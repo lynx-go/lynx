@@ -9,6 +9,13 @@ type lifecycleWrapper struct {
 	*lifecycle.Lifecycle
 }
 
+type Option struct {
+}
+
+func New() *App {
+	return &App{}
+}
+
 type App struct {
 	lifecycle *lifecycleWrapper
 }
