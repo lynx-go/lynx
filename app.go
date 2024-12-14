@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+type MD struct {
+}
+
 type Hook func(ctx context.Context) error
 
 type Option func(*App)
@@ -48,7 +51,8 @@ func New(opts ...Option) *App {
 
 func newApp() *App {
 	return &App{
-		logger: slog.Default(),
+		logger:          slog.Default(),
+		shutdownTimeout: 10 * time.Second,
 	}
 }
 
