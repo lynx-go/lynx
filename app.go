@@ -3,6 +3,7 @@ package lynx
 import (
 	"context"
 	"emperror.dev/emperror"
+	"github.com/samber/lo/mutable"
 	"github.com/spf13/cobra"
 	"log/slog"
 	"os"
@@ -23,14 +24,14 @@ type Hooks interface {
 var _ App = new(app)
 
 type options struct {
-	bootstrap func(ctx context.Context, args []string) error
-	name      string
-	id        string
-	version   string
-	onStarts  []Hook
-	onStops   []Hook
-	logger    *slog.Logger
-	services  []Service
+	name     string
+	id       string
+	version  string
+	onStarts []Hook
+	onStops  []Hook
+	logger   *slog.Logger
+	servers  []Server
+	commands []Command
 }
 
 type Hook func(ctx context.Context) error
@@ -44,12 +45,6 @@ func (a *app) Context() context.Context {
 }
 
 type Option func(*options)
-
-func WithBoostrap(fn func(ctx context.Context, args []string) error) Option {
-	return func(o *options) {
-		o.bootstrap = fn
-	}
-}
 
 func WithOnStart(hooks ...Hook) Option {
 	return func(o *options) {
@@ -85,23 +80,33 @@ func WithVersion(v string) Option {
 	return func(o *options) { o.version = v }
 }
 
-func WithServices(services ...Service) Option {
+func WithServer(servers ...Server) Option {
 	return func(o *options) {
-		if o.onStarts == nil {
-			o.services = []Service{}
+		if o.servers == nil {
+			o.servers = []Server{}
 		}
-		o.services = append(o.services, services...)
+		o.servers = append(o.servers, servers...)
 	}
+}
 
+func WithCommands(commands ...Command) Option {
+	return func(o *options) {
+		if o.commands == nil {
+			o.commands = make([]Command, 0)
+		}
+		o.commands = append(o.commands, commands...)
+	}
 }
 
 func New(opts ...Option) App {
-	o := &options{
-		logger: slog.Default(),
-	}
+	o := &options{}
 	//basePath := filepath.Base(os.Args[0])
 	for _, opt := range opts {
 		opt(o)
+	}
+	if o.logger == nil {
+		o.logger = slog.Default().With("name", o.name, "id", o.id, "version", o.version)
+		slog.SetDefault(o.logger)
 	}
 	logger := o.logger
 	a := &app{
@@ -112,25 +117,23 @@ func New(opts ...Option) App {
 			SilenceErrors: true,
 		},
 	}
+	cobra.OnInitialize(func() {
 
-	runningServices := make([]Service, 0)
+	})
+
+	runningServers := make([]Server, 0)
 	a.root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) (err error) {
-		//defer func() {
-		//	recovered := recover()
-		//	err = emperror.Recover(recovered)
-		//}()
-		for _, svc := range o.services {
-			ctx := cmd.Context()
-			if err = svc.Start(ctx); err != nil {
-				logger.Error("service start failed", "service", svc.Name(), "error", err)
-				return err
+		for _, srv := range o.servers {
+			if s, ok := srv.(NotForCLI); !ok || !s.NotForCLI() {
+				ctx := cmd.Context()
+				if err = srv.Start(ctx); err != nil {
+					logger.Error("server start failed", "server_name", srv.Name(), "error", err)
+					return err
+				}
+				runningServers = append(runningServers, srv)
 			}
-			runningServices = append(runningServices, svc)
 		}
 
-		return
-	}
-	a.root.PreRunE = func(cmd *cobra.Command, _ []string) (err error) {
 		for _, hook := range o.onStarts {
 			ctx := cmd.Context()
 			if err = hook(ctx); err != nil {
@@ -140,15 +143,22 @@ func New(opts ...Option) App {
 		}
 		return
 	}
-
-	cobra.OnFinalize(func() {
-		for _, svc := range runningServices {
-			ctx := context.Background()
-			if err := svc.Stop(ctx); err != nil {
-				logger.Error("service stop failed", "service", svc.Name(), "error", err)
+	a.root.PreRunE = func(cmd *cobra.Command, _ []string) (err error) {
+		for _, srv := range o.servers {
+			if s, ok := srv.(NotForCLI); ok && s.NotForCLI() {
+				ctx := cmd.Context()
+				logger.Info("starting server", "server_name", srv.Name())
+				if err = srv.Start(ctx); err != nil {
+					logger.Error("server start failed", "server_name", srv.Name(), "error", err)
+					return err
+				}
+				logger.Info("started server", "server_name", srv.Name())
+				runningServers = append(runningServers, srv)
 			}
 		}
-	})
+
+		return
+	}
 
 	a.root.PersistentPostRun = func(cmd *cobra.Command, _ []string) {
 		for _, hook := range o.onStops {
@@ -168,6 +178,47 @@ func New(opts ...Option) App {
 		case <-quit:
 		}
 	}
+	for _, c := range a.o.commands {
+		cmd := &cobra.Command{
+			Use:   c.Name(),
+			Short: c.Description(),
+			Long:  c.Description(),
+			RunE: func(cb *cobra.Command, args []string) error {
+				return c.Command(cb.Context(), args)
+			},
+		}
+
+		if srvs := c.Servers(); len(srvs) >= 0 {
+			cmd.PreRunE = func(cb *cobra.Command, args []string) (err error) {
+				for _, srv := range srvs {
+					if s, ok := srv.(NotForCLI); !ok || !s.NotForCLI() {
+						ctx := cmd.Context()
+						if err = srv.Start(ctx); err != nil {
+							logger.Error("server start failed", "server_name", srv.Name(), "error", err)
+							return err
+						}
+						runningServers = append(runningServers, srv)
+					}
+				}
+
+				return
+			}
+
+		}
+		a.root.AddCommand(cmd)
+	}
+
+	cobra.OnFinalize(func() {
+		mutable.Reverse(runningServers)
+		for _, srv := range runningServers {
+			ctx := context.Background()
+			logger.Info("stopping server", "server_name", srv.Name())
+			if err := srv.Stop(ctx); err != nil {
+				logger.Error("server stop failed", "server_name", srv.Name(), "error", err)
+			}
+			logger.Info("stopped server", "server_name", srv.Name())
+		}
+	})
 
 	return a
 }
