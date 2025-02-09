@@ -126,10 +126,12 @@ func New(opts ...Option) App {
 		for _, srv := range o.servers {
 			if s, ok := srv.(NotForCLI); !ok || !s.NotForCLI() {
 				ctx := cmd.Context()
+				logger.Info("starting server", "server_name", srv.Name())
 				if err = srv.Start(ctx); err != nil {
 					logger.Error("server start failed", "server_name", srv.Name(), "error", err)
 					return err
 				}
+				logger.Info("started server", "server_name", srv.Name())
 				runningServers = append(runningServers, srv)
 			}
 		}

@@ -107,7 +107,7 @@ type commonServer struct {
 }
 
 func (cs *commonServer) Name() string {
-	return "common"
+	return "common-server"
 }
 
 func (cs *commonServer) Start(ctx context.Context) error {
