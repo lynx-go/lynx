@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 )
 
@@ -24,13 +23,14 @@ type Hooks interface {
 var _ App = new(app)
 
 type options struct {
-	name     string
-	id       string
-	version  string
-	onStarts []Hook
-	onStops  []Hook
-	logger   *slog.Logger
-	services []Service
+	bootstrap func(ctx context.Context, args []string) error
+	name      string
+	id        string
+	version   string
+	onStarts  []Hook
+	onStops   []Hook
+	logger    *slog.Logger
+	services  []Service
 }
 
 type Hook func(ctx context.Context) error
@@ -44,6 +44,12 @@ func (a *app) Context() context.Context {
 }
 
 type Option func(*options)
+
+func WithBoostrap(fn func(ctx context.Context, args []string) error) Option {
+	return func(o *options) {
+		o.bootstrap = fn
+	}
+}
 
 func WithOnStart(hooks ...Hook) Option {
 	return func(o *options) {
@@ -93,7 +99,7 @@ func New(opts ...Option) App {
 	o := &options{
 		logger: slog.Default(),
 	}
-	basePath := filepath.Base(os.Args[0])
+	//basePath := filepath.Base(os.Args[0])
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -101,38 +107,52 @@ func New(opts ...Option) App {
 	a := &app{
 		o: o,
 		root: &cobra.Command{
-			Use: basePath,
+			Use:           o.name,
+			Version:       o.version,
+			SilenceErrors: true,
 		},
 	}
-	runningServices := []Service{}
-	a.root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
-		ctx := cmd.Context()
+
+	runningServices := make([]Service, 0)
+	a.root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) (err error) {
+		//defer func() {
+		//	recovered := recover()
+		//	err = emperror.Recover(recovered)
+		//}()
 		for _, svc := range o.services {
-			if err := svc.Start(ctx); err != nil {
+			ctx := cmd.Context()
+			if err = svc.Start(ctx); err != nil {
 				logger.Error("service start failed", "service", svc.Name(), "error", err)
 				return err
 			}
 			runningServices = append(runningServices, svc)
 		}
 
+		return
+	}
+	a.root.PreRunE = func(cmd *cobra.Command, _ []string) (err error) {
 		for _, hook := range o.onStarts {
-			if err := hook(ctx); err != nil {
+			ctx := cmd.Context()
+			if err = hook(ctx); err != nil {
 				logger.Error("call OnStart hook failed", "error", err)
 				return err
 			}
 		}
-		return nil
+		return
 	}
 
-	a.root.Version = o.version
-	a.root.PersistentPostRun = func(cmd *cobra.Command, _ []string) {
-		ctx := cmd.Context()
+	cobra.OnFinalize(func() {
 		for _, svc := range runningServices {
+			ctx := context.Background()
 			if err := svc.Stop(ctx); err != nil {
 				logger.Error("service stop failed", "service", svc.Name(), "error", err)
 			}
 		}
+	})
+
+	a.root.PersistentPostRun = func(cmd *cobra.Command, _ []string) {
 		for _, hook := range o.onStops {
+			ctx := context.Background()
 			if err := hook(ctx); err != nil {
 				logger.Error("call OnStop hook failed", "error", err)
 			}

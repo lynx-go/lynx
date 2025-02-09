@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"github.com/lynx-go/lynx"
 	"log/slog"
 )
@@ -10,6 +11,9 @@ func main() {
 	app := lynx.New(
 		lynx.WithName("lynx-demo"),
 		lynx.WithServices(&mockService{}),
+		lynx.WithBoostrap(func(ctx context.Context, args []string) error {
+			return nil
+		}),
 		lynx.WithOnStart(func(ctx context.Context) error {
 			slog.Info("start hook")
 			return nil
@@ -31,7 +35,9 @@ func (m *mockService) Name() string {
 
 func (m *mockService) Start(ctx context.Context) error {
 	slog.Info("start mock service")
-	return nil
+	//panic("start panic")
+	//return nil
+	return errors.New("start error")
 }
 
 func (m *mockService) Stop(ctx context.Context) error {
