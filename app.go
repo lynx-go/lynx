@@ -4,7 +4,6 @@ import (
 	"context"
 	"emperror.dev/emperror"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -30,7 +29,6 @@ type options struct {
 	version  string
 	onStarts []Hook
 	onStops  []Hook
-	config   string
 	logger   *slog.Logger
 	services []Service
 }
@@ -81,10 +79,6 @@ func WithVersion(v string) Option {
 	return func(o *options) { o.version = v }
 }
 
-func WithConfig(config string) Option {
-	return func(o *options) { o.config = config }
-}
-
 func WithServices(services ...Service) Option {
 	return func(o *options) {
 		if o.onStarts == nil {
@@ -97,15 +91,12 @@ func WithServices(services ...Service) Option {
 
 func New(opts ...Option) App {
 	o := &options{
-		config: filepath.Join("configs", "config.yml"),
 		logger: slog.Default(),
 	}
 	basePath := filepath.Base(os.Args[0])
 	for _, opt := range opts {
 		opt(o)
 	}
-	viper.AutomaticEnv()
-	viper.SetConfigFile(o.config)
 	logger := o.logger
 	a := &app{
 		o: o,
