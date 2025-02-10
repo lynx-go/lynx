@@ -14,11 +14,7 @@ import (
 type App interface {
 	Run()
 	Context() context.Context
-}
-
-type Hooks interface {
-	OnStart(ctx context.Context) error
-	OnStop(ctx context.Context) error
+	Root() *cobra.Command
 }
 
 var _ App = new(app)
@@ -38,6 +34,10 @@ type Hook func(ctx context.Context) error
 type app struct {
 	root *cobra.Command
 	o    *options
+}
+
+func (a *app) Root() *cobra.Command {
+	return a.root
 }
 
 func (a *app) Context() context.Context {
