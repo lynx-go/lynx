@@ -1,10 +1,13 @@
 package lynx
 
-import "context"
+import (
+	"context"
+	"github.com/lynx-go/lynx/hook"
+)
 
 type Command interface {
 	Name() string
 	Description() string
 	Command(ctx context.Context, args []string) error
-	Servers() []Server
+	Hooks() []hook.Hook
 }

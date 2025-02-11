@@ -3,45 +3,42 @@ package main
 import (
 	"context"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/config"
-	"github.com/spf13/pflag"
-	"github.com/spf13/viper"
+	"github.com/lynx-go/lynx/hook"
 	"log/slog"
 )
 
-type Config struct{}
+type Option struct {
+	Addr   string `json:"addr"`
+	Config string `json:"config"`
+}
 
 func main() {
-	v, _ := config.Configure("lynx-demo", func(v *viper.Viper, f *pflag.FlagSet) {
-	})
-	v.WatchConfig()
-	c := &Config{}
-	if err := v.Unmarshal(c); err != nil {
-		panic(err)
-	}
-	app := lynx.New(
-		lynx.WithName("lynx-demo"),
-		lynx.WithServer(&commonServer{c: c}, &serviceServer{}),
-		lynx.WithOnStart(func(ctx context.Context) error {
-			slog.Info("start hook")
-			return nil
+
+	app := lynx.New[Option](
+		lynx.WithName[Option]("lynx-demo"),
+		lynx.WithBootstrap[Option](func(hooks *hook.Registry, o Option) {
+			cfg := o.Config
+			slog.Info("config path", "path", cfg)
+			hooks.Register(&serviceServer{})
+			hooks.Register(&commandServer{})
 		}),
-		lynx.WithOnStop(func(ctx context.Context) error {
-			slog.Info("stop hook")
-			return nil
+		lynx.WithCommands[Option](&helloCommand{
+			servers: []lynx.Server{&commandServer{}},
 		}),
-		lynx.WithCommands(&helloCommand{}),
 	)
 	app.Run()
 }
 
 type helloCommand struct {
+	servers []lynx.Server
 }
 
-func (h *helloCommand) Servers() []lynx.Server {
-	return []lynx.Server{
-		&commandServer{},
+func (h *helloCommand) Hooks() []hook.Hook {
+	hooks := []hook.Hook{}
+	for _, s := range h.servers {
+		hooks = append(hooks, s)
 	}
+	return hooks
 }
 
 func (h *helloCommand) Name() string {
@@ -60,64 +57,62 @@ func (h *helloCommand) Command(ctx context.Context, args []string) error {
 var _ lynx.Command = new(helloCommand)
 
 type commandServer struct {
+	*hook.HookBase
 }
 
-func (cs *commandServer) Name() string {
+func (s *commandServer) OnStart(ctx context.Context) error {
+	slog.Info("command-server start")
+	return nil
+}
+
+func (s *commandServer) OnStop(ctx context.Context) {
+	slog.Info("command-server stop")
+}
+
+func (s *commandServer) Name() string {
 	return "command-server"
-}
-
-func (cs *commandServer) Start(ctx context.Context) error {
-	slog.Info("start command-server")
-	return nil
-}
-
-func (cs *commandServer) Stop(ctx context.Context) error {
-	slog.Info("stop command-server")
-	return nil
 }
 
 var _ lynx.Server = new(commandServer)
 
 type serviceServer struct {
+	*hook.HookBase
 }
 
-func (ss *serviceServer) NotForCLI() bool {
+func (s *serviceServer) OnStart(ctx context.Context) error {
+	slog.Info("service-server start")
+	return nil
+}
+
+func (s *serviceServer) OnStop(ctx context.Context) {
+	slog.Info("service-server stop")
+}
+
+func (s *serviceServer) IgnoreForCLI() bool {
 	return true
 }
 
-func (ss *serviceServer) Name() string {
+func (s *serviceServer) Name() string {
 	return "service-server"
 }
 
-func (ss *serviceServer) Start(ctx context.Context) error {
-	slog.Info("start service server")
-	return nil
-}
-
-func (ss *serviceServer) Stop(ctx context.Context) error {
-	slog.Info("stop service server")
-	return nil
-}
-
 var _ lynx.Server = new(serviceServer)
-var _ lynx.NotForCLI = new(serviceServer)
 
 type commonServer struct {
-	c *Config
+	*hook.HookBase
 }
 
-func (cs *commonServer) Name() string {
+func (c *commonServer) Name() string {
 	return "common-server"
 }
 
-func (cs *commonServer) Start(ctx context.Context) error {
-	slog.Info("start common service")
+func (c *commonServer) OnStart(ctx context.Context) error {
+	slog.Info("common-server start")
 	return nil
 }
 
-func (cs *commonServer) Stop(ctx context.Context) error {
-	slog.Info("stop common service")
-	return nil
+func (c *commonServer) OnStop(ctx context.Context) {
+	slog.Info("common-server stop")
 }
 
 var _ lynx.Server = new(commonServer)

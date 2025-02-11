@@ -1,13 +1,8 @@
 package lynx
 
-import "context"
+import "github.com/lynx-go/lynx/hook"
 
 type Server interface {
+	hook.Hook
 	Name() string
-	Start(ctx context.Context) error
-	Stop(ctx context.Context) error
-}
-
-type NotForCLI interface {
-	NotForCLI() bool
 }

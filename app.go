@@ -3,226 +3,318 @@ package lynx
 import (
 	"context"
 	"emperror.dev/emperror"
-	"github.com/lynx-go/lynx/run"
+	"errors"
+	"fmt"
+	"github.com/lynx-go/lynx/casing"
+	"github.com/lynx-go/lynx/hook"
+	"github.com/lynx-go/lynx/options"
 	"github.com/samber/lo/mutable"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 	"log/slog"
+	"os"
+	"os/signal"
+	"reflect"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
 )
 
 type App interface {
 	Run()
-	Context() context.Context
-	//Root() *cobra.Command
 }
 
-var _ App = new(app)
-
-type options struct {
-	name     string
-	id       string
-	version  string
-	onInit   func()
-	onStarts []Hook
-	onStops  []Hook
-	logger   *slog.Logger
-	servers  []Server
-	commands []Command
+type option struct {
+	name  string
+	rtype reflect.Type
+	path  []int
 }
 
-type Hook func(ctx context.Context) error
-type app struct {
-	root *cobra.Command
-	o    *options
+type Func func(ctx context.Context) error
+type app[O any] struct {
+	bootstrap func(hooks *hook.Registry, o O)
+	root      *cobra.Command
+	name      string
+	id        string
+	version   string
+	hooks     *hook.Registry
+	logger    *slog.Logger
+	commands  []Command
+	options   []option
 }
 
-func (a *app) Context() context.Context {
-	return a.root.Context()
-}
+type Option[O any] func(*app[O])
 
-type Option func(*options)
-
-func WithOnStart(hooks ...Hook) Option {
-	return func(o *options) {
-		if o.onStarts == nil {
-			o.onStarts = make([]Hook, 0)
-		}
-		o.onStarts = append(o.onStarts, hooks...)
+func WithName[O any](name string) Option[O] {
+	return func(a *app[O]) {
+		a.name = name
 	}
 }
 
-func WithOnStop(hooks ...Hook) Option {
-	return func(o *options) {
-		if o.onStops == nil {
-			o.onStops = make([]Hook, 0)
-		}
-		o.onStops = append(o.onStops, hooks...)
+func WithID[O any](id string) Option[O] {
+	return func(a *app[O]) { a.id = id }
+}
+
+func WithLogger[O any](logger *slog.Logger) Option[O] {
+	return func(a *app[O]) { a.logger = logger }
+}
+
+func WithVersion[O any](v string) Option[O] {
+	return func(a *app[O]) { a.version = v }
+}
+
+func WithCommands[O any](commands ...Command) Option[O] {
+	return func(a *app[O]) { a.commands = append(a.commands, commands...) }
+}
+
+func WithBootstrap[O any](fn func(hooks *hook.Registry, o O)) Option[O] {
+	return func(a *app[O]) {
+		a.bootstrap = fn
 	}
 }
 
-func WithName(name string) Option {
-	return func(o *options) { o.name = name }
-}
-
-func WithID(id string) Option {
-	return func(o *options) { o.id = id }
-}
-
-func WithLogger(logger *slog.Logger) Option {
-	return func(o *options) { o.logger = logger }
-}
-
-func WithVersion(v string) Option {
-	return func(o *options) { o.version = v }
-}
-
-func WithServer(servers ...Server) Option {
-	return func(o *options) {
-		if o.servers == nil {
-			o.servers = []Server{}
-		}
-		o.servers = append(o.servers, servers...)
+func New[O any](opts ...Option[O]) App {
+	a := &app[O]{
+		hooks: hook.NewHooks(),
 	}
-}
-
-func WithCommands(commands ...Command) Option {
-	return func(o *options) {
-		if o.commands == nil {
-			o.commands = make([]Command, 0)
-		}
-		o.commands = append(o.commands, commands...)
-	}
-}
-
-func WithOnInit(onInit func()) Option {
-	return func(o *options) { o.onInit = onInit }
-}
-
-func New(opts ...Option) App {
-	o := &options{}
 	//basePath := filepath.Base(os.Args[0])
 	for _, opt := range opts {
-		opt(o)
+		opt(a)
 	}
-	if o.logger == nil {
-		o.logger = slog.Default().With("name", o.name, "id", o.id, "version", o.version)
-		slog.SetDefault(o.logger)
+	a.root = &cobra.Command{
+		Use:           a.name,
+		Version:       a.version,
+		SilenceErrors: true,
 	}
-	logger := o.logger
-	a := &app{
-		o: o,
-		root: &cobra.Command{
-			Use:           o.name,
-			Version:       o.version,
-			SilenceErrors: true,
-		},
+	if a.logger == nil {
+		a.logger = slog.Default().With("name", a.name, "id", a.id, "version", a.version)
+		slog.SetDefault(a.logger)
 	}
-	cobra.OnInitialize(func() {
-		if o.onInit != nil {
-			o.onInit()
-		}
-	})
+	//logger := a.logger
 
-	runningServers := make([]Server, 0)
-	a.root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) (err error) {
-		for _, srv := range o.servers {
-			if s, ok := srv.(NotForCLI); !ok || !s.NotForCLI() {
-				ctx := cmd.Context()
-				logger.Info("starting server", "server_name", srv.Name())
-				if err = srv.Start(ctx); err != nil {
-					logger.Error("server start failed", "server_name", srv.Name(), "error", err)
-					return err
-				}
-				logger.Info("started server", "server_name", srv.Name())
-				runningServers = append(runningServers, srv)
+	var o O
+	a.setupOptions(reflect.TypeOf(o), []int{})
+
+	a.root.RunE = func(cmd *cobra.Command, args []string) error {
+		ctx, cancel := context.WithCancel(cmd.Context())
+		eg, sctx := errgroup.WithContext(ctx)
+		stopHooks := []func(ctx context.Context){}
+		for _, hk := range a.hooks.Range() {
+			hk := hk
+			stopHooks = append(stopHooks, hk.OnStop)
+		}
+		wg := sync.WaitGroup{}
+		eg.Go(func() error {
+			<-sctx.Done()
+			stopCtx, cancel := context.WithTimeout(cmd.Context(), time.Second*10)
+			defer cancel()
+			mutable.Reverse(stopHooks)
+			for _, hk := range stopHooks {
+				hk(stopCtx)
 			}
+			return nil
+		})
+		for _, hk := range a.hooks.Range() {
+			hk := hk
+			wg.Add(1)
+			eg.Go(func() error {
+				wg.Done()
+				return hk.OnStart(sctx)
+			})
 		}
+		wg.Wait()
 
-		for _, hook := range o.onStarts {
-			ctx := cmd.Context()
-			if err = hook(ctx); err != nil {
-				logger.Error("call OnStart hook failed", "error", err)
-				return err
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		eg.Go(func() error {
+			select {
+			case <-sctx.Done():
+				return nil
+			case <-quit:
+				cancel()
+				return nil
 			}
+		})
+
+		if err := eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+			return err
 		}
-		return
-	}
-	a.root.PreRunE = func(cmd *cobra.Command, _ []string) (err error) {
-		for _, srv := range o.servers {
-			if s, ok := srv.(NotForCLI); ok && s.NotForCLI() {
-				ctx := cmd.Context()
-				logger.Info("starting server", "server_name", srv.Name())
-				if err = srv.Start(ctx); err != nil {
-					logger.Error("server start failed", "server_name", srv.Name(), "error", err)
-					return err
-				}
-				logger.Info("started server", "server_name", srv.Name())
-				runningServers = append(runningServers, srv)
-			}
-		}
-
-		return
+		return nil
 	}
 
-	a.root.PersistentPostRun = func(cmd *cobra.Command, _ []string) {
-		for _, hook := range o.onStops {
-			ctx := context.Background()
-			if err := hook(ctx); err != nil {
-				logger.Error("call OnStop hook failed", "error", err)
-			}
-		}
-	}
-
-	a.root.Run = func(cmd *cobra.Command, args []string) {
-		run.ListenSignal()
-	}
-
-	for _, c := range a.o.commands {
+	for _, c := range a.commands {
 		cmd := &cobra.Command{
 			Use:   c.Name(),
 			Short: c.Description(),
 			Long:  c.Description(),
 			RunE: func(cb *cobra.Command, args []string) error {
-				return c.Command(cb.Context(), args)
+				eg, sctx := errgroup.WithContext(cb.Context())
+				stopHooks := []func(ctx context.Context){}
+				for _, hk := range c.Hooks() {
+					hk := hk
+					stopHooks = append(stopHooks, hk.OnStop)
+				}
+				defer func() {
+					mutable.Reverse(stopHooks)
+					for _, hk := range stopHooks {
+						hk(sctx)
+					}
+				}()
+
+				wg := sync.WaitGroup{}
+				for _, hk := range c.Hooks() {
+					hk := hk
+					wg.Add(1)
+					eg.Go(func() error {
+						wg.Done()
+						return hk.OnStart(sctx)
+					})
+				}
+				wg.Wait()
+
+				return c.Command(sctx, args)
 			},
 		}
 
-		if srvs := c.Servers(); len(srvs) >= 0 {
-			cmd.PreRunE = func(cb *cobra.Command, args []string) (err error) {
-				for _, srv := range srvs {
-					if s, ok := srv.(NotForCLI); !ok || !s.NotForCLI() {
-						ctx := cmd.Context()
-						logger.Info("starting server", "server_name", srv.Name())
-						if err = srv.Start(ctx); err != nil {
-							logger.Error("server start failed", "server_name", srv.Name(), "error", err)
-							return err
-						}
-						logger.Info("started server", "server_name", srv.Name())
-						runningServers = append(runningServers, srv)
-					}
-				}
-
-				return
-			}
-
-		}
 		a.root.AddCommand(cmd)
 	}
-
-	cobra.OnFinalize(func() {
-		mutable.Reverse(runningServers)
-		for _, srv := range runningServers {
-			ctx := context.Background()
-			logger.Info("stopping server", "server_name", srv.Name())
-			if err := srv.Stop(ctx); err != nil {
-				logger.Error("server stop failed", "server_name", srv.Name(), "error", err)
-			}
-			logger.Info("stopped server", "server_name", srv.Name())
-		}
-	})
 
 	return a
 }
 
-func (a *app) Run() {
+func (a *app[O]) Run() {
+
+	var o O
+	existing := a.root.PersistentPreRun
+	a.root.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+		// Load config from args/env/files
+		v := reflect.ValueOf(&o).Elem()
+		flags := a.root.PersistentFlags()
+		for _, opt := range a.options {
+			f := v
+			for _, i := range opt.path {
+				f = f.Field(i)
+			}
+			var fv reflect.Value
+			switch deref(opt.rtype).Kind() {
+			case reflect.String:
+				s, _ := flags.GetString(opt.name)
+				fv = reflect.ValueOf(s)
+			case reflect.Int, reflect.Int64:
+				var i any
+				if opt.rtype == durationType {
+					i, _ = flags.GetDuration(opt.name)
+				} else {
+					i, _ = flags.GetInt64(opt.name)
+				}
+				fv = reflect.ValueOf(i).Convert(deref(opt.rtype))
+			case reflect.Bool:
+				b, _ := flags.GetBool(opt.name)
+				fv = reflect.ValueOf(b)
+			}
+
+			if opt.rtype.Kind() == reflect.Ptr {
+				ptr := reflect.New(fv.Type())
+				ptr.Elem().Set(fv)
+				fv = ptr
+			}
+
+			f.Set(fv)
+		}
+		a.bootstrap(a.hooks, o)
+
+		if existing != nil {
+			existing(cmd, args)
+		}
+
+		// Set options in context, so custom commands can access it.
+		cmd.SetContext(options.Context(cmd.Context(), o))
+	}
+
 	emperror.Panic(a.root.Execute())
 }
+
+func (a *app[O]) setupOptions(t reflect.Type, path []int) {
+	var err error
+	flags := a.root.PersistentFlags()
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+
+		if !field.IsExported() {
+			// This isn't a public field, so we cannot use reflect.Value.Set with
+			// it. This is usually a struct field with a lowercase name.
+			fmt.Fprintln(os.Stderr, "warning: ignoring unexported options field", field.Name)
+			continue
+		}
+
+		currentPath := append([]int{}, path...)
+		currentPath = append(currentPath, i)
+
+		fieldType := deref(field.Type)
+		if field.Anonymous {
+			// Embedded struct. This enables composition from e.g. company defaults.
+			a.setupOptions(fieldType, currentPath)
+			continue
+		}
+
+		name := field.Tag.Get("name")
+		if name == "" {
+			name = casing.Kebab(field.Name)
+		}
+
+		envName := "SERVICE_" + casing.Snake(name, strings.ToUpper)
+		defaultValue := field.Tag.Get("default")
+		if v, ok := os.LookupEnv(envName); ok {
+			// Env vars will override the default value, which is used to document
+			// what the value is if no options are passed.
+			defaultValue = v
+		}
+
+		a.options = append(a.options, option{name, field.Type, currentPath})
+		switch fieldType.Kind() {
+		case reflect.String:
+			flags.StringP(name, field.Tag.Get("short"), defaultValue, field.Tag.Get("doc"))
+		case reflect.Int, reflect.Int64:
+			var def int64
+			if defaultValue != "" {
+				if fieldType == durationType {
+					var t time.Duration
+					t, err = time.ParseDuration(defaultValue)
+					def = int64(t)
+				} else {
+					def, err = strconv.ParseInt(defaultValue, 10, 64)
+				}
+				if err != nil {
+					panic(err)
+				}
+			}
+			if fieldType == durationType {
+				flags.DurationP(name, field.Tag.Get("short"), time.Duration(def), field.Tag.Get("doc"))
+			} else {
+				flags.Int64P(name, field.Tag.Get("short"), def, field.Tag.Get("doc"))
+			}
+		case reflect.Bool:
+			var def bool
+			if defaultValue != "" {
+				def, err = strconv.ParseBool(defaultValue)
+				if err != nil {
+					panic(err)
+				}
+			}
+			flags.BoolP(name, field.Tag.Get("short"), def, field.Tag.Get("doc"))
+		default:
+			panic("Unsupported option type: " + field.Type.Kind().String())
+		}
+	}
+}
+
+func deref(t reflect.Type) reflect.Type {
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t
+}
+
+var durationType = reflect.TypeOf((*time.Duration)(nil)).Elem()
