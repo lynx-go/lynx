@@ -19,6 +19,7 @@ func main() {
 		lynx.WithBootstrap[Option](func(hooks *hook.Registry, o Option) {
 			cfg := o.Config
 			slog.Info("config path", "path", cfg)
+			hooks.Register(&OnStart{})
 			hooks.Register(&serviceServer{})
 			hooks.Register(&commandServer{})
 		}),
@@ -27,6 +28,15 @@ func main() {
 		}),
 	)
 	app.Run()
+}
+
+type OnStart struct {
+	*hook.HookBase
+}
+
+func (o *OnStart) OnStart(ctx context.Context) error {
+	slog.Info("OnStart")
+	return nil
 }
 
 type helloCommand struct {
