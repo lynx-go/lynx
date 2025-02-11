@@ -3,18 +3,16 @@ package lynx
 import (
 	"context"
 	"emperror.dev/emperror"
+	"github.com/lynx-go/lynx/run"
 	"github.com/samber/lo/mutable"
 	"github.com/spf13/cobra"
 	"log/slog"
-	"os"
-	"os/signal"
-	"syscall"
 )
 
 type App interface {
 	Run()
 	Context() context.Context
-	Root() *cobra.Command
+	//Root() *cobra.Command
 }
 
 var _ App = new(app)
@@ -23,6 +21,7 @@ type options struct {
 	name     string
 	id       string
 	version  string
+	onInit   func()
 	onStarts []Hook
 	onStops  []Hook
 	logger   *slog.Logger
@@ -34,10 +33,6 @@ type Hook func(ctx context.Context) error
 type app struct {
 	root *cobra.Command
 	o    *options
-}
-
-func (a *app) Root() *cobra.Command {
-	return a.root
 }
 
 func (a *app) Context() context.Context {
@@ -98,6 +93,10 @@ func WithCommands(commands ...Command) Option {
 	}
 }
 
+func WithOnInit(onInit func()) Option {
+	return func(o *options) { o.onInit = onInit }
+}
+
 func New(opts ...Option) App {
 	o := &options{}
 	//basePath := filepath.Base(os.Args[0])
@@ -118,7 +117,9 @@ func New(opts ...Option) App {
 		},
 	}
 	cobra.OnInitialize(func() {
-
+		if o.onInit != nil {
+			o.onInit()
+		}
 	})
 
 	runningServers := make([]Server, 0)
@@ -172,14 +173,9 @@ func New(opts ...Option) App {
 	}
 
 	a.root.Run = func(cmd *cobra.Command, args []string) {
-		// Handle graceful shutdown.
-		quit := make(chan os.Signal, 1)
-		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-		select {
-		case <-quit:
-		}
+		run.ListenSignal()
 	}
+
 	for _, c := range a.o.commands {
 		cmd := &cobra.Command{
 			Use:   c.Name(),
