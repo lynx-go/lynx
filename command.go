@@ -10,4 +10,5 @@ type Command interface {
 	Description() string
 	Command(ctx context.Context, args []string) error
 	Hooks() []hook.Hook
+	SubCommands() []Command
 }
