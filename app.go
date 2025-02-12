@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/lynx-go/lynx/casing"
-	"github.com/lynx-go/lynx/hook"
+	"github.com/lynx-go/lynx/lifecycle"
 	"github.com/lynx-go/lynx/options"
 	"github.com/samber/lo/mutable"
 	"github.com/spf13/cobra"
@@ -34,15 +34,15 @@ type option struct {
 
 type Func func(ctx context.Context) error
 type app[O any] struct {
-	bootstrap func(hooks *hook.Registry, o O)
-	root      *cobra.Command
-	name      string
-	id        string
-	version   string
-	hooks     *hook.Registry
-	logger    *slog.Logger
-	commands  []Command
-	options   []option
+	setup    func(hooks *lifecycle.Registry, o O)
+	root     *cobra.Command
+	name     string
+	id       string
+	version  string
+	hooks    *lifecycle.Registry
+	logger   *slog.Logger
+	commands []Command
+	options  []option
 }
 
 type Option[O any] func(*app[O])
@@ -69,15 +69,15 @@ func WithCommands[O any](commands ...Command) Option[O] {
 	return func(a *app[O]) { a.commands = append(a.commands, commands...) }
 }
 
-func WithBootstrap[O any](fn func(hooks *hook.Registry, o O)) Option[O] {
+func WithSetup[O any](fn func(hooks *lifecycle.Registry, o O)) Option[O] {
 	return func(a *app[O]) {
-		a.bootstrap = fn
+		a.setup = fn
 	}
 }
 
 func New[O any](opts ...Option[O]) App {
 	a := &app[O]{
-		hooks: hook.NewHooks(),
+		hooks: lifecycle.NewHooks(),
 	}
 	//basePath := filepath.Base(os.Args[0])
 	for _, opt := range opts {
@@ -146,9 +146,9 @@ func New[O any](opts ...Option[O]) App {
 
 	for _, c := range a.commands {
 		cmd := &cobra.Command{
-			Use:   c.Name(),
-			Short: c.Description(),
-			Long:  c.Description(),
+			Use:   c.Use(),
+			Short: c.Desc(),
+			Long:  c.Example(),
 			RunE: func(cb *cobra.Command, args []string) error {
 				eg, sctx := errgroup.WithContext(cb.Context())
 				stopHooks := []func(ctx context.Context){}
@@ -174,7 +174,7 @@ func New[O any](opts ...Option[O]) App {
 				}
 				wg.Wait()
 
-				return c.Command(sctx, args)
+				return c.Run(sctx, args)
 			},
 		}
 
@@ -223,7 +223,7 @@ func (a *app[O]) Run() {
 
 			f.Set(fv)
 		}
-		a.bootstrap(a.hooks, o)
+		a.setup(a.hooks, o)
 
 		if existing != nil {
 			existing(cmd, args)

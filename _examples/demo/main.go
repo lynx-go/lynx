@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/hook"
+	"github.com/lynx-go/lynx/lifecycle"
 	"log/slog"
 )
 
@@ -16,22 +16,26 @@ func main() {
 
 	app := lynx.New[Option](
 		lynx.WithName[Option]("lynx-demo"),
-		lynx.WithBootstrap[Option](func(hooks *hook.Registry, o Option) {
+		lynx.WithSetup[Option](func(hooks *lifecycle.Registry, o Option) {
 			cfg := o.Config
 			slog.Info("config path", "path", cfg)
-			hooks.Register(&OnStart{})
-			hooks.Register(&serviceServer{})
-			hooks.Register(&commandServer{})
+
+			hooks.Service(&serviceServer{})
+			hooks.Service(&commandServer{})
+			hooks.OnStart(func(ctx context.Context) error {
+				slog.Info("onstart")
+				return nil
+			})
 		}),
 		lynx.WithCommands[Option](&helloCommand{
-			servers: []lynx.Server{&commandServer{}},
+			servers: []lifecycle.Service{&commandServer{}},
 		}),
 	)
 	app.Run()
 }
 
 type OnStart struct {
-	*hook.HookBase
+	*lifecycle.HookBase
 }
 
 func (o *OnStart) OnStart(ctx context.Context) error {
@@ -40,26 +44,34 @@ func (o *OnStart) OnStart(ctx context.Context) error {
 }
 
 type helloCommand struct {
-	servers []lynx.Server
+	servers []lifecycle.Service
 }
 
-func (h *helloCommand) Hooks() []hook.Hook {
-	hooks := []hook.Hook{}
+func (h *helloCommand) Example() string {
+	return ""
+}
+
+func (h *helloCommand) SubCommands() []lynx.Command {
+	return []lynx.Command{}
+}
+
+func (h *helloCommand) Hooks() []lifecycle.Hook {
+	hooks := []lifecycle.Hook{}
 	for _, s := range h.servers {
-		hooks = append(hooks, s)
+		hooks = append(hooks, lifecycle.ServiceToHook(s))
 	}
 	return hooks
 }
 
-func (h *helloCommand) Name() string {
+func (h *helloCommand) Use() string {
 	return "hello"
 }
 
-func (h *helloCommand) Description() string {
+func (h *helloCommand) Desc() string {
 	return "hello world"
 }
 
-func (h *helloCommand) Command(ctx context.Context, args []string) error {
+func (h *helloCommand) Run(ctx context.Context, args []string) error {
 	slog.Info("hello world")
 	return nil
 }
@@ -67,15 +79,15 @@ func (h *helloCommand) Command(ctx context.Context, args []string) error {
 var _ lynx.Command = new(helloCommand)
 
 type commandServer struct {
-	*hook.HookBase
+	*lifecycle.HookBase
 }
 
-func (s *commandServer) OnStart(ctx context.Context) error {
+func (s *commandServer) Start(ctx context.Context) error {
 	slog.Info("command-server start")
 	return nil
 }
 
-func (s *commandServer) OnStop(ctx context.Context) {
+func (s *commandServer) Stop(ctx context.Context) {
 	slog.Info("command-server stop")
 }
 
@@ -83,22 +95,22 @@ func (s *commandServer) Name() string {
 	return "command-server"
 }
 
-var _ lynx.Server = new(commandServer)
+var _ lifecycle.Service = new(commandServer)
 
 type serviceServer struct {
-	*hook.HookBase
+	*lifecycle.HookBase
 }
 
-func (s *serviceServer) OnStart(ctx context.Context) error {
+func (s *serviceServer) Start(ctx context.Context) error {
 	slog.Info("service-server start")
 	return nil
 }
 
-func (s *serviceServer) OnStop(ctx context.Context) {
+func (s *serviceServer) Stop(ctx context.Context) {
 	slog.Info("service-server stop")
 }
 
-func (s *serviceServer) IgnoreForCLI() bool {
+func (s *serviceServer) IgnoreCLI() bool {
 	return true
 }
 
@@ -106,23 +118,23 @@ func (s *serviceServer) Name() string {
 	return "service-server"
 }
 
-var _ lynx.Server = new(serviceServer)
+var _ lifecycle.Service = new(serviceServer)
 
 type commonServer struct {
-	*hook.HookBase
+	*lifecycle.HookBase
 }
 
 func (c *commonServer) Name() string {
 	return "common-server"
 }
 
-func (c *commonServer) OnStart(ctx context.Context) error {
+func (c *commonServer) Start(ctx context.Context) error {
 	slog.Info("common-server start")
 	return nil
 }
 
-func (c *commonServer) OnStop(ctx context.Context) {
+func (c *commonServer) Stop(ctx context.Context) {
 	slog.Info("common-server stop")
 }
 
-var _ lynx.Server = new(commonServer)
+var _ lifecycle.Service = new(commonServer)

@@ -2,13 +2,14 @@ package lynx
 
 import (
 	"context"
-	"github.com/lynx-go/lynx/hook"
+	"github.com/lynx-go/lynx/lifecycle"
 )
 
 type Command interface {
-	Name() string
-	Description() string
-	Command(ctx context.Context, args []string) error
-	Hooks() []hook.Hook
+	Use() string
+	Desc() string
+	Example() string
+	Run(ctx context.Context, args []string) error
+	Hooks() []lifecycle.Hook
 	SubCommands() []Command
 }

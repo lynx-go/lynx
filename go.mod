@@ -1,6 +1,8 @@
 module github.com/lynx-go/lynx
 
-go 1.22.0
+go 1.22.2
+
+toolchain go1.23.2
 
 require (
 	emperror.dev/emperror v0.33.0
@@ -18,6 +20,7 @@ require (
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/lynx-go/x v0.0.0-20250212100416-03b1f32836b1 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e // indirect
