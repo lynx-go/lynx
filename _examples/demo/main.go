@@ -27,9 +27,9 @@ func main() {
 				return nil
 			})
 		}),
-		lynx.WithCommands[Option](&helloCommand{
-			servers: []lifecycle.Service{&commandServer{}},
-		}),
+		lynx.WithCommands[Option](lynx.NewCommand[Option]("hello", "hello", "hello", func(ctx context.Context, o Option) error {
+			
+		})),
 	)
 	app.Run()
 }
@@ -43,19 +43,19 @@ func (o *OnStart) OnStart(ctx context.Context) error {
 	return nil
 }
 
-type helloCommand struct {
+type helloCommand[O any] struct {
 	servers []lifecycle.Service
 }
 
-func (h *helloCommand) Example() string {
+func (h *helloCommand[O]) Example() string {
 	return ""
 }
 
-func (h *helloCommand) SubCommands() []lynx.Command {
-	return []lynx.Command{}
+func (h *helloCommand[O]) SubCommands() []lynx.Command[O] {
+	return []lynx.Command[O]{}
 }
 
-func (h *helloCommand) Hooks() []lifecycle.Hook {
+func (h *helloCommand[O]) Hooks() []lifecycle.Hook {
 	hooks := []lifecycle.Hook{}
 	for _, s := range h.servers {
 		hooks = append(hooks, lifecycle.ServiceToHook(s))
@@ -63,20 +63,20 @@ func (h *helloCommand) Hooks() []lifecycle.Hook {
 	return hooks
 }
 
-func (h *helloCommand) Use() string {
+func (h *helloCommand[O]) Use() string {
 	return "hello"
 }
 
-func (h *helloCommand) Desc() string {
+func (h *helloCommand[O]) Desc() string {
 	return "hello world"
 }
 
-func (h *helloCommand) Run(ctx context.Context, args []string) error {
+func (h *helloCommand[O]) Run(ctx context.Context, o O) error {
 	slog.Info("hello world")
 	return nil
 }
 
-var _ lynx.Command = new(helloCommand)
+var _ lynx.Command[Option] = new(helloCommand[Option])
 
 type commandServer struct {
 	*lifecycle.HookBase

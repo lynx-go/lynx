@@ -41,7 +41,7 @@ type app[O any] struct {
 	version  string
 	hooks    *lifecycle.Registry
 	logger   *slog.Logger
-	commands []Command
+	commands []Command[O]
 	options  []option
 }
 
@@ -65,7 +65,7 @@ func WithVersion[O any](v string) Option[O] {
 	return func(a *app[O]) { a.version = v }
 }
 
-func WithCommands[O any](commands ...Command) Option[O] {
+func WithCommands[O any](commands ...Command[O]) Option[O] {
 	return func(a *app[O]) { a.commands = append(a.commands, commands...) }
 }
 
@@ -144,48 +144,10 @@ func New[O any](opts ...Option[O]) App {
 		return nil
 	}
 
-	for _, c := range a.commands {
-		cmd := &cobra.Command{
-			Use:   c.Use(),
-			Short: c.Desc(),
-			Long:  c.Example(),
-			RunE: func(cb *cobra.Command, args []string) error {
-				eg, sctx := errgroup.WithContext(cb.Context())
-				stopHooks := []func(ctx context.Context){}
-				for _, hk := range c.Hooks() {
-					hk := hk
-					stopHooks = append(stopHooks, hk.OnStop)
-				}
-				defer func() {
-					mutable.Reverse(stopHooks)
-					for _, hk := range stopHooks {
-						hk(sctx)
-					}
-				}()
-
-				wg := sync.WaitGroup{}
-				for _, hk := range c.Hooks() {
-					hk := hk
-					wg.Add(1)
-					eg.Go(func() error {
-						wg.Done()
-						return hk.OnStart(sctx)
-					})
-				}
-				wg.Wait()
-
-				return c.Run(sctx, args)
-			},
-		}
-
-		a.root.AddCommand(cmd)
-	}
-
 	return a
 }
 
 func (a *app[O]) Run() {
-
 	var o O
 	existing := a.root.PersistentPreRun
 	a.root.PersistentPreRun = func(cmd *cobra.Command, args []string) {
@@ -231,6 +193,42 @@ func (a *app[O]) Run() {
 
 		// Set options in context, so custom commands can access it.
 		cmd.SetContext(options.Context(cmd.Context(), o))
+	}
+
+	for _, c := range a.commands {
+		cmd := &cobra.Command{
+			Use:   c.Use(),
+			Short: c.Desc(),
+			Long:  c.Example(),
+			RunE: func(cb *cobra.Command, args []string) error {
+				eg, sctx := errgroup.WithContext(cb.Context())
+				stopHooks := []func(ctx context.Context){}
+				for _, hk := range c.Hooks() {
+					hk := hk
+					stopHooks = append(stopHooks, hk.OnStop)
+				}
+				defer func() {
+					mutable.Reverse(stopHooks)
+					for _, hk := range stopHooks {
+						hk(sctx)
+					}
+				}()
+
+				wg := sync.WaitGroup{}
+				for _, hk := range c.Hooks() {
+					hk := hk
+					wg.Add(1)
+					eg.Go(func() error {
+						wg.Done()
+						return hk.OnStart(sctx)
+					})
+				}
+				wg.Wait()
+
+				return c.Run(sctx, o)
+			},
+		}
+		a.root.AddCommand(cmd)
 	}
 
 	emperror.Panic(a.root.Execute())
