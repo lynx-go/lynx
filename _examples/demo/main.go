@@ -3,8 +3,7 @@ package main
 import (
 	"context"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/lifecycle"
-	"log/slog"
+	"github.com/lynx-go/x/log"
 )
 
 type Option struct {
@@ -14,114 +13,77 @@ type Option struct {
 
 func main() {
 
-	app := lynx.New[Option](
-		lynx.WithName[Option]("lynx-demo"),
-		lynx.WithSetup[Option](func(hooks *lifecycle.Registry, o Option) {
-			cfg := o.Config
-			slog.Info("config path", "path", cfg)
-
-			hooks.Service(&serviceServer{})
-			hooks.Service(&commandServer{})
-			hooks.OnStart(func(ctx context.Context) error {
-				slog.Info("onstart")
-				return nil
-			})
-		}),
-		lynx.WithCommands[Option](&helloCommand{
-			servers: []lifecycle.Service{&commandServer{}},
-		}),
+	cli := lynx.NewCLI[Option](
+		lynx.New(
+			lynx.WithName[Option]("lynx-demo"),
+			lynx.WithVersion[Option]("0.1.0"),
+			lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option) (lynx.Runnable, error) {
+				cfg := o.Config
+				log.InfoContext(ctx, "config path", "path", cfg)
+				hooks.Hook(&serviceServer{})
+				hooks.Hook(&commandServer{})
+				hooks.OnStart(func(ctx context.Context) error {
+					log.InfoContext(ctx, "onstart")
+					return nil
+				})
+				return lynx.RunForever(), nil
+			}),
+		),
+		lynx.New[Option](
+			lynx.WithName[Option]("hello"),
+			lynx.WithVersion[Option]("0.1.0"),
+			lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option) (lynx.Runnable, error) {
+				hooks.Hook(&commandServer{})
+				return func(ctx context.Context) error {
+					log.InfoContext(ctx, "help")
+					return nil
+				}, nil
+			}),
+		),
 	)
-	app.Run()
-}
 
-type OnStart struct {
-	*lifecycle.HookBase
+	cli.Run()
 }
-
-func (o *OnStart) OnStart(ctx context.Context) error {
-	slog.Info("OnStart")
-	return nil
-}
-
-type helloCommand struct {
-	servers []lifecycle.Service
-}
-
-func (h *helloCommand) Example() string {
-	return ""
-}
-
-func (h *helloCommand) SubCommands() []lynx.Command {
-	return []lynx.Command{}
-}
-
-func (h *helloCommand) Hooks() []lifecycle.Hook {
-	hooks := []lifecycle.Hook{}
-	for _, s := range h.servers {
-		hooks = append(hooks, lifecycle.ServiceToHook(s))
-	}
-	return hooks
-}
-
-func (h *helloCommand) Use() string {
-	return "hello"
-}
-
-func (h *helloCommand) Desc() string {
-	return "hello world"
-}
-
-func (h *helloCommand) Run(ctx context.Context, args []string) error {
-	slog.Info("hello world")
-	return nil
-}
-
-var _ lynx.Command = new(helloCommand)
 
 type commandServer struct {
-	*lifecycle.HookBase
 }
 
 func (s *commandServer) Start(ctx context.Context) error {
-	slog.Info("command-server start")
+	log.InfoContext(ctx, "command-server start")
 	return nil
 }
 
-func (s *commandServer) Stop(ctx context.Context) {
-	slog.Info("command-server stop")
+func (s *commandServer) Stop(ctx context.Context) error {
+	log.InfoContext(ctx, "command-server stop")
+	return nil
 }
 
 func (s *commandServer) Name() string {
 	return "command-server"
 }
 
-var _ lifecycle.Service = new(commandServer)
+var _ lynx.Hook = new(commandServer)
 
 type serviceServer struct {
-	*lifecycle.HookBase
 }
 
 func (s *serviceServer) Start(ctx context.Context) error {
-	slog.Info("service-server start")
+	log.InfoContext(ctx, "service-server start")
 	return nil
 }
 
-func (s *serviceServer) Stop(ctx context.Context) {
-	slog.Info("service-server stop")
-}
-
-func (s *serviceServer) IgnoreCLI() bool {
-	return true
+func (s *serviceServer) Stop(ctx context.Context) error {
+	log.InfoContext(ctx, "service-server stop")
+	return nil
 }
 
 func (s *serviceServer) Name() string {
 	return "service-server"
 }
 
-var _ lifecycle.Service = new(serviceServer)
+var _ lynx.Hook = new(serviceServer)
 
 type commonServer struct {
-	*lifecycle.HookBase
 }
 
 func (c *commonServer) Name() string {
@@ -129,12 +91,13 @@ func (c *commonServer) Name() string {
 }
 
 func (c *commonServer) Start(ctx context.Context) error {
-	slog.Info("common-server start")
+	log.InfoContext(ctx, "common-server start")
 	return nil
 }
 
-func (c *commonServer) Stop(ctx context.Context) {
-	slog.Info("common-server stop")
+func (c *commonServer) Stop(ctx context.Context) error {
+	log.InfoContext(ctx, "common-server stop")
+	return nil
 }
 
-var _ lifecycle.Service = new(commonServer)
+var _ lynx.Hook = new(commonServer)
