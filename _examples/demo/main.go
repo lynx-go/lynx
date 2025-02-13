@@ -11,6 +11,10 @@ type Option struct {
 	Config string `json:"config"`
 }
 
+type Config struct {
+	Addr string `json:"addr"`
+}
+
 func main() {
 
 	cli := lynx.NewCLI[Option](
@@ -33,6 +37,7 @@ func main() {
 			lynx.WithName[Option]("hello"),
 			lynx.WithVersion[Option]("0.1.0"),
 			lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option) (lynx.Runnable, error) {
+				log.InfoContext(ctx, "config path", "path", o.Config)
 				hooks.Hook(&commandServer{})
 				return func(ctx context.Context) error {
 					log.InfoContext(ctx, "help")

@@ -32,49 +32,14 @@ type cli[O any] struct {
 	options []option
 }
 
-func NewCLI[O any](app *App[O], subApps ...*App[O]) CLI {
-	c := &cli[O]{
-		app: app,
-	}
-
-	c.root = &cobra.Command{
-		Use:           c.app.Name(),
-		SilenceErrors: true,
-	}
-
+func preRun[O any](root *cobra.Command, options []option) O {
 	var o O
-	c.setupOptions(reflect.TypeOf(o), []int{})
-
-	c.root.RunE = func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithCancel(cmd.Context())
-		defer cancel()
-		return c.app.RunE(ctx, o)
-	}
-	for _, subApp := range subApps {
-		cmd := &cobra.Command{
-			Use:   subApp.Name(),
-			Short: subApp.Name(),
-		}
-
-		cmd.RunE = func(cmd *cobra.Command, args []string) error {
-			ctx, cancel := context.WithCancel(cmd.Context())
-			defer cancel()
-			return subApp.RunE(ctx, o)
-		}
-		c.root.AddCommand(cmd)
-	}
-
-	return c
-}
-
-func (c *cli[O]) Run() {
-	var o O
-	existing := c.root.PersistentPreRun
-	c.root.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+	existing := root.PersistentPreRun
+	root.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		// Load config from args/env/files
 		v := reflect.ValueOf(&o).Elem()
-		flags := c.root.PersistentFlags()
-		for _, opt := range c.options {
+		flags := root.PersistentFlags()
+		for _, opt := range options {
 			f := v
 			for _, i := range opt.path {
 				f = f.Field(i)
@@ -108,10 +73,57 @@ func (c *cli[O]) Run() {
 		if existing != nil {
 			existing(cmd, args)
 		}
-
-		// Set options in context, so custom commands can access it.
-		//cmd.SetContext(options.Context(cmd.Context(), o))
+		cmd.SetContext(context.WithValue(cmd.Context(), optionKey, &o))
 	}
+
+	return o
+}
+
+type optionCtx struct {
+}
+
+var optionKey = optionCtx{}
+
+func NewCLI[O any](app *App[O], subApps ...*App[O]) CLI {
+	c := &cli[O]{
+		app: app,
+	}
+
+	c.root = &cobra.Command{
+		Use:           c.app.Name(),
+		SilenceErrors: true,
+	}
+
+	var o O
+	c.setupOptions(reflect.TypeOf(o), []int{})
+
+	c.root.RunE = func(cmd *cobra.Command, args []string) error {
+		o := cmd.Context().Value(optionKey).(*O)
+		ctx, cancel := context.WithCancel(cmd.Context())
+		defer cancel()
+		return c.app.RunE(ctx, *o)
+	}
+	for _, subApp := range subApps {
+		subCmd := &cobra.Command{
+			Use:   subApp.Name(),
+			Short: subApp.Name(),
+		}
+
+		subCmd.RunE = func(cmd *cobra.Command, args []string) error {
+			o := cmd.Context().Value(optionKey).(*O)
+			ctx, cancel := context.WithCancel(cmd.Context())
+			defer cancel()
+			return subApp.RunE(ctx, *o)
+		}
+		c.root.AddCommand(subCmd)
+	}
+
+	return c
+}
+
+func (c *cli[O]) Run() {
+
+	preRun[O](c.root, c.options)
 
 	emperror.Panic(c.root.Execute())
 }
