@@ -26,13 +26,12 @@ type option struct {
 
 type Func func(ctx context.Context) error
 type cli[O any] struct {
-	app     *App[O]
 	root    *cobra.Command
 	logger  *slog.Logger
 	options []option
 }
 
-func preRun[O any](root *cobra.Command, options []option) O {
+func parseOptions[O any](root *cobra.Command, options []option) O {
 	var o O
 	existing := root.PersistentPreRun
 	root.PersistentPreRun = func(cmd *cobra.Command, args []string) {
@@ -84,13 +83,36 @@ type optionCtx struct {
 
 var optionKey = optionCtx{}
 
-func NewCLI[O any](app *App[O], subApps ...*App[O]) CLI {
-	c := &cli[O]{
-		app: app,
+func bindCmd[O any](parentCmd *cobra.Command, subCmds []*Command[O]) {
+	for _, subCmd := range subCmds {
+		subCmd := subCmd
+		cmd := &cobra.Command{
+			Use:   subCmd.Name(),
+			Short: subCmd.Usage(),
+			Long:  subCmd.Usage(),
+		}
+
+		cmd.RunE = func(cmd *cobra.Command, args []string) error {
+			o := cmd.Context().Value(optionKey).(*O)
+			ctx, cancel := context.WithCancel(cmd.Context())
+			defer cancel()
+			return subCmd.RunE(ctx, *o)
+		}
+		parentCmd.AddCommand(cmd)
+		if len(subCmd.SubCommands()) > 0 {
+			bindCmd(cmd, subCmd.SubCommands())
+		}
 	}
+}
+
+func NewCLI[O any](rootCmd *Command[O]) CLI {
+	c := &cli[O]{}
 
 	c.root = &cobra.Command{
-		Use:           c.app.Name(),
+		Use:           rootCmd.Name(),
+		Short:         rootCmd.Usage(),
+		Long:          rootCmd.Usage(),
+		Aliases:       rootCmd.Aliases(),
 		SilenceErrors: true,
 	}
 
@@ -101,29 +123,17 @@ func NewCLI[O any](app *App[O], subApps ...*App[O]) CLI {
 		o := cmd.Context().Value(optionKey).(*O)
 		ctx, cancel := context.WithCancel(cmd.Context())
 		defer cancel()
-		return c.app.RunE(ctx, *o)
+		return rootCmd.RunE(ctx, *o)
 	}
-	for _, subApp := range subApps {
-		subCmd := &cobra.Command{
-			Use:   subApp.Name(),
-			Short: subApp.Name(),
-		}
-
-		subCmd.RunE = func(cmd *cobra.Command, args []string) error {
-			o := cmd.Context().Value(optionKey).(*O)
-			ctx, cancel := context.WithCancel(cmd.Context())
-			defer cancel()
-			return subApp.RunE(ctx, *o)
-		}
-		c.root.AddCommand(subCmd)
-	}
+	parentCmd := c.root
+	bindCmd[O](parentCmd, rootCmd.SubCommands())
 
 	return c
 }
 
 func (c *cli[O]) Run() {
 
-	preRun[O](c.root, c.options)
+	parseOptions[O](c.root, c.options)
 
 	emperror.Panic(c.root.Execute())
 }

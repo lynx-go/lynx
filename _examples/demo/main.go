@@ -18,32 +18,55 @@ type Config struct {
 func main() {
 
 	cli := lynx.NewCLI[Option](
-		lynx.New(
-			lynx.WithName[Option]("lynx-demo"),
-			lynx.WithVersion[Option]("0.1.0"),
-			lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option) (lynx.Runnable, error) {
-				cfg := o.Config
-				log.InfoContext(ctx, "config path", "path", cfg)
-				hooks.Hook(&serviceServer{})
-				hooks.Hook(&commandServer{})
-				hooks.OnStart(func(ctx context.Context) error {
-					log.InfoContext(ctx, "onstart")
-					return nil
-				})
-				return lynx.RunForever(), nil
-			}),
-		),
-		lynx.New[Option](
-			lynx.WithName[Option]("hello"),
-			lynx.WithVersion[Option]("0.1.0"),
-			lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option) (lynx.Runnable, error) {
-				log.InfoContext(ctx, "config path", "path", o.Config)
-				hooks.Hook(&commandServer{})
-				return func(ctx context.Context) error {
-					log.InfoContext(ctx, "help")
-					return nil
-				}, nil
-			}),
+		lynx.CMD[Option](
+			lynx.New(
+				lynx.WithName[Option]("lynx-demo"),
+				lynx.WithVersion[Option]("0.1.0"),
+				lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option) (lynx.Runnable, error) {
+					cfg := o.Config
+					log.InfoContext(ctx, "config path", "path", cfg)
+					hooks.Hook(&serviceServer{})
+					hooks.Hook(&commandServer{})
+					hooks.OnStart(func(ctx context.Context) error {
+						log.InfoContext(ctx, "onstart")
+						return nil
+					})
+					return lynx.RunForever(), nil
+				}),
+			),
+			lynx.WithSubCMD[Option](
+				lynx.CMD[Option](
+					lynx.New[Option](
+						lynx.WithName[Option]("hello"),
+						lynx.WithVersion[Option]("0.1.0"),
+						lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option) (lynx.Runnable, error) {
+							log.InfoContext(ctx, "config path", "path", o.Config)
+							hooks.Hook(&commandServer{})
+							return func(ctx context.Context) error {
+								log.InfoContext(ctx, "hello")
+								return nil
+							}, nil
+						}),
+					),
+
+					lynx.WithSubCMD[Option](
+						lynx.CMD[Option](
+							lynx.New[Option](
+								lynx.WithName[Option]("world"),
+								lynx.WithVersion[Option]("0.1.0"),
+								lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option) (lynx.Runnable, error) {
+									log.InfoContext(ctx, "config path", "path", o.Config)
+									hooks.Hook(&commandServer{})
+									return func(ctx context.Context) error {
+										log.InfoContext(ctx, "hello world")
+										return nil
+									}, nil
+								}),
+							),
+						),
+					),
+				),
+			),
 		),
 	)
 
