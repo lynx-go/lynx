@@ -20,40 +20,41 @@ type Config struct {
 }
 
 func main() {
-	app := lynx.New[Option](lynx.WithName[Option]("system-test"), lynx.WithVersion[Option]("1"), lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option) (lynx.Runnable, error) {
-		logger := log.FromContext(ctx)
-		logger.Info("starting")
-		viper.SetConfigFile(o.Config)
-		if err := viper.ReadInConfig(); err != nil {
-			return nil, err
-		}
-		c := &Config{}
-		if err := viper.Unmarshal(&c); err != nil {
-			return nil, err
-		}
+	app := lynx.New[Option](lynx.WithName[Option]("system-test"), lynx.WithVersion[Option]("1"),
+		lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option, args []string) (lynx.Runnable, error) {
+			logger := log.FromContext(ctx)
+			logger.Info("starting")
+			viper.SetConfigFile(o.Config)
+			if err := viper.ReadInConfig(); err != nil {
+				return nil, err
+			}
+			c := &Config{}
+			if err := viper.Unmarshal(&c); err != nil {
+				return nil, err
+			}
 
-		server := newHttpServer(c.Addr)
-		hooks.Hook(server)
-		hooks.OnStart(func(ctx context.Context) error {
-			log.InfoContext(ctx, "onStart called")
-			return nil
-		})
+			server := newHttpServer(c.Addr)
+			hooks.Hook(server)
+			hooks.OnStart(func(ctx context.Context) error {
+				log.InfoContext(ctx, "onStart called")
+				return nil
+			})
 
-		hooks.OnStop(func(ctx context.Context) error {
-			slog.Info("onStop called")
-			return nil
-		})
+			hooks.OnStop(func(ctx context.Context) error {
+				slog.Info("onStop called")
+				return nil
+			})
 
-		return func(ctx context.Context) error {
-			log.InfoContext(ctx, "hello world")
-			return nil
-		}, nil
-	}))
+			return func(ctx context.Context) error {
+				log.InfoContext(ctx, "hello world")
+				return nil
+			}, nil
+		}))
 	o := Option{
 		Config: "./_examples/system/config.yaml",
 	}
 	ctx := context.TODO()
-	app.Run(ctx, o)
+	app.Run(ctx, o, []string{})
 }
 
 func newHttpServer(addr string) *httpServer {

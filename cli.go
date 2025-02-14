@@ -88,7 +88,7 @@ func bindCmd[O any](parentCmd *cobra.Command, subCmds []*Command[O]) {
 		subCmd := subCmd
 		cmd := &cobra.Command{
 			Use:   subCmd.Name(),
-			Short: subCmd.Usage(),
+			Short: subCmd.Desc(),
 			Long:  subCmd.Usage(),
 		}
 
@@ -96,7 +96,7 @@ func bindCmd[O any](parentCmd *cobra.Command, subCmds []*Command[O]) {
 			o := cmd.Context().Value(optionKey).(*O)
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
-			return subCmd.RunE(ctx, *o)
+			return subCmd.RunE(ctx, *o, args)
 		}
 		parentCmd.AddCommand(cmd)
 		if len(subCmd.SubCommands()) > 0 {
@@ -110,7 +110,7 @@ func NewCLI[O any](rootCmd *Command[O]) CLI {
 
 	c.root = &cobra.Command{
 		Use:           rootCmd.Name(),
-		Short:         rootCmd.Usage(),
+		Short:         rootCmd.Desc(),
 		Long:          rootCmd.Usage(),
 		Aliases:       rootCmd.Aliases(),
 		SilenceErrors: true,
@@ -123,7 +123,7 @@ func NewCLI[O any](rootCmd *Command[O]) CLI {
 		o := cmd.Context().Value(optionKey).(*O)
 		ctx, cancel := context.WithCancel(cmd.Context())
 		defer cancel()
-		return rootCmd.RunE(ctx, *o)
+		return rootCmd.RunE(ctx, *o, args)
 	}
 	parentCmd := c.root
 	bindCmd[O](parentCmd, rootCmd.SubCommands())

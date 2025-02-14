@@ -92,7 +92,7 @@ func RunForever() Runnable {
 	}
 }
 
-type SetupFunc[O any] func(ctx context.Context, hooks *Hooks, o O) (Runnable, error)
+type SetupFunc[O any] func(ctx context.Context, hooks *Hooks, o O, args []string) (Runnable, error)
 
 type App[O any] struct {
 	onSetup SetupFunc[O]
@@ -102,24 +102,24 @@ type App[O any] struct {
 	logger  *slog.Logger
 }
 
-func (sys *App[O]) Name() string {
-	return sys.name
+func (app *App[O]) Name() string {
+	return app.name
 }
 
-func (sys *App[O]) RunE(ctx context.Context, o O) error {
-	sys.hooks = &Hooks{}
+func (app *App[O]) RunE(ctx context.Context, o O, args []string) error {
+	app.hooks = &Hooks{}
 	var cancelCtx context.CancelFunc
 	ctx, cancelCtx = context.WithCancel(ctx)
 	defer cancelCtx()
 
-	ctx = log.Context(ctx, sys.logger)
-	runnable, err := sys.onSetup(ctx, sys.hooks, o)
+	ctx = log.Context(ctx, app.logger)
+	runnable, err := app.onSetup(ctx, app.hooks, o, args)
 	if err != nil {
 		return err
 	}
 	eg, egCtx := errgroup.WithContext(ctx)
 	wg := sync.WaitGroup{}
-	for _, hook := range sys.hooks.Hooks() {
+	for _, hook := range app.hooks.Hooks() {
 		eg.Go(func() error {
 			<-egCtx.Done()
 			stopCtx, cancelCtx := context.WithTimeout(egCtx, 5*time.Second)
@@ -141,8 +141,8 @@ func (sys *App[O]) RunE(ctx context.Context, o O) error {
 	return eg.Wait()
 }
 
-func (sys *App[O]) Run(ctx context.Context, o O) {
-	emperror.Panic(sys.RunE(ctx, o))
+func (app *App[O]) Run(ctx context.Context, o O, args []string) {
+	emperror.Panic(app.RunE(ctx, o, args))
 }
 
 type Option[O any] func(*App[O])
