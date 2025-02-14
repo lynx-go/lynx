@@ -48,7 +48,7 @@ func main() {
 							}, nil
 						}),
 					),
-
+					lynx.WithDesc[Option]("print hello world"),
 					lynx.WithSubCMD[Option](
 						lynx.CMD[Option](
 							lynx.New[Option](
