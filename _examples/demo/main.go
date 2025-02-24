@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/integration"
 	"github.com/lynx-go/x/log"
 )
 
@@ -22,11 +23,11 @@ func main() {
 			lynx.New(
 				lynx.WithName[Option]("lynx-demo"),
 				lynx.WithVersion[Option]("0.1.0"),
-				lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option, args []string) (lynx.Runnable, error) {
+				lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
 					cfg := o.Config
 					log.InfoContext(ctx, "config path", "path", cfg)
-					hooks.Hook(&serviceServer{})
-					hooks.Hook(&commandServer{})
+					hooks.Register(&serviceServer{})
+					hooks.Register(&commandServer{})
 					hooks.OnStart(func(ctx context.Context) error {
 						log.InfoContext(ctx, "onstart")
 						return nil
@@ -39,9 +40,9 @@ func main() {
 					lynx.New[Option](
 						lynx.WithName[Option]("hello"),
 						lynx.WithVersion[Option]("0.1.0"),
-						lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option, args []string) (lynx.Runnable, error) {
+						lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
 							log.InfoContext(ctx, "config path", "path", o.Config)
-							hooks.Hook(&commandServer{})
+							hooks.Register(&commandServer{})
 							return func(ctx context.Context) error {
 								log.InfoContext(ctx, "hello", "args", args, "options", o)
 								return nil
@@ -54,9 +55,9 @@ func main() {
 							lynx.New[Option](
 								lynx.WithName[Option]("world"),
 								lynx.WithVersion[Option]("0.1.0"),
-								lynx.WithSetup[Option](func(ctx context.Context, hooks *lynx.Hooks, o Option, args []string) (lynx.Runnable, error) {
+								lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
 									log.InfoContext(ctx, "config path", "path", o.Config)
-									hooks.Hook(&commandServer{})
+									hooks.Register(&commandServer{})
 									return func(ctx context.Context) error {
 										log.InfoContext(ctx, "hello world")
 										return nil
@@ -76,6 +77,10 @@ func main() {
 type commandServer struct {
 }
 
+func (s *commandServer) Status() (int, error) {
+	return 200, nil
+}
+
 func (s *commandServer) Start(ctx context.Context) error {
 	log.InfoContext(ctx, "command-server start")
 	return nil
@@ -90,9 +95,13 @@ func (s *commandServer) Name() string {
 	return "command-server"
 }
 
-var _ lynx.Hook = new(commandServer)
+var _ integration.Integration = new(commandServer)
 
 type serviceServer struct {
+}
+
+func (s *serviceServer) Status() (int, error) {
+	return 200, nil
 }
 
 func (s *serviceServer) Start(ctx context.Context) error {
@@ -109,9 +118,13 @@ func (s *serviceServer) Name() string {
 	return "service-server"
 }
 
-var _ lynx.Hook = new(serviceServer)
+var _ integration.Integration = new(serviceServer)
 
 type commonServer struct {
+}
+
+func (c *commonServer) Status() (int, error) {
+	return 200, nil
 }
 
 func (c *commonServer) Name() string {
@@ -128,4 +141,4 @@ func (c *commonServer) Stop(ctx context.Context) error {
 	return nil
 }
 
-var _ lynx.Hook = new(commonServer)
+var _ integration.Integration = new(commonServer)

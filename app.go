@@ -3,6 +3,7 @@ package lynx
 import (
 	"context"
 	"emperror.dev/emperror"
+	"github.com/lynx-go/lynx/integration"
 	"github.com/lynx-go/x/log"
 	"golang.org/x/sync/errgroup"
 	"log/slog"
@@ -12,74 +13,6 @@ import (
 	"syscall"
 	"time"
 )
-
-type Hooks struct {
-	hooks []Hook
-}
-
-func (hks *Hooks) Hooks() []Hook {
-	return hks.hooks
-}
-
-func (hks *Hooks) Hook(hooks ...Hook) {
-	hks.hooks = append(hks.hooks, hooks...)
-}
-
-func (hks *Hooks) OnStart(fns ...Func) {
-	for _, fn := range fns {
-		hook := &onStartHook{fn: fn}
-		hks.hooks = append(hks.hooks, hook)
-	}
-}
-
-func (hks *Hooks) OnStop(fns ...Func) {
-	for _, fn := range fns {
-		hook := &onStopHook{fn: fn}
-		hks.hooks = append(hks.hooks, hook)
-	}
-}
-
-type onStopHook struct {
-	fn Func
-}
-
-func (h *onStopHook) Name() string {
-	return "Stop"
-}
-
-func (h *onStopHook) Start(ctx context.Context) error {
-	return nil
-}
-
-func (h *onStopHook) Stop(ctx context.Context) error {
-	return h.fn(ctx)
-}
-
-var _ Hook = new(onStopHook)
-
-type onStartHook struct {
-	fn Func
-}
-
-func (h *onStartHook) Name() string {
-	return "Start"
-}
-
-func (h *onStartHook) Start(ctx context.Context) error {
-	return h.fn(ctx)
-}
-
-func (h *onStartHook) Stop(ctx context.Context) error {
-	return nil
-}
-
-var _ Hook = new(onStartHook)
-
-type Hook interface {
-	Name() string
-	Start(ctx context.Context) error
-	Stop(ctx context.Context) error
-}
 
 type Runnable func(ctx context.Context) error
 
@@ -92,14 +25,17 @@ func RunForever() Runnable {
 	}
 }
 
-type SetupFunc[O any] func(ctx context.Context, hooks *Hooks, o O, args []string) (Runnable, error)
+type SetupFunc[O any] func(ctx context.Context, registrar *integration.Registrar, o O, args []string) (Runnable, error)
 
 type App[O any] struct {
-	onSetup SetupFunc[O]
-	name    string
-	version string
-	hooks   *Hooks
-	logger  *slog.Logger
+	onSetup       SetupFunc[O]
+	name          string
+	version       string
+	registrar     *integration.Registrar
+	logger        *slog.Logger
+	mux           sync.Mutex
+	isInitialized bool
+	isClosed      bool
 }
 
 func (app *App[O]) Name() string {
@@ -107,19 +43,22 @@ func (app *App[O]) Name() string {
 }
 
 func (app *App[O]) RunE(ctx context.Context, o O, args []string) error {
-	app.hooks = &Hooks{}
+	app.mux.Lock()
+	defer app.mux.Unlock()
+
+	app.registrar = &integration.Registrar{}
 	var cancelCtx context.CancelFunc
 	ctx, cancelCtx = context.WithCancel(ctx)
 	defer cancelCtx()
 
 	ctx = log.Context(ctx, app.logger)
-	runnable, err := app.onSetup(ctx, app.hooks, o, args)
+	runnable, err := app.onSetup(ctx, app.registrar, o, args)
 	if err != nil {
 		return err
 	}
 	eg, egCtx := errgroup.WithContext(ctx)
 	wg := sync.WaitGroup{}
-	for _, hook := range app.hooks.Hooks() {
+	for _, hook := range app.registrar.Integrations() {
 		eg.Go(func() error {
 			<-egCtx.Done()
 			stopCtx, cancelCtx := context.WithTimeout(egCtx, 5*time.Second)
@@ -138,6 +77,8 @@ func (app *App[O]) RunE(ctx context.Context, o O, args []string) error {
 		defer cancelCtx()
 		return runnable(ctx)
 	})
+	app.isInitialized = true
+
 	return eg.Wait()
 }
 
@@ -171,7 +112,7 @@ func WithSetup[O any](setup SetupFunc[O]) Option[O] {
 
 func New[O any](opts ...Option[O]) *App[O] {
 	app := &App[O]{
-		hooks: &Hooks{},
+		registrar: &integration.Registrar{},
 	}
 	for _, opt := range opts {
 		opt(app)

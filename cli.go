@@ -24,7 +24,6 @@ type option struct {
 	path  []int
 }
 
-type Func func(ctx context.Context) error
 type cli[O any] struct {
 	root    *cobra.Command
 	logger  *slog.Logger
