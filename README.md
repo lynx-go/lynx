@@ -1,5 +1,6 @@
 # lynx
-a go framework for application development
+
+## is a opinionated go framework for application development
 
 ### example
 
