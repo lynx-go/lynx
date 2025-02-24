@@ -119,26 +119,3 @@ func (s *serviceServer) Name() string {
 }
 
 var _ integration.Integration = new(serviceServer)
-
-type commonServer struct {
-}
-
-func (c *commonServer) Status() (int, error) {
-	return 200, nil
-}
-
-func (c *commonServer) Name() string {
-	return "common-server"
-}
-
-func (c *commonServer) Start(ctx context.Context) error {
-	log.InfoContext(ctx, "common-server start")
-	return nil
-}
-
-func (c *commonServer) Stop(ctx context.Context) error {
-	log.InfoContext(ctx, "common-server stop")
-	return nil
-}
-
-var _ integration.Integration = new(commonServer)
