@@ -20,8 +20,12 @@ func RunWaitSignal() RunFunc {
 	return func(ctx context.Context) error {
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-		<-quit
-		return nil
+		select {
+		case <-quit:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 
