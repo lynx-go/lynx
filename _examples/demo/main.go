@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/integration"
+	"github.com/lynx-go/lynx/hook"
 	"github.com/lynx-go/x/log"
 )
 
@@ -23,7 +23,7 @@ func main() {
 			lynx.New(
 				lynx.WithName[Option]("lynx-demo"),
 				lynx.WithVersion[Option]("0.1.0"),
-				lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
+				lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
 					cfg := o.Config
 					log.InfoContext(ctx, "config path", "path", cfg)
 					hooks.Register(&serviceServer{})
@@ -32,7 +32,7 @@ func main() {
 						log.InfoContext(ctx, "onstart")
 						return nil
 					})
-					return lynx.RunForever(), nil
+					return lynx.RunWaitSignal(), nil
 				}),
 			),
 			lynx.WithSubCMD[Option](
@@ -40,7 +40,7 @@ func main() {
 					lynx.New[Option](
 						lynx.WithName[Option]("hello"),
 						lynx.WithVersion[Option]("0.1.0"),
-						lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
+						lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
 							log.InfoContext(ctx, "config path", "path", o.Config)
 							hooks.Register(&commandServer{})
 							return func(ctx context.Context) error {
@@ -55,7 +55,7 @@ func main() {
 							lynx.New[Option](
 								lynx.WithName[Option]("world"),
 								lynx.WithVersion[Option]("0.1.0"),
-								lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
+								lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
 									log.InfoContext(ctx, "config path", "path", o.Config)
 									hooks.Register(&commandServer{})
 									return func(ctx context.Context) error {
@@ -77,8 +77,8 @@ func main() {
 type commandServer struct {
 }
 
-func (s *commandServer) Status() (int, error) {
-	return 200, nil
+func (s *commandServer) Status() (hook.Status, error) {
+	return hook.StatusStarted, nil
 }
 
 func (s *commandServer) Start(ctx context.Context) error {
@@ -95,13 +95,13 @@ func (s *commandServer) Name() string {
 	return "command-server"
 }
 
-var _ integration.Integration = new(commandServer)
+var _ hook.Hook = new(commandServer)
 
 type serviceServer struct {
 }
 
-func (s *serviceServer) Status() (int, error) {
-	return 200, nil
+func (s *serviceServer) Status() (hook.Status, error) {
+	return hook.StatusStarted, nil
 }
 
 func (s *serviceServer) Start(ctx context.Context) error {
@@ -118,4 +118,4 @@ func (s *serviceServer) Name() string {
 	return "service-server"
 }
 
-var _ integration.Integration = new(serviceServer)
+var _ hook.Hook = new(serviceServer)

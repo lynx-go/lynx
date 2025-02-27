@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/integration"
+	"github.com/lynx-go/lynx/hook"
 	"github.com/lynx-go/x/log"
 	"github.com/spf13/viper"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 )
 
 type Option struct {
@@ -22,7 +23,7 @@ type Config struct {
 
 func main() {
 	app := lynx.New[Option](lynx.WithName[Option]("system-test"), lynx.WithVersion[Option]("1"),
-		lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
+		lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
 			logger := log.FromContext(ctx)
 			logger.Info("starting")
 			viper.SetConfigFile(o.Config)
@@ -75,6 +76,14 @@ func newHttpServer(addr string) *httpServer {
 
 type httpServer struct {
 	*http.Server
+	started atomic.Bool
+}
+
+func (h *httpServer) Status() (hook.Status, error) {
+	if h.started.Load() {
+		return hook.StatusStarted, nil
+	}
+	return hook.StatusUnstart, nil
 }
 
 func (h *httpServer) Name() string {
@@ -82,6 +91,7 @@ func (h *httpServer) Name() string {
 }
 
 func (h *httpServer) Start(ctx context.Context) error {
+	h.started.Store(true)
 	log.InfoContext(ctx, fmt.Sprintf("%s starting", h.Name()))
 	if err := h.ListenAndServe(); err != nil {
 		if errors.Is(err, http.ErrServerClosed) {
@@ -97,4 +107,4 @@ func (h *httpServer) Stop(ctx context.Context) error {
 	return h.Server.Shutdown(ctx)
 }
 
-var _ integration.Integration = new(httpServer)
+var _ hook.Hook = new(httpServer)

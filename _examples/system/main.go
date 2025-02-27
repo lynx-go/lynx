@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/integration"
+	"github.com/lynx-go/lynx/hook"
 	"github.com/lynx-go/x/log"
 	"github.com/spf13/viper"
 	"log/slog"
@@ -23,7 +23,7 @@ type Config struct {
 func main() {
 	app := lynx.New[Option](lynx.WithName[Option]("system-test"),
 		lynx.WithVersion[Option]("1"),
-		lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
+		lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
 			logger := log.FromContext(ctx)
 			logger.Info("starting")
 			viper.SetConfigFile(o.Config)
@@ -47,7 +47,7 @@ func main() {
 				return nil
 			})
 
-			return lynx.RunForever(), nil
+			return lynx.RunWaitSignal(), nil
 		}))
 	o := Option{
 		Config: "./_examples/system/config.yaml",
@@ -75,6 +75,10 @@ type httpServer struct {
 	*http.Server
 }
 
+func (h *httpServer) Status() (hook.Status, error) {
+	return hook.StatusStarted, nil
+}
+
 func (h *httpServer) Name() string {
 	return "http-server"
 }
@@ -95,4 +99,4 @@ func (h *httpServer) Stop(ctx context.Context) error {
 	return h.Server.Shutdown(ctx)
 }
 
-var _ integration.Integration = new(httpServer)
+var _ hook.Hook = new(httpServer)

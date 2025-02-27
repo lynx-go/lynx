@@ -3,7 +3,7 @@ package lynx
 import (
 	"context"
 	"emperror.dev/emperror"
-	"github.com/lynx-go/lynx/integration"
+	"github.com/lynx-go/lynx/hook"
 	"github.com/lynx-go/x/log"
 	"golang.org/x/sync/errgroup"
 	"log/slog"
@@ -14,9 +14,9 @@ import (
 	"time"
 )
 
-type Runnable func(ctx context.Context) error
+type RunFunc func(ctx context.Context) error
 
-func RunForever() Runnable {
+func RunWaitSignal() RunFunc {
 	return func(ctx context.Context) error {
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -25,13 +25,13 @@ func RunForever() Runnable {
 	}
 }
 
-type SetupFunc[O any] func(ctx context.Context, registrar *integration.Registrar, o O, args []string) (Runnable, error)
+type SetupFunc[O any] func(ctx context.Context, hooks *hook.Hooks, o O, args []string) (RunFunc, error)
 
 type App[O any] struct {
 	onSetup       SetupFunc[O]
 	name          string
 	version       string
-	registrar     *integration.Registrar
+	registrar     *hook.Hooks
 	logger        *slog.Logger
 	mux           sync.Mutex
 	isInitialized bool
@@ -46,7 +46,7 @@ func (app *App[O]) RunE(ctx context.Context, o O, args []string) error {
 	app.mux.Lock()
 	defer app.mux.Unlock()
 
-	app.registrar = &integration.Registrar{}
+	app.registrar = &hook.Hooks{}
 	var cancelCtx context.CancelFunc
 	ctx, cancelCtx = context.WithCancel(ctx)
 	defer cancelCtx()
@@ -58,17 +58,17 @@ func (app *App[O]) RunE(ctx context.Context, o O, args []string) error {
 	}
 	eg, egCtx := errgroup.WithContext(ctx)
 	wg := sync.WaitGroup{}
-	for _, hook := range app.registrar.Integrations() {
+	for _, hk := range app.registrar.Hooks() {
 		eg.Go(func() error {
 			<-egCtx.Done()
 			stopCtx, cancelCtx := context.WithTimeout(egCtx, 5*time.Second)
 			defer cancelCtx()
-			return hook.Stop(stopCtx)
+			return hk.Stop(stopCtx)
 		})
 		wg.Add(1)
 		eg.Go(func() error {
 			wg.Done()
-			return hook.Start(ctx)
+			return hk.Start(ctx)
 		})
 	}
 	wg.Wait()
@@ -112,7 +112,7 @@ func WithSetup[O any](setup SetupFunc[O]) Option[O] {
 
 func New[O any](opts ...Option[O]) *App[O] {
 	app := &App[O]{
-		registrar: &integration.Registrar{},
+		registrar: &hook.Hooks{},
 	}
 	for _, opt := range opts {
 		opt(app)
