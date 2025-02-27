@@ -57,7 +57,7 @@ func WithAlias[O any](aliases ...string) CommandOption[O] {
 	}
 }
 
-func WithSubCMD[O any](subCommands ...*Command[O]) CommandOption[O] {
+func WithCMD[O any](subCommands ...*Command[O]) CommandOption[O] {
 	return func(cmd *Command[O]) {
 		cmd.subCommands = append(cmd.subCommands, subCommands...)
 	}
