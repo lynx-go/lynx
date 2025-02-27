@@ -5,6 +5,7 @@ import (
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/hook"
 	"github.com/lynx-go/x/log"
+	"net/http"
 )
 
 type Option struct {
@@ -20,7 +21,7 @@ func main() {
 	serverSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
 		cfg := o.Config
 		log.InfoContext(ctx, "config path", "path", cfg)
-		hooks.Register(&serviceServer{})
+		hooks.Register(&serviceServer{addr: o.Addr})
 		hooks.Register(&commandServer{})
 		hooks.OnStart(func(ctx context.Context) error {
 			log.InfoContext(ctx, "onstart")
@@ -103,6 +104,7 @@ func (s *commandServer) Name() string {
 var _ hook.Hook = new(commandServer)
 
 type serviceServer struct {
+	addr string
 }
 
 func (s *serviceServer) Status() (hook.Status, error) {
@@ -111,7 +113,7 @@ func (s *serviceServer) Status() (hook.Status, error) {
 
 func (s *serviceServer) Start(ctx context.Context) error {
 	log.InfoContext(ctx, "service-server start")
-	return nil
+	return http.ListenAndServe(s.addr, http.NewServeMux())
 }
 
 func (s *serviceServer) Stop(ctx context.Context) error {

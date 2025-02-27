@@ -3,6 +3,7 @@ package lynx
 import (
 	"context"
 	"emperror.dev/emperror"
+	"errors"
 	"github.com/lynx-go/lynx/hook"
 	"github.com/lynx-go/x/log"
 	"golang.org/x/sync/errgroup"
@@ -24,7 +25,11 @@ func RunWaitSignal() RunFunc {
 		case <-quit:
 			return nil
 		case <-ctx.Done():
-			return ctx.Err()
+			err := ctx.Err()
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
 		}
 	}
 }
@@ -72,7 +77,11 @@ func (app *App[O]) RunE(ctx context.Context, o O, args []string) error {
 		wg.Add(1)
 		eg.Go(func() error {
 			wg.Done()
-			return hk.Start(ctx)
+			if err := hk.Start(ctx); err != nil {
+				cancelCtx()
+				return err
+			}
+			return nil
 		})
 	}
 	wg.Wait()
