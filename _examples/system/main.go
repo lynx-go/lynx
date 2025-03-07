@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/viper"
 	"log/slog"
 	"net/http"
+	"os"
 )
 
 type Option struct {
@@ -21,8 +22,13 @@ type Config struct {
 }
 
 func main() {
-	app := lynx.New[Option](lynx.WithName[Option]("system-test"),
-		lynx.WithVersion[Option]("1"),
+	id, _ := os.Hostname()
+	app := lynx.New[Option](
+		lynx.WithMeta[Option](&lynx.Meta{
+			ID:      id,
+			Name:    "system",
+			Version: "0.0.1",
+		}),
 		lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
 			logger := log.FromContext(ctx)
 			logger.Info("starting")
@@ -47,7 +53,7 @@ func main() {
 				return nil
 			})
 
-			return lynx.RunWaitSignal(), nil
+			return lynx.WaitSignals(), nil
 		}))
 	o := Option{
 		Config: "./_examples/system/config.yaml",

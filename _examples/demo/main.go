@@ -6,6 +6,7 @@ import (
 	"github.com/lynx-go/lynx/hook"
 	"github.com/lynx-go/x/log"
 	"net/http"
+	"os"
 )
 
 type Option struct {
@@ -27,7 +28,7 @@ func main() {
 			log.InfoContext(ctx, "onstart")
 			return nil
 		})
-		return lynx.RunWaitSignal(), nil
+		return lynx.WaitSignals(), nil
 	}
 
 	helloSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
@@ -47,29 +48,41 @@ func main() {
 			return nil
 		}, nil
 	}
+	id, _ := os.Hostname()
 
 	cli := lynx.NewCLI[Option](
 		lynx.CMD[Option](
 			lynx.New(
-				lynx.WithName[Option]("lynx-demo"),
-				lynx.WithVersion[Option]("0.1.0"),
+				lynx.WithMeta[Option](&lynx.Meta{
+					ID:      id,
+					Name:    "lynx",
+					Version: "0.0.1",
+				}),
 				lynx.WithSetup[Option](serverSetup),
 			),
 			lynx.WithCMD[Option](
 				lynx.CMD[Option](
 					lynx.New[Option](
-						lynx.WithName[Option]("hello"),
-						lynx.WithVersion[Option]("0.1.0"),
+						lynx.WithMeta[Option](&lynx.Meta{
+							ID:      id,
+							Name:    "lynx",
+							Version: "0.0.1",
+						}),
 						lynx.WithSetup[Option](helloSetup),
 					),
+					lynx.WithUsage[Option]("hello"),
 					lynx.WithDesc[Option]("print hello world"),
 					lynx.WithCMD[Option](
 						lynx.CMD[Option](
 							lynx.New[Option](
-								lynx.WithName[Option]("world"),
-								lynx.WithVersion[Option]("0.1.0"),
+								lynx.WithMeta[Option](&lynx.Meta{
+									ID:      id,
+									Name:    "lynx",
+									Version: "0.0.1",
+								}),
 								lynx.WithSetup[Option](worldSetup),
 							),
+							lynx.WithUsage[Option]("world"),
 						),
 					),
 				),

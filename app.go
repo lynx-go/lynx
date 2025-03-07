@@ -17,7 +17,7 @@ import (
 
 type RunFunc func(ctx context.Context) error
 
-func RunWaitSignal() RunFunc {
+func WaitSignals() RunFunc {
 	return func(ctx context.Context) error {
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -34,12 +34,17 @@ func RunWaitSignal() RunFunc {
 	}
 }
 
+type Meta struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
 type SetupFunc[O any] func(ctx context.Context, hooks *hook.Hooks, o O, args []string) (RunFunc, error)
 
 type App[O any] struct {
 	onSetup       SetupFunc[O]
-	name          string
-	version       string
+	md            *Meta
 	registrar     *hook.Hooks
 	logger        *slog.Logger
 	mux           sync.Mutex
@@ -48,7 +53,7 @@ type App[O any] struct {
 }
 
 func (app *App[O]) Name() string {
-	return app.name
+	return app.md.Name
 }
 
 func (app *App[O]) RunE(ctx context.Context, o O, args []string) error {
@@ -105,15 +110,9 @@ func WithLogger[O any](logger *slog.Logger) Option[O] {
 	return func(a *App[O]) { a.logger = logger }
 }
 
-func WithName[O any](name string) Option[O] {
+func WithMeta[O any](md *Meta) Option[O] {
 	return func(a *App[O]) {
-		a.name = name
-	}
-}
-
-func WithVersion[O any](version string) Option[O] {
-	return func(a *App[O]) {
-		a.version = version
+		a.md = md
 	}
 }
 
@@ -130,8 +129,12 @@ func New[O any](opts ...Option[O]) *App[O] {
 	for _, opt := range opts {
 		opt(app)
 	}
+	logger := app.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if app.logger == nil {
-		app.logger = slog.Default().With("name", app.name, "version", app.version)
+		app.logger = logger.With("service_id", app.md.ID, "service_name", app.md.Name, "service_version", app.md.Version)
 	}
 
 	return app
