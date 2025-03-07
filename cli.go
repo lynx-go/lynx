@@ -86,9 +86,9 @@ func bindCmd[O any](parentCmd *cobra.Command, subCmds []*Command[O]) {
 	for _, subCmd := range subCmds {
 		subCmd := subCmd
 		cmd := &cobra.Command{
-			Use:   subCmd.Name(),
+			Use:   subCmd.Usage(),
 			Short: subCmd.Desc(),
-			Long:  subCmd.Usage(),
+			Long:  subCmd.Desc(),
 		}
 
 		cmd.RunE = func(cmd *cobra.Command, args []string) error {
