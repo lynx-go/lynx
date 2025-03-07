@@ -17,10 +17,13 @@ import (
 
 type RunFunc func(ctx context.Context) error
 
-func WaitSignals() RunFunc {
+func WaitSignals(sigs ...os.Signal) RunFunc {
 	return func(ctx context.Context) error {
+		if len(sigs) == 0 {
+			sigs = []os.Signal{syscall.SIGINT, syscall.SIGTERM}
+		}
 		quit := make(chan os.Signal, 1)
-		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		signal.Notify(quit, sigs...)
 		select {
 		case <-quit:
 			return nil
