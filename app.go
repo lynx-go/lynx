@@ -3,6 +3,7 @@ package lynx
 import (
 	"context"
 	"emperror.dev/emperror"
+	"fmt"
 	"github.com/lynx-go/lynx/hook"
 	"github.com/lynx-go/lynx/run"
 	"github.com/lynx-go/x/log"
@@ -16,6 +17,14 @@ type Meta struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Version string `json:"version"`
+}
+
+func (md Meta) String() string {
+	return fmt.Sprintf("%s/%s/%s", md.ID, md.Name, md.Version)
+}
+
+func (md Meta) UniqID() string {
+	return fmt.Sprintf("%s/%s", md.Name, md.ID)
 }
 
 type SetupFunc[O any] func(ctx context.Context, hooks *hook.Hooks, o O, args []string) (run.RunFunc, error)
