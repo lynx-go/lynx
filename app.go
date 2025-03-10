@@ -20,7 +20,7 @@ type Meta struct {
 }
 
 func (md Meta) String() string {
-	return fmt.Sprintf("%s/%s/%s", md.ID, md.Name, md.Version)
+	return fmt.Sprintf("%s/%s/%s", md.Name, md.ID, md.Version)
 }
 
 func (md Meta) UniqID() string {
