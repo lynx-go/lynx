@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/hook"
+	"github.com/lynx-go/lynx/run"
 	"github.com/lynx-go/x/log"
 	"github.com/spf13/viper"
 	"log/slog"
@@ -23,7 +24,7 @@ type Config struct {
 
 func main() {
 	app := lynx.New[Option](lynx.WithName[Option]("system-test"), lynx.WithVersion[Option]("1"),
-		lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
+		lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 			logger := log.FromContext(ctx)
 			logger.Info("starting")
 			viper.SetConfigFile(o.Config)

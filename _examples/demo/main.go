@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/hook"
+	"github.com/lynx-go/lynx/run"
 	"github.com/lynx-go/x/log"
 	"net/http"
 	"os"
@@ -19,7 +20,7 @@ type Config struct {
 }
 
 func main() {
-	serverSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
+	serverSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 		cfg := o.Config
 		log.InfoContext(ctx, "config path", "path", cfg)
 		hooks.Register(&serviceServer{addr: o.Addr})
@@ -28,10 +29,10 @@ func main() {
 			log.InfoContext(ctx, "onstart")
 			return nil
 		})
-		return lynx.WaitSignals(), nil
+		return run.WaitForSignals(), nil
 	}
 
-	helloSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
+	helloSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 		log.InfoContext(ctx, "config path", "path", o.Config)
 		hooks.Register(&commandServer{})
 		return func(ctx context.Context) error {
@@ -40,7 +41,7 @@ func main() {
 		}, nil
 	}
 
-	worldSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
+	worldSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 		log.InfoContext(ctx, "config path", "path", o.Config)
 		hooks.Register(&commandServer{})
 		return func(ctx context.Context) error {
