@@ -3,39 +3,14 @@ package lynx
 import (
 	"context"
 	"emperror.dev/emperror"
-	"errors"
 	"github.com/lynx-go/lynx/hook"
+	"github.com/lynx-go/lynx/run"
 	"github.com/lynx-go/x/log"
 	"golang.org/x/sync/errgroup"
 	"log/slog"
-	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 )
-
-type RunFunc func(ctx context.Context) error
-
-func WaitSignals(sigs ...os.Signal) RunFunc {
-	return func(ctx context.Context) error {
-		if len(sigs) == 0 {
-			sigs = []os.Signal{syscall.SIGINT, syscall.SIGTERM}
-		}
-		quit := make(chan os.Signal, 1)
-		signal.Notify(quit, sigs...)
-		select {
-		case <-quit:
-			return nil
-		case <-ctx.Done():
-			err := ctx.Err()
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return err
-		}
-	}
-}
 
 type Meta struct {
 	ID      string `json:"id"`
@@ -43,7 +18,7 @@ type Meta struct {
 	Version string `json:"version"`
 }
 
-type SetupFunc[O any] func(ctx context.Context, hooks *hook.Hooks, o O, args []string) (RunFunc, error)
+type SetupFunc[O any] func(ctx context.Context, hooks *hook.Hooks, o O, args []string) (run.RunFunc, error)
 
 type App[O any] struct {
 	onSetup       SetupFunc[O]

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/hook"
+	"github.com/lynx-go/lynx/run"
 	"github.com/lynx-go/x/log"
 	"github.com/spf13/viper"
 	"log/slog"
@@ -29,7 +30,7 @@ func main() {
 			Name:    "system",
 			Version: "0.0.1",
 		}),
-		lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (lynx.RunFunc, error) {
+		lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 			logger := log.FromContext(ctx)
 			logger.Info("starting")
 			viper.SetConfigFile(o.Config)
@@ -53,7 +54,7 @@ func main() {
 				return nil
 			})
 
-			return lynx.WaitSignals(), nil
+			return run.WaitForSignals(), nil
 		}))
 	o := Option{
 		Config: "./_examples/system/config.yaml",
