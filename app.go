@@ -120,9 +120,7 @@ func New[O any](opts ...Option[O]) *App[O] {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if app.logger == nil {
-		app.logger = logger.With("service_id", app.md.ID, "service_name", app.md.Name, "service_version", app.md.Version)
-	}
+	app.logger = logger.With("service_id", app.md.ID, "service_name", app.md.Name, "service_version", app.md.Version)
 
 	return app
 }
