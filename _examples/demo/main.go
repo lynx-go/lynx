@@ -20,7 +20,7 @@ type Config struct {
 }
 
 func main() {
-	serverSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
+	wireServer := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 		cfg := o.Config
 		log.InfoContext(ctx, "config path", "path", cfg)
 		hooks.Register(&serviceServer{addr: o.Addr})
@@ -32,7 +32,7 @@ func main() {
 		return run.WaitForSignals(), nil
 	}
 
-	helloSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
+	wireHello := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 		log.InfoContext(ctx, "config path", "path", o.Config)
 		hooks.Register(&commandServer{})
 		return func(ctx context.Context) error {
@@ -41,7 +41,7 @@ func main() {
 		}, nil
 	}
 
-	worldSetup := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
+	wireWorld := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 		log.InfoContext(ctx, "config path", "path", o.Config)
 		hooks.Register(&commandServer{})
 		return func(ctx context.Context) error {
@@ -59,7 +59,7 @@ func main() {
 					Name:    "lynx",
 					Version: "0.0.1",
 				}),
-				lynx.WithSetup[Option](serverSetup),
+				lynx.WithWireFunc[Option](wireServer),
 			),
 			lynx.WithCMD[Option](
 				lynx.CMD[Option](
@@ -69,7 +69,7 @@ func main() {
 							Name:    "lynx",
 							Version: "0.0.1",
 						}),
-						lynx.WithSetup[Option](helloSetup),
+						lynx.WithWireFunc[Option](wireHello),
 					),
 					lynx.WithUsage[Option]("hello"),
 					lynx.WithDesc[Option]("print hello world"),
@@ -81,7 +81,7 @@ func main() {
 									Name:    "lynx",
 									Version: "0.0.1",
 								}),
-								lynx.WithSetup[Option](worldSetup),
+								lynx.WithWireFunc[Option](wireWorld),
 							),
 							lynx.WithUsage[Option]("world"),
 						),

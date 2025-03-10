@@ -30,7 +30,7 @@ func main() {
 			Name:    "system",
 			Version: "0.0.1",
 		}),
-		lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
+		lynx.WithWireFunc[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 			logger := log.FromContext(ctx)
 			logger.Info("starting")
 			viper.SetConfigFile(o.Config)

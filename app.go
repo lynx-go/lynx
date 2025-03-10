@@ -27,10 +27,10 @@ func (md Meta) UniqID() string {
 	return fmt.Sprintf("%s/%s", md.Name, md.ID)
 }
 
-type SetupFunc[O any] func(ctx context.Context, hooks *hook.Hooks, o O, args []string) (run.RunFunc, error)
+type WireFunc[O any] func(ctx context.Context, hooks *hook.Hooks, o O, args []string) (run.RunFunc, error)
 
 type App[O any] struct {
-	onSetup       SetupFunc[O]
+	wire          WireFunc[O]
 	md            *Meta
 	registrar     *hook.Hooks
 	logger        *slog.Logger
@@ -53,7 +53,7 @@ func (app *App[O]) RunE(ctx context.Context, o O, args []string) error {
 	defer cancelCtx()
 
 	ctx = log.Context(ctx, app.logger)
-	runnable, err := app.onSetup(ctx, app.registrar, o, args)
+	runFunc, err := app.wire(ctx, app.registrar, o, args)
 	if err != nil {
 		return err
 	}
@@ -80,7 +80,7 @@ func (app *App[O]) RunE(ctx context.Context, o O, args []string) error {
 
 	eg.Go(func() error {
 		defer cancelCtx()
-		return runnable(ctx)
+		return runFunc(ctx)
 	})
 	app.isInitialized = true
 
@@ -103,9 +103,9 @@ func WithMeta[O any](md *Meta) Option[O] {
 	}
 }
 
-func WithSetup[O any](setup SetupFunc[O]) Option[O] {
+func WithWireFunc[O any](wire WireFunc[O]) Option[O] {
 	return func(a *App[O]) {
-		a.onSetup = setup
+		a.wire = wire
 	}
 }
 

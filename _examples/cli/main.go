@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/viper"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync/atomic"
 )
 
@@ -23,8 +24,14 @@ type Config struct {
 }
 
 func main() {
-	app := lynx.New[Option](lynx.WithName[Option]("system-test"), lynx.WithVersion[Option]("1"),
-		lynx.WithSetup[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
+	id, _ := os.Hostname()
+	app := lynx.New[Option](
+		lynx.WithMeta[Option](&lynx.Meta{
+			ID:      id,
+			Name:    "cli",
+			Version: "",
+		}),
+		lynx.WithWireFunc[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 			logger := log.FromContext(ctx)
 			logger.Info("starting")
 			viper.SetConfigFile(o.Config)

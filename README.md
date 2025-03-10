@@ -9,13 +9,19 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/integration"
+	"github.com/lynx-go/lynx/hook"
+	"github.com/lynx-go/lynx/run"
 	"github.com/lynx-go/x/log"
+	"github.com/spf13/viper"
+	"log/slog"
+	"net/http"
+	"os"
 )
 
 type Option struct {
-	Addr   string `json:"addr"`
 	Config string `json:"config"`
 }
 
@@ -24,107 +30,88 @@ type Config struct {
 }
 
 func main() {
+	id, _ := os.Hostname()
+	app := lynx.New[Option](
+		lynx.WithMeta[Option](&lynx.Meta{
+			ID:      id,
+			Name:    "system",
+			Version: "0.0.1",
+		}),
+		lynx.WithWire[Option](func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
+			logger := log.FromContext(ctx)
+			logger.Info("starting")
+			viper.SetConfigFile(o.Config)
+			if err := viper.ReadInConfig(); err != nil {
+				return nil, err
+			}
+			c := &Config{}
+			if err := viper.Unmarshal(&c); err != nil {
+				return nil, err
+			}
 
-	cli := lynx.NewCLI[Option](
-		lynx.CMD[Option](
-			lynx.New(
-				lynx.WithName[Option]("lynx-demo"),
-				lynx.WithVersion[Option]("0.1.0"),
-				lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
-					cfg := o.Config
-					log.InfoContext(ctx, "config path", "path", cfg)
-					hooks.Register(&serviceServer{})
-					hooks.Register(&commandServer{})
-					hooks.OnStart(func(ctx context.Context) error {
-						log.InfoContext(ctx, "onstart")
-						return nil
-					})
-					return lynx.RunForever(), nil
-				}),
-			),
-			lynx.WithSubCMD[Option](
-				lynx.CMD[Option](
-					lynx.New[Option](
-						lynx.WithName[Option]("hello"),
-						lynx.WithVersion[Option]("0.1.0"),
-						lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
-							log.InfoContext(ctx, "config path", "path", o.Config)
-							hooks.Register(&commandServer{})
-							return func(ctx context.Context) error {
-								log.InfoContext(ctx, "hello", "args", args, "options", o)
-								return nil
-							}, nil
-						}),
-					),
-					lynx.WithDesc[Option]("print hello world"),
-					lynx.WithSubCMD[Option](
-						lynx.CMD[Option](
-							lynx.New[Option](
-								lynx.WithName[Option]("world"),
-								lynx.WithVersion[Option]("0.1.0"),
-								lynx.WithSetup[Option](func(ctx context.Context, hooks *integration.Registrar, o Option, args []string) (lynx.Runnable, error) {
-									log.InfoContext(ctx, "config path", "path", o.Config)
-									hooks.Register(&commandServer{})
-									return func(ctx context.Context) error {
-										log.InfoContext(ctx, "hello world")
-										return nil
-									}, nil
-								}),
-							),
-						),
-					),
-				),
-			),
-		),
-	)
+			server := newHttpServer(c.Addr)
+			hooks.Register(server)
+			hooks.OnStart(func(ctx context.Context) error {
+				log.InfoContext(ctx, "onStart called")
+				return nil
+			})
 
-	cli.Run()
+			hooks.OnStop(func(ctx context.Context) error {
+				slog.Info("onStop called")
+				return nil
+			})
+
+			return run.WaitForSignals(), nil
+		}))
+	o := Option{
+		Config: "./_examples/system/config.yaml",
+	}
+	ctx := context.TODO()
+	app.Run(ctx, o, []string{})
 }
 
-type commandServer struct {
+func newHttpServer(addr string) *httpServer {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		slog.Info("api called")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+	return &httpServer{
+		Server: &http.Server{
+			Addr:    addr,
+			Handler: mux,
+		},
+	}
 }
 
-func (s *commandServer) Status() (int, error) {
-	return 200, nil
+type httpServer struct {
+	*http.Server
 }
 
-func (s *commandServer) Start(ctx context.Context) error {
-	log.InfoContext(ctx, "command-server start")
+func (h *httpServer) Status() (hook.Status, error) {
+	return hook.StatusStarted, nil
+}
+
+func (h *httpServer) Name() string {
+	return "http-server"
+}
+
+func (h *httpServer) Start(ctx context.Context) error {
+	log.InfoContext(ctx, fmt.Sprintf("%s starting", h.Name()))
+	if err := h.ListenAndServe(); err != nil {
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 
-func (s *commandServer) Stop(ctx context.Context) error {
-	log.InfoContext(ctx, "command-server stop")
-	return nil
+func (h *httpServer) Stop(ctx context.Context) error {
+	log.InfoContext(ctx, fmt.Sprintf("%s stopping", h.Name()))
+	return h.Server.Shutdown(ctx)
 }
 
-func (s *commandServer) Name() string {
-	return "command-server"
-}
-
-var _ integration.Integration = new(commandServer)
-
-type serviceServer struct {
-}
-
-func (s *serviceServer) Status() (int, error) {
-	return 200, nil
-}
-
-func (s *serviceServer) Start(ctx context.Context) error {
-	log.InfoContext(ctx, "service-server start")
-	return nil
-}
-
-func (s *serviceServer) Stop(ctx context.Context) error {
-	log.InfoContext(ctx, "service-server stop")
-	return nil
-}
-
-func (s *serviceServer) Name() string {
-	return "service-server"
-}
-
-var _ integration.Integration = new(serviceServer)
-
+var _ hook.Hook = new(httpServer)
 ```
