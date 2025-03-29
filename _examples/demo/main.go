@@ -23,8 +23,8 @@ func main() {
 	wireServer := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 		cfg := o.Config
 		log.InfoContext(ctx, "config path", "path", cfg)
-		hooks.Register(&serviceServer{addr: o.Addr})
-		hooks.Register(&commandServer{})
+		hooks.Hook(&serviceServer{addr: o.Addr})
+		hooks.Hook(&commandServer{})
 		hooks.OnStart(func(ctx context.Context) error {
 			log.InfoContext(ctx, "onstart")
 			return nil
@@ -34,7 +34,7 @@ func main() {
 
 	wireHello := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 		log.InfoContext(ctx, "config path", "path", o.Config)
-		hooks.Register(&commandServer{})
+		hooks.Hook(&commandServer{})
 		return func(ctx context.Context) error {
 			log.InfoContext(ctx, "hello", "args", args, "options", o)
 			return nil
@@ -43,7 +43,7 @@ func main() {
 
 	wireWorld := func(ctx context.Context, hooks *hook.Hooks, o Option, args []string) (run.RunFunc, error) {
 		log.InfoContext(ctx, "config path", "path", o.Config)
-		hooks.Register(&commandServer{})
+		hooks.Hook(&commandServer{})
 		return func(ctx context.Context) error {
 			log.InfoContext(ctx, "hello world")
 			return nil
@@ -97,10 +97,6 @@ func main() {
 type commandServer struct {
 }
 
-func (s *commandServer) Status() (hook.Status, error) {
-	return hook.StatusStarted, nil
-}
-
 func (s *commandServer) Start(ctx context.Context) error {
 	log.InfoContext(ctx, "command-server start")
 	return nil
@@ -119,10 +115,6 @@ var _ hook.Hook = new(commandServer)
 
 type serviceServer struct {
 	addr string
-}
-
-func (s *serviceServer) Status() (hook.Status, error) {
-	return hook.StatusStarted, nil
 }
 
 func (s *serviceServer) Start(ctx context.Context) error {

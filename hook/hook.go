@@ -5,15 +5,6 @@ import (
 	"sync"
 )
 
-type Status int
-
-const (
-	StatusUnstart Status = 0
-	StatusStarted Status = 1
-	StatusStopped Status = 2
-	StatusError   Status = -1
-)
-
 type Func func(ctx context.Context) error
 
 type Hooks struct {
@@ -25,7 +16,7 @@ func (reg *Hooks) Hooks() []Hook {
 	return reg.hooks
 }
 
-func (reg *Hooks) Register(hooks ...Hook) {
+func (reg *Hooks) Hook(hooks ...Hook) {
 	reg.hooks = append(reg.hooks, hooks...)
 }
 
@@ -47,10 +38,6 @@ type onStop struct {
 	fn Func
 }
 
-func (h *onStop) Status() (Status, error) {
-	return StatusStarted, nil
-}
-
 func (h *onStop) Name() string {
 	return "Stop"
 }
@@ -67,10 +54,6 @@ var _ Hook = new(onStop)
 
 type onStart struct {
 	fn Func
-}
-
-func (h *onStart) Status() (Status, error) {
-	return StatusStarted, nil
 }
 
 func (h *onStart) Name() string {
@@ -91,5 +74,4 @@ type Hook interface {
 	Name() string
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
-	Status() (Status, error)
 }

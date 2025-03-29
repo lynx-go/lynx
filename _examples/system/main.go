@@ -43,7 +43,7 @@ func main() {
 			}
 
 			server := newHttpServer(c.Addr)
-			hooks.Register(server)
+			hooks.Hook(server)
 			hooks.OnStart(func(ctx context.Context) error {
 				log.InfoContext(ctx, "onStart called")
 				return nil
@@ -80,10 +80,6 @@ func newHttpServer(addr string) *httpServer {
 
 type httpServer struct {
 	*http.Server
-}
-
-func (h *httpServer) Status() (hook.Status, error) {
-	return hook.StatusStarted, nil
 }
 
 func (h *httpServer) Name() string {
