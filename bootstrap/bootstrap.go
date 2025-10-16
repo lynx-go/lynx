@@ -1,4 +1,4 @@
-package boot
+package bootstrap
 
 import (
 	"github.com/lynx-go/lynx"
