@@ -11,7 +11,7 @@ type Bootstrap struct {
 	ComponentProducers []lynx.ComponentFactory
 }
 
-func NewBootstrap(
+func New(
 	onStars lynx.OnStartHooks,
 	onStops lynx.OnStopHooks,
 	components []lynx.Component,
