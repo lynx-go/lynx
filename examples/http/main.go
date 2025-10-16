@@ -42,7 +42,7 @@ func main() {
 			_, _ = rw.Write([]byte("hello"))
 		})
 
-		if err := lx.Register(http.NewServer(":9090", router, lx.HealthCheckFunc(), lx.Logger("logger", "http-requestlog"))); err != nil {
+		if err := lx.Inject(http.NewServer(":9090", router, lx.HealthCheckFunc(), lx.Logger("logger", "http-requestlog"))); err != nil {
 			return err
 		}
 

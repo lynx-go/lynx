@@ -28,11 +28,11 @@ func New(
 func (b *Bootstrap) Wire(fl lynx.Lynx) error {
 	fl.Hooks().OnStart(b.StartHooks...)
 	fl.Hooks().OnStop(b.StopHooks...)
-	if err := fl.Register(b.Components...); err != nil {
+	if err := fl.Inject(b.Components...); err != nil {
 		return err
 	}
 
-	if err := fl.RegisterFactory(b.ComponentFactories...); err != nil {
+	if err := fl.InjectFactory(b.ComponentFactories...); err != nil {
 		return err
 	}
 	return nil

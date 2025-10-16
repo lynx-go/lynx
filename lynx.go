@@ -22,9 +22,9 @@ type Lynx interface {
 	Context() context.Context
 	// CLI 注册启动的命令，用于 CLI 模式
 	CLI(cmd CommandFunc) error
-	// Register 加载组件，但只有当应用启动后才会执行 Start
-	Register(components ...Component) error
-	RegisterFactory(factories ...ComponentFactory) error
+	// Inject 加载组件，但只有当应用启动后才会执行 Start
+	Inject(components ...Component) error
+	InjectFactory(factories ...ComponentFactory) error
 	HealthCheckFunc() HealthCheckFunc
 	// Run 启用 App
 	Run() error
@@ -56,7 +56,7 @@ func (lx *lynx) HealthCheckFunc() HealthCheckFunc {
 }
 
 func (lx *lynx) CLI(cmd CommandFunc) error {
-	return lx.Register(NewCommand(cmd))
+	return lx.Inject(NewCommand(cmd))
 }
 
 func (lx *lynx) Close() {
@@ -93,7 +93,7 @@ func (lx *lynx) initConfigurer() {
 	lx.c.Merge(lx.o.PropertiesAsMap())
 }
 
-func (lx *lynx) RegisterFactory(producers ...ComponentFactory) error {
+func (lx *lynx) InjectFactory(producers ...ComponentFactory) error {
 	for _, producer := range producers {
 		produce := producer.Component
 		options := producer.Option()
@@ -103,7 +103,7 @@ func (lx *lynx) RegisterFactory(producers ...ComponentFactory) error {
 			comp := produce()
 			components = append(components, comp)
 		}
-		if err := lx.Register(components...); err != nil {
+		if err := lx.Inject(components...); err != nil {
 			return err
 		}
 	}
@@ -126,7 +126,7 @@ func (lx *lynx) Option() *Options {
 	return &lx.o
 }
 
-func (lx *lynx) Register(components ...Component) error {
+func (lx *lynx) Inject(components ...Component) error {
 	for _, comp := range components {
 		ctx, cancel := context.WithCancel(context.Background())
 		if err := comp.Init(lx); err != nil {
