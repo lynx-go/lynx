@@ -2,10 +2,11 @@ package http
 
 import (
 	"context"
-	"github.com/lynx-go/lynx"
-	"gocloud.dev/server"
 	"log/slog"
 	"net/http"
+
+	"github.com/lynx-go/lynx"
+	"gocloud.dev/server"
 )
 
 func NewRouter() *http.ServeMux {

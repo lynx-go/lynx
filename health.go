@@ -2,8 +2,9 @@ package lynx
 
 import (
 	"errors"
-	"gocloud.dev/server/health"
 	"sync"
+
+	"gocloud.dev/server/health"
 )
 
 type HealthChecker struct {

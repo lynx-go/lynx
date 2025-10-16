@@ -1,10 +1,11 @@
 package http
 
 import (
-	"gocloud.dev/server/requestlog"
 	"log/slog"
 	"strconv"
 	"time"
+
+	"gocloud.dev/server/requestlog"
 )
 
 // A RequestLogger writes log entries in the Stackdriver forward JSON
