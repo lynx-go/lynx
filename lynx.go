@@ -2,14 +2,16 @@ package lynx
 
 import (
 	"context"
-	"github.com/oklog/run"
-	"gocloud.dev/server/health"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/oklog/run"
+	"gocloud.dev/server/health"
 )
 
 type Lynx interface {
@@ -18,16 +20,17 @@ type Lynx interface {
 	Config() Configurer
 	Option() *Options
 	Context() context.Context
-	// MainCommand 注册启动的命令，用于 CLI 模式
-	MainCommand(cmd CommandFunc) error
-	// Load 加载组件，但只有当应用启动后才会执行 Start
-	Load(components ...Component) error
-	LoadFromProducer(producers ...ComponentProducer) error
-	HealthCheck() HealthCheckFunc
+	// CLI 注册启动的命令，用于 CLI 模式
+	CLI(cmd CommandFunc) error
+	// Register 加载组件，但只有当应用启动后才会执行 Start
+	Register(components ...Component) error
+	RegisterFactory(factories ...ComponentFactory) error
+	HealthCheckFunc() HealthCheckFunc
+	// Run 启用 App
 	Run() error
 	Hooks() Hooks
 	SetLogger(logger *slog.Logger)
-	Logger(args ...any) *slog.Logger
+	Logger(kwargs ...any) *slog.Logger
 }
 
 type lynx struct {
@@ -46,14 +49,14 @@ func (lx *lynx) SetLogger(logger *slog.Logger) {
 	lx.logger = logger
 }
 
-func (lx *lynx) HealthCheck() HealthCheckFunc {
+func (lx *lynx) HealthCheckFunc() HealthCheckFunc {
 	return func() []health.Checker {
 		return lx.healthCheckers
 	}
 }
 
-func (lx *lynx) MainCommand(cmd CommandFunc) error {
-	return lx.Load(NewCommand(cmd))
+func (lx *lynx) CLI(cmd CommandFunc) error {
+	return lx.Register(NewCommand(cmd))
 }
 
 func (lx *lynx) Close() {
@@ -90,7 +93,7 @@ func (lx *lynx) initConfigurer() {
 	lx.c.Merge(lx.o.PropertiesAsMap())
 }
 
-func (lx *lynx) LoadFromProducer(producers ...ComponentProducer) error {
+func (lx *lynx) RegisterFactory(producers ...ComponentFactory) error {
 	for _, producer := range producers {
 		produce := producer.Component
 		options := producer.Option()
@@ -100,7 +103,7 @@ func (lx *lynx) LoadFromProducer(producers ...ComponentProducer) error {
 			comp := produce()
 			components = append(components, comp)
 		}
-		if err := lx.Load(components...); err != nil {
+		if err := lx.Register(components...); err != nil {
 			return err
 		}
 	}
@@ -111,8 +114,8 @@ func (lx *lynx) Config() Configurer {
 	return lx.c
 }
 
-func (lx *lynx) Logger(args ...any) *slog.Logger {
-	return lx.logger.With(args...)
+func (lx *lynx) Logger(kwargs ...any) *slog.Logger {
+	return lx.logger.With(kwargs...)
 }
 
 func (lx *lynx) Context() context.Context {
@@ -123,7 +126,7 @@ func (lx *lynx) Option() *Options {
 	return &lx.o
 }
 
-func (lx *lynx) Load(components ...Component) error {
+func (lx *lynx) Register(components ...Component) error {
 	for _, comp := range components {
 		ctx, cancel := context.WithCancel(context.Background())
 		if err := comp.Init(lx); err != nil {
@@ -160,6 +163,11 @@ func (lx *lynx) Run() error {
 		lx.Close()
 	})
 
+	closeTimeout := 10 * time.Second
+	if lx.c.GetInt("shutdown_timeout") > 0 {
+		closeTimeout = time.Duration(lx.c.GetInt("shutdown_timeout")) * time.Second
+	}
+
 	lx.runG.Add(func() error {
 		exit := make(chan os.Signal, 1)
 		signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
@@ -171,7 +179,7 @@ func (lx *lynx) Run() error {
 		}
 	}, func(err error) {
 		lx.Logger().Info("shutting down")
-		ctx, cancelCtx := context.WithTimeout(context.TODO(), lx.o.ShutdownTimeout)
+		ctx, cancelCtx := context.WithTimeout(context.TODO(), closeTimeout)
 		defer cancelCtx()
 		lx.Logger().Info("calling on stop hooks")
 		for _, fn := range lx.hooks.onStops {

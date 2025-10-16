@@ -2,6 +2,7 @@ package lynx
 
 import (
 	"context"
+
 	"gocloud.dev/server/health"
 )
 
@@ -12,16 +13,16 @@ type Component interface {
 	Stop(ctx context.Context)
 }
 
-type ComponentProducer interface {
+type ComponentFactory interface {
 	Component() Component
-	Option() ProduceOption
+	Option() FactoryOption
 }
 
-type ProduceOption struct {
+type FactoryOption struct {
 	Instances int `json:"instances"` // 实例数
 }
 
-func (o *ProduceOption) ensureDefaults() {
+func (o *FactoryOption) ensureDefaults() {
 	if o.Instances == 0 {
 		o.Instances = 1
 	}

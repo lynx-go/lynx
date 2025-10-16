@@ -1,10 +1,11 @@
 package zap
 
 import (
+	"log/slog"
+
 	"github.com/lynx-go/lynx"
 	slogzap "github.com/samber/slog-zap/v2"
 	"go.uber.org/zap"
-	"log/slog"
 )
 
 func NewLogger(lx lynx.Lynx, logLevel string) *slog.Logger {

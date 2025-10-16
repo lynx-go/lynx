@@ -2,11 +2,12 @@ package main
 
 import (
 	"context"
-	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/server/http"
 	"log"
 	gohttp "net/http"
 	"time"
+
+	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/server/http"
 )
 
 type Config struct {
@@ -41,7 +42,7 @@ func main() {
 			_, _ = rw.Write([]byte("hello"))
 		})
 
-		if err := lx.Load(http.NewServer(":9090", router, lx.HealthCheck(), lx.Logger("logger", "http-requestlog"))); err != nil {
+		if err := lx.Register(http.NewServer(":9090", router, lx.HealthCheckFunc(), lx.Logger("logger", "http-requestlog"))); err != nil {
 			return err
 		}
 

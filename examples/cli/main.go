@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"github.com/lynx-go/lynx"
 	"log"
 	"time"
+
+	"github.com/lynx-go/lynx"
 )
 
 type Config struct {
@@ -36,7 +37,7 @@ func main() {
 			return nil
 		})
 
-		if err := lx.MainCommand(func(ctx context.Context) error {
+		if err := lx.CLI(func(ctx context.Context) error {
 			logger.Info("command executed successfully")
 			time.Sleep(1 * time.Second)
 			return nil

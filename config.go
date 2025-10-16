@@ -1,9 +1,10 @@
 package lynx
 
 import (
+	"log"
+
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
-	"log"
 )
 
 type Configurer interface {
