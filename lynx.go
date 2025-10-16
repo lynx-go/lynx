@@ -149,7 +149,7 @@ func (app *lynx) Inject(components ...Component) error {
 func (app *lynx) Run() error {
 	app.Logger().Info("starting")
 	app.runG.Add(func() error {
-		app.Logger().Info("calling on start hooks")
+		app.Logger().Info("run OnStart hooks")
 		for _, fn := range app.hooks.onStarts {
 			if err := fn(app.ctx); err != nil {
 				return err
@@ -181,7 +181,7 @@ func (app *lynx) Run() error {
 		app.Logger().Info("shutting down")
 		ctx, cancelCtx := context.WithTimeout(context.TODO(), closeTimeout)
 		defer cancelCtx()
-		app.Logger().Info("calling on stop hooks")
+		app.Logger().Info("run OnStop hooks")
 		for _, fn := range app.hooks.onStops {
 			fn := fn
 			if err := fn(ctx); err != nil {

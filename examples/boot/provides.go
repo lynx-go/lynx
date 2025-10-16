@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"github.com/google/wire"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/bootstrap"
@@ -35,10 +36,20 @@ func NewComponentFactories() []lynx.ComponentFactory {
 	return []lynx.ComponentFactory{}
 }
 
-func NewOnStarts() lynx.OnStartHooks {
-	return lynx.OnStartHooks{}
+func NewOnStarts(app lynx.Lynx) lynx.OnStartHooks {
+	return lynx.OnStartHooks{
+		func(ctx context.Context) error {
+			app.Logger().Info("starting")
+			return nil
+		},
+	}
 }
 
-func NewOnStops() lynx.OnStopHooks {
-	return lynx.OnStopHooks{}
+func NewOnStops(app lynx.Lynx) lynx.OnStopHooks {
+	return lynx.OnStopHooks{
+		func(ctx context.Context) error {
+			app.Logger().Info("stopping")
+			return nil
+		},
+	}
 }
