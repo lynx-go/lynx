@@ -15,7 +15,7 @@ type Config struct {
 }
 
 func main() {
-	opt := lynx.BindOptions()
+	opt := lynx.ParseOptions()
 	opt.Name = "http-example"
 	opt.Version = "v0.0.1"
 	app := lynx.New(opt, func(ctx context.Context, lx lynx.Lynx) error {

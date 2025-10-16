@@ -13,7 +13,7 @@ type Config struct {
 }
 
 func main() {
-	op := lynx.BindOptions()
+	op := lynx.ParseOptions()
 	op.Name = "cli-example"
 	op.Version = "v0.0.1"
 	app := lynx.New(op, func(ctx context.Context, lx lynx.Lynx) error {

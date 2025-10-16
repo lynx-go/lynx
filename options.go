@@ -51,7 +51,7 @@ func (o *Options) PropertiesAsMap() map[string]any {
 	return properties
 }
 
-func BindOptions() Options {
+func ParseOptions() Options {
 	fs := pflag.NewFlagSet("", pflag.ExitOnError)
 	option := Options{}
 	if err := flagbind.Bind(fs, &option); err != nil {
