@@ -21,8 +21,8 @@ func (cmd *command) Name() string {
 	return "command"
 }
 
-func (cmd *command) Init(lx Lynx) error {
-	cmd.lynx = lx
+func (cmd *command) Init(app Lynx) error {
+	cmd.lynx = app
 	return nil
 }
 

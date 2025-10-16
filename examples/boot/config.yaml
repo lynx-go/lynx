@@ -1,10 +1,1 @@
-addr: ":9090"
-
-pubsub:
-  hello:
-    provider: kafka
-    kafka:
-      servers: [ "127.0.0.1:9092" ]
-      topic: "topic_hello"
-      subscription:
-        group: "dyno_consumer"
+addr: ":9080"

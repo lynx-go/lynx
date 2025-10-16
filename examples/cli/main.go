@@ -13,31 +13,31 @@ type Config struct {
 }
 
 func main() {
-	op := lynx.ParseOptions()
+	op := lynx.ParseFlags()
 	op.Name = "cli-example"
 	op.Version = "v0.0.1"
-	app := lynx.New(op, func(ctx context.Context, lx lynx.Lynx) error {
+	app := lynx.New(op, func(ctx context.Context, app lynx.Lynx) error {
 		config := &Config{}
-		if err := lx.Config().Unmarshal(config); err != nil {
+		if err := app.Config().Unmarshal(config); err != nil {
 			return err
 		}
 
-		opt := lx.Option()
-		logger := lx.Logger()
+		opt := app.Option()
+		logger := app.Logger()
 		logger.Info("parsed option", "option", opt.String())
 		logger.Info("parsed config", "config", config)
 
-		lx.Hooks().OnStart(func(ctx context.Context) error {
-			lx.Logger().Info("on start")
+		app.Hooks().OnStart(func(ctx context.Context) error {
+			app.Logger().Info("on start")
 			return nil
 		})
 
-		lx.Hooks().OnStop(func(ctx context.Context) error {
-			lx.Logger().Info("on stop")
+		app.Hooks().OnStop(func(ctx context.Context) error {
+			app.Logger().Info("on stop")
 			return nil
 		})
 
-		if err := lx.CLI(func(ctx context.Context) error {
+		if err := app.CLI(func(ctx context.Context) error {
 			logger.Info("command executed successfully")
 			time.Sleep(1 * time.Second)
 			return nil

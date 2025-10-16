@@ -20,7 +20,7 @@ var (
 func main() {
 	id, _ = os.Hostname()
 
-	op := lynx.ParseOptions()
+	op := lynx.ParseFlags()
 	op.ID = id
 	op.Version = version
 	op.Name = "fleet"
@@ -44,6 +44,7 @@ func NewHttpServer(app lynx.Lynx) *http.Server {
 	router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 		_, _ = rw.Write([]byte("hello"))
 	})
+	addr := app.Config().GetString("addr")
 
-	return http.NewServer(":9090", router, app.HealthCheckFunc(), app.Logger("logger", "http-requestlog"))
+	return http.NewServer(addr, router, app.HealthCheckFunc(), app.Logger("logger", "http-requestlog"))
 }

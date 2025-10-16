@@ -44,56 +44,56 @@ type lynx struct {
 	healthCheckers []health.Checker
 }
 
-func (lx *lynx) SetLogger(logger *slog.Logger) {
+func (app *lynx) SetLogger(logger *slog.Logger) {
 	slog.SetDefault(logger)
-	lx.logger = logger
+	app.logger = logger
 }
 
-func (lx *lynx) HealthCheckFunc() HealthCheckFunc {
+func (app *lynx) HealthCheckFunc() HealthCheckFunc {
 	return func() []health.Checker {
-		return lx.healthCheckers
+		return app.healthCheckers
 	}
 }
 
-func (lx *lynx) CLI(cmd CommandFunc) error {
-	return lx.Inject(NewCommand(cmd))
+func (app *lynx) CLI(cmd CommandFunc) error {
+	return app.Inject(NewCommand(cmd))
 }
 
-func (lx *lynx) Close() {
-	lx.cancelCtx()
+func (app *lynx) Close() {
+	app.cancelCtx()
 }
 
-func (lx *lynx) Init() error {
-	lx.initConfigurer()
-	lx.initLogger()
+func (app *lynx) Init() error {
+	app.initConfigurer()
+	app.initLogger()
 	return nil
 }
 
-func (lx *lynx) initLogger() {
-	lx.logger = slog.Default()
+func (app *lynx) initLogger() {
+	app.logger = slog.Default()
 }
 
-func (lx *lynx) initConfigurer() {
-	configDir := lx.o.ConfigDir
-	config := lx.o.Config
+func (app *lynx) initConfigurer() {
+	configDir := app.o.ConfigDir
+	config := app.o.Config
 	configType := "yaml"
-	if lx.o.ConfigType != "" {
-		configType = lx.o.ConfigType
+	if app.o.ConfigType != "" {
+		configType = app.o.ConfigType
 	}
 	if configDir != "" {
 
 		configDirs := strings.Split(configDir, ",")
-		lx.c = newConfigFromDir(configDirs, configType)
+		app.c = newConfigFromDir(configDirs, configType)
 	} else if config != "" {
-		lx.c = newConfigFromFile(config)
+		app.c = newConfigFromFile(config)
 	} else {
-		lx.c = newConfigFromDir([]string{"./configs"}, configType)
+		app.c = newConfigFromDir([]string{"./configs"}, configType)
 	}
 
-	lx.c.Merge(lx.o.PropertiesAsMap())
+	app.c.Merge(app.o.PropertiesAsMap())
 }
 
-func (lx *lynx) InjectFactory(producers ...ComponentFactory) error {
+func (app *lynx) InjectFactory(producers ...ComponentFactory) error {
 	for _, producer := range producers {
 		produce := producer.Component
 		options := producer.Option()
@@ -103,102 +103,102 @@ func (lx *lynx) InjectFactory(producers ...ComponentFactory) error {
 			comp := produce()
 			components = append(components, comp)
 		}
-		if err := lx.Inject(components...); err != nil {
+		if err := app.Inject(components...); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (lx *lynx) Config() Configurer {
-	return lx.c
+func (app *lynx) Config() Configurer {
+	return app.c
 }
 
-func (lx *lynx) Logger(kwargs ...any) *slog.Logger {
-	return lx.logger.With(kwargs...)
+func (app *lynx) Logger(kwargs ...any) *slog.Logger {
+	return app.logger.With(kwargs...)
 }
 
-func (lx *lynx) Context() context.Context {
-	return lx.ctx
+func (app *lynx) Context() context.Context {
+	return app.ctx
 }
 
-func (lx *lynx) Option() *Options {
-	return &lx.o
+func (app *lynx) Option() *Options {
+	return &app.o
 }
 
-func (lx *lynx) Inject(components ...Component) error {
+func (app *lynx) Inject(components ...Component) error {
 	for _, comp := range components {
 		ctx, cancel := context.WithCancel(context.Background())
-		if err := comp.Init(lx); err != nil {
+		if err := comp.Init(app); err != nil {
 			cancel()
 			return err
 		}
-		lx.runG.Add(func() error {
+		app.runG.Add(func() error {
 			return comp.Start(ctx)
 		}, func(err error) {
 			comp.Stop(ctx)
 			cancel()
 		})
 		if hc, ok := comp.(health.Checker); ok {
-			lx.healthCheckers = append(lx.healthCheckers, hc)
+			app.healthCheckers = append(app.healthCheckers, hc)
 		}
 	}
 	return nil
 }
 
-func (lx *lynx) Run() error {
-	lx.Logger().Info("starting")
-	lx.runG.Add(func() error {
-		lx.Logger().Info("calling on start hooks")
-		for _, fn := range lx.hooks.onStarts {
-			if err := fn(lx.ctx); err != nil {
+func (app *lynx) Run() error {
+	app.Logger().Info("starting")
+	app.runG.Add(func() error {
+		app.Logger().Info("calling on start hooks")
+		for _, fn := range app.hooks.onStarts {
+			if err := fn(app.ctx); err != nil {
 				return err
 			}
 		}
 		select {
-		case <-lx.ctx.Done():
+		case <-app.ctx.Done():
 			return nil
 		}
 	}, func(err error) {
-		lx.Close()
+		app.Close()
 	})
 
 	closeTimeout := 10 * time.Second
-	if lx.c.GetInt("shutdown_timeout") > 0 {
-		closeTimeout = time.Duration(lx.c.GetInt("shutdown_timeout")) * time.Second
+	if app.c.GetInt("shutdown_timeout") > 0 {
+		closeTimeout = time.Duration(app.c.GetInt("shutdown_timeout")) * time.Second
 	}
 
-	lx.runG.Add(func() error {
+	app.runG.Add(func() error {
 		exit := make(chan os.Signal, 1)
 		signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
 		select {
-		case <-lx.ctx.Done():
+		case <-app.ctx.Done():
 			return nil
 		case <-exit:
 			return nil
 		}
 	}, func(err error) {
-		lx.Logger().Info("shutting down")
+		app.Logger().Info("shutting down")
 		ctx, cancelCtx := context.WithTimeout(context.TODO(), closeTimeout)
 		defer cancelCtx()
-		lx.Logger().Info("calling on stop hooks")
-		for _, fn := range lx.hooks.onStops {
+		app.Logger().Info("calling on stop hooks")
+		for _, fn := range app.hooks.onStops {
 			fn := fn
 			if err := fn(ctx); err != nil {
-				lx.logger.ErrorContext(lx.ctx, "post stop func called error", "error", err)
+				app.logger.ErrorContext(app.ctx, "post stop func called error", "error", err)
 			}
 		}
 	})
-	return lx.runG.Run()
+	return app.runG.Run()
 }
 
-func (lx *lynx) Hooks() Hooks {
-	return lx.hooks
+func (app *lynx) Hooks() Hooks {
+	return app.hooks
 }
 
 func newLynx(o Options) Lynx {
 	o.EnsureDefaults()
-	lx := &lynx{
+	app := &lynx{
 		o:    o,
 		runG: &run.Group{},
 		hooks: &hooks{
@@ -206,9 +206,9 @@ func newLynx(o Options) Lynx {
 			onStops:  []HookFunc{},
 		},
 	}
-	lx.ctx, lx.cancelCtx = context.WithCancel(context.Background())
-	if err := lx.Init(); err != nil {
+	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
+	if err := app.Init(); err != nil {
 		log.Fatal(err)
 	}
-	return lx
+	return app
 }

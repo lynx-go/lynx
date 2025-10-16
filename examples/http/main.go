@@ -15,26 +15,26 @@ type Config struct {
 }
 
 func main() {
-	opt := lynx.ParseOptions()
+	opt := lynx.ParseFlags()
 	opt.Name = "http-example"
 	opt.Version = "v0.0.1"
-	app := lynx.New(opt, func(ctx context.Context, lx lynx.Lynx) error {
+	app := lynx.New(opt, func(ctx context.Context, app lynx.Lynx) error {
 		config := &Config{}
-		if err := lx.Config().Unmarshal(config); err != nil {
+		if err := app.Config().Unmarshal(config); err != nil {
 			return err
 		}
-		opt := lx.Option()
-		logger := lx.Logger()
+		opt := app.Option()
+		logger := app.Logger()
 		logger.Info("parsed option", "option", opt)
 		logger.Info("parsed config", "config", config)
 
-		lx.Hooks().OnStart(func(ctx context.Context) error {
-			lx.Logger().Info("on start")
+		app.Hooks().OnStart(func(ctx context.Context) error {
+			app.Logger().Info("on start")
 			return nil
 		})
 
-		lx.Hooks().OnStop(func(ctx context.Context) error {
-			lx.Logger().Info("on stop")
+		app.Hooks().OnStop(func(ctx context.Context) error {
+			app.Logger().Info("on stop")
 			return nil
 		})
 		router := http.NewRouter()
@@ -42,11 +42,11 @@ func main() {
 			_, _ = rw.Write([]byte("hello"))
 		})
 
-		if err := lx.Inject(http.NewServer(":9090", router, lx.HealthCheckFunc(), lx.Logger("logger", "http-requestlog"))); err != nil {
+		if err := app.Inject(http.NewServer(":9090", router, app.HealthCheckFunc(), app.Logger("logger", "http-requestlog"))); err != nil {
 			return err
 		}
 
-		lx.Hooks().OnStart(func(ctx context.Context) error {
+		app.Hooks().OnStart(func(ctx context.Context) error {
 			time.Sleep(1 * time.Second)
 			return nil
 		})

@@ -34,8 +34,8 @@ func (s *Server) Name() string {
 	return "http"
 }
 
-func (s *Server) Init(lx lynx.Lynx) error {
-	s.logger = lx.Logger("component", s.Name())
+func (s *Server) Init(app lynx.Lynx) error {
+	s.logger = app.Logger("component", s.Name())
 	return nil
 }
 

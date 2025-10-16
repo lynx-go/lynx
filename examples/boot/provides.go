@@ -19,9 +19,9 @@ var ProviderSet = wire.NewSet(
 	NewOnStops,
 )
 
-func NewConfig(lx lynx.Lynx) (*AppConfig, error) {
+func NewConfig(app lynx.Lynx) (*AppConfig, error) {
 	c := new(AppConfig)
-	if err := lx.Config().Unmarshal(c); err != nil {
+	if err := app.Config().Unmarshal(c); err != nil {
 		return nil, err
 	}
 	return c, nil

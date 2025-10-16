@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-type SetupFunc func(ctx context.Context, lx Lynx) error
+type SetupFunc func(ctx context.Context, app Lynx) error
 
 type App struct {
 	setup SetupFunc
@@ -16,10 +16,10 @@ func New(o Options, setup SetupFunc) *App {
 	if o.ID == "" {
 		o.ID, _ = os.Hostname()
 	}
-	lx := newLynx(o)
+	app := newLynx(o)
 	return &App{
 		setup: setup,
-		lynx:  lx,
+		lynx:  app,
 	}
 }
 
