@@ -18,19 +18,25 @@ import (
 type ConfigLoaderFunc func(f *pflag.FlagSet, v *viper.Viper) error
 
 type Lynx interface {
+	// Close 关闭应用实例
 	Close()
+	// Config 获取配置实例
 	Config() *viper.Viper
-	Option() *Options
+	// Context 获取应用上下文
 	Context() context.Context
 	// CLI 注册启动的命令，用于 CLI 模式
 	CLI(cmd CommandFunc) error
 	// Hook 加载组件，但只有当应用启动后才会执行 Start
 	Hook(components ...Component) error
+	// HookFactory 把 ComponentFactory 注入应用中
 	HookFactory(factories ...ComponentFactory) error
+	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
 	HealthCheckFunc() HealthCheckFunc
 	// Run 启用 App
 	Run() error
+	// SetLogger 设置 logger
 	SetLogger(logger *slog.Logger)
+	// Logger 获取 logger
 	Logger(kwargs ...any) *slog.Logger
 	Hooks
 }
