@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	gohttp "net/http"
-	"os"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/lynx-go/lynx"
@@ -13,14 +12,7 @@ import (
 	"github.com/spf13/pflag"
 )
 
-var (
-	id      string
-	version string
-)
-
 func main() {
-	id, _ = os.Hostname()
-
 	opts := lynx.NewOptions(lynx.WithSetFlags(func(f *pflag.FlagSet) {
 		f.String("addr", ":8080", "http listen address")
 		f.StringP("loglevel", "l", "debug", "log level")

@@ -41,6 +41,30 @@ type Lynx interface {
 	Hooks
 }
 
+type nameCtx struct{}
+
+var keyName = nameCtx{}
+
+type idCtx struct{}
+
+var keyId = idCtx{}
+
+type versionCtx struct{}
+
+var keyVersion = versionCtx{}
+
+func IDFromContext(ctx context.Context) string {
+	return ctx.Value(keyId).(string)
+}
+
+func VersionFromContext(ctx context.Context) string {
+	return ctx.Value(keyVersion).(string)
+}
+
+func NameFromContext(ctx context.Context) string {
+	return ctx.Value(keyName).(string)
+}
+
 type lynx struct {
 	*hooks
 	o              *Options
@@ -73,7 +97,27 @@ func (app *lynx) Close() {
 }
 
 func (app *lynx) init() error {
-	return app.loadConfig()
+	if err := app.loadConfig(); err != nil {
+		return err
+	}
+
+	name := app.c.GetString("name")
+	if name == "" {
+		name = app.o.Name
+	}
+	app.ctx = context.WithValue(app.ctx, keyName, name)
+	id := app.c.GetString("id")
+	if id == "" {
+		id = app.o.ID
+	}
+	app.ctx = context.WithValue(app.ctx, keyId, id)
+	version := app.c.GetString("version")
+	if version == "" {
+		version = app.o.Version
+	}
+	app.ctx = context.WithValue(app.ctx, keyVersion, version)
+
+	return nil
 }
 
 func (app *lynx) loadConfig() error {

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"encoding/json"
 	gohttp "net/http"
 	"time"
 
@@ -30,9 +30,8 @@ func main() {
 		if err := app.Config().Unmarshal(config); err != nil {
 			return err
 		}
-		opt := app.Option()
+
 		logger := app.Logger()
-		logger.Info("parsed option", "option", opt)
 		logger.Info("parsed config", "config", config)
 
 		app.OnStart(func(ctx context.Context) error {
@@ -46,7 +45,14 @@ func main() {
 		})
 		router := http.NewRouter()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
-			_, _ = rw.Write([]byte("hello"))
+			name := lynx.NameFromContext(app.Context())
+			id := lynx.IDFromContext(app.Context())
+			out, _ := json.Marshal(map[string]any{
+				"hello": "world",
+				"from":  name,
+				"id":    id,
+			})
+			_, _ = rw.Write(out)
 		})
 
 		addr := app.Config().GetString("addr")
@@ -61,8 +67,5 @@ func main() {
 
 		return nil
 	})
-	err := app.RunE()
-	if err != nil {
-		log.Fatal(err)
-	}
+	app.Run()
 }
