@@ -25,7 +25,7 @@ func New(
 	}
 }
 
-func (b *Bootstrap) Wire(fl lynx.Lynx) error {
+func (b *Bootstrap) Build(fl lynx.Lynx) error {
 	fl.OnStart(b.StartHooks...)
 	fl.OnStop(b.StopHooks...)
 	if err := fl.Hook(b.Components...); err != nil {

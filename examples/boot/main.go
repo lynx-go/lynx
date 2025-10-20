@@ -36,7 +36,7 @@ func main() {
 			cleanup()
 			return nil
 		})
-		return boot.Wire(app)
+		return boot.Build(app)
 	})
 	app.Run()
 }
