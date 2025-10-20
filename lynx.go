@@ -6,41 +6,44 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/oklog/run"
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	"gocloud.dev/server/health"
 )
 
+type ConfigLoaderFunc func(f *pflag.FlagSet, v *viper.Viper) error
+
 type Lynx interface {
-	Init() error
 	Close()
-	Config() Configurer
+	Config() *viper.Viper
 	Option() *Options
 	Context() context.Context
 	// CLI 注册启动的命令，用于 CLI 模式
 	CLI(cmd CommandFunc) error
-	// Inject 加载组件，但只有当应用启动后才会执行 Start
-	Inject(components ...Component) error
-	InjectFactory(factories ...ComponentFactory) error
+	// Hook 加载组件，但只有当应用启动后才会执行 Start
+	Hook(components ...Component) error
+	HookFactory(factories ...ComponentFactory) error
 	HealthCheckFunc() HealthCheckFunc
 	// Run 启用 App
 	Run() error
-	Hooks() Hooks
 	SetLogger(logger *slog.Logger)
 	Logger(kwargs ...any) *slog.Logger
+	Hooks
 }
 
 type lynx struct {
+	*hooks
+	o              *Options
+	f              *pflag.FlagSet
+	c              *viper.Viper
 	ctx            context.Context
 	cancelCtx      context.CancelFunc
-	o              Options
 	runG           *run.Group
-	hooks          *hooks
 	logger         *slog.Logger
-	c              Configurer
 	healthCheckers []health.Checker
 }
 
@@ -56,44 +59,45 @@ func (app *lynx) HealthCheckFunc() HealthCheckFunc {
 }
 
 func (app *lynx) CLI(cmd CommandFunc) error {
-	return app.Inject(NewCommand(cmd))
+	return app.Hook(NewCommand(cmd))
 }
 
 func (app *lynx) Close() {
 	app.cancelCtx()
 }
 
-func (app *lynx) Init() error {
-	app.initConfigurer()
-	app.initLogger()
+func (app *lynx) init() error {
+	return app.loadConfig()
+}
+
+func (app *lynx) loadConfig() error {
+	if fn := app.o.SetFlags; fn != nil {
+		fn(app.f)
+	}
+	if err := app.f.Parse(os.Args[1:]); err != nil {
+		log.Fatal(err)
+	}
+
+	if c, _ := app.f.GetString("config"); c != "" {
+		app.c.SetConfigFile(c)
+	}
+	if cd, _ := app.f.GetString("config_dir"); cd != "" {
+		app.c.AddConfigPath(cd)
+	}
+	if t, _ := app.f.GetString("config_type"); t != "" {
+		app.c.SetConfigType(t)
+	}
+	if err := app.c.ReadInConfig(); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := app.c.BindPFlags(app.f); err != nil {
+		log.Fatal(err)
+	}
 	return nil
 }
 
-func (app *lynx) initLogger() {
-	app.logger = slog.Default()
-}
-
-func (app *lynx) initConfigurer() {
-	configDir := app.o.ConfigDir
-	config := app.o.Config
-	configType := "yaml"
-	if app.o.ConfigType != "" {
-		configType = app.o.ConfigType
-	}
-	if configDir != "" {
-
-		configDirs := strings.Split(configDir, ",")
-		app.c = newConfigFromDir(configDirs, configType)
-	} else if config != "" {
-		app.c = newConfigFromFile(config)
-	} else {
-		app.c = newConfigFromDir([]string{"./configs"}, configType)
-	}
-
-	app.c.Merge(app.o.PropertiesAsMap())
-}
-
-func (app *lynx) InjectFactory(producers ...ComponentFactory) error {
+func (app *lynx) HookFactory(producers ...ComponentFactory) error {
 	for _, producer := range producers {
 		produce := producer.Component
 		options := producer.Option()
@@ -103,14 +107,14 @@ func (app *lynx) InjectFactory(producers ...ComponentFactory) error {
 			comp := produce()
 			components = append(components, comp)
 		}
-		if err := app.Inject(components...); err != nil {
+		if err := app.Hook(components...); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (app *lynx) Config() Configurer {
+func (app *lynx) Config() *viper.Viper {
 	return app.c
 }
 
@@ -123,10 +127,10 @@ func (app *lynx) Context() context.Context {
 }
 
 func (app *lynx) Option() *Options {
-	return &app.o
+	return app.o
 }
 
-func (app *lynx) Inject(components ...Component) error {
+func (app *lynx) Hook(components ...Component) error {
 	for _, comp := range components {
 		ctx, cancel := context.WithCancel(context.Background())
 		if err := comp.Init(app); err != nil {
@@ -196,18 +200,21 @@ func (app *lynx) Hooks() Hooks {
 	return app.hooks
 }
 
-func newLynx(o Options) Lynx {
+func newLynx(o *Options) Lynx {
 	o.EnsureDefaults()
 	app := &lynx{
 		o:    o,
+		c:    viper.New(),
+		f:    pflag.CommandLine,
 		runG: &run.Group{},
 		hooks: &hooks{
 			onStarts: []HookFunc{},
 			onStops:  []HookFunc{},
 		},
+		logger: slog.Default(),
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
-	if err := app.Init(); err != nil {
+	if err := app.init(); err != nil {
 		log.Fatal(err)
 	}
 	return app

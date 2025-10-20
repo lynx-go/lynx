@@ -12,6 +12,6 @@ import (
 	"github.com/lynx-go/lynx/bootstrap"
 )
 
-func wireBootstrap(ft lynx.Lynx, o *lynx.Options, c lynx.Configurer, slogger *slog.Logger) (*bootstrap.Bootstrap, func(), error) {
+func wireBootstrap(app lynx.Lynx, slogger *slog.Logger) (*bootstrap.Bootstrap, func(), error) {
 	panic(wire.Build(ProviderSet))
 }

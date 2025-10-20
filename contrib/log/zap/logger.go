@@ -12,14 +12,12 @@ func NewLogger(app lynx.Lynx, logLevel string) *slog.Logger {
 	level := slog.LevelDebug
 	atomicLevel := zap.NewAtomicLevel()
 	if logLevel == "" {
-		logLevel = app.Option().LogLevel
+		logLevel = "debug"
 	}
 
 	zapLevel := zap.DebugLevel
-	if logLevel != "" {
-		_ = level.UnmarshalText([]byte(logLevel))
-		_ = zapLevel.UnmarshalText([]byte(logLevel))
-	}
+	_ = level.UnmarshalText([]byte(logLevel))
+	_ = zapLevel.UnmarshalText([]byte(logLevel))
 	atomicLevel.SetLevel(zapLevel)
 
 	zapConfig := zap.NewProductionConfig()

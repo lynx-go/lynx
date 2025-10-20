@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 )
 
 type Config struct {
@@ -13,10 +15,21 @@ type Config struct {
 }
 
 func main() {
-	op := lynx.ParseFlags()
-	op.Name = "cli-example"
-	op.Version = "v0.0.1"
-	app := lynx.New(op, func(ctx context.Context, app lynx.Lynx) error {
+	opts := lynx.NewOptions(
+		lynx.WithName("cli-example"),
+		lynx.WithSetFlags(func(fs *pflag.FlagSet) {
+			fs.StringP("config", "c", "./configs", "config file path")
+			fs.StringP("loglevel", "l", "debug", "log level")
+		}),
+		lynx.WithLoadConfig(func(c *viper.Viper) error {
+			c.SetEnvPrefix("LYNX")
+			c.AutomaticEnv()
+			return nil
+		}),
+	)
+
+	app := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+
 		config := &Config{}
 		if err := app.Config().Unmarshal(config); err != nil {
 			return err
@@ -27,12 +40,12 @@ func main() {
 		logger.Info("parsed option", "option", opt.String())
 		logger.Info("parsed config", "config", config)
 
-		app.Hooks().OnStart(func(ctx context.Context) error {
+		app.OnStart(func(ctx context.Context) error {
 			app.Logger().Info("on start")
 			return nil
 		})
 
-		app.Hooks().OnStop(func(ctx context.Context) error {
+		app.OnStop(func(ctx context.Context) error {
 			app.Logger().Info("on stop")
 			return nil
 		})

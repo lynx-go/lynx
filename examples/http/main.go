@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/contrib/log/zap"
 	"github.com/lynx-go/lynx/server/http"
+	"github.com/spf13/pflag"
 )
 
 type Config struct {
@@ -15,10 +17,15 @@ type Config struct {
 }
 
 func main() {
-	opt := lynx.ParseFlags()
-	opt.Name = "http-example"
-	opt.Version = "v0.0.1"
-	app := lynx.New(opt, func(ctx context.Context, app lynx.Lynx) error {
+	opts := lynx.NewOptions(lynx.WithSetFlags(func(f *pflag.FlagSet) {
+		f.StringP("config", "c", "./configs", "config file path")
+		f.String("addr", ":8080", "http listen address")
+		f.StringP("loglevel", "l", "debug", "log level")
+	}))
+
+	app := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+		app.SetLogger(zap.NewLogger(app, app.Config().GetString("loglevel")))
+
 		config := &Config{}
 		if err := app.Config().Unmarshal(config); err != nil {
 			return err
@@ -28,12 +35,12 @@ func main() {
 		logger.Info("parsed option", "option", opt)
 		logger.Info("parsed config", "config", config)
 
-		app.Hooks().OnStart(func(ctx context.Context) error {
+		app.OnStart(func(ctx context.Context) error {
 			app.Logger().Info("on start")
 			return nil
 		})
 
-		app.Hooks().OnStop(func(ctx context.Context) error {
+		app.OnStop(func(ctx context.Context) error {
 			app.Logger().Info("on stop")
 			return nil
 		})
@@ -42,11 +49,12 @@ func main() {
 			_, _ = rw.Write([]byte("hello"))
 		})
 
-		if err := app.Inject(http.NewServer(":9090", router, app.HealthCheckFunc(), app.Logger("logger", "http-requestlog"))); err != nil {
+		addr := app.Config().GetString("addr")
+		if err := app.Hook(http.NewServer(addr, router, app.HealthCheckFunc(), app.Logger("logger", "http-requestlog"))); err != nil {
 			return err
 		}
 
-		app.Hooks().OnStart(func(ctx context.Context) error {
+		app.OnStart(func(ctx context.Context) error {
 			time.Sleep(1 * time.Second)
 			return nil
 		})

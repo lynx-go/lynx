@@ -10,6 +10,7 @@ import (
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/log/zap"
 	"github.com/lynx-go/lynx/server/http"
+	"github.com/spf13/pflag"
 )
 
 var (
@@ -20,17 +21,18 @@ var (
 func main() {
 	id, _ = os.Hostname()
 
-	op := lynx.ParseFlags()
-	op.ID = id
-	op.Version = version
-	op.Name = "fleet"
-	app := lynx.New(op, func(ctx context.Context, app lynx.Lynx) error {
-		app.SetLogger(zap.NewLogger(app, app.Option().LogLevel))
-		boot, cleanup, err := wireBootstrap(app, app.Option(), app.Config(), app.Logger())
+	opts := lynx.NewOptions(lynx.WithSetFlags(func(f *pflag.FlagSet) {
+		f.String("addr", ":8080", "http listen address")
+		f.StringP("loglevel", "l", "debug", "log level")
+	}))
+
+	app := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+		app.SetLogger(zap.NewLogger(app, app.Config().GetString("loglevel")))
+		boot, cleanup, err := wireBootstrap(app, app.Logger())
 		if err != nil {
 			log.Fatal(err)
 		}
-		app.Hooks().OnStop(func(ctx context.Context) error {
+		app.OnStop(func(ctx context.Context) error {
 			cleanup()
 			return nil
 		})

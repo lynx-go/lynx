@@ -2,7 +2,6 @@ package lynx
 
 import (
 	"context"
-	"os"
 )
 
 type SetupFunc func(ctx context.Context, app Lynx) error
@@ -12,10 +11,7 @@ type App struct {
 	lynx  Lynx
 }
 
-func New(o Options, setup SetupFunc) *App {
-	if o.ID == "" {
-		o.ID, _ = os.Hostname()
-	}
+func New(o *Options, setup SetupFunc) *App {
 	app := newLynx(o)
 	return &App{
 		setup: setup,

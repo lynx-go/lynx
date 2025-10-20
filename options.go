@@ -2,23 +2,18 @@ package lynx
 
 import (
 	"encoding/json"
-	"log"
 	"os"
-	"strings"
 
-	"github.com/AdamSLevy/flagbind"
 	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 )
 
 type Options struct {
 	ID         string `json:"id" flag:"id;;Server ID"`
-	ConfigDir  string `json:"config_dir" flag:"config-dir;;config path, eg:--config-dir ./configs"`
-	ConfigType string `json:"config_type" flag:"config-type;yaml;config file type, eg:--config-type yaml"`
-	Config     string `json:"config" flag:"config;config file, eg: --config ./configs/config.yaml"`
-	LogLevel   string `json:"log_level" flag:"log-level;debug;default log level, eg:--log-level debug"`
-	Props      string `json:"props" flag:"props;;extern args, eg: --props a=1,b=2"`
-	Version    string `json:"version"`
 	Name       string `json:"name" flag:"name;;service name, eg: --name lynx_app"`
+	Version    string `json:"version"`
+	SetFlags   func(f *pflag.FlagSet)
+	LoadConfig func(c *viper.Viper) error
 }
 
 func (o *Options) String() string {
@@ -36,29 +31,45 @@ func (o *Options) EnsureDefaults() {
 	}
 }
 
-func (o *Options) PropertiesAsMap() map[string]any {
-	properties := map[string]any{}
-	args := strings.Split(o.Props, ",")
-	for _, s := range args {
-		kv := strings.Split(s, "=")
-		if len(kv) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(kv[0])
-		value := strings.TrimSpace(kv[1])
-		properties[key] = value
+type Option func(*Options)
+
+func WithID(id string) Option {
+	return func(o *Options) {
+		o.ID = id
 	}
-	return properties
 }
 
-func ParseFlags() Options {
-	fs := pflag.NewFlagSet("", pflag.ExitOnError)
-	option := Options{}
-	if err := flagbind.Bind(fs, &option); err != nil {
-		log.Fatalln(err)
+func WithName(name string) Option {
+	return func(o *Options) {
+		o.Name = name
 	}
-	if err := fs.Parse(os.Args[1:]); err != nil {
-		log.Fatal(err)
+}
+
+func WithVersion(v string) Option {
+	return func(o *Options) {
+		o.Version = v
 	}
-	return option
+}
+
+func WithSetFlags(f func(f *pflag.FlagSet)) Option {
+	return func(o *Options) {
+		o.SetFlags = f
+	}
+}
+
+func WithLoadConfig(f func(c *viper.Viper) error) Option {
+	return func(o *Options) {
+		o.LoadConfig = f
+	}
+}
+
+func NewOptions(opts ...Option) *Options {
+	id, _ := os.Hostname()
+	op := &Options{
+		ID: id,
+	}
+	for _, o := range opts {
+		o(op)
+	}
+	return op
 }
