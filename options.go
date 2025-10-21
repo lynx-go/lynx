@@ -3,17 +3,15 @@ package lynx
 import (
 	"encoding/json"
 	"os"
-
-	"github.com/spf13/pflag"
-	"github.com/spf13/viper"
 )
 
 type Options struct {
-	ID         string `json:"id" flag:"id;;Server ID"`
-	Name       string `json:"name" flag:"name;;service name, eg: --name lynx_app"`
-	Version    string `json:"version"`
-	SetFlags   func(f *pflag.FlagSet)
-	LoadConfig func(c *viper.Viper) error
+	ID                    string         `json:"id"`
+	Name                  string         `json:"name"`
+	Version               string         `json:"version"`
+	UseDefaultConfigFlags bool           `json:"use_default_config_flags"`
+	SetFlagsFunc          SetFlagsFunc   `json:"-"`
+	BindConfigFunc        BindConfigFunc `json:"-"`
 }
 
 func (o *Options) String() string {
@@ -51,15 +49,22 @@ func WithVersion(v string) Option {
 	}
 }
 
-func WithSetFlags(f func(f *pflag.FlagSet)) Option {
+func WithSetFlags(f SetFlagsFunc) Option {
 	return func(o *Options) {
-		o.SetFlags = f
+		o.SetFlagsFunc = f
 	}
 }
 
-func WithLoadConfig(f func(c *viper.Viper) error) Option {
+func WithUseDefaultConfigFlagsFunc() Option {
 	return func(o *Options) {
-		o.LoadConfig = f
+		o.BindConfigFunc = DefaultBindConfigFunc
+		o.SetFlagsFunc = DefaultSetFlagsFunc
+	}
+}
+
+func WithBindConfig(f BindConfigFunc) Option {
+	return func(o *Options) {
+		o.BindConfigFunc = f
 	}
 }
 

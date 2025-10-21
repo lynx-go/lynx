@@ -15,7 +15,8 @@ import (
 	"gocloud.dev/server/health"
 )
 
-type ConfigLoaderFunc func(f *pflag.FlagSet, v *viper.Viper) error
+type BindConfigFunc func(f *pflag.FlagSet, v *viper.Viper) error
+type SetFlagsFunc func(f *pflag.FlagSet)
 
 type Lynx interface {
 	// Close 关闭应用实例
@@ -120,23 +121,40 @@ func (app *lynx) init() error {
 	return nil
 }
 
+func DefaultSetFlagsFunc(f *pflag.FlagSet) {
+	f.StringP("config", "c", "./config.yaml", "config file path, default is ./configs")
+	f.String("config_type", "yaml", "config file type, default yaml")
+	f.String("config_dir", "", "config file path, default is ./configs")
+	f.String("log_level", "info", "log level, default info")
+}
+
+func DefaultBindConfigFunc(f *pflag.FlagSet, v *viper.Viper) error {
+	if c, _ := f.GetString("config"); c != "" {
+		v.SetConfigFile(c)
+	}
+	if cd, _ := f.GetString("config_dir"); cd != "" {
+		v.AddConfigPath(cd)
+	}
+	if t, _ := f.GetString("config_type"); t != "" {
+		v.SetConfigType(t)
+	}
+	return nil
+}
+
 func (app *lynx) loadConfig() error {
-	if fn := app.o.SetFlags; fn != nil {
+	if fn := app.o.SetFlagsFunc; fn != nil {
 		fn(app.f)
 	}
 	if err := app.f.Parse(os.Args[1:]); err != nil {
 		log.Fatal(err)
 	}
 
-	if c, _ := app.f.GetString("config"); c != "" {
-		app.c.SetConfigFile(c)
+	if fn := app.o.BindConfigFunc; fn != nil {
+		if err := fn(app.f, app.c); err != nil {
+			return err
+		}
 	}
-	if cd, _ := app.f.GetString("config_dir"); cd != "" {
-		app.c.AddConfigPath(cd)
-	}
-	if t, _ := app.f.GetString("config_type"); t != "" {
-		app.c.SetConfigType(t)
-	}
+
 	if err := app.c.ReadInConfig(); err != nil {
 		log.Fatal(err)
 	}

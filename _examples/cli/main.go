@@ -6,8 +6,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
-	"github.com/spf13/pflag"
-	"github.com/spf13/viper"
+	"github.com/lynx-go/lynx/contrib/log/zap"
 )
 
 type Config struct {
@@ -17,27 +16,18 @@ type Config struct {
 func main() {
 	opts := lynx.NewOptions(
 		lynx.WithName("cli-example"),
-		lynx.WithSetFlags(func(fs *pflag.FlagSet) {
-			fs.StringP("config", "c", "./configs", "config file path")
-			fs.StringP("loglevel", "l", "debug", "log level")
-		}),
-		lynx.WithLoadConfig(func(c *viper.Viper) error {
-			c.SetEnvPrefix("LYNX")
-			c.AutomaticEnv()
-			return nil
-		}),
+		lynx.WithUseDefaultConfigFlagsFunc(),
 	)
 
 	app := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+		app.SetLogger(zap.NewLogger(app))
 
 		config := &Config{}
 		if err := app.Config().Unmarshal(config); err != nil {
 			return err
 		}
 
-		opt := app.Option()
 		logger := app.Logger()
-		logger.Info("parsed option", "option", opt.String())
 		logger.Info("parsed config", "config", config)
 
 		app.OnStart(func(ctx context.Context) error {
