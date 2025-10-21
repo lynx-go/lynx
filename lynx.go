@@ -122,9 +122,9 @@ func (app *lynx) init() error {
 }
 
 func DefaultSetFlagsFunc(f *pflag.FlagSet) {
-	f.StringP("config", "c", "./config.yaml", "config file path, default is ./configs")
+	f.StringP("config", "c", "", "config file path")
 	f.String("config_type", "yaml", "config file type, default yaml")
-	f.String("config_dir", "", "config file path, default is ./configs")
+	f.String("config_dir", "", "config file path")
 	f.String("log_level", "info", "log level, default info")
 }
 
