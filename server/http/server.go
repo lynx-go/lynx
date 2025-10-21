@@ -18,7 +18,7 @@ func NewServer(addr string, h http.Handler, healthCheck lynx.HealthCheckFunc, lo
 		addr:        addr,
 		handler:     h,
 		healthCheck: healthCheck,
-		logger:      logger,
+		logger:      logger.With("server", "http"),
 	}
 }
 
@@ -35,7 +35,6 @@ func (s *Server) Name() string {
 }
 
 func (s *Server) Init(app lynx.Lynx) error {
-	s.logger = app.Logger("component", s.Name())
 	return nil
 }
 
