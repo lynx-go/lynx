@@ -37,10 +37,9 @@ func NewLogger(app lynx.Lynx) *slog.Logger {
 	return logger
 }
 
-func NewZapLogger(app lynx.Lynx, zlogger *zap.Logger) *slog.Logger {
+func NewZapLogger(zlogger *zap.Logger, logLevel string) *slog.Logger {
 	level := slog.LevelDebug
 	atomicLevel := zap.NewAtomicLevel()
-	logLevel := getLevel(app)
 
 	zapLevel := zap.DebugLevel
 	_ = level.UnmarshalText([]byte(logLevel))
