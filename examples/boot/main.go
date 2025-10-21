@@ -19,7 +19,7 @@ func main() {
 	}))
 
 	app := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
-		app.SetLogger(zap.NewLogger(app, app.Config().GetString("loglevel")))
+		app.SetLogger(zap.NewLogger(app))
 		boot, cleanup, err := wireBootstrap(app, app.Logger())
 		if err != nil {
 			log.Fatal(err)

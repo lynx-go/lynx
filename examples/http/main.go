@@ -24,7 +24,7 @@ func main() {
 	}))
 
 	app := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
-		app.SetLogger(zap.NewLogger(app, app.Config().GetString("loglevel")))
+		app.SetLogger(zap.NewLogger(app))
 
 		config := &Config{}
 		if err := app.Config().Unmarshal(config); err != nil {
