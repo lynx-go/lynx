@@ -88,14 +88,15 @@ func (s *Server) Init(app lynx.Lynx) error {
 }
 
 func (s *Server) Start(ctx context.Context) error {
-	s.logger.Info("Starting HTTP server, listening on " + s.addr)
+	s.logger.Info("Starting HTTP server, listening on " + s.o.Addr)
 	var healthChecks []health.Checker
 	if s.o.HealthCheck != nil {
 		healthChecks = s.o.HealthCheck()
 	}
 	opts := &server.Options{
 		HealthChecks: healthChecks,
-		Driver:       server.NewDefaultDriver(),
+		//TraceTextMapPropagator: sdserver.NewTextMapPropagator(),
+		Driver: server.NewDefaultDriver(),
 	}
 	if s.o.RequestLog {
 		opts.RequestLogger = NewRequestLogger(s.logger, func(err error) {
