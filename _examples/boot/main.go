@@ -40,5 +40,5 @@ func NewHttpServer(app lynx.Lynx) *http.Server {
 	})
 	addr := app.Config().GetString("addr")
 
-	return http.NewServer(addr, router, app.HealthCheckFunc(), app.Logger("logger", "http-requestlog"))
+	return http.NewServer(router, http.WithAddr(addr), http.WithHealthCheck(app.HealthCheckFunc()), http.WithLogger(app.Logger("logger", "http-requestlog")))
 }

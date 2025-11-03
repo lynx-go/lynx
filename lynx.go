@@ -33,7 +33,7 @@ type Lynx interface {
 	HookFactory(factories ...ComponentFactory) error
 	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
 	HealthCheckFunc() HealthCheckFunc
-	// Run 启用 App
+	// Run 启用 CLI
 	Run() error
 	// SetLogger 设置 logger
 	SetLogger(logger *slog.Logger)
