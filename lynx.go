@@ -33,7 +33,7 @@ type Lynx interface {
 	HookFactory(factories ...ComponentFactory) error
 	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
 	HealthCheckFunc() HealthCheckFunc
-	// Run 启用 App
+	// Run 启用 CLI
 	Run() error
 	// SetLogger 设置 logger
 	SetLogger(logger *slog.Logger)
@@ -122,20 +122,20 @@ func (app *lynx) init() error {
 }
 
 func DefaultSetFlagsFunc(f *pflag.FlagSet) {
-	f.StringP("config", "c", "./config.yaml", "config file path, default is ./configs")
-	f.String("config_type", "yaml", "config file type, default yaml")
-	f.String("config_dir", "", "config file path, default is ./configs")
-	f.String("log_level", "info", "log level, default info")
+	f.StringP("config", "c", "", "config file path")
+	f.String("config-type", "yaml", "config file type, default yaml")
+	f.String("config-dir", "", "config file path")
+	f.String("log-level", "info", "log level, default info")
 }
 
 func DefaultBindConfigFunc(f *pflag.FlagSet, v *viper.Viper) error {
 	if c, _ := f.GetString("config"); c != "" {
 		v.SetConfigFile(c)
 	}
-	if cd, _ := f.GetString("config_dir"); cd != "" {
+	if cd, _ := f.GetString("config-dir"); cd != "" {
 		v.AddConfigPath(cd)
 	}
-	if t, _ := f.GetString("config_type"); t != "" {
+	if t, _ := f.GetString("config-type"); t != "" {
 		v.SetConfigType(t)
 	}
 	return nil

@@ -71,7 +71,11 @@ func main() {
 		})
 
 		addr := app.Config().GetString("addr")
-		if err := app.Hook(http.NewServer(addr, router, app.HealthCheckFunc(), app.Logger("logger", "http-requestlog"))); err != nil {
+		if err := app.Hook(http.NewServer(router,
+			http.WithAddr(addr),
+			http.WithHealthCheck(app.HealthCheckFunc()),
+			http.WithLogger(app.Logger("logger", "http-requestlog")),
+		)); err != nil {
 			return err
 		}
 

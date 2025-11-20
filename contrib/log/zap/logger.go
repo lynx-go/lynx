@@ -36,7 +36,7 @@ func NewLogger(app lynx.Lynx) *slog.Logger {
 	zapLogger, _ := zapConfig.Build()
 	slog.SetLogLoggerLevel(level)
 	logger := slog.New(slogzap.Option{Level: level, Logger: zapLogger}.NewZapHandler())
-	return logger
+	return logger.With("service_id", lynx.IDFromContext(app.Context()), "service_name", lynx.NameFromContext(app.Context()), "version", lynx.VersionFromContext(app.Context()))
 }
 
 func NewZapLogger(zlogger *zap.Logger, logLevel string) *slog.Logger {

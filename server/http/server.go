@@ -4,30 +4,79 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/lynx-go/lynx"
 	"gocloud.dev/server"
+	"gocloud.dev/server/health"
 )
 
 func NewRouter() *http.ServeMux {
 	return http.NewServeMux()
 }
 
-func NewServer(addr string, h http.Handler, healthCheck lynx.HealthCheckFunc, logger *slog.Logger) *Server {
+type Options struct {
+	Addr        string
+	Timeout     time.Duration
+	HealthCheck lynx.HealthCheckFunc
+	Logger      *slog.Logger
+	RequestLog  bool
+}
+
+type Option func(*Options)
+
+func WithAddr(addr string) Option {
+	return func(o *Options) {
+		o.Addr = addr
+	}
+}
+
+func WithTimeout(timeout time.Duration) Option {
+	return func(o *Options) {
+		o.Timeout = timeout
+	}
+}
+
+func WithHealthCheck(hc lynx.HealthCheckFunc) Option {
+	return func(o *Options) {
+		o.HealthCheck = hc
+	}
+}
+
+func WithLogger(l *slog.Logger) Option {
+	return func(o *Options) {
+		o.Logger = l
+	}
+}
+
+func WithRequestLog(requestLog bool) Option {
+	return func(o *Options) {
+		o.RequestLog = requestLog
+	}
+}
+
+func NewServer(handler http.Handler, opts ...Option) *Server {
+	options := Options{
+		Addr:    ":8080",
+		Timeout: time.Second * 60,
+		Logger:  slog.Default(),
+	}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	return &Server{
-		addr:        addr,
-		handler:     h,
-		healthCheck: healthCheck,
-		logger:      logger,
+		logger:  options.Logger,
+		o:       options,
+		handler: handler,
 	}
 }
 
 type Server struct {
 	*server.Server
-	addr        string
-	logger      *slog.Logger
-	handler     http.Handler
-	healthCheck lynx.HealthCheckFunc
+	logger  *slog.Logger
+	o       Options
+	handler http.Handler
 }
 
 func (s *Server) Name() string {
@@ -35,20 +84,29 @@ func (s *Server) Name() string {
 }
 
 func (s *Server) Init(app lynx.Lynx) error {
-	s.logger = app.Logger("component", s.Name())
 	return nil
 }
 
 func (s *Server) Start(ctx context.Context) error {
-	s.logger.Info("Starting HTTP server, listening on " + s.addr)
-	hs := server.New(s.handler, &server.Options{
-		HealthChecks: s.healthCheck(),
-		RequestLogger: NewRequestLogger(s.logger, func(err error) {
-		}),
+	s.logger.Info("Starting HTTP server, listening on " + s.o.Addr)
+	var healthChecks []health.Checker
+	if s.o.HealthCheck != nil {
+		healthChecks = s.o.HealthCheck()
+	}
+	opts := &server.Options{
+		HealthChecks: healthChecks,
+		//TraceTextMapPropagator: sdserver.NewTextMapPropagator(),
 		Driver: server.NewDefaultDriver(),
-	})
+	}
+	if s.o.RequestLog {
+		opts.RequestLogger = NewRequestLogger(s.logger, func(err error) {
+			s.logger.Error("Failed to log HTTP request", "error", err)
+		})
+	}
+
+	hs := server.New(s.handler, opts)
 	s.Server = hs
-	return s.Server.ListenAndServe(s.addr)
+	return s.Server.ListenAndServe(s.o.Addr)
 }
 
 func (s *Server) Stop(ctx context.Context) {
