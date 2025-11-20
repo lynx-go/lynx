@@ -6,6 +6,7 @@ import (
 	"github.com/lynx-go/lynx"
 	slogzap "github.com/samber/slog-zap/v2"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func getLevel(app lynx.Lynx) string {
@@ -31,6 +32,7 @@ func NewLogger(app lynx.Lynx) *slog.Logger {
 
 	zapConfig := zap.NewProductionConfig()
 	zapConfig.Level = atomicLevel
+	zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	zapLogger, _ := zapConfig.Build()
 	slog.SetLogLoggerLevel(level)
 	logger := slog.New(slogzap.Option{Level: level, Logger: zapLogger}.NewZapHandler())
