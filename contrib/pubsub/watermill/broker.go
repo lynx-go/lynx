@@ -95,10 +95,7 @@ func (b *Broker) Init(app lynx.Lynx) error {
 }
 
 func (b *Broker) Start(ctx context.Context) error {
-	if err := b.router.Run(ctx); err != nil {
-		return err
-	}
-	return nil
+	return b.router.Run(ctx)
 }
 
 func (b *Broker) Stop(ctx context.Context) {
@@ -120,9 +117,13 @@ func (b *Broker) Publish(ctx context.Context, eventName string, data pubsub.RawE
 		opt(o)
 	}
 
-	var traceId string
-	if b.options.TraceIDFunc != nil {
-		traceId = b.options.TraceIDFunc(ctx)
+	var traceId = o.TraceID
+	if traceId != "" {
+		if b.options.TraceIDFunc != nil {
+			traceId = b.options.TraceIDFunc(ctx)
+		} else {
+			traceId = uuid.NewString()
+		}
 	}
 	topicName := eventName
 	if b.options.TopicNameFunc != nil {
@@ -148,7 +149,6 @@ func (b *Broker) Subscribe(eventName, handlerName string, h pubsub.HandlerFunc, 
 		opt(o)
 	}
 	handler := func(msg *message.Message) error {
-
 		traceId := cast.ToString(msg.Metadata[pubsub.TraceIDKey.String()])
 		ctx := pubsub.ContextWithTraceID(msg.Context(), traceId)
 		ctx = log.Context(ctx, log.FromContext(ctx), "x-trace-id", traceId)

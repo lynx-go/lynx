@@ -78,7 +78,9 @@ func WithAsync() SubscribeOption {
 }
 
 type PublishOptions struct {
-	MessageKey string `json:"message_key"`
+	TraceID    string            `json:"traceId"`
+	MessageKey string            `json:"message_key"`
+	Metadata   map[string]string `json:"metadata"`
 }
 
 type PublishOption func(*PublishOptions)
@@ -86,5 +88,26 @@ type PublishOption func(*PublishOptions)
 func WithMessageKey(key string) PublishOption {
 	return func(opts *PublishOptions) {
 		opts.MessageKey = key
+	}
+}
+
+func WithTraceID(traceID string) PublishOption {
+	return func(opts *PublishOptions) {
+		opts.TraceID = traceID
+	}
+}
+
+func WithMetadata(metadata map[string]string) PublishOption {
+	return func(opts *PublishOptions) {
+		opts.Metadata = metadata
+	}
+}
+
+func WithMetadataKV(key, value string) PublishOption {
+	return func(opts *PublishOptions) {
+		if opts.Metadata == nil {
+			opts.Metadata = map[string]string{}
+		}
+		opts.Metadata[key] = value
 	}
 }
