@@ -28,30 +28,38 @@ type Handler interface {
 }
 
 func TraceIDFromContext(ctx context.Context) string {
-	return ctx.Value(traceIDKey).(string)
+	return ctx.Value(TraceIDKey).(string)
 }
 
 func ContextWithTraceID(ctx context.Context, traceID string) context.Context {
-	return context.WithValue(ctx, traceIDKey, traceID)
+	return context.WithValue(ctx, TraceIDKey, traceID)
 }
 
 type msgKeyCtx struct {
 }
 
-var msgKeyKey = msgKeyCtx{}
+func (ctx msgKeyCtx) String() string {
+	return "x-message-key"
+}
+
+var MessageKeyKey = msgKeyCtx{}
 
 func ContextWithMessageKey(ctx context.Context, msgKey string) context.Context {
-	return context.WithValue(ctx, msgKeyKey, msgKey)
+	return context.WithValue(ctx, MessageKeyKey, msgKey)
 }
 
 func MessageKeyFromContext(ctx context.Context) string {
-	return ctx.Value(msgKeyKey).(string)
+	return ctx.Value(MessageKeyKey).(string)
 }
 
 type traceIDCtx struct {
 }
 
-var traceIDKey = traceIDCtx{}
+func (ctx traceIDCtx) String() string {
+	return "x-trace-id"
+}
+
+var TraceIDKey = traceIDCtx{}
 
 type AsyncHandler interface {
 	Async() bool
