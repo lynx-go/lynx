@@ -5,7 +5,10 @@ go 1.24.2
 toolchain go1.24.9
 
 require (
+	github.com/google/uuid v1.6.0
+	github.com/lynx-go/x v0.0.5
 	github.com/oklog/run v1.2.0
+	github.com/qiulin/sqldb-logger v0.0.2
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	gocloud.dev v0.43.0
