@@ -104,7 +104,7 @@ func WithMetadata(metadata map[string]string) PublishOption {
 	}
 }
 
-func WithMetadataKV(key, value string) PublishOption {
+func WithMetadataField(key, value string) PublishOption {
 	return func(opts *PublishOptions) {
 		if opts.Metadata == nil {
 			opts.Metadata = map[string]string{}
