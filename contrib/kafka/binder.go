@@ -102,7 +102,7 @@ func (b *Binder) Start(ctx context.Context) error {
 		producer := b.producers[k]
 		if err := b.broker.Subscribe(k, k, func(ctx context.Context, event pubsub.RawEvent) error {
 			msgKey := pubsub.MessageKeyFromContext(ctx)
-			traceId := pubsub.TraceIDFromContext(ctx)
+			traceId := pubsub.MessageIDFromContext(ctx)
 			return producer.Produce(ctx, NewBinaryMessage(event, WithMessageKey(msgKey), WithMessageHeader("x-trace-id", traceId)))
 		}); err != nil {
 			return err

@@ -9,6 +9,7 @@ import (
 type Broker interface {
 	lynx.ServerLike
 	PubSub
+	ID() string
 	IsRunning() bool
 }
 
@@ -27,12 +28,12 @@ type Handler interface {
 	HandlerFunc() HandlerFunc
 }
 
-func TraceIDFromContext(ctx context.Context) string {
-	return ctx.Value(TraceIDKey).(string)
+func MessageIDFromContext(ctx context.Context) string {
+	return ctx.Value(MessageIDKey).(string)
 }
 
-func ContextWithTraceID(ctx context.Context, traceID string) context.Context {
-	return context.WithValue(ctx, TraceIDKey, traceID)
+func ContextWithMessageID(ctx context.Context, msgId string) context.Context {
+	return context.WithValue(ctx, MessageIDKey, msgId)
 }
 
 type msgKeyCtx struct {
@@ -52,14 +53,14 @@ func MessageKeyFromContext(ctx context.Context) string {
 	return ctx.Value(MessageKeyKey).(string)
 }
 
-type traceIDCtx struct {
+type msgIdCtx struct {
 }
 
-func (ctx traceIDCtx) String() string {
-	return "x-trace-id"
+func (ctx msgIdCtx) String() string {
+	return "x-message-id"
 }
 
-var TraceIDKey = traceIDCtx{}
+var MessageIDKey = msgIdCtx{}
 
 type AsyncHandler interface {
 	Async() bool
@@ -78,7 +79,7 @@ func WithAsync() SubscribeOption {
 }
 
 type PublishOptions struct {
-	TraceID    string            `json:"traceId"`
+	MessageID  string            `json:"message_id"`
 	MessageKey string            `json:"message_key"`
 	Metadata   map[string]string `json:"metadata"`
 }
@@ -91,9 +92,9 @@ func WithMessageKey(key string) PublishOption {
 	}
 }
 
-func WithTraceID(traceID string) PublishOption {
+func WithMessageID(messageId string) PublishOption {
 	return func(opts *PublishOptions) {
-		opts.TraceID = traceID
+		opts.MessageID = messageId
 	}
 }
 

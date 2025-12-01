@@ -20,7 +20,6 @@ type Options struct {
 	Publisher     message.Publisher
 	Subscriber    message.Subscriber
 	TopicNameFunc TopicNameFunc
-	TraceIDKey    string
 	TraceIDFunc   TraceIDFunc
 }
 
@@ -42,6 +41,10 @@ type Broker struct {
 	publisher  message.Publisher
 	subscriber message.Subscriber
 	brokerId   string
+}
+
+func (b *Broker) ID() string {
+	return b.brokerId
 }
 
 func (b *Broker) CheckHealth() error {
@@ -116,12 +119,12 @@ func (b *Broker) Publish(ctx context.Context, eventName string, data pubsub.RawE
 		opt(o)
 	}
 
-	var traceId = o.TraceID
-	if traceId != "" {
+	var msgId = o.MessageID
+	if msgId == "" {
 		if b.options.TraceIDFunc != nil {
-			traceId = b.options.TraceIDFunc(ctx)
+			msgId = b.options.TraceIDFunc(ctx)
 		} else {
-			traceId = uuid.NewString()
+			msgId = uuid.NewString()
 		}
 	}
 	topicName := eventName
@@ -129,10 +132,10 @@ func (b *Broker) Publish(ctx context.Context, eventName string, data pubsub.RawE
 		topicName = b.options.TopicNameFunc(eventName)
 	}
 
-	msg := message.NewMessageWithContext(ctx, uuid.NewString(), message.Payload(data))
+	msg := message.NewMessageWithContext(ctx, msgId, message.Payload(data))
 	msg.Metadata.Set(pubsub.MessageKeyKey.String(), o.MessageKey)
-	if traceId != "" {
-		msg.Metadata.Set(pubsub.TraceIDKey.String(), traceId)
+	if msgId != "" {
+		msg.Metadata.Set(pubsub.MessageIDKey.String(), msgId)
 	}
 
 	return b.publisher.Publish(topicName, msg)
@@ -148,9 +151,9 @@ func (b *Broker) Subscribe(eventName, handlerName string, h pubsub.HandlerFunc, 
 		opt(o)
 	}
 	handler := func(msg *message.Message) error {
-		traceId := msg.Metadata[pubsub.TraceIDKey.String()]
-		ctx := pubsub.ContextWithTraceID(msg.Context(), traceId)
-		ctx = log.Context(ctx, log.FromContext(ctx), pubsub.TraceIDKey.String(), traceId)
+		msgId := msg.Metadata[pubsub.MessageIDKey.String()]
+		ctx := pubsub.ContextWithMessageID(msg.Context(), msgId)
+		ctx = log.Context(ctx, log.FromContext(ctx), pubsub.MessageIDKey.String(), msgId)
 
 		return h(ctx, pubsub.RawEvent(msg.Payload))
 	}
