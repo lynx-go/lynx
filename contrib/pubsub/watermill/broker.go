@@ -14,7 +14,6 @@ import (
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/lynx-go/x/log"
-	"github.com/spf13/cast"
 )
 
 type Options struct {
@@ -149,9 +148,9 @@ func (b *Broker) Subscribe(eventName, handlerName string, h pubsub.HandlerFunc, 
 		opt(o)
 	}
 	handler := func(msg *message.Message) error {
-		traceId := cast.ToString(msg.Metadata[pubsub.TraceIDKey.String()])
+		traceId := msg.Metadata[pubsub.TraceIDKey.String()]
 		ctx := pubsub.ContextWithTraceID(msg.Context(), traceId)
-		ctx = log.Context(ctx, log.FromContext(ctx), "x-trace-id", traceId)
+		ctx = log.Context(ctx, log.FromContext(ctx), pubsub.TraceIDKey.String(), traceId)
 
 		return h(ctx, pubsub.RawEvent(msg.Payload))
 	}
