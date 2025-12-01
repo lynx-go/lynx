@@ -1,4 +1,4 @@
-package watermill
+package pubsub
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
 	"github.com/google/uuid"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/lynx-go/x/log"
 )
 
@@ -26,15 +25,15 @@ type Options struct {
 type TopicNameFunc func(string) string
 type TraceIDFunc func(ctx context.Context) string
 
-func NewBroker(opts Options) *Broker {
-	return &Broker{
+func NewBroker(opts Options) Broker {
+	return &broker{
 		options:    &opts,
 		publisher:  opts.Publisher,
 		subscriber: opts.Subscriber,
 	}
 }
 
-type Broker struct {
+type broker struct {
 	options    *Options
 	app        lynx.Lynx
 	router     *message.Router
@@ -43,26 +42,26 @@ type Broker struct {
 	brokerId   string
 }
 
-func (b *Broker) ID() string {
+func (b *broker) ID() string {
 	return b.brokerId
 }
 
-func (b *Broker) CheckHealth() error {
+func (b *broker) CheckHealth() error {
 	if b.router.IsRunning() {
 		return nil
 	}
 	return errors.New("broker is not running")
 }
 
-func (b *Broker) IsRunning() bool {
+func (b *broker) IsRunning() bool {
 	return b.router.IsRunning()
 }
 
-func (b *Broker) Name() string {
+func (b *broker) Name() string {
 	return "pubsub-watermill"
 }
 
-func (b *Broker) Init(app lynx.Lynx) error {
+func (b *broker) Init(app lynx.Lynx) error {
 	b.app = app
 	slogger := b.app.Logger("category", "pubsub-watermill")
 	logger := watermill.NewSlogLogger(slogger)
@@ -96,11 +95,11 @@ func (b *Broker) Init(app lynx.Lynx) error {
 
 }
 
-func (b *Broker) Start(ctx context.Context) error {
+func (b *broker) Start(ctx context.Context) error {
 	return b.router.Run(ctx)
 }
 
-func (b *Broker) Stop(ctx context.Context) {
+func (b *broker) Stop(ctx context.Context) {
 	if err := b.publisher.Close(); err != nil {
 		log.ErrorContext(ctx, "error closing publisher", err)
 	}
@@ -112,9 +111,9 @@ func (b *Broker) Stop(ctx context.Context) {
 	}
 }
 
-func (b *Broker) Publish(ctx context.Context, eventName string, data pubsub.RawEvent, opts ...pubsub.PublishOption) error {
+func (b *broker) Publish(ctx context.Context, eventName string, data RawEvent, opts ...PublishOption) error {
 	ctx = context.WithoutCancel(ctx)
-	o := &pubsub.PublishOptions{}
+	o := &PublishOptions{}
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -133,29 +132,29 @@ func (b *Broker) Publish(ctx context.Context, eventName string, data pubsub.RawE
 	}
 
 	msg := message.NewMessageWithContext(ctx, msgId, message.Payload(data))
-	msg.Metadata.Set(pubsub.MessageKeyKey.String(), o.MessageKey)
+	msg.Metadata.Set(MessageKeyKey.String(), o.MessageKey)
 	if msgId != "" {
-		msg.Metadata.Set(pubsub.MessageIDKey.String(), msgId)
+		msg.Metadata.Set(MessageIDKey.String(), msgId)
 	}
 
 	return b.publisher.Publish(topicName, msg)
 }
 
-func (b *Broker) Subscribe(eventName, handlerName string, h pubsub.HandlerFunc, opts ...pubsub.SubscribeOption) error {
+func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ...SubscribeOption) error {
 	topicName := eventName
 	if b.options.TopicNameFunc != nil {
 		topicName = b.options.TopicNameFunc(eventName)
 	}
-	o := &pubsub.SubscribeOptions{}
+	o := &SubscribeOptions{}
 	for _, opt := range opts {
 		opt(o)
 	}
 	handler := func(msg *message.Message) error {
-		msgId := msg.Metadata[pubsub.MessageIDKey.String()]
-		ctx := pubsub.ContextWithMessageID(msg.Context(), msgId)
-		ctx = log.Context(ctx, log.FromContext(ctx), pubsub.MessageIDKey.String(), msgId)
+		msgId := msg.Metadata[MessageIDKey.String()]
+		ctx := ContextWithMessageID(msg.Context(), msgId)
+		ctx = log.Context(ctx, log.FromContext(ctx), MessageIDKey.String(), msgId)
 
-		return h(ctx, pubsub.RawEvent(msg.Payload))
+		return h(ctx, msg)
 	}
 	if o.Async {
 		handler = func(msg *message.Message) error {
@@ -169,5 +168,3 @@ func (b *Broker) Subscribe(eventName, handlerName string, h pubsub.HandlerFunc, 
 	}
 	return nil
 }
-
-var _ pubsub.Broker = new(Broker)

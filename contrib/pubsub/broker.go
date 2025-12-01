@@ -3,6 +3,7 @@ package pubsub
 import (
 	"context"
 
+	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
 )
 
@@ -20,7 +21,7 @@ type PubSub interface {
 
 type RawEvent []byte
 
-type HandlerFunc func(ctx context.Context, event RawEvent) error
+type HandlerFunc func(ctx context.Context, event *message.Message) error
 
 type Handler interface {
 	EventName() string
