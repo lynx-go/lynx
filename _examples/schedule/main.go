@@ -28,7 +28,7 @@ func main() {
 		}
 		mux := gohttp.NewServeMux()
 		hs := http.NewServer(mux, http.WithAddr(":8089"))
-		return app.Hook(lynx.WithComponent(scheduler, hs))
+		return app.Hook(lynx.Components(scheduler, hs))
 	})
 	cli.Run()
 }

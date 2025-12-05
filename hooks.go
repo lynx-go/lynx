@@ -11,25 +11,25 @@ type hookOptions struct {
 
 type HookOption func(*hookOptions)
 
-func WithOnStart(fns ...HookFunc) HookOption {
+func OnStart(fns ...HookFunc) HookOption {
 	return func(options *hookOptions) {
 		options.onStarts = append(options.onStarts, fns...)
 	}
 }
 
-func WithOnStop(fns ...HookFunc) HookOption {
+func OnStop(fns ...HookFunc) HookOption {
 	return func(options *hookOptions) {
 		options.onStops = append(options.onStops, fns...)
 	}
 }
 
-func WithComponent(components ...Component) HookOption {
+func Components(components ...Component) HookOption {
 	return func(options *hookOptions) {
 		options.components = append(options.components, components...)
 	}
 }
 
-func WithComponentBuilder(builders ...ComponentBuilder) HookOption {
+func ComponentBuilders(builders ...ComponentBuilder) HookOption {
 	return func(options *hookOptions) {
 		options.componentBuilders = append(options.componentBuilders, builders...)
 	}

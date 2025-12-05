@@ -24,7 +24,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if err := app.Hook(lynx.WithOnStart(func(ctx context.Context) error {
+		if err := app.Hook(lynx.OnStart(func(ctx context.Context) error {
 			cleanup()
 			return nil
 		})); err != nil {
