@@ -2,13 +2,14 @@ package lynx
 
 import (
 	"context"
-	"log"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/lynx-go/lynx/pkg/errors"
+	"github.com/lynx-go/x/log"
 	"github.com/oklog/run"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -162,9 +163,7 @@ func DefaultBindConfigFunc(f *pflag.FlagSet, v *viper.Viper) error {
 func (app *lynx) initConfig() error {
 	if fn := app.o.SetFlagsFunc; fn != nil {
 		fn(app.f)
-		if err := app.f.Parse(os.Args[1:]); err != nil {
-			log.Fatal(err)
-		}
+		errors.Panic(app.f.Parse(os.Args[1:]))
 	}
 
 	if fn := app.o.BindConfigFunc; fn != nil {
@@ -172,15 +171,11 @@ func (app *lynx) initConfig() error {
 			return err
 		}
 
-		if err := app.c.ReadInConfig(); err != nil {
-			log.Fatal(err)
-		}
+		errors.Panic(app.c.ReadInConfig())
 	}
 
 	if app.o.SetFlagsFunc != nil {
-		if err := app.c.BindPFlags(app.f); err != nil {
-			log.Fatal(err)
-		}
+		errors.Panic(app.c.BindPFlags(app.f))
 	}
 
 	return nil
@@ -220,19 +215,21 @@ func (app *lynx) Option() *Options {
 }
 
 func (app *lynx) addComponents(components ...Component) error {
-	for _, comp := range components {
+	for _, component := range components {
 		ctx, cancel := context.WithCancel(context.Background())
-		if err := comp.Init(app); err != nil {
+		if err := component.Init(app); err != nil {
 			cancel()
 			return err
 		}
 		app.runG.Add(func() error {
-			return comp.Start(ctx)
+			log.InfoContext(ctx, "starting component", "component", component.Name())
+			return component.Start(ctx)
 		}, func(err error) {
-			comp.Stop(ctx)
+			log.InfoContext(ctx, "stopping component", "component", component.Name())
+			component.Stop(ctx)
 			cancel()
 		})
-		if hc, ok := comp.(health.Checker); ok {
+		if hc, ok := component.(health.Checker); ok {
 			app.healthCheckers = append(app.healthCheckers, hc)
 		}
 	}
@@ -242,7 +239,7 @@ func (app *lynx) addComponents(components ...Component) error {
 func (app *lynx) Run() error {
 	app.Logger().Info("starting")
 	app.runG.Add(func() error {
-		app.Logger().Info("run OnStart hooks")
+		app.Logger().Info("run on-start hooks")
 		for _, fn := range app.hooks.onStarts {
 			if err := fn(app.ctx); err != nil {
 				return err
@@ -274,7 +271,7 @@ func (app *lynx) Run() error {
 		app.Logger().Info("shutting down")
 		ctx, cancelCtx := context.WithTimeout(context.TODO(), closeTimeout)
 		defer cancelCtx()
-		app.Logger().Info("run OnStop hooks")
+		app.Logger().Info("run on-stop hooks")
 		for _, fn := range app.hooks.onStops {
 			fn := fn
 			if err := fn(ctx); err != nil {
@@ -303,8 +300,6 @@ func newLynx(o *Options) Lynx {
 		logger: slog.Default(),
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
-	if err := app.init(); err != nil {
-		log.Fatal(err)
-	}
+	errors.Panic(app.init())
 	return app
 }

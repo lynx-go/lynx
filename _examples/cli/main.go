@@ -31,12 +31,12 @@ func main() {
 		logger := app.Logger()
 		logger.Info("parsed config", "config", config)
 
-		errors.OrPanic(app.Hook(lynx.OnStart(func(ctx context.Context) error {
+		errors.Panic(app.Hook(lynx.OnStart(func(ctx context.Context) error {
 			app.Logger().Info("on start")
 			return nil
 		})))
 
-		errors.OrPanic(app.Hook(lynx.OnStop(func(ctx context.Context) error {
+		errors.Panic(app.Hook(lynx.OnStop(func(ctx context.Context) error {
 			app.Logger().Info("on stop")
 			return nil
 		})))

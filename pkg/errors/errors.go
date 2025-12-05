@@ -1,6 +1,6 @@
 package errors
 
-func OrPanic(err error) {
+func Panic(err error) {
 	if err != nil {
 		panic(err)
 	}
