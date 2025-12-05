@@ -71,7 +71,7 @@ func main() {
 		})
 
 		addr := app.Config().GetString("addr")
-		if err := app.LoadComponents(http.NewServer(router,
+		if err := app.Component(http.NewServer(router,
 			http.WithAddr(addr),
 			http.WithHealthCheck(app.HealthCheckFunc()),
 			http.WithLogger(app.Logger("logger", "http-requestlog")),

@@ -46,16 +46,16 @@ func main() {
 				},
 			},
 		}, broker)
-		if err := app.LoadComponents(broker, binder); err != nil {
+		if err := app.Component(broker, binder); err != nil {
 			return err
 		}
-		if err := app.LoadComponentBuilders(binder.Builders()...); err != nil {
+		if err := app.ComponentBuilder(binder.Builders()...); err != nil {
 			return err
 		}
 		router := pubsub.NewRouter(broker, []pubsub.Handler{
 			&helloHandler{},
 		})
-		if err := app.LoadComponents(router); err != nil {
+		if err := app.Component(router); err != nil {
 			return err
 		}
 		mux := gohttp.NewServeMux()
@@ -64,7 +64,7 @@ func main() {
 			_, _ = writer.Write([]byte("ok"))
 		})
 		hs := http.NewServer(mux, http.WithAddr(":9099"))
-		if err := app.LoadComponents(hs); err != nil {
+		if err := app.Component(hs); err != nil {
 			return err
 		}
 

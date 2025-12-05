@@ -28,11 +28,11 @@ func New(
 func (b *Bootstrap) Build(fl lynx.Lynx) error {
 	fl.OnStart(b.StartHooks...)
 	fl.OnStop(b.StopHooks...)
-	if err := fl.LoadComponents(b.Components...); err != nil {
+	if err := fl.Component(b.Components...); err != nil {
 		return err
 	}
 
-	if err := fl.LoadComponentBuilders(b.ComponentBuilders...); err != nil {
+	if err := fl.ComponentBuilder(b.ComponentBuilders...); err != nil {
 		return err
 	}
 	return nil
