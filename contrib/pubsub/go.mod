@@ -7,7 +7,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/lynx-go/lynx v0.3.7
 	github.com/lynx-go/x v0.0.5
-	github.com/spf13/cast v1.10.0
 )
 
 require (
@@ -23,6 +22,7 @@ require (
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/sony/gobreaker v1.0.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
+	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/spf13/viper v1.21.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
