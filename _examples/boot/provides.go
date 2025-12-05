@@ -5,14 +5,14 @@ import (
 
 	"github.com/google/wire"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/bootstrap"
+	"github.com/lynx-go/lynx/boot"
 	"github.com/lynx-go/lynx/server/http"
 )
 
 //go:generate wire
 
 var ProviderSet = wire.NewSet(
-	bootstrap.New,
+	boot.New,
 	NewHttpServer,
 	NewConfig,
 	NewComponents,

@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/wire"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/bootstrap"
+	"github.com/lynx-go/lynx/boot"
 )
 
-func wireBootstrap(app lynx.Lynx, slogger *slog.Logger) (*bootstrap.Bootstrap, func(), error) {
+func wireBootstrap(app lynx.Lynx, slogger *slog.Logger) (*boot.Bootstrap, func(), error) {
 	panic(wire.Build(ProviderSet))
 }

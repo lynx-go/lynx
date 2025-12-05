@@ -8,7 +8,7 @@ package main
 
 import (
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/bootstrap"
+	"github.com/lynx-go/lynx/boot"
 	"log/slog"
 )
 
@@ -18,13 +18,13 @@ import (
 
 // Injectors from wire.go:
 
-func wireBootstrap(app lynx.Lynx, slogger *slog.Logger) (*bootstrap.Bootstrap, func(), error) {
+func wireBootstrap(app lynx.Lynx, slogger *slog.Logger) (*boot.Bootstrap, func(), error) {
 	onStartHooks := NewOnStarts(app)
 	onStopHooks := NewOnStops(app)
 	server := NewHttpServer(app)
 	v := NewComponents(server)
 	v2 := NewComponentBuilders()
-	bootstrapBootstrap := bootstrap.New(onStartHooks, onStopHooks, v, v2)
+	bootstrapBootstrap := boot.New(onStartHooks, onStopHooks, v, v2)
 	return bootstrapBootstrap, func() {
 	}, nil
 }
