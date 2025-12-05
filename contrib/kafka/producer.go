@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/lynx-go/lynx/contrib/pubsub"
+	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/segmentio/kafka-go"
+	"github.com/spf13/cast"
 )
 
 type Producer struct {
@@ -39,6 +40,10 @@ func (p *Producer) Produce(ctx context.Context, msgs ...kafka.Message) error {
 	return p.writer.WriteMessages(ctx, msgs...)
 }
 
+func (p *Producer) Close(ctx context.Context) error {
+	return p.writer.Close()
+}
+
 type MessageOptions struct {
 	Key     string
 	Headers map[string]string
@@ -67,32 +72,38 @@ func WithMessageHeader(key, value string) MessageOption {
 	}
 }
 
-func NewBinaryMessage(data pubsub.RawEvent, opts ...MessageOption) kafka.Message {
+func NewKafkaMessageFromWatermill(msg *message.Message, opts ...MessageOption) kafka.Message {
 	o := &MessageOptions{}
 	for _, opt := range opts {
 		opt(o)
 	}
-	msg := kafka.Message{
-		Value: data,
+	kmsg := kafka.Message{
+		Value: msg.Payload,
 	}
 
 	if o.Key != "" {
-		msg.Key = []byte(o.Key)
+		kmsg.Key = []byte(o.Key)
 	}
+	kmsg.Headers = []kafka.Header{}
 	if len(o.Headers) > 0 {
-		msg.Headers = []kafka.Header{}
 		for k, v := range o.Headers {
-			msg.Headers = append(msg.Headers, kafka.Header{
+			kmsg.Headers = append(kmsg.Headers, kafka.Header{
 				Key:   k,
 				Value: []byte(v),
 			})
 		}
 	}
+	for k, v := range msg.Metadata {
+		kmsg.Headers = append(kmsg.Headers, kafka.Header{
+			Key:   k,
+			Value: []byte(cast.ToString(v)),
+		})
+	}
 
-	return msg
+	return kmsg
 }
 
-func NewJSONMessage(data any, opts ...MessageOption) kafka.Message {
+func NewKafkaMessageJSON(data any, opts ...MessageOption) kafka.Message {
 	o := &MessageOptions{}
 	for _, opt := range opts {
 		opt(o)

@@ -11,11 +11,10 @@ type Broker interface {
 	lynx.ServerLike
 	PubSub
 	ID() string
-	IsRunning() bool
 }
 
 type PubSub interface {
-	Publish(ctx context.Context, eventName string, eventData RawEvent, opts ...PublishOption) error
+	Publish(ctx context.Context, eventName string, message *message.Message, opts ...PublishOption) error
 	Subscribe(eventName, handlerName string, h HandlerFunc, opts ...SubscribeOption) error
 }
 

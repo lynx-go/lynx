@@ -111,7 +111,7 @@ func (b *broker) Stop(ctx context.Context) {
 	}
 }
 
-func (b *broker) Publish(ctx context.Context, eventName string, data RawEvent, opts ...PublishOption) error {
+func (b *broker) Publish(ctx context.Context, eventName string, msg *message.Message, opts ...PublishOption) error {
 	ctx = context.WithoutCancel(ctx)
 	o := &PublishOptions{}
 	for _, opt := range opts {
@@ -130,8 +130,7 @@ func (b *broker) Publish(ctx context.Context, eventName string, data RawEvent, o
 	if b.options.TopicNameFunc != nil {
 		topicName = b.options.TopicNameFunc(eventName)
 	}
-
-	msg := message.NewMessageWithContext(ctx, msgId, message.Payload(data))
+	msg.UUID = msgId
 	msg.Metadata.Set(MessageKeyKey.String(), o.MessageKey)
 	if msgId != "" {
 		msg.Metadata.Set(MessageIDKey.String(), msgId)

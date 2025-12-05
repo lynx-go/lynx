@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 
+	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/google/uuid"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/pubsub"
+	"github.com/lynx-go/x/log"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -38,12 +41,21 @@ func (h *binderHandler) HandlerName() string {
 }
 
 func (h *binderHandler) HandlerFunc() pubsub.HandlerFunc {
-	return func(ctx context.Context, event pubsub.RawEvent) error {
+	return func(ctx context.Context, event *message.Message) error {
 		return h.broker.Publish(ctx, h.eventName, event)
 	}
 }
 
 var _ pubsub.Handler = new(binderHandler)
+
+func getHeader(headers []kafka.Header, key string) string {
+	for _, header := range headers {
+		if header.Key == key {
+			return string(header.Value)
+		}
+	}
+	return ""
+}
 
 func NewBinder(options BinderOptions, broker pubsub.Broker) *Binder {
 	consumers := map[string]*ConsumerFactory{}
@@ -51,7 +63,16 @@ func NewBinder(options BinderOptions, broker pubsub.Broker) *Binder {
 		h := &binderHandler{}
 		consumers[k] = NewConsumerFactoryFromHandler(opts, func(ctx context.Context, msg kafka.Message) error {
 			fn := h.HandlerFunc()
-			return fn(ctx, msg.Value)
+			msgId := getHeader(msg.Headers, pubsub.MessageIDKey.String())
+			if msgId == "" {
+				msgId = uuid.NewString()
+			}
+			newMsg := message.NewMessage(msgId, msg.Value)
+			for i := range msg.Headers {
+				header := msg.Headers[i]
+				newMsg.Metadata.Set(header.Key, string(header.Value))
+			}
+			return fn(ctx, newMsg)
 		})
 	}
 	producers := map[string]*Producer{}
@@ -100,10 +121,10 @@ func (b *Binder) Start(ctx context.Context) error {
 
 	for k := range b.producers {
 		producer := b.producers[k]
-		if err := b.broker.Subscribe(k, k, func(ctx context.Context, event pubsub.RawEvent) error {
+		if err := b.broker.Subscribe(k, k, func(ctx context.Context, event *message.Message) error {
 			msgKey := pubsub.MessageKeyFromContext(ctx)
 			traceId := pubsub.MessageIDFromContext(ctx)
-			return producer.Produce(ctx, NewBinaryMessage(event, WithMessageKey(msgKey), WithMessageHeader("x-trace-id", traceId)))
+			return producer.Produce(ctx, NewKafkaMessageFromWatermill(event, WithMessageKey(msgKey), WithMessageHeader("x-trace-id", traceId)))
 		}); err != nil {
 			return err
 		}
@@ -115,6 +136,13 @@ func (b *Binder) Start(ctx context.Context) error {
 
 func (b *Binder) Stop(ctx context.Context) {
 	b.running = false
+	for k, producer := range b.producers {
+		err := producer.Close(ctx)
+		if err != nil {
+			log.ErrorContext(ctx, "failed to close producer", err, "producer", k)
+		}
+	}
+
 	b.stopCh <- struct{}{}
 }
 
