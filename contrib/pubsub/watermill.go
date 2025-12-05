@@ -132,9 +132,6 @@ func (b *broker) Publish(ctx context.Context, eventName string, msg *message.Mes
 	}
 	msg.UUID = msgId
 	msg.Metadata.Set(MessageKeyKey.String(), o.MessageKey)
-	if msgId != "" {
-		msg.Metadata.Set(MessageIDKey.String(), msgId)
-	}
 
 	return b.publisher.Publish(topicName, msg)
 }
@@ -165,7 +162,7 @@ func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ..
 		opt(o)
 	}
 	handler := func(msg *message.Message) error {
-		msgId := msg.Metadata[MessageIDKey.String()]
+		msgId := msg.UUID
 		ctx := ContextWithMessageID(msg.Context(), msgId)
 		ctx = log.Context(ctx, log.FromContext(ctx), MessageIDKey.String(), msgId)
 

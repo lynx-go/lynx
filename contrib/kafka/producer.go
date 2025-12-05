@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/segmentio/kafka-go"
 	"github.com/spf13/cast"
 )
@@ -85,6 +86,11 @@ func NewKafkaMessageFromWatermill(msg *message.Message, opts ...MessageOption) k
 		kmsg.Key = []byte(o.Key)
 	}
 	kmsg.Headers = []kafka.Header{}
+	kmsg.Headers = append(kmsg.Headers, kafka.Header{
+		Key:   pubsub.MessageIDKey.String(),
+		Value: []byte(msg.UUID),
+	})
+
 	if len(o.Headers) > 0 {
 		for k, v := range o.Headers {
 			kmsg.Headers = append(kmsg.Headers, kafka.Header{

@@ -58,7 +58,7 @@ func main() {
 		app.OnStart(router.Run)
 		mux := gohttp.NewServeMux()
 		mux.HandleFunc("/hello", func(writer gohttp.ResponseWriter, request *gohttp.Request) {
-			_ = pubSub.Publish(ctx, kafka.ProducerName("hello"), message.NewMessage(uuid.NewString(), []byte("hello")))
+			_ = pubSub.Publish(ctx, kafka.ProducerName("hello"), message.NewMessage(uuid.NewString(), []byte("hello")), pubsub.WithMessageKey(uuid.NewString()))
 			_, _ = writer.Write([]byte("ok"))
 		})
 		hs := http.NewServer(mux, http.WithAddr(":9099"))
