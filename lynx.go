@@ -26,10 +26,8 @@ type Lynx interface {
 	Context() context.Context
 	// CLI 注册启动的命令，用于 CLI 模式
 	CLI(cmd CommandFunc) error
+	// Hook 添加 OnStart/OnStop/Component/ComponentBuilder Hooks
 	Hook(hooks ...HookOption) error
-
-	//addComponents(components ...addComponents) error
-	//addComponentBuilders(builders ...addComponentBuilders) error
 
 	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
 	HealthCheckFunc() HealthCheckFunc
