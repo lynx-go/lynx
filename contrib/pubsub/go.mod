@@ -2,6 +2,10 @@ module github.com/lynx-go/lynx/contrib/pubsub
 
 go 1.24.2
 
+replace (
+	github.com/lynx-go/lynx => ../../
+)
+
 require (
 	github.com/ThreeDotsLabs/watermill v1.5.1
 	github.com/google/uuid v1.6.0

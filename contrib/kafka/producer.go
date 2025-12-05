@@ -73,7 +73,7 @@ func WithMessageHeader(key, value string) MessageOption {
 	}
 }
 
-func NewKafkaMessageFromWatermill(msg *message.Message, opts ...MessageOption) kafka.Message {
+func NewKafkaMessage(msg *message.Message, opts ...MessageOption) kafka.Message {
 	o := &MessageOptions{}
 	for _, opt := range opts {
 		opt(o)

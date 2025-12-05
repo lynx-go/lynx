@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/log/zap"
+	"github.com/lynx-go/lynx/contrib/zap"
 	"github.com/lynx-go/lynx/server/http"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"

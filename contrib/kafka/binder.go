@@ -111,7 +111,7 @@ func (b *Binder) Start(ctx context.Context) error {
 		producer := b.producers[k]
 		if err := b.broker.Subscribe(ToProducerName(k), k, func(ctx context.Context, event *message.Message) error {
 			msgKey := pubsub.GetMessageKey(event)
-			return producer.Produce(ctx, NewKafkaMessageFromWatermill(event, WithMessageKey(msgKey)))
+			return producer.Produce(ctx, NewKafkaMessage(event, WithMessageKey(msgKey)))
 		}); err != nil {
 			return err
 		}

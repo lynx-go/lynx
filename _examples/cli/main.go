@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/log/zap"
+	"github.com/lynx-go/lynx/contrib/zap"
+"
 )
-
 type Config struct {
 	Addr string `json:"addr"`
 }

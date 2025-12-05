@@ -76,12 +76,12 @@ func (c *Consumer) Init(app lynx.Lynx) error {
 	return nil
 }
 
-func GetMessageIdFromKafka(kmsg *kafka.Message) string {
+func GetMessageID(kmsg *kafka.Message) string {
 	return getHeader(kmsg.Headers, pubsub.MessageIDKey.String())
 }
 
-func NewMessageFromKafka(kmsg kafka.Message) *message.Message {
-	msgId := GetMessageIdFromKafka(&kmsg)
+func NewMessage(kmsg kafka.Message) *message.Message {
+	msgId := GetMessageID(&kmsg)
 	msg := message.NewMessage(msgId, kmsg.Value)
 	for i := range kmsg.Headers {
 		h := kmsg.Headers[i]
@@ -107,7 +107,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 					log.ErrorContext(ctx, "failed to fetch message", err, "topic", c.options.Topic)
 				}
 			}
-			if err := c.broker.Publish(ctx, ToConsumerName(c.eventName), NewMessageFromKafka(msg)); err != nil {
+			if err := c.broker.Publish(ctx, ToConsumerName(c.eventName), NewMessage(msg)); err != nil {
 				if errHandler != nil {
 					if err := errHandler(err); err != nil {
 						return err

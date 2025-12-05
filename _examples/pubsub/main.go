@@ -9,11 +9,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/kafka"
-	"github.com/lynx-go/lynx/contrib/log/zap"
-	"github.com/lynx-go/lynx/contrib/pubsub"
-	"github.com/lynx-go/lynx/server/http"
-	"github.com/lynx-go/x/log"
-	"github.com/samber/lo"
+	"github.com/lynx-go/lynx/contrib/zap"
+"
+"github.com/lynx-go/lynx/contrib/pubsub"
+"github.com/lynx-go/lynx/server/http"
+"github.com/lynx-go/x/log"
+"github.com/samber/lo"
 )
 
 func main() {

@@ -1,8 +1,8 @@
-module github.com/lynx-go/lynx/contrib/log/zap
+module github.com/lynx-go/lynx/contrib/zap
 
 go 1.24.2
 
-replace github.com/lynx-go/lynx => ../../../
+replace github.com/lynx-go/lynx => ../../
 
 require (
 	github.com/lynx-go/lynx v0.4.0

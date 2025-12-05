@@ -7,9 +7,10 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/log/zap"
-	"github.com/lynx-go/lynx/server/http"
-	"github.com/spf13/pflag"
+	"github.com/lynx-go/lynx/contrib/zap"
+"
+"github.com/lynx-go/lynx/server/http"
+"github.com/spf13/pflag"
 )
 
 func main() {
