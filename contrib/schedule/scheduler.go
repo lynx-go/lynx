@@ -88,7 +88,7 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	for _, opt := range opts {
 		opt(o)
 	}
-	logger := newSlogLogger(o.Logger, o.DebugEnabled)
+	logger := NewSlogLogger(o.Logger, o.DebugEnabled)
 	var cronInstance *cron.Cron
 	if o.Cron != nil {
 		cronInstance = o.Cron
@@ -112,17 +112,17 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	return scheduler, nil
 }
 
-func newSlogLogger(slogger *slog.Logger, debugEnabled bool) cron.Logger {
-	return &slogLogger{slogger: slogger, debugEnabled: debugEnabled}
+func NewSlogLogger(slogger *slog.Logger, logDebug bool) cron.Logger {
+	return &slogLogger{slogger: slogger, logDebug: logDebug}
 }
 
 type slogLogger struct {
-	slogger      *slog.Logger
-	debugEnabled bool
+	slogger  *slog.Logger
+	logDebug bool
 }
 
 func (l *slogLogger) Info(msg string, keysAndValues ...interface{}) {
-	if l.debugEnabled {
+	if l.logDebug {
 		l.slogger.Debug(msg, keysAndValues...)
 	}
 }
