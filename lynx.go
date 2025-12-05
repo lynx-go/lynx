@@ -113,7 +113,7 @@ func (app *lynx) Close() {
 }
 
 func (app *lynx) init() error {
-	if err := app.initConfig(); err != nil {
+	if err := app.initConfigure(); err != nil {
 		return err
 	}
 
@@ -156,7 +156,7 @@ func DefaultBindConfigFunc(f *pflag.FlagSet, v *viper.Viper) error {
 	return nil
 }
 
-func (app *lynx) initConfig() error {
+func (app *lynx) initConfigure() error {
 	if fn := app.o.SetFlagsFunc; fn != nil {
 		fn(app.f)
 		errors.Panic(app.f.Parse(os.Args[1:]))
