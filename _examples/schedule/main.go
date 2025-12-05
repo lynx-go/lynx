@@ -22,7 +22,11 @@ func main() {
 
 	cli := lynx.New(options, func(ctx context.Context, app lynx.Lynx) error {
 		app.SetLogger(zap.NewLogger(app))
-		scheduler, err := schedule.NewScheduler([]schedule.Task{&task{}}, schedule.WithLogger(app.Logger()))
+		task1 := &task{}
+		_ = app.Hook(lynx.OnStart(func(ctx context.Context) error {
+			return task1.HandlerFunc()(ctx)
+		}))
+		scheduler, err := schedule.NewScheduler([]schedule.Task{task1}, schedule.WithLogger(app.Logger()))
 		if err != nil {
 			return err
 		}
