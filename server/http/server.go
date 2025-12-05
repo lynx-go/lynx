@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/x/log"
 	"gocloud.dev/server"
 	"gocloud.dev/server/health"
 )
@@ -88,7 +89,7 @@ func (s *Server) Init(app lynx.Lynx) error {
 }
 
 func (s *Server) Start(ctx context.Context) error {
-	s.logger.Info("Starting HTTP server, listening on " + s.o.Addr)
+	log.InfoContext(ctx, "starting HTTP server, listening on "+s.o.Addr)
 	var healthChecks []health.Checker
 	if s.o.HealthCheck != nil {
 		healthChecks = s.o.HealthCheck()
@@ -100,7 +101,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	if s.o.RequestLog {
 		opts.RequestLogger = NewRequestLogger(s.logger, func(err error) {
-			s.logger.Error("Failed to log HTTP request", "error", err)
+			log.ErrorContext(ctx, "failed to log HTTP request", err)
 		})
 	}
 
@@ -110,9 +111,9 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 func (s *Server) Stop(ctx context.Context) {
-	s.logger.Info("Stopping HTTP server")
+	log.InfoContext(ctx, "stopping HTTP server")
 	if err := s.Server.Shutdown(ctx); err != nil {
-		s.logger.Warn("Error shutting down http server", "error", err)
+		log.ErrorContext(ctx, "failed to shutting down http server", err)
 	}
 }
 
