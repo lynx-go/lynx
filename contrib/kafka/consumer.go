@@ -4,8 +4,12 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/contrib/pubsub"
+	"github.com/lynx-go/x/log"
 	"github.com/segmentio/kafka-go"
+	"github.com/spf13/cast"
 )
 
 type ConsumerOptions struct {
@@ -33,17 +37,20 @@ type Handler interface {
 	HandlerFunc() HandlerFunc
 }
 
-func NewConsumer(options ConsumerOptions, handler Handler) *Consumer {
+func NewConsumer(eventName string, broker pubsub.Broker, options ConsumerOptions) *Consumer {
 	consumer := &Consumer{
-		options: options,
-		handler: handler,
+		options:   options,
+		eventName: eventName,
+		broker:    broker,
 	}
+	consumer.ctx, consumer.closeCtx = context.WithCancel(context.Background())
 	if options.Reader != nil {
 		consumer.reader = options.Reader
 	} else {
 		reader := kafka.NewReader(kafka.ReaderConfig{
 			Brokers: options.Brokers,
 			Topic:   options.Topic,
+			GroupID: options.Group,
 		})
 		consumer.reader = reader
 	}
@@ -51,10 +58,13 @@ func NewConsumer(options ConsumerOptions, handler Handler) *Consumer {
 }
 
 type Consumer struct {
-	app     lynx.Lynx
-	options ConsumerOptions
-	handler Handler
-	reader  *kafka.Reader
+	app       lynx.Lynx
+	options   ConsumerOptions
+	reader    *kafka.Reader
+	eventName string
+	broker    pubsub.Broker
+	ctx       context.Context
+	closeCtx  context.CancelFunc
 }
 
 func (c *Consumer) Name() string {
@@ -66,29 +76,47 @@ func (c *Consumer) Init(app lynx.Lynx) error {
 	return nil
 }
 
+func GetMessageIdFromKafka(kmsg *kafka.Message) string {
+	return getHeader(kmsg.Headers, pubsub.MessageIDKey.String())
+}
+
+func NewMessageFromKafka(kmsg kafka.Message) *message.Message {
+	msgId := GetMessageIdFromKafka(&kmsg)
+	msg := message.NewMessage(msgId, kmsg.Value)
+	for i := range kmsg.Headers {
+		h := kmsg.Headers[i]
+		msg.Metadata.Set(h.Key, cast.ToString(h.Value))
+	}
+	return msg
+}
+
 func (c *Consumer) Start(ctx context.Context) error {
 	for {
-		msg, err := c.reader.FetchMessage(ctx)
-		if err != nil {
-			if he := c.options.ErrorHandlerFunc; he != nil {
-				err = he(err)
-				if err != nil {
-					return err
-				}
-			}
-			return err
-		}
-		if h := c.handler.HandlerFunc(); h != nil {
-			if err := h(ctx, msg); err != nil {
+		select {
+		case <-c.ctx.Done():
+			return nil
+		default:
+			msg, err := c.reader.FetchMessage(ctx)
+			if err != nil {
 				if he := c.options.ErrorHandlerFunc; he != nil {
-					if err := he(err); err != nil {
+					err = he(err)
+					if err != nil {
+						return err
+					}
+				}
+				return err
+			}
+			if err := c.broker.Publish(ctx, ConsumerName(c.eventName), NewMessageFromKafka(msg)); err != nil {
+				if errHandler := c.options.ErrorHandlerFunc; errHandler != nil {
+					if err := errHandler(err); err != nil {
 						return err
 					}
 				}
 			}
-		}
-		if err := c.reader.CommitMessages(ctx, msg); err != nil {
-			slog.ErrorContext(ctx, "Failed to commit messages", err, "topic", c.options.Topic)
+
+			if err := c.reader.CommitMessages(ctx, msg); err != nil {
+				slog.ErrorContext(ctx, "failed to commit messages", "error", err, "topic", c.options.Topic)
+			}
 		}
 	}
 }
@@ -97,34 +125,30 @@ func (c *Consumer) Stop(ctx context.Context) {
 	if err := c.reader.Close(); err != nil {
 		slog.ErrorContext(ctx, "Error closing kafka reader", err)
 	}
+	c.closeCtx()
+	log.InfoContext(ctx, "stopped kafka consumer", "event_name", c.eventName)
 }
 
 var _ lynx.Component = new(Consumer)
 
-func NewConsumerFactory(options ConsumerOptions, handler Handler) *ConsumerFactory {
+func NewConsumerFactory(eventName string, broker pubsub.Broker, options ConsumerOptions) *ConsumerFactory {
 	return &ConsumerFactory{
 		options:   options,
-		handler:   handler,
 		instances: options.Instances,
-	}
-}
-
-func NewConsumerFactoryFromHandler(options ConsumerOptions, handler HandlerFunc) *ConsumerFactory {
-	return &ConsumerFactory{
-		options:   options,
-		handler:   &consumerHandlerWrapper{handler},
-		instances: options.Instances,
+		broker:    broker,
+		eventName: eventName,
 	}
 }
 
 type ConsumerFactory struct {
 	options   ConsumerOptions
-	handler   Handler
 	instances int
+	broker    pubsub.Broker
+	eventName string
 }
 
 func (cf *ConsumerFactory) Component() lynx.Component {
-	return NewConsumer(cf.options, cf.handler)
+	return NewConsumer(cf.eventName, cf.broker, cf.options)
 }
 
 func (cf *ConsumerFactory) Option() lynx.FactoryOption {

@@ -6,12 +6,11 @@ import (
 )
 
 type Options struct {
-	ID                    string         `json:"id"`
-	Name                  string         `json:"name"`
-	Version               string         `json:"version"`
-	UseDefaultConfigFlags bool           `json:"use_default_config_flags"`
-	SetFlagsFunc          SetFlagsFunc   `json:"-"`
-	BindConfigFunc        BindConfigFunc `json:"-"`
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Version        string         `json:"version"`
+	SetFlagsFunc   SetFlagsFunc   `json:"-"`
+	BindConfigFunc BindConfigFunc `json:"-"`
 }
 
 func (o *Options) String() string {

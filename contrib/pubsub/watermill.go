@@ -139,6 +139,22 @@ func (b *broker) Publish(ctx context.Context, eventName string, msg *message.Mes
 	return b.publisher.Publish(topicName, msg)
 }
 
+func SetMessageKey(msg *message.Message, key string) {
+	msg.Metadata.Set(MessageKeyKey.String(), key)
+}
+
+func GetMessageKey(msg *message.Message) string {
+	return msg.Metadata.Get(MessageKeyKey.String())
+}
+
+func SetMessageID(msg *message.Message, msgId string) {
+	msg.Metadata.Set(MessageIDKey.String(), msgId)
+}
+
+func GetMessageID(msg *message.Message) string {
+	return msg.Metadata.Get(MessageIDKey.String())
+}
+
 func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ...SubscribeOption) error {
 	topicName := eventName
 	if b.options.TopicNameFunc != nil {

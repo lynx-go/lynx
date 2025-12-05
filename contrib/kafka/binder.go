@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/ThreeDotsLabs/watermill/message"
-	"github.com/google/uuid"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/lynx-go/x/log"
@@ -18,13 +17,14 @@ type BinderOptions struct {
 }
 
 type Binder struct {
-	options   BinderOptions
-	broker    pubsub.Broker
-	app       lynx.Lynx
-	running   bool
-	consumers map[string]*ConsumerFactory
-	producers map[string]*Producer
-	stopCh    chan struct{}
+	options           BinderOptions
+	broker            pubsub.Broker
+	app               lynx.Lynx
+	running           bool
+	consumerFactories map[string]*ConsumerFactory
+	producers         map[string]*Producer
+	ctx               context.Context
+	closeCtx          context.CancelFunc
 }
 
 type binderHandler struct {
@@ -58,22 +58,9 @@ func getHeader(headers []kafka.Header, key string) string {
 }
 
 func NewBinder(options BinderOptions, broker pubsub.Broker) *Binder {
-	consumers := map[string]*ConsumerFactory{}
+	consumerFactories := map[string]*ConsumerFactory{}
 	for k, opts := range options.SubscribeOptions {
-		h := &binderHandler{}
-		consumers[k] = NewConsumerFactoryFromHandler(opts, func(ctx context.Context, msg kafka.Message) error {
-			fn := h.HandlerFunc()
-			msgId := getHeader(msg.Headers, pubsub.MessageIDKey.String())
-			if msgId == "" {
-				msgId = uuid.NewString()
-			}
-			newMsg := message.NewMessage(msgId, msg.Value)
-			for i := range msg.Headers {
-				header := msg.Headers[i]
-				newMsg.Metadata.Set(header.Key, string(header.Value))
-			}
-			return fn(ctx, newMsg)
-		})
+		consumerFactories[k] = NewConsumerFactory(k, broker, opts)
 	}
 	producers := map[string]*Producer{}
 	for k, opts := range options.PublishOptions {
@@ -82,19 +69,20 @@ func NewBinder(options BinderOptions, broker pubsub.Broker) *Binder {
 	}
 
 	binder := &Binder{
-		options:   options,
-		broker:    broker,
-		running:   false,
-		consumers: consumers,
-		producers: producers,
+		options:           options,
+		broker:            broker,
+		running:           false,
+		consumerFactories: consumerFactories,
+		producers:         producers,
 	}
 
+	binder.ctx, binder.closeCtx = context.WithCancel(context.TODO())
 	return binder
 }
 
 func (b *Binder) ComponentFactories() []lynx.ComponentFactory {
 	factories := []lynx.ComponentFactory{}
-	for _, factory := range b.consumers {
+	for _, factory := range b.consumerFactories {
 		factories = append(factories, factory)
 	}
 	return factories
@@ -121,16 +109,15 @@ func (b *Binder) Start(ctx context.Context) error {
 
 	for k := range b.producers {
 		producer := b.producers[k]
-		if err := b.broker.Subscribe(k, k, func(ctx context.Context, event *message.Message) error {
-			msgKey := pubsub.MessageKeyFromContext(ctx)
-			traceId := pubsub.MessageIDFromContext(ctx)
-			return producer.Produce(ctx, NewKafkaMessageFromWatermill(event, WithMessageKey(msgKey), WithMessageHeader("x-trace-id", traceId)))
+		if err := b.broker.Subscribe(ProducerName(k), k, func(ctx context.Context, event *message.Message) error {
+			msgKey := pubsub.GetMessageKey(event)
+			msgId := pubsub.GetMessageID(event)
+			return producer.Produce(ctx, NewKafkaMessageFromWatermill(event, WithMessageKey(msgKey), WithMessageHeader("x-message-id", msgId)))
 		}); err != nil {
 			return err
 		}
 	}
-
-	<-b.stopCh
+	<-b.ctx.Done()
 	return nil
 }
 
@@ -143,7 +130,16 @@ func (b *Binder) Stop(ctx context.Context) {
 		}
 	}
 
-	b.stopCh <- struct{}{}
+	b.closeCtx()
+	log.InfoContext(ctx, "kafka binder stopped")
 }
 
 var _ pubsub.Binder = new(Binder)
+
+func ProducerName(eventName string) string {
+	return "producer:" + eventName
+}
+
+func ConsumerName(eventName string) string {
+	return "consumer:" + eventName
+}

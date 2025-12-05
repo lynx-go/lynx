@@ -98,7 +98,7 @@ func (app *lynx) Close() {
 }
 
 func (app *lynx) init() error {
-	if err := app.loadConfig(); err != nil {
+	if err := app.initConfig(); err != nil {
 		return err
 	}
 
@@ -141,27 +141,30 @@ func DefaultBindConfigFunc(f *pflag.FlagSet, v *viper.Viper) error {
 	return nil
 }
 
-func (app *lynx) loadConfig() error {
+func (app *lynx) initConfig() error {
 	if fn := app.o.SetFlagsFunc; fn != nil {
 		fn(app.f)
-	}
-	if err := app.f.Parse(os.Args[1:]); err != nil {
-		log.Fatal(err)
+		if err := app.f.Parse(os.Args[1:]); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	if fn := app.o.BindConfigFunc; fn != nil {
 		if err := fn(app.f, app.c); err != nil {
 			return err
 		}
+
+		if err := app.c.ReadInConfig(); err != nil {
+			log.Fatal(err)
+		}
 	}
 
-	if err := app.c.ReadInConfig(); err != nil {
-		log.Fatal(err)
+	if app.o.SetFlagsFunc != nil {
+		if err := app.c.BindPFlags(app.f); err != nil {
+			log.Fatal(err)
+		}
 	}
 
-	if err := app.c.BindPFlags(app.f); err != nil {
-		log.Fatal(err)
-	}
 	return nil
 }
 

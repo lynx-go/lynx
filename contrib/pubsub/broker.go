@@ -50,7 +50,8 @@ func ContextWithMessageKey(ctx context.Context, msgKey string) context.Context {
 }
 
 func MessageKeyFromContext(ctx context.Context) string {
-	return ctx.Value(MessageKeyKey).(string)
+	v, _ := ctx.Value(MessageKeyKey).(string)
+	return v
 }
 
 type msgIdCtx struct {
