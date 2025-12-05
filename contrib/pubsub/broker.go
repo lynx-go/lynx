@@ -11,6 +11,7 @@ type Broker interface {
 	lynx.ServerLike
 	PubSub
 	ID() string
+	IsRunning() bool
 }
 
 type PubSub interface {
