@@ -40,15 +40,11 @@ func main() {
 			return nil
 		})
 
-		if err := app.CLI(func(ctx context.Context) error {
+		return app.CLI(func(ctx context.Context) error {
 			logger.Info("command executed successfully")
 			time.Sleep(1 * time.Second)
 			return nil
-		}); err != nil {
-			return err
-		}
-
-		return nil
+		})
 	})
 	err := app.RunE()
 	if err != nil {

@@ -5,34 +5,34 @@ import (
 )
 
 type Bootstrap struct {
-	StartHooks         []lynx.HookFunc
-	StopHooks          []lynx.HookFunc
-	Components         []lynx.Component
-	ComponentFactories []lynx.ComponentBuilder
+	StartHooks        []lynx.HookFunc
+	StopHooks         []lynx.HookFunc
+	Components        []lynx.Component
+	ComponentBuilders []lynx.ComponentBuilder
 }
 
 func New(
 	onStars lynx.OnStartHooks,
 	onStops lynx.OnStopHooks,
 	components []lynx.Component,
-	componentFactories []lynx.ComponentBuilder,
+	componentBuilders []lynx.ComponentBuilder,
 ) *Bootstrap {
 	return &Bootstrap{
-		StartHooks:         onStars,
-		StopHooks:          onStops,
-		Components:         components,
-		ComponentFactories: componentFactories,
+		StartHooks:        onStars,
+		StopHooks:         onStops,
+		Components:        components,
+		ComponentBuilders: componentBuilders,
 	}
 }
 
 func (b *Bootstrap) Build(fl lynx.Lynx) error {
 	fl.OnStart(b.StartHooks...)
 	fl.OnStop(b.StopHooks...)
-	if err := fl.Hook(b.Components...); err != nil {
+	if err := fl.LoadComponents(b.Components...); err != nil {
 		return err
 	}
 
-	if err := fl.Builder(b.ComponentFactories...); err != nil {
+	if err := fl.LoadComponentBuilders(b.ComponentBuilders...); err != nil {
 		return err
 	}
 	return nil

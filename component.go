@@ -19,14 +19,14 @@ type Component interface {
 
 type ComponentBuilder interface {
 	Build() Component
-	Option() BuildOption
+	Options() BuildOptions
 }
 
-type BuildOption struct {
+type BuildOptions struct {
 	Instances int `json:"instances"` // 实例数
 }
 
-func (o *BuildOption) ensureDefaults() {
+func (o *BuildOptions) ensureDefaults() {
 	if o.Instances == 0 {
 		o.Instances = 1
 	}

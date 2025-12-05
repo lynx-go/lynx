@@ -152,8 +152,8 @@ func (cf *ConsumerBuilder) Build() lynx.Component {
 	return NewConsumer(cf.eventName, cf.broker, cf.options)
 }
 
-func (cf *ConsumerBuilder) Option() lynx.BuildOption {
-	return lynx.BuildOption{
+func (cf *ConsumerBuilder) Options() lynx.BuildOptions {
+	return lynx.BuildOptions{
 		Instances: cf.instances,
 	}
 }
