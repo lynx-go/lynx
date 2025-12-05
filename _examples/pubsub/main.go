@@ -46,10 +46,10 @@ func main() {
 				},
 			},
 		}, broker)
-		if err := app.Hook(lynx.Components(broker, binder)); err != nil {
+		if err := app.Hook(lynx.Components(broker)); err != nil {
 			return err
 		}
-		if err := app.Hook(lynx.ComponentBuilders(binder.Builders()...)); err != nil {
+		if err := app.Hook(lynx.Components(binder), lynx.ComponentBuilders(binder.Builders()...)); err != nil {
 			return err
 		}
 		router := pubsub.NewRouter(broker, []pubsub.Handler{
