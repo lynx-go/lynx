@@ -3,6 +3,8 @@ package lynx
 import (
 	"encoding/json"
 	"os"
+	"syscall"
+	"time"
 )
 
 type Options struct {
@@ -11,6 +13,8 @@ type Options struct {
 	Version        string         `json:"version"`
 	SetFlagsFunc   SetFlagsFunc   `json:"-"`
 	BindConfigFunc BindConfigFunc `json:"-"`
+	ExitSignals    []os.Signal    `json:"-"`
+	CloseTimeout   time.Duration  `json:"close_timeout"`
 }
 
 func (o *Options) String() string {
@@ -48,7 +52,7 @@ func WithVersion(v string) Option {
 	}
 }
 
-func WithSetFlags(f SetFlagsFunc) Option {
+func WithSetFlagsFunc(f SetFlagsFunc) Option {
 	return func(o *Options) {
 		o.SetFlagsFunc = f
 	}
@@ -61,9 +65,21 @@ func WithUseDefaultConfigFlagsFunc() Option {
 	}
 }
 
-func WithBindConfig(f BindConfigFunc) Option {
+func WithBindConfigFunc(f BindConfigFunc) Option {
 	return func(o *Options) {
 		o.BindConfigFunc = f
+	}
+}
+
+func WithExitSignals(signals ...os.Signal) Option {
+	return func(o *Options) {
+		o.ExitSignals = signals
+	}
+}
+
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return func(o *Options) {
+		o.CloseTimeout = timeout
 	}
 }
 
@@ -71,6 +87,10 @@ func NewOptions(opts ...Option) *Options {
 	id, _ := os.Hostname()
 	op := &Options{
 		ID: id,
+		ExitSignals: []os.Signal{
+			syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL,
+		},
+		CloseTimeout: time.Second * 5,
 	}
 	for _, o := range opts {
 		o(op)

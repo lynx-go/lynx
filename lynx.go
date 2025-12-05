@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"syscall"
-	"time"
 
 	"github.com/lynx-go/lynx/pkg/errors"
 	"github.com/lynx-go/x/log"
@@ -253,18 +251,14 @@ func (app *lynx) Run() error {
 		app.Close()
 	})
 
-	closeTimeout := 10 * time.Second
-	if app.c.GetInt("shutdown_timeout") > 0 {
-		closeTimeout = time.Duration(app.c.GetInt("shutdown_timeout")) * time.Second
-	}
-
+	closeTimeout := app.o.CloseTimeout
 	app.runG.Add(func() error {
-		exit := make(chan os.Signal, 1)
-		signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
+		exitCh := make(chan os.Signal, 1)
+		signal.Notify(exitCh, app.o.ExitSignals...)
 		select {
 		case <-app.ctx.Done():
 			return nil
-		case <-exit:
+		case <-exitCh:
 			return nil
 		}
 	}, func(err error) {
@@ -275,7 +269,7 @@ func (app *lynx) Run() error {
 		for _, fn := range app.hooks.onStops {
 			fn := fn
 			if err := fn(ctx); err != nil {
-				app.logger.ErrorContext(app.ctx, "post stop func called error", "error", err)
+				app.logger.ErrorContext(app.ctx, "on-stop hook called error", "error", err)
 			}
 		}
 	})

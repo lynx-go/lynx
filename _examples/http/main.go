@@ -20,12 +20,12 @@ type Config struct {
 
 func main() {
 	opts := lynx.NewOptions(
-		lynx.WithSetFlags(func(f *pflag.FlagSet) {
+		lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
 			f.StringP("config", "c", "./configs", "config file path")
 			f.String("addr", "", "http listen address")
 			f.StringP("log_level", "l", "debug", "log level")
 		}),
-		lynx.WithBindConfig(func(f *pflag.FlagSet, v *viper.Viper) error {
+		lynx.WithBindConfigFunc(func(f *pflag.FlagSet, v *viper.Viper) error {
 			if c, _ := f.GetString("config"); c != "" {
 				v.SetConfigFile(c)
 			}
