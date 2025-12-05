@@ -17,14 +17,14 @@ type BinderOptions struct {
 }
 
 type Binder struct {
-	options           BinderOptions
-	broker            pubsub.Broker
-	app               lynx.Lynx
-	running           bool
-	consumerFactories map[string]*ConsumerFactory
-	producers         map[string]*Producer
-	ctx               context.Context
-	closeCtx          context.CancelFunc
+	options   BinderOptions
+	broker    pubsub.Broker
+	app       lynx.Lynx
+	running   bool
+	builders  map[string]*ConsumerBuilder
+	producers map[string]*Producer
+	ctx       context.Context
+	closeCtx  context.CancelFunc
 }
 
 type binderHandler struct {
@@ -58,9 +58,9 @@ func getHeader(headers []kafka.Header, key string) string {
 }
 
 func NewBinder(options BinderOptions, broker pubsub.Broker) *Binder {
-	consumerFactories := map[string]*ConsumerFactory{}
+	builders := map[string]*ConsumerBuilder{}
 	for k, opts := range options.SubscribeOptions {
-		consumerFactories[k] = NewConsumerFactory(k, broker, opts)
+		builders[k] = NewConsumerBuilder(k, broker, opts)
 	}
 	producers := map[string]*Producer{}
 	for k, opts := range options.PublishOptions {
@@ -69,23 +69,23 @@ func NewBinder(options BinderOptions, broker pubsub.Broker) *Binder {
 	}
 
 	binder := &Binder{
-		options:           options,
-		broker:            broker,
-		running:           false,
-		consumerFactories: consumerFactories,
-		producers:         producers,
+		options:   options,
+		broker:    broker,
+		running:   false,
+		builders:  builders,
+		producers: producers,
 	}
 
 	binder.ctx, binder.closeCtx = context.WithCancel(context.TODO())
 	return binder
 }
 
-func (b *Binder) ComponentFactories() []lynx.ComponentFactory {
-	factories := []lynx.ComponentFactory{}
-	for _, factory := range b.consumerFactories {
-		factories = append(factories, factory)
+func (b *Binder) Builders() []lynx.ComponentBuilder {
+	builders := []lynx.ComponentBuilder{}
+	for _, builder := range b.builders {
+		builders = append(builders, builder)
 	}
-	return factories
+	return builders
 }
 
 func (b *Binder) CheckHealth() error {

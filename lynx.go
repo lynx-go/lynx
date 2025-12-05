@@ -28,9 +28,9 @@ type Lynx interface {
 	// CLI 注册启动的命令，用于 CLI 模式
 	CLI(cmd CommandFunc) error
 	// Hook 加载组件，但只有当应用启动后才会执行 Start
-	Hook(components ...Component) error
-	// HookFactory 把 ComponentFactory 注入应用中
-	HookFactory(factories ...ComponentFactory) error
+	Hook(components ...LifecycleManaged) error
+	// HookFactory 把 ComponentBuilder 注入应用中
+	Builder(factories ...ComponentBuilder) error
 	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
 	HealthCheckFunc() HealthCheckFunc
 	// Run 启用 CLI
@@ -168,12 +168,12 @@ func (app *lynx) initConfig() error {
 	return nil
 }
 
-func (app *lynx) HookFactory(producers ...ComponentFactory) error {
-	for _, producer := range producers {
-		produce := producer.Component
+func (app *lynx) Builder(builders ...ComponentBuilder) error {
+	for _, producer := range builders {
+		produce := producer.Build
 		options := producer.Option()
 		options.ensureDefaults()
-		var components []Component
+		var components []LifecycleManaged
 		for i := 0; i < options.Instances; i++ {
 			comp := produce()
 			components = append(components, comp)
@@ -201,7 +201,7 @@ func (app *lynx) Option() *Options {
 	return app.o
 }
 
-func (app *lynx) Hook(components ...Component) error {
+func (app *lynx) Hook(components ...LifecycleManaged) error {
 	for _, comp := range components {
 		ctx, cancel := context.WithCancel(context.Background())
 		if err := comp.Init(app); err != nil {

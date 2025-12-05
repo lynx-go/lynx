@@ -33,8 +33,8 @@ func NewComponents(hs *http.Server) []lynx.Component {
 	return []lynx.Component{hs}
 }
 
-func NewComponentFactories() []lynx.ComponentFactory {
-	return []lynx.ComponentFactory{}
+func NewComponentFactories() []lynx.ComponentBuilder {
+	return []lynx.ComponentBuilder{}
 }
 
 func NewOnStarts(app lynx.Lynx) lynx.OnStartHooks {

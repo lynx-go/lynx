@@ -6,7 +6,7 @@ import (
 	"gocloud.dev/server/health"
 )
 
-type LifeCycle interface {
+type LifecycleManaged interface {
 	Init(app Lynx) error
 	Start(ctx context.Context) error
 	Stop(ctx context.Context)
@@ -14,19 +14,19 @@ type LifeCycle interface {
 
 type Component interface {
 	Name() string
-	LifeCycle
+	LifecycleManaged
 }
 
-type ComponentFactory interface {
-	Component() Component
-	Option() FactoryOption
+type ComponentBuilder interface {
+	Build() Component
+	Option() BuildOption
 }
 
-type FactoryOption struct {
+type BuildOption struct {
 	Instances int `json:"instances"` // 实例数
 }
 
-func (o *FactoryOption) ensureDefaults() {
+func (o *BuildOption) ensureDefaults() {
 	if o.Instances == 0 {
 		o.Instances = 1
 	}

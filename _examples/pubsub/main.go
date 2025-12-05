@@ -49,7 +49,7 @@ func main() {
 		if err := app.Hook(broker, binder); err != nil {
 			return err
 		}
-		if err := app.HookFactory(binder.ComponentFactories()...); err != nil {
+		if err := app.Builder(binder.Builders()...); err != nil {
 			return err
 		}
 		router := pubsub.NewRouter(broker, []pubsub.Handler{

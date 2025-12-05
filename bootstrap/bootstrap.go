@@ -8,14 +8,14 @@ type Bootstrap struct {
 	StartHooks         []lynx.HookFunc
 	StopHooks          []lynx.HookFunc
 	Components         []lynx.Component
-	ComponentFactories []lynx.ComponentFactory
+	ComponentFactories []lynx.ComponentBuilder
 }
 
 func New(
 	onStars lynx.OnStartHooks,
 	onStops lynx.OnStopHooks,
 	components []lynx.Component,
-	componentFactories []lynx.ComponentFactory,
+	componentFactories []lynx.ComponentBuilder,
 ) *Bootstrap {
 	return &Bootstrap{
 		StartHooks:         onStars,
@@ -32,7 +32,7 @@ func (b *Bootstrap) Build(fl lynx.Lynx) error {
 		return err
 	}
 
-	if err := fl.HookFactory(b.ComponentFactories...); err != nil {
+	if err := fl.Builder(b.ComponentFactories...); err != nil {
 		return err
 	}
 	return nil

@@ -132,8 +132,8 @@ func (c *Consumer) Stop(ctx context.Context) {
 
 var _ lynx.Component = new(Consumer)
 
-func NewConsumerFactory(eventName string, broker pubsub.Broker, options ConsumerOptions) *ConsumerFactory {
-	return &ConsumerFactory{
+func NewConsumerBuilder(eventName string, broker pubsub.Broker, options ConsumerOptions) *ConsumerBuilder {
+	return &ConsumerBuilder{
 		options:   options,
 		instances: options.Instances,
 		broker:    broker,
@@ -141,21 +141,21 @@ func NewConsumerFactory(eventName string, broker pubsub.Broker, options Consumer
 	}
 }
 
-type ConsumerFactory struct {
+type ConsumerBuilder struct {
 	options   ConsumerOptions
 	instances int
 	broker    pubsub.Broker
 	eventName string
 }
 
-func (cf *ConsumerFactory) Component() lynx.Component {
+func (cf *ConsumerBuilder) Build() lynx.Component {
 	return NewConsumer(cf.eventName, cf.broker, cf.options)
 }
 
-func (cf *ConsumerFactory) Option() lynx.FactoryOption {
-	return lynx.FactoryOption{
+func (cf *ConsumerBuilder) Option() lynx.BuildOption {
+	return lynx.BuildOption{
 		Instances: cf.instances,
 	}
 }
 
-var _ lynx.ComponentFactory = new(ConsumerFactory)
+var _ lynx.ComponentBuilder = new(ConsumerBuilder)
