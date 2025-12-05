@@ -25,7 +25,7 @@ func main() {
 
 	cli := lynx.New(options, func(ctx context.Context, app lynx.Lynx) error {
 		app.SetLogger(zap.NewLogger(app))
-		pubSub := pubsub.NewBroker(pubsub.Options{})
+		broker := pubsub.NewBroker(pubsub.Options{})
 		binder := kafka.NewBinder(kafka.BinderOptions{
 			SubscribeOptions: map[string]kafka.ConsumerOptions{
 				"hello": {
@@ -45,20 +45,22 @@ func main() {
 					Topic:   "topic_hello",
 				},
 			},
-		}, pubSub)
-		if err := app.Hook(pubSub, binder); err != nil {
+		}, broker)
+		if err := app.Hook(broker, binder); err != nil {
 			return err
 		}
 		if err := app.HookFactory(binder.ComponentFactories()...); err != nil {
 			return err
 		}
-		router := pubsub.NewRouter(pubSub, []pubsub.Handler{
+		router := pubsub.NewRouter(broker, []pubsub.Handler{
 			&helloHandler{},
 		})
-		app.OnStart(router.Run)
+		if err := app.Hook(router); err != nil {
+			return err
+		}
 		mux := gohttp.NewServeMux()
 		mux.HandleFunc("/hello", func(writer gohttp.ResponseWriter, request *gohttp.Request) {
-			_ = pubSub.Publish(ctx, kafka.ProducerName("hello"), message.NewMessage(uuid.NewString(), []byte("hello")), pubsub.WithMessageKey(uuid.NewString()))
+			_ = broker.Publish(ctx, kafka.ProducerName("hello"), message.NewMessage(uuid.NewString(), []byte("hello")), pubsub.WithMessageKey(uuid.NewString()))
 			_, _ = writer.Write([]byte("ok"))
 		})
 		hs := http.NewServer(mux, http.WithAddr(":9099"))

@@ -91,6 +91,7 @@ func NewMessageFromKafka(kmsg kafka.Message) *message.Message {
 }
 
 func (c *Consumer) Start(ctx context.Context) error {
+	errHandler := c.options.ErrorHandlerFunc
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -98,16 +99,16 @@ func (c *Consumer) Start(ctx context.Context) error {
 		default:
 			msg, err := c.reader.FetchMessage(ctx)
 			if err != nil {
-				if he := c.options.ErrorHandlerFunc; he != nil {
-					err = he(err)
-					if err != nil {
+				if errHandler != nil {
+					if err := errHandler(err); err != nil {
 						return err
 					}
+				} else {
+					log.ErrorContext(ctx, "failed to fetch message", err, "topic", c.options.Topic)
 				}
-				return err
 			}
 			if err := c.broker.Publish(ctx, ConsumerName(c.eventName), NewMessageFromKafka(msg)); err != nil {
-				if errHandler := c.options.ErrorHandlerFunc; errHandler != nil {
+				if errHandler != nil {
 					if err := errHandler(err); err != nil {
 						return err
 					}
