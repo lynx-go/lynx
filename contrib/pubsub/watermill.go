@@ -10,16 +10,13 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	"github.com/ThreeDotsLabs/watermill/message/router/plugin"
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
-	"github.com/google/uuid"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/x/log"
 )
 
 type Options struct {
-	Publisher     message.Publisher
-	Subscriber    message.Subscriber
-	TopicNameFunc TopicNameFunc
-	TraceIDFunc   TraceIDFunc
+	Publisher  message.Publisher
+	Subscriber message.Subscriber
 }
 
 type TopicNameFunc func(string) string
@@ -118,22 +115,12 @@ func (b *broker) Publish(ctx context.Context, eventName string, msg *message.Mes
 		opt(o)
 	}
 
-	var msgId = o.MessageID
-	if msgId == "" {
-		if b.options.TraceIDFunc != nil {
-			msgId = b.options.TraceIDFunc(ctx)
-		} else {
-			msgId = uuid.NewString()
-		}
-	}
-	topicName := eventName
-	if b.options.TopicNameFunc != nil {
-		topicName = b.options.TopicNameFunc(eventName)
-	}
-	msg.UUID = msgId
 	msg.Metadata.Set(MessageKeyKey.String(), o.MessageKey)
+	for k, v := range o.Metadata {
+		msg.Metadata.Set(k, v)
+	}
 
-	return b.publisher.Publish(topicName, msg)
+	return b.publisher.Publish(eventName, msg)
 }
 
 func SetMessageKey(msg *message.Message, key string) {
@@ -153,10 +140,7 @@ func GetMessageID(msg *message.Message) string {
 }
 
 func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ...SubscribeOption) error {
-	topicName := eventName
-	if b.options.TopicNameFunc != nil {
-		topicName = b.options.TopicNameFunc(eventName)
-	}
+
 	o := &SubscribeOptions{}
 	for _, opt := range opts {
 		opt(o)
@@ -174,7 +158,7 @@ func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ..
 			return handler(msg)
 		}
 	}
-	b.router.AddConsumerHandler(handlerName, topicName, b.subscriber, handler)
+	b.router.AddConsumerHandler(handlerName, eventName, b.subscriber, handler)
 	if b.router.IsRunning() {
 		return b.router.RunHandlers(b.app.Context())
 	}

@@ -109,7 +109,7 @@ func (b *Binder) Start(ctx context.Context) error {
 
 	for k := range b.producers {
 		producer := b.producers[k]
-		if err := b.broker.Subscribe(ProducerName(k), k, func(ctx context.Context, event *message.Message) error {
+		if err := b.broker.Subscribe(ToProducerName(k), k, func(ctx context.Context, event *message.Message) error {
 			msgKey := pubsub.GetMessageKey(event)
 			return producer.Produce(ctx, NewKafkaMessageFromWatermill(event, WithMessageKey(msgKey)))
 		}); err != nil {
@@ -135,10 +135,10 @@ func (b *Binder) Stop(ctx context.Context) {
 
 var _ pubsub.Binder = new(Binder)
 
-func ProducerName(eventName string) string {
+func ToProducerName(eventName string) string {
 	return "producer:" + eventName
 }
 
-func ConsumerName(eventName string) string {
+func ToConsumerName(eventName string) string {
 	return "consumer:" + eventName
 }

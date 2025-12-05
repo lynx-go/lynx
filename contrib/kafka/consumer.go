@@ -107,7 +107,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 					log.ErrorContext(ctx, "failed to fetch message", err, "topic", c.options.Topic)
 				}
 			}
-			if err := c.broker.Publish(ctx, ConsumerName(c.eventName), NewMessageFromKafka(msg)); err != nil {
+			if err := c.broker.Publish(ctx, ToConsumerName(c.eventName), NewMessageFromKafka(msg)); err != nil {
 				if errHandler != nil {
 					if err := errHandler(err); err != nil {
 						return err

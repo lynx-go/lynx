@@ -4,7 +4,9 @@ import (
 	"context"
 
 	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/google/uuid"
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/x/encoding/json"
 )
 
 type Broker interface {
@@ -81,7 +83,6 @@ func WithAsync() SubscribeOption {
 }
 
 type PublishOptions struct {
-	MessageID  string            `json:"message_id"`
 	MessageKey string            `json:"message_key"`
 	Metadata   map[string]string `json:"metadata"`
 }
@@ -91,12 +92,6 @@ type PublishOption func(*PublishOptions)
 func WithMessageKey(key string) PublishOption {
 	return func(opts *PublishOptions) {
 		opts.MessageKey = key
-	}
-}
-
-func WithMessageID(messageId string) PublishOption {
-	return func(opts *PublishOptions) {
-		opts.MessageID = messageId
 	}
 }
 
@@ -113,4 +108,9 @@ func WithMetadataField(key, value string) PublishOption {
 		}
 		opts.Metadata[key] = value
 	}
+}
+
+func NewJSONMessage(data any) *message.Message {
+	bytes := json.MustMarshal(data)
+	return message.NewMessage(uuid.NewString(), bytes)
 }

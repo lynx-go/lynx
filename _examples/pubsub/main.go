@@ -60,7 +60,7 @@ func main() {
 		}
 		mux := gohttp.NewServeMux()
 		mux.HandleFunc("/hello", func(writer gohttp.ResponseWriter, request *gohttp.Request) {
-			_ = broker.Publish(ctx, kafka.ProducerName("hello"), message.NewMessage(uuid.NewString(), []byte("hello")), pubsub.WithMessageKey(uuid.NewString()))
+			_ = broker.Publish(ctx, kafka.ToProducerName("hello"), pubsub.NewJSONMessage(map[string]any{"message": "hello"}), pubsub.WithMessageKey(uuid.NewString()))
 			_, _ = writer.Write([]byte("ok"))
 		})
 		hs := http.NewServer(mux, http.WithAddr(":9099"))
@@ -77,7 +77,7 @@ type helloHandler struct {
 }
 
 func (h *helloHandler) EventName() string {
-	return kafka.ConsumerName("hello")
+	return kafka.ToConsumerName("hello")
 }
 
 func (h *helloHandler) HandlerName() string {
