@@ -8,9 +8,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/zap"
-"
-"github.com/lynx-go/lynx/server/http"
-"github.com/spf13/pflag"
+	"github.com/lynx-go/lynx/server/http"
+	"github.com/spf13/pflag"
 )
 
 func main() {
@@ -25,10 +24,12 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		app.OnStop(func(ctx context.Context) error {
+		if err := app.Hook(lynx.OnStart(func(ctx context.Context) error {
 			cleanup()
 			return nil
-		})
+		})); err != nil {
+			return err
+		}
 		return boot.Build(app)
 	})
 	app.Run()

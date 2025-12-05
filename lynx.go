@@ -27,10 +27,11 @@ type Lynx interface {
 	Context() context.Context
 	// CLI 注册启动的命令，用于 CLI 模式
 	CLI(cmd CommandFunc) error
-	// Component 加载组件，但只有当应用启动后才会执行 Start
-	Component(components ...Component) error
-	// ComponentBuilder 把 ComponentBuilder 注入应用中
-	ComponentBuilder(builders ...ComponentBuilder) error
+	Hook(hooks ...HookOption) error
+
+	//addComponents(components ...addComponents) error
+	//addComponentBuilders(builders ...addComponentBuilders) error
+
 	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
 	HealthCheckFunc() HealthCheckFunc
 	// Run 启用 CLI
@@ -39,7 +40,7 @@ type Lynx interface {
 	SetLogger(logger *slog.Logger)
 	// Logger 获取 logger
 	Logger(kwargs ...any) *slog.Logger
-	Hooks
+	//Hooks
 }
 
 type nameCtx struct{}
@@ -78,6 +79,23 @@ type lynx struct {
 	healthCheckers []health.Checker
 }
 
+func (app *lynx) Hook(hooks ...HookOption) error {
+	options := &hookOptions{}
+	for _, hook := range hooks {
+		hook(options)
+	}
+
+	app.hooks.onStarts = append(app.hooks.onStarts, options.onStarts...)
+	app.hooks.onStops = append(app.hooks.onStops, options.onStops...)
+	if err := app.addComponents(options.components...); err != nil {
+		return err
+	}
+	if err := app.addComponentBuilders(options.componentBuilders...); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (app *lynx) SetLogger(logger *slog.Logger) {
 	slog.SetDefault(logger)
 	app.logger = logger
@@ -90,7 +108,7 @@ func (app *lynx) HealthCheckFunc() HealthCheckFunc {
 }
 
 func (app *lynx) CLI(cmd CommandFunc) error {
-	return app.Component(NewCommand(cmd))
+	return app.addComponents(NewCommand(cmd))
 }
 
 func (app *lynx) Close() {
@@ -168,7 +186,7 @@ func (app *lynx) initConfig() error {
 	return nil
 }
 
-func (app *lynx) ComponentBuilder(builders ...ComponentBuilder) error {
+func (app *lynx) addComponentBuilders(builders ...ComponentBuilder) error {
 	for _, producer := range builders {
 		produce := producer.Build
 		options := producer.Options()
@@ -178,7 +196,7 @@ func (app *lynx) ComponentBuilder(builders ...ComponentBuilder) error {
 			comp := produce()
 			components = append(components, comp)
 		}
-		if err := app.Component(components...); err != nil {
+		if err := app.addComponents(components...); err != nil {
 			return err
 		}
 	}
@@ -201,7 +219,7 @@ func (app *lynx) Option() *Options {
 	return app.o
 }
 
-func (app *lynx) Component(components ...Component) error {
+func (app *lynx) addComponents(components ...Component) error {
 	for _, comp := range components {
 		ctx, cancel := context.WithCancel(context.Background())
 		if err := comp.Init(app); err != nil {

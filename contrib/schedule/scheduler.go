@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/x/log"
 	"github.com/robfig/cron/v3"
 )
 
@@ -16,9 +17,9 @@ type Scheduler struct {
 }
 
 type Options struct {
-	Cron   *cron.Cron
-	Logger *slog.Logger
-	Debug  bool
+	Cron         *cron.Cron
+	Logger       *slog.Logger
+	DebugEnabled bool
 }
 
 func (s *Scheduler) CheckHealth() error {
@@ -74,6 +75,12 @@ func WithCron(cron *cron.Cron) Option {
 	}
 }
 
+func WithDebugEnabled() Option {
+	return func(o *Options) {
+		o.DebugEnabled = true
+	}
+}
+
 func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	o := &Options{
 		Logger: slog.Default(),
@@ -81,27 +88,43 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	for _, opt := range opts {
 		opt(o)
 	}
-	logger := NewSlogLogger(o.Logger)
-	var cr *cron.Cron
+	logger := newSlogLogger(o.Logger, o.DebugEnabled)
+	var cronInstance *cron.Cron
 	if o.Cron != nil {
-		cr = o.Cron
+		cronInstance = o.Cron
 	} else {
-		cr = cron.New(cron.WithSeconds(), cron.WithLogger(logger), cron.WithChain(cron.Recover(logger)))
+		cronInstance = cron.New(cron.WithSeconds(), cron.WithLogger(logger), cron.WithChain(cron.Recover(logger)))
 	}
 
-	return &Scheduler{options: o, cron: cr, tasks: tasks}, nil
+	scheduler := &Scheduler{options: o, cron: cronInstance, tasks: tasks}
+	for i := range tasks {
+		task := tasks[i]
+		if _, err := scheduler.cron.AddFunc(task.Cron(), func() {
+			ctx := log.WithContext(context.Background(), "component", "scheduler", "task_name", task.Name())
+			if err := task.HandlerFunc()(ctx); err != nil {
+				log.ErrorContext(ctx, "schedule task execute error", err)
+			}
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	return scheduler, nil
 }
 
-func NewSlogLogger(slogger *slog.Logger) cron.Logger {
-	return &slogLogger{slogger}
+func newSlogLogger(slogger *slog.Logger, debugEnabled bool) cron.Logger {
+	return &slogLogger{slogger: slogger, debugEnabled: debugEnabled}
 }
 
 type slogLogger struct {
-	slogger *slog.Logger
+	slogger      *slog.Logger
+	debugEnabled bool
 }
 
 func (l *slogLogger) Info(msg string, keysAndValues ...interface{}) {
-	l.slogger.Info(msg, keysAndValues...)
+	if l.debugEnabled {
+		l.slogger.Debug(msg, keysAndValues...)
+	}
 }
 
 func (l *slogLogger) Error(err error, msg string, keysAndValues ...interface{}) {

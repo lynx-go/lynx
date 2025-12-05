@@ -7,8 +7,9 @@ import (
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/zap"
-"
+	"github.com/lynx-go/lynx/pkg/errors"
 )
+
 type Config struct {
 	Addr string `json:"addr"`
 }
@@ -30,15 +31,15 @@ func main() {
 		logger := app.Logger()
 		logger.Info("parsed config", "config", config)
 
-		app.OnStart(func(ctx context.Context) error {
+		errors.OrPanic(app.Hook(lynx.OnStart(func(ctx context.Context) error {
 			app.Logger().Info("on start")
 			return nil
-		})
+		})))
 
-		app.OnStop(func(ctx context.Context) error {
+		errors.OrPanic(app.Hook(lynx.OnStop(func(ctx context.Context) error {
 			app.Logger().Info("on stop")
 			return nil
-		})
+		})))
 
 		return app.CLI(func(ctx context.Context) error {
 			logger.Info("command executed successfully")

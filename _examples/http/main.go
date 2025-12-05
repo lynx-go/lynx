@@ -8,6 +8,7 @@ import (
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/zap"
+	"github.com/lynx-go/lynx/pkg/errors"
 	"github.com/lynx-go/lynx/server/http"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -38,7 +39,7 @@ func main() {
 		}),
 	)
 
-	app := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+	cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
 		app.SetLogger(zap.NewLogger(app))
 
 		config := &Config{}
@@ -49,15 +50,15 @@ func main() {
 		logger := app.Logger()
 		logger.Info("parsed config", "config", config)
 
-		app.OnStart(func(ctx context.Context) error {
+		errors.OrPanic(app.Hook(lynx.OnStart(func(ctx context.Context) error {
 			app.Logger().Info("on start")
 			return nil
-		})
+		})))
 
-		app.OnStop(func(ctx context.Context) error {
+		errors.OrPanic(app.Hook(lynx.OnStop(func(ctx context.Context) error {
 			app.Logger().Info("on stop")
 			return nil
-		})
+		})))
 		router := http.NewRouter()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			name := lynx.NameFromContext(app.Context())
@@ -71,20 +72,20 @@ func main() {
 		})
 
 		addr := app.Config().GetString("addr")
-		if err := app.Component(http.NewServer(router,
+		if err := app.Hook(lynx.WithComponent(http.NewServer(router,
 			http.WithAddr(addr),
 			http.WithHealthCheck(app.HealthCheckFunc()),
 			http.WithLogger(app.Logger("logger", "http-requestlog")),
-		)); err != nil {
+		))); err != nil {
 			return err
 		}
 
-		app.OnStart(func(ctx context.Context) error {
+		errors.OrPanic(app.Hook(lynx.OnStart(func(ctx context.Context) error {
 			time.Sleep(1 * time.Second)
 			return nil
-		})
+		})))
 
 		return nil
 	})
-	app.Run()
+	cli.Run()
 }
