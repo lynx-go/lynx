@@ -21,7 +21,7 @@ func main() {
 	)
 
 	cli := lynx.New(options, func(ctx context.Context, app lynx.Lynx) error {
-		app.SetLogger(zap.NewLogger(app))
+		app.SetLogger(zap.MustNewLogger(app))
 		task1 := &task{}
 		_ = app.Hook(lynx.OnStart(func(ctx context.Context) error {
 			return task1.HandlerFunc()(ctx)

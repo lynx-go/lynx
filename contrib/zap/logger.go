@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/lynx-go/lynx"
+	"github.com/samber/lo"
 	slogzap "github.com/samber/slog-zap/v2"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -20,10 +21,27 @@ func getLevel(app lynx.Lynx) string {
 	return logLevel
 }
 
-func NewLogger(app lynx.Lynx) *slog.Logger {
+func MustNewLogger(app lynx.Lynx) *slog.Logger {
+	return lo.Must1(NewLogger(app))
+}
+
+func NewLogger(app lynx.Lynx) (*slog.Logger, error) {
+	logLevel := getLevel(app)
+	zapLogger, err := NewZapLogger(logLevel)
+	if err != nil {
+		return nil, err
+	}
+	slogger, err := NewSLogger(zapLogger, logLevel)
+	if err != nil {
+		return nil, err
+	}
+
+	return slogger.With("service_id", lynx.IDFromContext(app.Context()), "service_name", lynx.NameFromContext(app.Context()), "version", lynx.VersionFromContext(app.Context())), nil
+}
+
+func NewZapLogger(logLevel string) (*zap.Logger, error) {
 	level := slog.LevelDebug
 	atomicLevel := zap.NewAtomicLevel()
-	logLevel := getLevel(app)
 
 	zapLevel := zap.DebugLevel
 	_ = level.UnmarshalText([]byte(logLevel))
@@ -33,22 +51,24 @@ func NewLogger(app lynx.Lynx) *slog.Logger {
 	zapConfig := zap.NewProductionConfig()
 	zapConfig.Level = atomicLevel
 	zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	zapLogger, _ := zapConfig.Build()
-	slog.SetLogLoggerLevel(level)
-	logger := slog.New(slogzap.Option{Level: level, Logger: zapLogger}.NewZapHandler())
-	return logger.With("service_id", lynx.IDFromContext(app.Context()), "service_name", lynx.NameFromContext(app.Context()), "version", lynx.VersionFromContext(app.Context()))
+	return zapConfig.Build()
 }
 
-func NewZapLogger(zlogger *zap.Logger, logLevel string) *slog.Logger {
+func NewSLogger(zlogger *zap.Logger, logLevel string) (*slog.Logger, error) {
 	level := slog.LevelDebug
 	atomicLevel := zap.NewAtomicLevel()
 
 	zapLevel := zap.DebugLevel
-	_ = level.UnmarshalText([]byte(logLevel))
-	_ = zapLevel.UnmarshalText([]byte(logLevel))
+	if err := level.UnmarshalText([]byte(logLevel)); err != nil {
+		return nil, err
+	}
+
+	if err := zapLevel.UnmarshalText([]byte(logLevel)); err != nil {
+		return nil, err
+	}
 	atomicLevel.SetLevel(zapLevel)
 
 	slog.SetLogLoggerLevel(level)
 	logger := slog.New(slogzap.Option{Level: level, Logger: zlogger}.NewZapHandler())
-	return logger
+	return logger, nil
 }

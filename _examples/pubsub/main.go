@@ -24,7 +24,7 @@ func main() {
 	)
 
 	cli := lynx.New(options, func(ctx context.Context, app lynx.Lynx) error {
-		app.SetLogger(zap.NewLogger(app))
+		app.SetLogger(zap.MustNewLogger(app))
 		broker := pubsub.NewBroker(pubsub.Options{})
 		binder := kafka.NewBinder(kafka.BinderOptions{
 			SubscribeOptions: map[string]kafka.ConsumerOptions{
