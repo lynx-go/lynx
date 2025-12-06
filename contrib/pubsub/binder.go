@@ -4,4 +4,5 @@ import "github.com/lynx-go/lynx"
 
 type Binder interface {
 	lynx.ServerLike
+	Builders() []lynx.ComponentBuilder
 }
