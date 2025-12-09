@@ -30,6 +30,9 @@ type Handler interface {
 	HandlerName() string
 	HandlerFunc() HandlerFunc
 }
+type HandlerOptions interface {
+	Options() []SubscribeOption
+}
 
 func MessageIDFromContext(ctx context.Context) string {
 	return ctx.Value(MessageIDKey).(string)
@@ -66,19 +69,22 @@ func (ctx msgIdCtx) String() string {
 
 var MessageIDKey = msgIdCtx{}
 
-type AsyncHandler interface {
-	Async() bool
-}
-
 type SubscribeOptions struct {
-	AutoAck bool `json:"auto_ack"`
+	AutoAck         bool `json:"auto_ack"`
+	ContinueOnError bool `json:"continue_on_error"`
 }
 
 type SubscribeOption func(*SubscribeOptions)
 
-func WithAsync() SubscribeOption {
+func WithAutoAck() SubscribeOption {
 	return func(opts *SubscribeOptions) {
 		opts.AutoAck = true
+	}
+}
+
+func WithContinueOnError() SubscribeOption {
+	return func(opts *SubscribeOptions) {
+		opts.ContinueOnError = true
 	}
 }
 
