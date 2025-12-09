@@ -70,6 +70,7 @@ func (b *broker) Init(app lynx.Lynx) error {
 	router.AddMiddleware(
 		middleware.Recoverer,
 		middleware.CorrelationID,
+		middleware.Retry{MaxRetries: 3}.Middleware,
 	)
 	serverId := lynx.IDFromContext(b.app.Context())
 	serviceName := lynx.NameFromContext(b.app.Context())
