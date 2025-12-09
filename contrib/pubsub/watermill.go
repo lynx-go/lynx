@@ -108,7 +108,7 @@ func (b *broker) Stop(ctx context.Context) {
 	}
 }
 
-func (b *broker) Publish(ctx context.Context, eventName string, msg *message.Message, opts ...PublishOption) error {
+func (b *broker) Publish(ctx context.Context, topicName string, msg *message.Message, opts ...PublishOption) error {
 	ctx = context.WithoutCancel(ctx)
 	o := &PublishOptions{}
 	for _, opt := range opts {
@@ -120,7 +120,7 @@ func (b *broker) Publish(ctx context.Context, eventName string, msg *message.Mes
 		msg.Metadata.Set(k, v)
 	}
 
-	return b.publisher.Publish(eventName, msg)
+	return b.publisher.Publish(topicName, msg)
 }
 
 func SetMessageKey(msg *message.Message, key string) {
@@ -139,7 +139,7 @@ func GetMessageID(msg *message.Message) string {
 	return msg.Metadata.Get(MessageIDKey.String())
 }
 
-func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ...SubscribeOption) error {
+func (b *broker) Subscribe(topicName, handlerName string, h HandlerFunc, opts ...SubscribeOption) error {
 
 	o := &SubscribeOptions{}
 	for _, opt := range opts {
@@ -152,13 +152,13 @@ func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ..
 
 		return h(ctx, msg)
 	}
-	if o.Async {
+	if o.AutoAck {
 		handler = func(msg *message.Message) error {
 			msg.Ack()
 			return handler(msg)
 		}
 	}
-	b.router.AddConsumerHandler(handlerName, eventName, b.subscriber, handler)
+	b.router.AddConsumerHandler(handlerName, topicName, b.subscriber, handler)
 	if b.router.IsRunning() {
 		return b.router.RunHandlers(b.app.Context())
 	}

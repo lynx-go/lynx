@@ -17,8 +17,8 @@ type Broker interface {
 }
 
 type PubSub interface {
-	Publish(ctx context.Context, eventName string, message *message.Message, opts ...PublishOption) error
-	Subscribe(eventName, handlerName string, h HandlerFunc, opts ...SubscribeOption) error
+	Publish(ctx context.Context, topicName string, message *message.Message, opts ...PublishOption) error
+	Subscribe(topicName, handlerName string, h HandlerFunc, opts ...SubscribeOption) error
 }
 
 type RawEvent []byte
@@ -71,14 +71,14 @@ type AsyncHandler interface {
 }
 
 type SubscribeOptions struct {
-	Async bool `json:"async"`
+	AutoAck bool `json:"auto_ack"`
 }
 
 type SubscribeOption func(*SubscribeOptions)
 
 func WithAsync() SubscribeOption {
 	return func(opts *SubscribeOptions) {
-		opts.Async = true
+		opts.AutoAck = true
 	}
 }
 
