@@ -5,6 +5,8 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/go-viper/mapstructure/v2"
 )
 
 type Options struct {
@@ -96,4 +98,8 @@ func NewOptions(opts ...Option) *Options {
 		o(op)
 	}
 	return op
+}
+
+func TagNameJSON(config *mapstructure.DecoderConfig) {
+	config.TagName = "json"
 }

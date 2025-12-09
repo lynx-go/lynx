@@ -123,6 +123,7 @@ func (b *Binder) Start(ctx context.Context) error {
 func (b *Binder) Stop(ctx context.Context) {
 	b.running = false
 	for k, producer := range b.producers {
+		log.InfoContext(ctx, "close kafka producer", "event_name", k)
 		err := producer.Close(ctx)
 		if err != nil {
 			log.ErrorContext(ctx, "failed to close producer", err, "producer", k)
