@@ -6,6 +6,7 @@ import (
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx/contrib/pubsub"
+	"github.com/lynx-go/x/log"
 	"github.com/segmentio/kafka-go"
 	"github.com/spf13/cast"
 )
@@ -16,9 +17,10 @@ type Producer struct {
 }
 
 type ProducerOptions struct {
-	Brokers []string
-	Topic   string
-	Writer  *kafka.Writer
+	Brokers    []string
+	Topic      string
+	Writer     *kafka.Writer
+	LogMessage bool
 }
 
 func NewProducer(options ProducerOptions) *Producer {
@@ -38,6 +40,11 @@ func NewProducer(options ProducerOptions) *Producer {
 }
 
 func (p *Producer) Produce(ctx context.Context, msgs ...kafka.Message) error {
+	if p.options.LogMessage {
+		for _, msg := range msgs {
+			log.DebugContext(ctx, "sending kafka message", "message", string(msg.Value), "topic", msg.Topic)
+		}
+	}
 	return p.writer.WriteMessages(ctx, msgs...)
 }
 

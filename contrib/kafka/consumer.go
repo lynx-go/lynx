@@ -19,6 +19,7 @@ type ConsumerOptions struct {
 	Reader           *kafka.Reader
 	ErrorHandlerFunc func(error) error
 	Instances        int
+	LogMessage       bool
 }
 
 type HandlerFunc func(ctx context.Context, msg kafka.Message) error
@@ -106,6 +107,9 @@ func (c *Consumer) Start(ctx context.Context) error {
 				} else {
 					log.ErrorContext(ctx, "failed to fetch message", err, "topic", c.options.Topic)
 				}
+			}
+			if c.options.LogMessage {
+				log.DebugContext(ctx, "recv kafka message", "message", string(msg.Value), "topic", msg.Topic, "offset", msg.Offset, "partition", msg.Partition)
 			}
 			if err := c.broker.Publish(ctx, ToConsumerName(c.eventName), NewMessage(msg)); err != nil {
 				if errHandler != nil {
