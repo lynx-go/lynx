@@ -46,16 +46,16 @@ func main() {
 				},
 			},
 		}, broker)
-		if err := app.Hook(lynx.Components(broker)); err != nil {
+		if err := app.Hooks(lynx.Components(broker)); err != nil {
 			return err
 		}
-		if err := app.Hook(lynx.Components(binder), lynx.ComponentBuilders(binder.Builders()...)); err != nil {
+		if err := app.Hooks(lynx.Components(binder), lynx.ComponentBuilders(binder.Builders()...)); err != nil {
 			return err
 		}
 		router := pubsub.NewRouter(broker, []pubsub.Handler{
 			&helloHandler{},
 		})
-		if err := app.Hook(lynx.Components(router)); err != nil {
+		if err := app.Hooks(lynx.Components(router)); err != nil {
 			return err
 		}
 		mux := gohttp.NewServeMux()
@@ -64,7 +64,7 @@ func main() {
 			_, _ = writer.Write([]byte("ok"))
 		})
 		hs := http.NewServer(mux, http.WithAddr(":9099"))
-		if err := app.Hook(lynx.Components(hs)); err != nil {
+		if err := app.Hooks(lynx.Components(hs)); err != nil {
 			return err
 		}
 

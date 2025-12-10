@@ -50,12 +50,12 @@ func main() {
 		logger := app.Logger()
 		logger.Info("parsed config", "config", config)
 
-		errors.Panic(app.Hook(lynx.OnStart(func(ctx context.Context) error {
+		errors.Fatal(app.Hooks(lynx.OnStart(func(ctx context.Context) error {
 			app.Logger().Info("on start")
 			return nil
 		})))
 
-		errors.Panic(app.Hook(lynx.OnStop(func(ctx context.Context) error {
+		errors.Fatal(app.Hooks(lynx.OnStop(func(ctx context.Context) error {
 			app.Logger().Info("on stop")
 			return nil
 		})))
@@ -72,7 +72,7 @@ func main() {
 		})
 
 		addr := app.Config().GetString("addr")
-		if err := app.Hook(lynx.Components(http.NewServer(router,
+		if err := app.Hooks(lynx.Components(http.NewServer(router,
 			http.WithAddr(addr),
 			http.WithHealthCheck(app.HealthCheckFunc()),
 			http.WithLogger(app.Logger("logger", "http-requestlog")),
@@ -80,7 +80,7 @@ func main() {
 			return err
 		}
 
-		errors.Panic(app.Hook(lynx.OnStart(func(ctx context.Context) error {
+		errors.Fatal(app.Hooks(lynx.OnStart(func(ctx context.Context) error {
 			time.Sleep(1 * time.Second)
 			return nil
 		})))

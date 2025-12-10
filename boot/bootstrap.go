@@ -26,17 +26,17 @@ func New(
 }
 
 func (b *Bootstrap) Build(fl lynx.Lynx) error {
-	if err := fl.Hook(lynx.OnStart(b.StartHooks...)); err != nil {
+	if err := fl.Hooks(lynx.OnStart(b.StartHooks...)); err != nil {
 		return err
 	}
-	if err := fl.Hook(lynx.OnStop(b.StopHooks...)); err != nil {
+	if err := fl.Hooks(lynx.OnStop(b.StopHooks...)); err != nil {
 		return err
 	}
-	if err := fl.Hook(lynx.Components(b.Components...)); err != nil {
+	if err := fl.Hooks(lynx.Components(b.Components...)); err != nil {
 		return err
 	}
 
-	if err := fl.Hook(lynx.ComponentBuilders(b.ComponentBuilders...)); err != nil {
+	if err := fl.Hooks(lynx.ComponentBuilders(b.ComponentBuilders...)); err != nil {
 		return err
 	}
 	return nil

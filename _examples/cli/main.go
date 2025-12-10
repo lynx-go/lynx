@@ -32,13 +32,13 @@ func main() {
 		logger.Info("parsed config", "config", config)
 
 		broker := pubsub.NewBroker(pubsub.Options{})
-		if err := app.Hook(lynx.Components(broker)); err != nil {
+		if err := app.Hooks(lynx.Components(broker)); err != nil {
 			return err
 		}
 		router := pubsub.NewRouter(broker, []pubsub.Handler{
 			&helloHandler{},
 		})
-		if err := app.Hook(lynx.Components(router)); err != nil {
+		if err := app.Hooks(lynx.Components(router)); err != nil {
 			return err
 		}
 

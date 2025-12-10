@@ -23,7 +23,7 @@ func main() {
 	cli := lynx.New(options, func(ctx context.Context, app lynx.Lynx) error {
 		app.SetLogger(zap.MustNewLogger(app))
 		task1 := &task{}
-		_ = app.Hook(lynx.OnStart(func(ctx context.Context) error {
+		_ = app.Hooks(lynx.OnStart(func(ctx context.Context) error {
 			return task1.HandlerFunc()(ctx)
 		}))
 		scheduler, err := schedule.NewScheduler([]schedule.Task{task1}, schedule.WithLogger(app.Logger()))
@@ -32,7 +32,7 @@ func main() {
 		}
 		mux := gohttp.NewServeMux()
 		hs := http.NewServer(mux, http.WithAddr(":8089"))
-		return app.Hook(lynx.Components(scheduler, hs))
+		return app.Hooks(lynx.Components(scheduler, hs))
 	})
 	cli.Run()
 }

@@ -26,8 +26,8 @@ type Lynx interface {
 	Context() context.Context
 	// CLI 注册启动的命令，用于 CLI 模式
 	CLI(cmd CommandFunc) error
-	// Hook 添加 OnStart/OnStop/Component/ComponentBuilder Hooks
-	Hook(hooks ...HookOption) error
+	// Hooks 添加 OnStart/OnStop/Component/ComponentBuilder Hooks
+	Hooks(hooks ...HookOption) error
 
 	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
 	HealthCheckFunc() HealthCheckFunc
@@ -76,7 +76,7 @@ type lynx struct {
 	healthCheckers []health.Checker
 }
 
-func (app *lynx) Hook(hooks ...HookOption) error {
+func (app *lynx) Hooks(hooks ...HookOption) error {
 	options := &hookOptions{}
 	for _, hook := range hooks {
 		hook(options)
@@ -159,7 +159,7 @@ func DefaultBindConfigFunc(f *pflag.FlagSet, v *viper.Viper) error {
 func (app *lynx) initConfigure() error {
 	if fn := app.o.SetFlagsFunc; fn != nil {
 		fn(app.f)
-		errors.Panic(app.f.Parse(os.Args[1:]))
+		errors.Fatal(app.f.Parse(os.Args[1:]))
 	}
 
 	if fn := app.o.BindConfigFunc; fn != nil {
@@ -167,11 +167,11 @@ func (app *lynx) initConfigure() error {
 			return err
 		}
 
-		errors.Panic(app.c.ReadInConfig())
+		errors.Fatal(app.c.ReadInConfig())
 	}
 
 	if app.o.SetFlagsFunc != nil {
-		errors.Panic(app.c.BindPFlags(app.f))
+		errors.Fatal(app.c.BindPFlags(app.f))
 	}
 
 	return nil
@@ -274,10 +274,6 @@ func (app *lynx) Run() error {
 	return app.runG.Run()
 }
 
-func (app *lynx) Hooks() Hooks {
-	return app.hooks
-}
-
 func newLynx(o *Options) Lynx {
 	o.EnsureDefaults()
 	app := &lynx{
@@ -292,6 +288,6 @@ func newLynx(o *Options) Lynx {
 		logger: slog.Default(),
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
-	errors.Panic(app.init())
+	errors.Fatal(app.init())
 	return app
 }
