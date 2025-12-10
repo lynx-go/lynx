@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
@@ -137,9 +138,9 @@ func (b *Binder) Stop(ctx context.Context) {
 var _ pubsub.Binder = new(Binder)
 
 func ToProducerName(eventName string) string {
-	return "producer:" + eventName
+	return fmt.Sprintf("%s:producer", eventName)
 }
 
 func ToConsumerName(eventName string) string {
-	return "consumer:" + eventName
+	return fmt.Sprintf("%s:consumer", eventName)
 }
