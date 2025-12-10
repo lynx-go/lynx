@@ -70,6 +70,7 @@ func (b *broker) Init(app lynx.Lynx) error {
 	router.AddMiddleware(
 		middleware.Recoverer,
 		middleware.CorrelationID,
+		middleware.Retry{MaxRetries: 3}.Middleware,
 	)
 	serverId := lynx.IDFromContext(b.app.Context())
 	serviceName := lynx.NameFromContext(b.app.Context())
@@ -150,7 +151,13 @@ func (b *broker) Subscribe(topicName, handlerName string, h HandlerFunc, opts ..
 		ctx := ContextWithMessageID(msg.Context(), msgId)
 		ctx = log.Context(ctx, log.FromContext(ctx), MessageIDKey.String(), msgId)
 
-		return h(ctx, msg)
+		if err := h(ctx, msg); err != nil {
+			log.ErrorContext(ctx, "error handling message", err)
+			if o.ContinueOnError {
+				return nil
+			}
+		}
+		return nil
 	}
 	if o.AutoAck {
 		handler = func(msg *message.Message) error {

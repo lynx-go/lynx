@@ -49,7 +49,11 @@ func NewRouter(broker Broker, handlers []Handler) *Router {
 func (r *Router) Run(ctx context.Context) error {
 	for _, h := range r.handlers {
 		log.InfoContext(ctx, "add event handler", "event_name", h.EventName(), "handler_name", h.HandlerName())
-		if err := r.broker.Subscribe(h.EventName(), h.HandlerName(), h.HandlerFunc()); err != nil {
+		var opts []SubscribeOption
+		if o, ok := h.(HandlerOptions); ok {
+			opts = append(opts, o.Options()...)
+		}
+		if err := r.broker.Subscribe(h.EventName(), h.HandlerName(), h.HandlerFunc(), opts...); err != nil {
 			return err
 		}
 	}
