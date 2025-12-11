@@ -36,7 +36,7 @@ tasks:
     cmds:
       - task: release-tag
         vars:
-          Version: contrib/pubsub/$RELEASE_VERSION
+          Version: contrib/kafka/$RELEASE_VERSION
           Comment: $RELEASE_COMMENT
 
   release-lynx-schedule:
