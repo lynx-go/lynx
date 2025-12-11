@@ -1,0 +1,55 @@
+version: '3'
+
+env:
+  RELEASE_VERSION: v0.4.8
+  RELEASE_COMMENT: v0.4.8
+
+tasks:
+  release-tag:
+    dir: '{{.USER_WORKING_DIR}}'
+    cmds:
+      - git tag -a {{ .Version }} -m {{ .Comment }}
+      - git push origin {{ .Version }}
+
+  release-lynx:
+    cmds:
+      - task: release-tag
+        vars:
+          Version: $RELEASE_VERSION
+          Comment: $RELEASE_COMMENT
+
+  release-lynx-zap:
+    cmds:
+      - task: release-tag
+        vars:
+          Version: contrib/zap/$RELEASE_VERSION
+          Comment: $RELEASE_COMMENT
+
+  release-lynx-pubsub:
+    cmds:
+      - task: release-tag
+        vars:
+          Version: contrib/pubsub/$RELEASE_VERSION
+          Comment: $RELEASE_COMMENT
+
+  release-lynx-kafka:
+    cmds:
+      - task: release-tag
+        vars:
+          Version: contrib/pubsub/$RELEASE_VERSION
+          Comment: $RELEASE_COMMENT
+
+  release-lynx-schedule:
+    cmds:
+      - task: release-tag
+        vars:
+          Version: contrib/schedule/$RELEASE_VERSION
+          Comment: $RELEASE_COMMENT
+
+  release-all:
+    cmds:
+      - task: release-lynx
+      - task: release-lynx-zap
+      - task: release-lynx-pubsub
+      - task: release-lynx-kafka
+      - task: release-lynx-schedule
