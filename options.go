@@ -79,7 +79,7 @@ func WithExitSignals(signals ...os.Signal) Option {
 	}
 }
 
-func WithShutdownTimeout(timeout time.Duration) Option {
+func WithCloseTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.CloseTimeout = timeout
 	}
