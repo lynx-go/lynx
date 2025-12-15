@@ -1,8 +1,8 @@
 version: '3'
 
 env:
-  RELEASE_VERSION: v0.4.9
-  RELEASE_COMMENT: v0.4.9
+  RELEASE_VERSION: v0.4.10
+  RELEASE_COMMENT: slog log to file
 
 tasks:
   release-tag:
