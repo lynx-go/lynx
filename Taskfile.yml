@@ -2,13 +2,13 @@ version: '3'
 
 env:
   RELEASE_VERSION: v0.4.10
-  RELEASE_COMMENT: slog log to file
+  RELEASE_COMMENT: "slog log to file"
 
 tasks:
   release-tag:
     dir: '{{.USER_WORKING_DIR}}'
     cmds:
-      - git tag -a {{ .Version }} -m {{ .Comment }}
+      - git tag -a {{ .Version }} -m "{{ .Comment }}"
       - git push origin {{ .Version }}
 
   release-all:
