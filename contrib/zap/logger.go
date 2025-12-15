@@ -39,6 +39,22 @@ func NewLogger(app lynx.Lynx) (*slog.Logger, error) {
 	return slogger.With("service_id", lynx.IDFromContext(app.Context()), "service_name", lynx.NameFromContext(app.Context()), "version", lynx.VersionFromContext(app.Context())), nil
 }
 
+func NewZapLoggerToFile(logLevel string, logFile string) (*zap.Logger, error) {
+	level := slog.LevelDebug
+	atomicLevel := zap.NewAtomicLevel()
+
+	zapLevel := zap.DebugLevel
+	_ = level.UnmarshalText([]byte(logLevel))
+	_ = zapLevel.UnmarshalText([]byte(logLevel))
+	atomicLevel.SetLevel(zapLevel)
+
+	zapConfig := zap.NewProductionConfig()
+	zapConfig.Level = atomicLevel
+	zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	zapConfig.OutputPaths = []string{logFile}
+	return zapConfig.Build()
+}
+
 func NewZapLogger(logLevel string) (*zap.Logger, error) {
 	level := slog.LevelDebug
 	atomicLevel := zap.NewAtomicLevel()

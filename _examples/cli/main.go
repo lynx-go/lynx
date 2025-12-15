@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/lynx-go/lynx/contrib/zap"
+	"github.com/lynx-go/lynx/pkg/errors"
 	"github.com/lynx-go/x/log"
 )
 
@@ -21,7 +23,16 @@ func main() {
 	)
 
 	cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
-		app.SetLogger(zap.MustNewLogger(app))
+
+		logLevel := app.Config().GetString("log-level")
+		if logLevel == "" {
+			logLevel = "debug"
+		}
+		zlogger, err := zap.NewZapLoggerToFile(logLevel, "cli.out")
+		errors.Fatal(err)
+		slogger, err := zap.NewSLogger(zlogger, logLevel)
+		errors.Fatal(err)
+		app.SetLogger(slogger)
 
 		config := &Config{}
 		if err := app.Config().Unmarshal(config); err != nil {
@@ -41,6 +52,8 @@ func main() {
 		if err := app.Hooks(lynx.Components(router)); err != nil {
 			return err
 		}
+
+		fmt.Println("hello cli")
 
 		return app.CLI(func(ctx context.Context) error {
 			if err := broker.Publish(ctx, "hello", pubsub.NewJSONMessage(map[string]any{"message": "hello world"})); err != nil {
