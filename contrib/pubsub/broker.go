@@ -14,6 +14,7 @@ type Broker interface {
 	PubSub
 	ID() string
 	IsRunning() bool
+	Binders() []Binder
 }
 
 type PubSub interface {

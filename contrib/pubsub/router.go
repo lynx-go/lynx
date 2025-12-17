@@ -53,8 +53,20 @@ func (r *Router) Run(ctx context.Context) error {
 		if o, ok := h.(HandlerOptions); ok {
 			opts = append(opts, o.Options()...)
 		}
-		if err := r.broker.Subscribe(h.EventName(), h.HandlerName(), h.HandlerFunc(), opts...); err != nil {
-			return err
+		found := false
+		for _, binder := range r.broker.Binders() {
+			topicName, ok := binder.CanSubscribe(h.EventName())
+			if ok {
+				if err := r.broker.Subscribe(topicName, h.HandlerName(), h.HandlerFunc(), opts...); err != nil {
+					return err
+				}
+				found = true
+			}
+		}
+		if !found {
+			if err := r.broker.Subscribe(h.EventName(), h.HandlerName(), h.HandlerFunc(), opts...); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

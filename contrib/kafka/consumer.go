@@ -16,10 +16,11 @@ type ConsumerOptions struct {
 	Brokers          []string
 	Topic            string
 	Group            string
-	Reader           *kafka.Reader
+	ReaderConfig     *kafka.ReaderConfig
 	ErrorHandlerFunc func(error) error
 	Instances        int
 	LogMessage       bool
+	MappedEvent      string
 }
 
 type HandlerFunc func(ctx context.Context, msg kafka.Message) error
@@ -45,16 +46,16 @@ func NewConsumer(eventName string, broker pubsub.Broker, options ConsumerOptions
 		broker:    broker,
 	}
 	consumer.ctx, consumer.closeCtx = context.WithCancel(context.Background())
-	if options.Reader != nil {
-		consumer.reader = options.Reader
-	} else {
-		reader := kafka.NewReader(kafka.ReaderConfig{
+	var readerConfig = options.ReaderConfig
+	if readerConfig == nil {
+		readerConfig = &kafka.ReaderConfig{
 			Brokers: options.Brokers,
 			Topic:   options.Topic,
 			GroupID: options.Group,
-		})
-		consumer.reader = reader
+		}
 	}
+
+	consumer.reader = kafka.NewReader(*readerConfig)
 	return consumer
 }
 

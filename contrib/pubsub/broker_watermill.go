@@ -12,22 +12,30 @@ import (
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/x/log"
+	"go.uber.org/multierr"
 )
 
 type Options struct {
-	Publisher  message.Publisher
-	Subscriber message.Subscriber
+	Publisher       message.Publisher
+	Subscriber      message.Subscriber
+	OnlyFirstBinder bool
 }
 
 type TopicNameFunc func(string) string
 type TraceIDFunc func(ctx context.Context) string
 
-func NewBroker(opts Options) Broker {
-	return &broker{
+func NewBroker(opts Options, binders []Binder) Broker {
+	b := &broker{
 		options:    &opts,
 		publisher:  opts.Publisher,
 		subscriber: opts.Subscriber,
+		binders:    binders,
 	}
+	for _, binder := range binders {
+		binder.SetBroker(b)
+	}
+
+	return b
 }
 
 type broker struct {
@@ -37,6 +45,11 @@ type broker struct {
 	publisher  message.Publisher
 	subscriber message.Subscriber
 	brokerId   string
+	binders    []Binder
+}
+
+func (b *broker) Binders() []Binder {
+	return b.binders
 }
 
 func (b *broker) ID() string {
@@ -109,7 +122,7 @@ func (b *broker) Stop(ctx context.Context) {
 	}
 }
 
-func (b *broker) Publish(ctx context.Context, topicName string, msg *message.Message, opts ...PublishOption) error {
+func (b *broker) Publish(ctx context.Context, eventName string, msg *message.Message, opts ...PublishOption) error {
 	ctx = context.WithoutCancel(ctx)
 	o := &PublishOptions{}
 	for _, opt := range opts {
@@ -120,8 +133,26 @@ func (b *broker) Publish(ctx context.Context, topicName string, msg *message.Mes
 	for k, v := range o.Metadata {
 		msg.Metadata.Set(k, v)
 	}
+	var errs error
+	var found bool
+	for _, binder := range b.binders {
+		topicName, ok := binder.CanPublish(eventName)
+		if ok {
+			err := b.publisher.Publish(topicName, msg)
+			if err != nil {
+				errs = multierr.Append(errs, err)
+			}
+			found = true
+			if b.options.OnlyFirstBinder {
+				break
+			}
+		}
+	}
+	if !found {
+		return b.publisher.Publish(eventName, msg)
+	}
 
-	return b.publisher.Publish(topicName, msg)
+	return errs
 }
 
 func SetMessageKey(msg *message.Message, key string) {
@@ -140,12 +171,12 @@ func GetMessageID(msg *message.Message) string {
 	return msg.Metadata.Get(MessageIDKey.String())
 }
 
-func (b *broker) Subscribe(topicName, handlerName string, h HandlerFunc, opts ...SubscribeOption) error {
-
+func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ...SubscribeOption) error {
 	o := &SubscribeOptions{}
 	for _, opt := range opts {
 		opt(o)
 	}
+
 	handler := func(msg *message.Message) error {
 		msgId := msg.UUID
 		ctx := ContextWithMessageID(msg.Context(), msgId)
@@ -165,7 +196,8 @@ func (b *broker) Subscribe(topicName, handlerName string, h HandlerFunc, opts ..
 			return handler(msg)
 		}
 	}
-	b.router.AddConsumerHandler(handlerName, topicName, b.subscriber, handler)
+	log.InfoContext(context.TODO(), "broker subscribing to topic", "eventName", eventName, "handlerName", handlerName)
+	b.router.AddConsumerHandler(handlerName, eventName, b.subscriber, handler)
 	if b.router.IsRunning() {
 		return b.router.RunHandlers(b.app.Context())
 	}

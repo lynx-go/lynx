@@ -17,22 +17,22 @@ type Producer struct {
 }
 
 type ProducerOptions struct {
-	Brokers    []string
-	Topic      string
-	Writer     *kafka.Writer
-	LogMessage bool
+	Brokers      []string
+	Topic        string
+	WriterConfig *kafka.WriterConfig
+	LogMessage   bool
+	MappedEvent  string
 }
 
 func NewProducer(options ProducerOptions) *Producer {
-	var writer *kafka.Writer
-	if options.Writer != nil {
-		writer = options.Writer
-	} else {
-		writer = kafka.NewWriter(kafka.WriterConfig{
+	var writerConfig = options.WriterConfig
+	if writerConfig == nil {
+		writerConfig = &kafka.WriterConfig{
 			Brokers: options.Brokers,
 			Topic:   options.Topic,
-		})
+		}
 	}
+	writer := kafka.NewWriter(*writerConfig)
 	return &Producer{
 		options: options,
 		writer:  writer,
