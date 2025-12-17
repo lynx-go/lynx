@@ -185,9 +185,13 @@ func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ..
 		if err := h(ctx, msg); err != nil {
 			log.ErrorContext(ctx, "error handling message", err, "x-message-id", msgId, "eventName", eventName, "handlerName", handlerName)
 			if o.ContinueOnError {
+				msg.Ack()
 				return nil
 			}
+			msg.Nack()
+			return err
 		}
+		msg.Ack()
 		return nil
 	}
 	if o.AutoAck {
