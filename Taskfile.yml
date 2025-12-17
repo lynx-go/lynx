@@ -1,8 +1,8 @@
 version: '3'
 
 env:
-  RELEASE_VERSION: v0.4.10
-  RELEASE_COMMENT: "slog log to file"
+  RELEASE_VERSION: v0.5.1
+  RELEASE_COMMENT: "refactor pubsub & kafka"
 
 tasks:
   release-tag:
