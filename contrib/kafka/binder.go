@@ -153,16 +153,20 @@ func (b *Binder) Start(ctx context.Context) error {
 		topicName, ok := b.CanPublish(eventName)
 		if ok {
 			log.InfoContext(ctx, "binder subscribing to topic", "eventName", eventName, "topicName", topicName)
-			if err := b.broker.Subscribe(topicName, k, func(ctx context.Context, event *message.Message) error {
-				msgKey := pubsub.GetMessageKey(event)
-				return producer.Produce(ctx, NewKafkaMessage(event, WithMessageKey(msgKey)))
-			}); err != nil {
+			if err := b.broker.Subscribe(topicName, k+"ProducerHandler", newProducerHandlerFunc(producer)); err != nil {
 				return err
 			}
 		}
 	}
 	<-b.ctx.Done()
 	return nil
+}
+
+func newProducerHandlerFunc(producer *Producer) pubsub.HandlerFunc {
+	return func(ctx context.Context, event *message.Message) error {
+		msgKey := pubsub.GetMessageKey(event)
+		return producer.Produce(ctx, NewKafkaMessage(event, WithMessageKey(msgKey)))
+	}
 }
 
 func (b *Binder) Stop(ctx context.Context) {
