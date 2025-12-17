@@ -1,7 +1,7 @@
 version: '3'
 
 env:
-  RELEASE_VERSION: v0.5.1
+  RELEASE_VERSION: v0.5.2
   RELEASE_COMMENT: "refactor pubsub & kafka"
 
 tasks:

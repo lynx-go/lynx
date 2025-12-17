@@ -5,13 +5,14 @@ go 1.24.2
 toolchain go1.24.9
 
 require (
-	github.com/google/uuid v1.6.0
-	github.com/lynx-go/x v0.0.5
+	github.com/cenkalti/backoff/v5 v5.0.2
+	github.com/go-viper/mapstructure/v2 v2.4.0
+	github.com/lynx-go/x v0.1.0
 	github.com/oklog/run v1.2.0
-	github.com/qiulin/sqldb-logger v0.0.2
+	github.com/pkg/errors v0.9.1
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
-	gocloud.dev v0.43.0
+	gocloud.dev v0.44.0
 )
 
 require (
@@ -19,7 +20,6 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/google/wire v0.7.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect

@@ -13,7 +13,7 @@ require (
 	github.com/ThreeDotsLabs/watermill v1.5.1
 	github.com/lynx-go/lynx v0.3.7
 	github.com/lynx-go/lynx/contrib/pubsub v0.0.1
-	github.com/lynx-go/x v0.0.5
+	github.com/lynx-go/x v0.1.0
 	github.com/segmentio/kafka-go v0.4.49
 	github.com/spf13/cast v1.10.0
 )
@@ -40,8 +40,9 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/spf13/viper v1.21.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	gocloud.dev v0.43.0 // indirect
+	gocloud.dev v0.44.0 // indirect
 	golang.org/x/sys v0.37.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
 )
