@@ -183,7 +183,7 @@ func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ..
 		ctx = log.Context(ctx, log.FromContext(ctx), MessageIDKey.String(), msgId)
 
 		if err := h(ctx, msg); err != nil {
-			log.ErrorContext(ctx, "error handling message", err)
+			log.ErrorContext(ctx, "error handling message", err, "x-message-id", msgId, "eventName", eventName, "handlerName", handlerName)
 			if o.ContinueOnError {
 				return nil
 			}
