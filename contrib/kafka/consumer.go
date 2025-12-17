@@ -93,6 +93,7 @@ func NewMessage(kmsg kafka.Message) *message.Message {
 }
 
 func (c *Consumer) Start(ctx context.Context) error {
+	log.InfoContext(ctx, "starting kafka consumer", "topic", c.options.Topic, "group", c.options.Group, "brokers", c.options.Brokers, "event", c.eventName)
 	errHandler := c.options.ErrorHandlerFunc
 	for {
 		select {
@@ -109,10 +110,11 @@ func (c *Consumer) Start(ctx context.Context) error {
 					log.ErrorContext(ctx, "failed to fetch message", err, "topic", c.options.Topic)
 				}
 			}
+			newMsg := NewMessage(msg)
 			if c.options.LogMessage {
-				log.DebugContext(ctx, "recv kafka message", "message", string(msg.Value), "topic", msg.Topic, "offset", msg.Offset, "partition", msg.Partition)
+				log.DebugContext(ctx, "recv kafka message", "message", string(msg.Value), "msg_id", newMsg.UUID, "topic", msg.Topic, "offset", msg.Offset, "partition", msg.Partition)
 			}
-			if err := c.broker.Publish(ctx, ToConsumerName(c.eventName), NewMessage(msg)); err != nil {
+			if err := c.broker.Publish(ctx, c.eventName, NewMessage(msg), pubsub.WithFromBinder()); err != nil {
 				if errHandler != nil {
 					if err := errHandler(err); err != nil {
 						return err
@@ -121,7 +123,11 @@ func (c *Consumer) Start(ctx context.Context) error {
 			}
 
 			if err := c.reader.CommitMessages(ctx, msg); err != nil {
-				slog.ErrorContext(ctx, "failed to commit messages", "error", err, "topic", c.options.Topic)
+				slog.ErrorContext(ctx, "failed to commit messages", "error", err, "topic", c.options.Topic, "msg_id", newMsg.UUID)
+			}
+
+			if c.options.LogMessage {
+				log.DebugContext(ctx, "processed kafka message", "topic", msg.Topic, "offset", msg.Offset, "partition", msg.Partition, "msg_id", newMsg.UUID)
 			}
 		}
 	}

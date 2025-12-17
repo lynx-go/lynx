@@ -87,6 +87,7 @@ func (app *lynx) Hooks(hooks ...HookOption) error {
 	if err := app.addComponents(options.components...); err != nil {
 		return err
 	}
+
 	if err := app.addComponentBuilders(options.componentBuilders...); err != nil {
 		return err
 	}
@@ -178,13 +179,14 @@ func (app *lynx) initConfigure() error {
 }
 
 func (app *lynx) addComponentBuilders(builders ...ComponentBuilder) error {
-	for _, producer := range builders {
-		produce := producer.Build
-		options := producer.Options()
+
+	for _, builder := range builders {
+		build := builder.Build
+		options := builder.Options()
 		options.ensureDefaults()
 		var components []Component
 		for i := 0; i < options.Instances; i++ {
-			comp := produce()
+			comp := build()
 			components = append(components, comp)
 		}
 		if err := app.addComponents(components...); err != nil {
@@ -213,10 +215,12 @@ func (app *lynx) Option() *Options {
 func (app *lynx) addComponents(components ...Component) error {
 	for _, component := range components {
 		ctx, cancel := context.WithCancel(context.Background())
+		log.InfoContext(ctx, "initializing component", "component", component.Name())
 		if err := component.Init(app); err != nil {
 			cancel()
 			return err
 		}
+		log.InfoContext(ctx, "initialized component", "component", component.Name())
 		app.runG.Add(func() error {
 			log.InfoContext(ctx, "starting component", "component", component.Name())
 			return component.Start(ctx)

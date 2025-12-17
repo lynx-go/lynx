@@ -17,6 +17,10 @@ type Component interface {
 	LifecycleManaged
 }
 
+type ComponentBuilderSet []ComponentBuilder
+
+type ComponentBuilderSetFunc func() ComponentBuilderSet
+
 type ComponentBuilder interface {
 	Build() Component
 	Options() BuildOptions

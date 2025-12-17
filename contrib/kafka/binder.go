@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
@@ -21,7 +22,7 @@ type Binder struct {
 	options                BinderOptions
 	broker                 pubsub.Broker
 	app                    lynx.Lynx
-	running                bool
+	running                atomic.Bool
 	consumerBuilders       map[string]*ConsumerBuilder
 	producers              map[string]*Producer
 	ctx                    context.Context
@@ -44,27 +45,6 @@ func (b *Binder) CanPublish(eventName string) (string, bool) {
 	return topicName, ok
 }
 
-type binderHandler struct {
-	eventName string
-	broker    pubsub.Broker
-}
-
-func (h *binderHandler) EventName() string {
-	return h.eventName
-}
-
-func (h *binderHandler) HandlerName() string {
-	return h.eventName
-}
-
-func (h *binderHandler) HandlerFunc() pubsub.HandlerFunc {
-	return func(ctx context.Context, event *message.Message) error {
-		return h.broker.Publish(ctx, h.eventName, event)
-	}
-}
-
-var _ pubsub.Handler = new(binderHandler)
-
 func getHeader(headers []kafka.Header, key string) string {
 	for _, header := range headers {
 		if header.Key == key {
@@ -78,7 +58,7 @@ func NewBinder(options BinderOptions) *Binder {
 
 	binder := &Binder{
 		options:                options,
-		running:                false,
+		running:                atomic.Bool{},
 		subscribeEventMappings: map[string]string{},
 		publishEventMappings:   map[string]string{},
 	}
@@ -100,6 +80,7 @@ func NewBinder(options BinderOptions) *Binder {
 // ConsumerBuilders 获取 Consumer 构造器
 // 因为 binder 中需要先在 Init() 中初始化 consumer builders，所以 binder.ConsumerBuilders() 不能和 binder 同时注入
 func (b *Binder) ConsumerBuilders() []lynx.ComponentBuilder {
+	log.InfoContext(b.ctx, "get kafka consumer builders")
 	builders := []lynx.ComponentBuilder{}
 	for _, builder := range b.consumerBuilders {
 		builders = append(builders, builder)
@@ -108,7 +89,7 @@ func (b *Binder) ConsumerBuilders() []lynx.ComponentBuilder {
 }
 
 func (b *Binder) CheckHealth() error {
-	if b.running {
+	if b.running.Load() {
 		return nil
 	}
 	return errors.New("kafka binder is not running")
@@ -121,7 +102,11 @@ func (b *Binder) Name() string {
 func (b *Binder) Init(app lynx.Lynx) error {
 	b.app = app
 	b.ctx, b.closeCtx = context.WithCancel(app.Context())
+	b.initConsumersAndProducers(b.ctx)
+	return nil
+}
 
+func (b *Binder) initConsumersAndProducers(ctx context.Context) {
 	builders := map[string]*ConsumerBuilder{}
 	for k, opts := range b.options.SubscribeOptions {
 		eventName := opts.MappedEvent
@@ -138,12 +123,10 @@ func (b *Binder) Init(app lynx.Lynx) error {
 		producers[k] = producer
 	}
 	b.producers = producers
-	return nil
+	log.InfoContext(ctx, "initialized kafka producers and consumers")
 }
 
 func (b *Binder) Start(ctx context.Context) error {
-	b.running = true
-
 	for k := range b.producers {
 		producer := b.producers[k]
 		eventName := producer.options.MappedEvent
@@ -152,12 +135,13 @@ func (b *Binder) Start(ctx context.Context) error {
 		}
 		topicName, ok := b.CanPublish(eventName)
 		if ok {
-			log.InfoContext(ctx, "binder subscribing to topic", "eventName", eventName, "topicName", topicName)
-			if err := b.broker.Subscribe(topicName, k+"ProducerHandler", newProducerHandlerFunc(producer)); err != nil {
+			log.InfoContext(ctx, "kafka binder subscribing to topic", "eventName", eventName, "topicName", topicName)
+			if err := b.broker.Subscribe(topicName, k+"-ProducerHandler", newProducerHandlerFunc(producer)); err != nil {
 				return err
 			}
 		}
 	}
+	b.running.CompareAndSwap(false, true)
 	<-b.ctx.Done()
 	return nil
 }
@@ -170,7 +154,7 @@ func newProducerHandlerFunc(producer *Producer) pubsub.HandlerFunc {
 }
 
 func (b *Binder) Stop(ctx context.Context) {
-	b.running = false
+	b.running.CompareAndSwap(true, false)
 	for k, producer := range b.producers {
 		log.InfoContext(ctx, "close kafka producer", "event_name", k)
 		err := producer.Close(ctx)

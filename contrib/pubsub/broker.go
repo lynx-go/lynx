@@ -92,9 +92,16 @@ func WithContinueOnError() SubscribeOption {
 type PublishOptions struct {
 	MessageKey string            `json:"message_key"`
 	Metadata   map[string]string `json:"metadata"`
+	FromBinder bool              `json:"from_binder"`
 }
 
 type PublishOption func(*PublishOptions)
+
+func WithFromBinder() PublishOption {
+	return func(opts *PublishOptions) {
+		opts.FromBinder = true
+	}
+}
 
 func WithMessageKey(key string) PublishOption {
 	return func(opts *PublishOptions) {

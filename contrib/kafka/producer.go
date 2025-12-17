@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx/contrib/pubsub"
@@ -22,14 +23,22 @@ type ProducerOptions struct {
 	WriterConfig *kafka.WriterConfig
 	LogMessage   bool
 	MappedEvent  string
+	BatchSize    int
+	BatchTimeout time.Duration
+	WriteTimeout time.Duration
+	Acks         int
+	Async        bool
 }
 
 func NewProducer(options ProducerOptions) *Producer {
 	var writerConfig = options.WriterConfig
 	if writerConfig == nil {
 		writerConfig = &kafka.WriterConfig{
-			Brokers: options.Brokers,
-			Topic:   options.Topic,
+			Brokers:      options.Brokers,
+			Topic:        options.Topic,
+			BatchSize:    options.BatchSize,
+			BatchTimeout: options.BatchTimeout,
+			Async:        options.Async,
 		}
 	}
 	writer := kafka.NewWriter(*writerConfig)
@@ -45,7 +54,15 @@ func (p *Producer) Produce(ctx context.Context, msgs ...kafka.Message) error {
 			log.DebugContext(ctx, "sending kafka message", "message", string(msg.Value), "topic", msg.Topic)
 		}
 	}
-	return p.writer.WriteMessages(ctx, msgs...)
+	if err := p.writer.WriteMessages(ctx, msgs...); err != nil {
+		return err
+	}
+	if p.options.LogMessage {
+		for _, msg := range msgs {
+			log.DebugContext(ctx, "sent kafka message", "message", string(msg.Value), "topic", msg.Topic)
+		}
+	}
+	return nil
 }
 
 func (p *Producer) Close(ctx context.Context) error {

@@ -135,16 +135,19 @@ func (b *broker) Publish(ctx context.Context, eventName string, msg *message.Mes
 	}
 	var errs error
 	var found bool
-	for _, binder := range b.binders {
-		topicName, ok := binder.CanPublish(eventName)
-		if ok {
-			err := b.publisher.Publish(topicName, msg)
-			if err != nil {
-				errs = multierr.Append(errs, err)
-			}
-			found = true
-			if b.options.OnlyFirstBinder {
-				break
+	if !o.FromBinder {
+		for _, binder := range b.binders {
+			topicName, ok := binder.CanPublish(eventName)
+			if ok {
+				log.DebugContext(ctx, "publishing binder event", "eventName", eventName, "topicName", topicName)
+				err := b.publisher.Publish(topicName, msg)
+				if err != nil {
+					errs = multierr.Append(errs, err)
+				}
+				found = true
+				if b.options.OnlyFirstBinder {
+					break
+				}
 			}
 		}
 	}
