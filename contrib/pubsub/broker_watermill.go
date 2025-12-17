@@ -73,7 +73,7 @@ func (b *broker) Name() string {
 
 func (b *broker) Init(app lynx.Lynx) error {
 	b.app = app
-	slogger := b.app.Logger("component", "pubsub-watermill")
+	slogger := b.app.Logger("component", "watermill")
 	logger := watermill.NewSlogLogger(slogger)
 
 	router, err := message.NewRouter(message.RouterConfig{}, logger)
