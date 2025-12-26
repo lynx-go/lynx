@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
@@ -109,6 +110,8 @@ func (c *Consumer) Start(ctx context.Context) error {
 				} else {
 					log.ErrorContext(ctx, "failed to fetch message", err, "topic", c.options.Topic)
 				}
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
 			newMsg := NewMessage(msg)
 			if c.options.LogMessage {
