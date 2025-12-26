@@ -191,7 +191,6 @@ func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ..
 				msg.Ack()
 				return nil
 			}
-			msg.Nack()
 			return err
 		}
 		msg.Ack()
