@@ -138,7 +138,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 
 func (c *Consumer) Stop(ctx context.Context) {
 	if err := c.reader.Close(); err != nil {
-		slog.ErrorContext(ctx, "Error closing kafka reader", err)
+		slog.ErrorContext(ctx, "Error closing kafka reader", "error", err)
 	}
 	c.closeCtx()
 	log.InfoContext(ctx, "stopped kafka consumer", "event_name", c.eventName)
