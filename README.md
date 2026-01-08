@@ -1,7 +1,7 @@
 # Lynx
 
 [![Go Version](https://img.shields.io/badge/Go-1.24.2+-00ADD8?logo=go)](https://golang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 Lynx 是一个轻量级的 Go 微服务框架，提供了开箱即用的应用生命周期管理、组件系统、HTTP 服务器、健康检查、配置管理和事件驱动等功能。
 
@@ -289,7 +289,7 @@ github.com/lynx-go/lynx/contrib/zap
 
 ## License
 
-MIT License
+Apache License 2.0
 
 ## 贡献
 
