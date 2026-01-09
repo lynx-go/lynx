@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/lynx-go/lynx"
@@ -51,21 +52,35 @@ func NewServer(opts ...Option) *Server {
 		opt(&options)
 	}
 
-	return &Server{
+	s := &Server{
 		logger: options.Logger,
 		o:      options,
 	}
+	grpcOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(
+			interceptor.Logging(s.logger),
+			interceptor.Recovery(),
+		),
+	}
+
+	s.server = grpc.NewServer(grpcOpts...)
+
+	// Register health check service
+	s.health = health.NewServer()
+	grpc_health_v1.RegisterHealthServer(s.server, s.health)
+	return s
 }
 
 type Server struct {
-	server *grpc.Server
-	logger *slog.Logger
-	o      Options
-	health *health.Server
+	server  *grpc.Server
+	logger  *slog.Logger
+	o       Options
+	health  *health.Server
+	running atomic.Bool
 }
 
 func (s *Server) CheckHealth() error {
-	if s.server == nil {
+	if !s.running.Load() {
 		return grpc.ErrServerStopped
 	}
 	// Check if the server is still serving
@@ -88,25 +103,13 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
-	opts := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(
-			interceptor.Logging(s.logger),
-			interceptor.Recovery(),
-		),
-	}
-
-	s.server = grpc.NewServer(opts...)
-
-	// Register health check service
-	s.health = health.NewServer()
-	grpc_health_v1.RegisterHealthServer(s.server, s.health)
-
 	// Set the server to healthy
 	s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	// Register reflection service
 	reflection.Register(s.server)
 
+	s.running.Store(true)
 	return s.server.Serve(lis)
 }
 
@@ -115,6 +118,7 @@ func (s *Server) Stop(ctx context.Context) {
 	if s.health != nil {
 		s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	}
+	s.running.Store(false)
 	if s.server != nil {
 		s.server.GracefulStop()
 	}
