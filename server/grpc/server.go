@@ -17,9 +17,10 @@ import (
 )
 
 type Options struct {
-	Addr    string
-	Timeout time.Duration
-	Logger  *slog.Logger
+	Addr         string
+	Timeout      time.Duration
+	Logger       *slog.Logger
+	Interceptors []grpc.UnaryServerInterceptor
 }
 
 type Option func(*Options)
@@ -42,6 +43,12 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+func WithInterceptors(interceptors ...grpc.UnaryServerInterceptor) Option {
+	return func(o *Options) {
+		o.Interceptors = append(o.Interceptors, interceptors...)
+	}
+}
+
 func NewServer(opts ...Option) *Server {
 	options := Options{
 		Addr:    ":9090",
@@ -56,10 +63,14 @@ func NewServer(opts ...Option) *Server {
 		logger: options.Logger,
 		o:      options,
 	}
+	interceptors := []grpc.UnaryServerInterceptor{
+		interceptor.Logging(s.logger),
+		interceptor.Recovery(),
+	}
+	interceptors = append(interceptors, options.Interceptors...)
 	grpcOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(
-			interceptor.Logging(s.logger),
-			interceptor.Recovery(),
+			interceptors...,
 		),
 	}
 

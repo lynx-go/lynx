@@ -1,8 +1,8 @@
 version: '3'
 
 env:
-  RELEASE_VERSION: v0.6.1
-  RELEASE_COMMENT: "release v0.6.1 fix grpc"
+  RELEASE_VERSION: v0.6.2
+  RELEASE_COMMENT: "release v0.6.2 fix grpc"
 
 tasks:
   release-tag:
