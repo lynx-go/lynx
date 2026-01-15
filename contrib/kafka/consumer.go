@@ -110,7 +110,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 			if err != nil {
 				hasError = true
 				retryAfter := backOff.NextBackOff()
-				log.WarnContext(ctx, fmt.Sprintf("failed to fetch message, retry after %s", retryAfter.String()), err, "topic", c.options.Topic)
+				log.ErrorContext(ctx, fmt.Sprintf("failed to fetch message, retry after %s", retryAfter.String()), err, "topic", c.options.Topic)
 				if errorCallback != nil {
 					errorCallback(err)
 				}

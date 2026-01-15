@@ -1,8 +1,8 @@
 version: '3'
 
 env:
-  RELEASE_VERSION: v0.6.4
-  RELEASE_COMMENT: "release v0.6.4: kafka consume error retry backoff"
+  RELEASE_VERSION: v0.6.5
+  RELEASE_COMMENT: "release v0.6.5: handle kafka consume error"
 
 tasks:
   release-tag:
