@@ -26,3 +26,5 @@ go.work.sum
 
 .idea
 *.log
+
+.claude/settings.local.json
