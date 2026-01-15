@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/lynx-go/x/log"
@@ -95,7 +96,9 @@ func NewMessage(kmsg kafka.Message) *message.Message {
 
 func (c *Consumer) Start(ctx context.Context) error {
 	log.InfoContext(ctx, "starting kafka consumer", "topic", c.options.Topic, "group", c.options.Group, "brokers", c.options.Brokers, "event", c.eventName)
-	errHandler := c.options.ErrorHandlerFunc
+	errorHandlerFunc := c.options.ErrorHandlerFunc
+	backOff := backoff.NewExponentialBackOff()
+	hasError := false
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -103,23 +106,28 @@ func (c *Consumer) Start(ctx context.Context) error {
 		default:
 			msg, err := c.reader.FetchMessage(ctx)
 			if err != nil {
-				if errHandler != nil {
-					if err := errHandler(err); err != nil {
+				hasError = true
+				if errorHandlerFunc != nil {
+					if err := errorHandlerFunc(err); err != nil {
 						return err
 					}
 				} else {
 					log.ErrorContext(ctx, "failed to fetch message", err, "topic", c.options.Topic)
 				}
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(backOff.NextBackOff())
 				continue
+			}
+			if hasError {
+				backOff.Reset()
+				hasError = false
 			}
 			newMsg := NewMessage(msg)
 			if c.options.LogMessage {
 				log.DebugContext(ctx, "recv kafka message", "message", string(msg.Value), "msg_id", newMsg.UUID, "topic", msg.Topic, "offset", msg.Offset, "partition", msg.Partition)
 			}
 			if err := c.broker.Publish(ctx, c.eventName, NewMessage(msg), pubsub.WithFromBinder()); err != nil {
-				if errHandler != nil {
-					if err := errHandler(err); err != nil {
+				if errorHandlerFunc != nil {
+					if err := errorHandlerFunc(err); err != nil {
 						return err
 					}
 				}

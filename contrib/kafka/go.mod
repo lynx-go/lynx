@@ -11,6 +11,7 @@ replace (
 
 require (
 	github.com/ThreeDotsLabs/watermill v1.5.1
+	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/lynx-go/lynx v0.3.7
 	github.com/lynx-go/lynx/contrib/pubsub v0.0.1
 	github.com/lynx-go/x v0.1.0
@@ -19,7 +20,6 @@ require (
 )
 
 require (
-	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
