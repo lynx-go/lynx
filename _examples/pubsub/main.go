@@ -31,9 +31,8 @@ func main() {
 					Brokers: []string{"127.0.0.1:19092"},
 					Topic:   "topic_hello",
 					Group:   "consumer_hello",
-					ErrorHandlerFunc: func(err error) error {
+					ErrorCallbackFunc: func(err error) {
 						log.ErrorContext(ctx, "failed to handle event", err)
-						return nil
 					},
 					Instances:   3,
 					MappedEvent: "hello",

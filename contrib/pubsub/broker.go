@@ -97,7 +97,7 @@ type PublishOptions struct {
 
 type PublishOption func(*PublishOptions)
 
-func WithFromBinder() PublishOption {
+func FromBinder() PublishOption {
 	return func(opts *PublishOptions) {
 		opts.FromBinder = true
 	}

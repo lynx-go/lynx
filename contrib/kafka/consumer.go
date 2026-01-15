@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -15,14 +16,15 @@ import (
 )
 
 type ConsumerOptions struct {
-	Brokers          []string
-	Topic            string
-	Group            string
-	ReaderConfig     *kafka.ReaderConfig
-	ErrorHandlerFunc func(error) error
-	Instances        int
-	LogMessage       bool
-	MappedEvent      string
+	Brokers                  []string
+	Topic                    string
+	Group                    string
+	ReaderConfig             *kafka.ReaderConfig
+	ErrorCallbackFunc        func(error)
+	Instances                int
+	LogMessage               bool
+	MappedEvent              string
+	StillCommitOnBrokerError bool // commit message to kafka while failed forward to broker
 }
 
 type HandlerFunc func(ctx context.Context, msg kafka.Message) error
@@ -96,7 +98,7 @@ func NewMessage(kmsg kafka.Message) *message.Message {
 
 func (c *Consumer) Start(ctx context.Context) error {
 	log.InfoContext(ctx, "starting kafka consumer", "topic", c.options.Topic, "group", c.options.Group, "brokers", c.options.Brokers, "event", c.eventName)
-	errorHandlerFunc := c.options.ErrorHandlerFunc
+	errorCallback := c.options.ErrorCallbackFunc
 	backOff := backoff.NewExponentialBackOff()
 	hasError := false
 	for {
@@ -107,14 +109,12 @@ func (c *Consumer) Start(ctx context.Context) error {
 			msg, err := c.reader.FetchMessage(ctx)
 			if err != nil {
 				hasError = true
-				if errorHandlerFunc != nil {
-					if err := errorHandlerFunc(err); err != nil {
-						return err
-					}
-				} else {
-					log.ErrorContext(ctx, "failed to fetch message", err, "topic", c.options.Topic)
+				retryAfter := backOff.NextBackOff()
+				log.WarnContext(ctx, fmt.Sprintf("failed to fetch message, retry after %s", retryAfter.String()), err, "topic", c.options.Topic)
+				if errorCallback != nil {
+					errorCallback(err)
 				}
-				time.Sleep(backOff.NextBackOff())
+				time.Sleep(retryAfter)
 				continue
 			}
 			if hasError {
@@ -125,14 +125,12 @@ func (c *Consumer) Start(ctx context.Context) error {
 			if c.options.LogMessage {
 				log.DebugContext(ctx, "recv kafka message", "message", string(msg.Value), "msg_id", newMsg.UUID, "topic", msg.Topic, "offset", msg.Offset, "partition", msg.Partition)
 			}
-			if err := c.broker.Publish(ctx, c.eventName, NewMessage(msg), pubsub.WithFromBinder()); err != nil {
-				if errorHandlerFunc != nil {
-					if err := errorHandlerFunc(err); err != nil {
-						return err
-					}
+			if err := c.broker.Publish(ctx, c.eventName, NewMessage(msg), pubsub.FromBinder()); err != nil {
+				log.ErrorContext(ctx, "failed to publish message to broker", err, "topic", c.options.Topic, "msg_id", newMsg.UUID)
+				if !c.options.StillCommitOnBrokerError {
+					continue
 				}
 			}
-
 			if err := c.reader.CommitMessages(ctx, msg); err != nil {
 				slog.ErrorContext(ctx, "failed to commit messages", "error", err, "topic", c.options.Topic, "msg_id", newMsg.UUID)
 			}
