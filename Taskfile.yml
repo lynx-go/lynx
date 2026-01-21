@@ -1,8 +1,8 @@
 version: '3'
 
 env:
-  RELEASE_VERSION: v0.6.6
-  RELEASE_COMMENT: "release v0.6.6: handle kafka consume error"
+  RELEASE_VERSION: v0.7.9
+  RELEASE_COMMENT: "release v0.7.0: bootstrap.Bind()"
 
 tasks:
   release-tag:

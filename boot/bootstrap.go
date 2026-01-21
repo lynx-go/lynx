@@ -28,7 +28,7 @@ func New(
 	}
 }
 
-func (b *Bootstrap) Run(app lynx.Lynx) error {
+func (b *Bootstrap) Bind(app lynx.Lynx) error {
 	if err := app.Hooks(lynx.OnStart(b.StartHooks...)); err != nil {
 		return err
 	}

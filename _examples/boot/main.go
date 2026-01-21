@@ -30,7 +30,7 @@ func main() {
 		})); err != nil {
 			return err
 		}
-		return boot.Run(app)
+		return boot.Bind(app)
 	})
 	app.Run()
 }
