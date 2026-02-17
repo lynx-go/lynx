@@ -53,6 +53,10 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./contrib/kafka` - Kafka binder/consumer/producer
 - `./contrib/schedule` - Cron scheduler
 
+Server implementations (within main module):
+- `./server/http` - HTTP server using gocloud.dev/server
+- `./server/grpc` - gRPC server with interceptors
+
 Each contrib module has its own `go.mod` with local replace directives pointing to `../../` for the main lynx module.
 
 ## Architecture
@@ -64,13 +68,17 @@ All managed units implement the `Component` interface (component.go:15-18):
 ```go
 type Component interface {
     Name() string
+    LifecycleManaged
+}
+
+type LifecycleManaged interface {
     Init(app Lynx) error
     Start(ctx context.Context) error
     Stop(ctx context.Context)
 }
 ```
 
-Components are registered via `app.Hooks(lynx.Components(...))` and automatically managed through their lifecycle.
+Components are registered via `app.Hooks(lynx.Components(...))` and automatically managed through their lifecycle. Components implementing `health.Checker` are automatically added to health checks.
 
 **ComponentBuilder**
 For dynamic component creation with configurable instance counts (component.go:24-27):
@@ -122,7 +130,7 @@ The `boot` package provides a structured way to organize application initializat
 2. Define a Wire injector function with `//go:build wireinject` tag
 3. Register providers in a ProviderSet
 4. Wire generates the dependency graph
-5. Bootstrap.Build() registers all hooks/components with the app
+5. Bootstrap.Bind(app) registers all hooks/components with the app
 
 This pattern is particularly useful for complex applications with many components.
 
@@ -132,6 +140,12 @@ This pattern is particularly useful for complex applications with many component
 - Wraps `gocloud.dev/server` with health check integration
 - Support for request logging and custom timeouts
 - Automatically registers health check endpoint at `/health`
+
+**gRPC Server** (server/grpc/server.go)
+- Wraps `google.golang.org/grpc` with health check and reflection
+- Built-in logging and recovery interceptors
+- Custom interceptors via `WithInterceptors()` option
+- Health check service registered at `grpc.health.v1.Health`
 
 **PubSub** (contrib/pubsub/)
 - Abstraction over Watermill message library
@@ -157,15 +171,21 @@ This pattern is particularly useful for complex applications with many component
 
 ### Health Checks
 
-Components implementing `health.Checker` interface are automatically registered in the health check endpoint. HTTP server exposes these at `/health`.
+Components implementing `health.Checker` interface are automatically registered in the health check endpoint. HTTP server exposes these at `/health`, gRPC server uses `grpc.health.v1.Health`.
+
+### Application Entry Point
+
+The `lynx.New()` function creates a `*CLI` instance with two run methods:
+- `cli.Run()` - Panics on error
+- `cli.RunE()` - Returns error for handling
 
 ## Code Style
 
 - Uses EditorConfig: Go files use tabs, 4-space indent
 - No unit tests currently exist in the codebase
 - Uses slog for structured logging (Go 1.24+)
-- Error handling uses `github.com/pkg/errors`
-- Uses panic-based fatal error handling via `pkg/errors` package
+- Uses local `pkg/errors` package with panic-based `Fatal()` helper
+- External logging utilities from `github.com/lynx-go/x/log`
 
 ## Common Patterns
 
