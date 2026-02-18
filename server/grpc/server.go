@@ -130,8 +130,23 @@ func (s *Server) Stop(ctx context.Context) {
 		s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	}
 	s.running.Store(false)
-	if s.server != nil {
+	if s.server == nil {
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
 		s.server.GracefulStop()
+	}()
+
+	select {
+	case <-done:
+		s.logger.Info("gRPC server stopped gracefully")
+	case <-ctx.Done():
+		s.logger.Warn("graceful stop timeout, forcing stop")
+		s.server.Stop()
+		<-done
 	}
 }
 

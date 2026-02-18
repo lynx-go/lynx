@@ -2,11 +2,12 @@ package lynx
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 
-	"github.com/lynx-go/lynx/pkg/errors"
 	"github.com/lynx-go/x/log"
 	"github.com/oklog/run"
 	"github.com/spf13/pflag"
@@ -53,30 +54,49 @@ type versionCtx struct{}
 var keyVersion = versionCtx{}
 
 func IDFromContext(ctx context.Context) string {
-	return ctx.Value(keyId).(string)
+	if v := ctx.Value(keyId); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 func VersionFromContext(ctx context.Context) string {
-	return ctx.Value(keyVersion).(string)
+	if v := ctx.Value(keyVersion); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 func NameFromContext(ctx context.Context) string {
-	return ctx.Value(keyName).(string)
+	if v := ctx.Value(keyName); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 type lynx struct {
 	*hooks
-	o              *Options
-	f              *pflag.FlagSet
-	c              *viper.Viper
-	ctx            context.Context
-	cancelCtx      context.CancelFunc
-	runG           *run.Group
-	logger         *slog.Logger
-	healthCheckers []health.Checker
+	mu              sync.Mutex
+	o               *Options
+	f               *pflag.FlagSet
+	c               *viper.Viper
+	ctx             context.Context
+	cancelCtx       context.CancelFunc
+	runG            *run.Group
+	logger          *slog.Logger
+	healthCheckers  []health.Checker
 }
 
 func (app *lynx) Hooks(hooks ...HookOption) error {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
 	options := &hookOptions{}
 	for _, hook := range hooks {
 		hook(options)
@@ -106,6 +126,8 @@ func (app *lynx) HealthCheckFunc() HealthCheckFunc {
 }
 
 func (app *lynx) CLI(cmd CommandFunc) error {
+	app.mu.Lock()
+	defer app.mu.Unlock()
 	return app.addComponents(NewCommand(cmd))
 }
 
@@ -160,7 +182,9 @@ func DefaultBindConfigFunc(f *pflag.FlagSet, v *viper.Viper) error {
 func (app *lynx) initConfigure() error {
 	if fn := app.o.SetFlagsFunc; fn != nil {
 		fn(app.f)
-		errors.Fatal(app.f.Parse(os.Args[1:]))
+		if err := app.f.Parse(os.Args[1:]); err != nil {
+			return fmt.Errorf("failed to parse flags: %w", err)
+		}
 	}
 
 	if fn := app.o.BindConfigFunc; fn != nil {
@@ -168,11 +192,15 @@ func (app *lynx) initConfigure() error {
 			return err
 		}
 
-		errors.Fatal(app.c.ReadInConfig())
+		if err := app.c.ReadInConfig(); err != nil {
+			return fmt.Errorf("failed to read config: %w", err)
+		}
 	}
 
 	if app.o.SetFlagsFunc != nil {
-		errors.Fatal(app.c.BindPFlags(app.f))
+		if err := app.c.BindPFlags(app.f); err != nil {
+			return fmt.Errorf("failed to bind flags: %w", err)
+		}
 	}
 
 	return nil
@@ -278,7 +306,7 @@ func (app *lynx) Run() error {
 	return app.runG.Run()
 }
 
-func newLynx(o *Options) Lynx {
+func newLynx(o *Options) (Lynx, error) {
 	o.EnsureDefaults()
 	app := &lynx{
 		o:    o,
@@ -292,6 +320,8 @@ func newLynx(o *Options) Lynx {
 		logger: slog.Default(),
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
-	errors.Fatal(app.init())
-	return app
+	if err := app.init(); err != nil {
+		return nil, err
+	}
+	return app, nil
 }
