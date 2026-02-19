@@ -42,7 +42,7 @@ func main() {
 		logger := app.Logger()
 		logger.Info("parsed config", "config", config)
 
-		broker := pubsub.NewBroker(pubsub.Options{})
+		broker := pubsub.NewBroker(pubsub.Options{}, nil)
 		if err := app.Hooks(lynx.Components(broker)); err != nil {
 			return err
 		}
