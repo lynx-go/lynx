@@ -12,6 +12,12 @@ import (
 	"gocloud.dev/server/health"
 )
 
+// Default values for HTTP server configuration.
+const (
+	DefaultHTTPAddr = ":8080"
+	DefaultTimeout  = 60 * time.Second
+)
+
 func NewRouter() *http.ServeMux {
 	return http.NewServeMux()
 }
@@ -58,8 +64,8 @@ func WithRequestLog(requestLog bool) Option {
 
 func NewServer(handler http.Handler, opts ...Option) *Server {
 	options := Options{
-		Addr:    ":8080",
-		Timeout: time.Second * 60,
+		Addr:    DefaultHTTPAddr,
+		Timeout: DefaultTimeout,
 		Logger:  slog.Default(),
 	}
 	for _, opt := range opts {

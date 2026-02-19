@@ -88,3 +88,33 @@ func NewSLogger(zlogger *zap.Logger, logLevel string) (*slog.Logger, error) {
 	logger := slog.New(slogzap.Option{Level: level, Logger: zlogger}.NewZapHandler())
 	return logger, nil
 }
+
+// SyncableLogger wraps slog.Logger with the underlying zap.Logger for Sync capability.
+// This allows flushing buffered log entries before application exit.
+type SyncableLogger struct {
+	*slog.Logger
+	zapLogger *zap.Logger
+}
+
+// Sync flushes any buffered log entries. Should be called before application exit.
+func (l *SyncableLogger) Sync() error {
+	return l.zapLogger.Sync()
+}
+
+// NewSyncableLogger creates a SyncableLogger that wraps both slog and zap loggers.
+// This allows using slog for structured logging while retaining the ability to Sync.
+func NewSyncableLogger(app lynx.Lynx) (*SyncableLogger, error) {
+	logLevel := getLevel(app)
+	zapLogger, err := NewZapLogger(logLevel)
+	if err != nil {
+		return nil, err
+	}
+	slogger, err := NewSLogger(zapLogger, logLevel)
+	if err != nil {
+		return nil, err
+	}
+	return &SyncableLogger{
+		Logger:    slogger.With("service_id", lynx.IDFromContext(app.Context()), "service_name", lynx.NameFromContext(app.Context()), "version", lynx.VersionFromContext(app.Context())),
+		zapLogger: zapLogger,
+	}, nil
+}

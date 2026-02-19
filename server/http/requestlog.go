@@ -8,28 +8,21 @@ import (
 	"gocloud.dev/server/requestlog"
 )
 
-// A RequestLogger writes log entries in the Stackdriver forward JSON
-// format.  The record's fields are suitable for consumption by
-// Stackdriver Logging.
+// RequestLogger writes log entries in the Stackdriver forward JSON format.
+// The record's fields are suitable for consumption by Stackdriver Logging.
+// slog.Logger is concurrency-safe, so no additional locking is required.
 type RequestLogger struct {
-	onErr func(error)
-
-	//mu     sync.Mutex
+	onErr  func(error)
 	logger *slog.Logger
-	//w   io.Writer
-	//buf bytes.Buffer
-	//enc *json.Encoder
 }
 
-// NewRequestLogger returns a new logger that writes to w.
+// NewRequestLogger returns a new logger.
 // A nil onErr is treated the same as func(error) {}.
 func NewRequestLogger(logger *slog.Logger, onErr func(error)) *RequestLogger {
-	l := &RequestLogger{
+	return &RequestLogger{
 		logger: logger,
 		onErr:  onErr,
 	}
-	//l.enc = json.NewEncoder(&l.buf)
-	return l
 }
 
 // Log writes a record to its writer.  Multiple concurrent calls will
@@ -41,10 +34,6 @@ func (l *RequestLogger) Log(ent *requestlog.Entry) {
 }
 
 func (l *RequestLogger) log(ent *requestlog.Entry) error {
-	//defer l.mu.Unlock()
-	//l.mu.Lock()
-
-	//l.buf.Reset()
 	// r represents the fluent-plugin-google-cloud format
 	// See https://github.com/GoogleCloudPlatform/fluent-plugin-google-cloud/blob/f93046d92f7722db2794a042c3f2dde5df91a90b/lib/fluent/plugin/out_google_cloud.rb#L145
 	// to check json tags
@@ -84,10 +73,6 @@ func (l *RequestLogger) log(ent *requestlog.Entry) error {
 	r.Timestamp.Nanos = t.Nanosecond()
 	r.TraceID = ent.TraceID.String()
 	r.SpanID = ent.SpanID.String()
-	//if err := l.enc.Encode(r); err != nil {
-	//	return err
-	//}
-	//_, err := l.w.Write(l.buf.Bytes())
 	l.logger.Debug("requestlog", "request", r)
 	return nil
 }

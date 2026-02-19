@@ -53,6 +53,8 @@ type versionCtx struct{}
 
 var keyVersion = versionCtx{}
 
+// IDFromContext returns the instance ID from the context.
+// Returns an empty string if the ID is not set or has wrong type.
 func IDFromContext(ctx context.Context) string {
 	if v := ctx.Value(keyId); v != nil {
 		if s, ok := v.(string); ok {
@@ -62,6 +64,8 @@ func IDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// VersionFromContext returns the application version from the context.
+// Returns an empty string if the version is not set or has wrong type.
 func VersionFromContext(ctx context.Context) string {
 	if v := ctx.Value(keyVersion); v != nil {
 		if s, ok := v.(string); ok {
@@ -71,6 +75,8 @@ func VersionFromContext(ctx context.Context) string {
 	return ""
 }
 
+// NameFromContext returns the application name from the context.
+// Returns an empty string if the name is not set or has wrong type.
 func NameFromContext(ctx context.Context) string {
 	if v := ctx.Value(keyName); v != nil {
 		if s, ok := v.(string); ok {
@@ -296,11 +302,16 @@ func (app *lynx) Run() error {
 		ctx, cancelCtx := context.WithTimeout(context.TODO(), closeTimeout)
 		defer cancelCtx()
 		app.Logger().Info("run on-stop hooks")
+		var shutdownErrors ShutdownErrors
 		for _, fn := range app.hooks.onStops {
 			fn := fn
-			if err := fn(ctx); err != nil {
-				app.logger.ErrorContext(app.ctx, "on-stop hook called error", "error", err)
+			if hookErr := fn(ctx); hookErr != nil {
+				app.logger.ErrorContext(app.ctx, "on-stop hook called error", "error", hookErr)
+				shutdownErrors.Add(hookErr)
 			}
+		}
+		if shutdownErrors.HasErrors() {
+			app.logger.ErrorContext(app.ctx, "shutdown completed with errors", "errors", shutdownErrors.Error())
 		}
 	})
 	return app.runG.Run()

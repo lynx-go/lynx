@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/lynx-go/lynx"
@@ -23,6 +24,9 @@ type Options struct {
 }
 
 func (s *Scheduler) CheckHealth() error {
+	if s.cron == nil {
+		return errors.New("scheduler not initialized")
+	}
 	return nil
 }
 

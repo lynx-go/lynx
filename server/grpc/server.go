@@ -16,6 +16,12 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
+// Default values for gRPC server configuration.
+const (
+	DefaultGRPCAddr = ":9090"
+	DefaultTimeout  = 60 * time.Second
+)
+
 type Options struct {
 	Addr         string
 	Timeout      time.Duration
@@ -51,8 +57,8 @@ func WithInterceptors(interceptors ...grpc.UnaryServerInterceptor) Option {
 
 func NewServer(opts ...Option) *Server {
 	options := Options{
-		Addr:    ":9090",
-		Timeout: time.Second * 60,
+		Addr:    DefaultGRPCAddr,
+		Timeout: DefaultTimeout,
 		Logger:  slog.Default(),
 	}
 	for _, opt := range opts {
@@ -83,11 +89,12 @@ func NewServer(opts ...Option) *Server {
 }
 
 type Server struct {
-	server  *grpc.Server
-	logger  *slog.Logger
-	o       Options
-	health  *health.Server
-	running atomic.Bool
+	server   *grpc.Server
+	listener net.Listener
+	logger   *slog.Logger
+	o        Options
+	health   *health.Server
+	running  atomic.Bool
 }
 
 func (s *Server) CheckHealth() error {
@@ -113,6 +120,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.listener = lis
 
 	// Set the server to healthy
 	s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_SERVING)
@@ -130,6 +138,12 @@ func (s *Server) Stop(ctx context.Context) {
 		s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	}
 	s.running.Store(false)
+
+	// Close the listener first to stop accepting new connections
+	if s.listener != nil {
+		s.listener.Close()
+	}
+
 	if s.server == nil {
 		return
 	}
