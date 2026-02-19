@@ -2,11 +2,27 @@ package lynx
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"syscall"
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
+)
+
+// Default values for Options.
+const (
+	DefaultName        = "lynx-app"
+	DefaultCloseTimout = 5 * time.Second
+	MinCloseTimeout    = 1 * time.Second
+	MaxCloseTimeout    = 5 * time.Minute
+)
+
+// Validation errors for Options.
+var (
+	ErrNameTooLong       = errors.New("name must be at most 63 characters")
+	ErrCloseTimeoutTooSmall = errors.New("close timeout must be at least 1 second")
+	ErrCloseTimeoutTooLarge = errors.New("close timeout must be at most 5 minutes")
 )
 
 type Options struct {
@@ -24,13 +40,41 @@ func (o *Options) String() string {
 	return string(bs)
 
 }
+
+// Validate checks if the Options values are valid.
+func (o *Options) Validate() error {
+	if len(o.Name) > 63 {
+		return ErrNameTooLong
+	}
+	if o.CloseTimeout > 0 {
+		if o.CloseTimeout < MinCloseTimeout {
+			return ErrCloseTimeoutTooSmall
+		}
+		if o.CloseTimeout > MaxCloseTimeout {
+			return ErrCloseTimeoutTooLarge
+		}
+	}
+	return nil
+}
+
+// EnsureDefaults sets default values for unset fields and validates the options.
 func (o *Options) EnsureDefaults() {
 	if o.ID == "" {
 		o.ID, _ = os.Hostname()
 	}
 
 	if o.Name == "" {
-		o.Name = "lynx-app"
+		o.Name = DefaultName
+	}
+
+	if o.CloseTimeout == 0 {
+		o.CloseTimeout = DefaultCloseTimout
+	}
+
+	if len(o.ExitSignals) == 0 {
+		o.ExitSignals = []os.Signal{
+			syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL,
+		}
 	}
 }
 
@@ -88,11 +132,9 @@ func WithCloseTimeout(timeout time.Duration) Option {
 func NewOptions(opts ...Option) *Options {
 	id, _ := os.Hostname()
 	op := &Options{
-		ID: id,
-		ExitSignals: []os.Signal{
-			syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL,
-		},
-		CloseTimeout: time.Second * 5,
+		ID:           id,
+		ExitSignals:  []os.Signal{syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL},
+		CloseTimeout: DefaultCloseTimout,
 	}
 	for _, o := range opts {
 		o(op)

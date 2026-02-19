@@ -299,20 +299,26 @@ func (app *lynx) Run() error {
 		}
 	}, func(err error) {
 		app.Logger().Info("shutting down")
-		ctx, cancelCtx := context.WithTimeout(context.TODO(), closeTimeout)
+
+		// Step 1: Cancel context first to signal components to stop
+		app.cancelCtx()
+
+		// Step 2: Execute OnStop hooks with timeout
+		ctx, cancelCtx := context.WithTimeout(context.Background(), closeTimeout)
 		defer cancelCtx()
 		app.Logger().Info("run on-stop hooks")
 		var shutdownErrors ShutdownErrors
 		for _, fn := range app.hooks.onStops {
 			fn := fn
 			if hookErr := fn(ctx); hookErr != nil {
-				app.logger.ErrorContext(app.ctx, "on-stop hook called error", "error", hookErr)
+				app.logger.ErrorContext(ctx, "on-stop hook called error", "error", hookErr)
 				shutdownErrors.Add(hookErr)
 			}
 		}
 		if shutdownErrors.HasErrors() {
-			app.logger.ErrorContext(app.ctx, "shutdown completed with errors", "errors", shutdownErrors.Error())
+			app.logger.ErrorContext(ctx, "shutdown completed with errors", "errors", shutdownErrors.Error())
 		}
+		// Step 3: run.Group will automatically stop all components after this
 	})
 	return app.runG.Run()
 }
