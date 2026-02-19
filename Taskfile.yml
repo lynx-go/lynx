@@ -1,8 +1,8 @@
 version: '3'
 
-env:
-  RELEASE_VERSION: v0.7.1
-  RELEASE_COMMENT: "release v0.7.1"
+vars:
+  Version: v0.7.1
+  Comment: "release v0.7.1"
 
 tasks:
   release-tag:
@@ -15,21 +15,21 @@ tasks:
     cmds:
       - task: release-tag
         vars:
-          Version: $RELEASE_VERSION
-          Comment: $RELEASE_COMMENT
+          Version: "{{.Version}}"
+          Comment: "{{.Comment}}"
       - task: release-tag
         vars:
-          Version: contrib/zap/$RELEASE_VERSION
-          Comment: $RELEASE_COMMENT
+          Version: "contrib/zap/{{.Version}}"
+          Comment: "{{.Comment}}"
       - task: release-tag
         vars:
-          Version: contrib/pubsub/$RELEASE_VERSION
-          Comment: $RELEASE_COMMENT
+          Version: "contrib/pubsub/{{.Version}}"
+          Comment: "{{.Comment}}"
       - task: release-tag
         vars:
-          Version: contrib/kafka/$RELEASE_VERSION
-          Comment: $RELEASE_COMMENT
+          Version: "contrib/kafka/{{.Version}}"
+          Comment: "{{.Comment}}"
       - task: release-tag
         vars:
-          Version: contrib/schedule/$RELEASE_VERSION
-          Comment: $RELEASE_COMMENT
+          Version: "contrib/schedule/{{.Version}}"
+          Comment: "{{.Comment}}"
