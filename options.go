@@ -12,15 +12,15 @@ import (
 
 // Default values for Options.
 const (
-	DefaultName        = "lynx-app"
-	DefaultCloseTimout = 5 * time.Second
-	MinCloseTimeout    = 1 * time.Second
-	MaxCloseTimeout    = 5 * time.Minute
+	DefaultName         = "lynx-app"
+	DefaultCloseTimeout = 5 * time.Second
+	MinCloseTimeout     = 1 * time.Second
+	MaxCloseTimeout     = 5 * time.Minute
 )
 
 // Validation errors for Options.
 var (
-	ErrNameTooLong       = errors.New("name must be at most 63 characters")
+	ErrNameTooLong          = errors.New("name must be at most 63 characters")
 	ErrCloseTimeoutTooSmall = errors.New("close timeout must be at least 1 second")
 	ErrCloseTimeoutTooLarge = errors.New("close timeout must be at most 5 minutes")
 )
@@ -68,7 +68,7 @@ func (o *Options) EnsureDefaults() {
 	}
 
 	if o.CloseTimeout == 0 {
-		o.CloseTimeout = DefaultCloseTimout
+		o.CloseTimeout = DefaultCloseTimeout
 	}
 
 	if len(o.ExitSignals) == 0 {
@@ -134,7 +134,7 @@ func NewOptions(opts ...Option) *Options {
 	op := &Options{
 		ID:           id,
 		ExitSignals:  []os.Signal{syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL},
-		CloseTimeout: DefaultCloseTimout,
+		CloseTimeout: DefaultCloseTimeout,
 	}
 	for _, o := range opts {
 		o(op)
@@ -144,4 +144,8 @@ func NewOptions(opts ...Option) *Options {
 
 func TagNameJSON(config *mapstructure.DecoderConfig) {
 	config.TagName = "json"
+}
+
+func TagNameYAML(config *mapstructure.DecoderConfig) {
+	config.TagName = "yaml"
 }
