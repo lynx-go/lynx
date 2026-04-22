@@ -10,13 +10,13 @@ import (
 )
 
 type Options struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Version        string         `json:"version"`
-	SetFlagsFunc   SetFlagsFunc   `json:"-"`
-	BindConfigFunc BindConfigFunc `json:"-"`
-	ExitSignals    []os.Signal    `json:"-"`
-	CloseTimeout   time.Duration  `json:"close_timeout"`
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	Version         string         `json:"version"`
+	SetFlagsFunc    SetFlagsFunc   `json:"-"`
+	BindConfigFunc  BindConfigFunc `json:"-"`
+	ExitSignals     []os.Signal    `json:"-"`
+	ShutdownTimeout time.Duration  `json:"shutdown_timeout"`
 }
 
 func (o *Options) String() string {
@@ -79,9 +79,9 @@ func WithExitSignals(signals ...os.Signal) Option {
 	}
 }
 
-func WithCloseTimeout(timeout time.Duration) Option {
+func WithShutdownTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
-		o.CloseTimeout = timeout
+		o.ShutdownTimeout = timeout
 	}
 }
 
@@ -92,7 +92,7 @@ func NewOptions(opts ...Option) *Options {
 		ExitSignals: []os.Signal{
 			syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL,
 		},
-		CloseTimeout: time.Second * 5,
+		ShutdownTimeout: time.Second * 5,
 	}
 	for _, o := range opts {
 		o(op)

@@ -253,7 +253,7 @@ func (app *lynx) Run() error {
 		app.Close()
 	})
 
-	closeTimeout := app.o.CloseTimeout
+	shutdownTimeout := app.o.ShutdownTimeout
 	app.runG.Add(func() error {
 		exitCh := make(chan os.Signal, 1)
 		signal.Notify(exitCh, app.o.ExitSignals...)
@@ -265,7 +265,7 @@ func (app *lynx) Run() error {
 		}
 	}, func(err error) {
 		app.Logger().Info("shutting down")
-		ctx, cancelCtx := context.WithTimeout(context.TODO(), closeTimeout)
+		ctx, cancelCtx := context.WithTimeout(context.TODO(), shutdownTimeout)
 		defer cancelCtx()
 		app.Logger().Info("run on-stop hooks")
 		for _, fn := range app.hooks.onStops {

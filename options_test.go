@@ -12,8 +12,8 @@ func TestNewOptions(t *testing.T) {
 		t.Error("expected ID to be set, got empty string")
 	}
 
-	if opts.CloseTimeout != 5*time.Second {
-		t.Errorf("expected CloseTimeout = 5s, got %v", opts.CloseTimeout)
+	if opts.ShutdownTimeout != 5*time.Second {
+		t.Errorf("expected CloseTimeout = 5s, got %v", opts.ShutdownTimeout)
 	}
 
 	if len(opts.ExitSignals) == 0 {
@@ -102,10 +102,10 @@ func TestOptionFuncs(t *testing.T) {
 		},
 		{
 			name: "WithCloseTimeout",
-			opts: []Option{WithCloseTimeout(10 * time.Second)},
+			opts: []Option{WithShutdownTimeout(10 * time.Second)},
 			checkFunc: func(t *testing.T, o *Options) {
-				if o.CloseTimeout != 10*time.Second {
-					t.Errorf("expected CloseTimeout = 10s, got %v", o.CloseTimeout)
+				if o.ShutdownTimeout != 10*time.Second {
+					t.Errorf("expected CloseTimeout = 10s, got %v", o.ShutdownTimeout)
 				}
 			},
 		},

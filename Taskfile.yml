@@ -1,8 +1,8 @@
 version: '3'
 
 env:
-  RELEASE_VERSION: v0.5.8
-  RELEASE_COMMENT: "release v0.5.8"
+  RELEASE_VERSION: v0.7.2
+  RELEASE_COMMENT: "release v0.7.2"
 
 tasks:
   release-tag:
