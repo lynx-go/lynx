@@ -12,10 +12,10 @@ import (
 
 // Default values for Options.
 const (
-	DefaultName         = "lynx-app"
-	DefaultCloseTimeout = 5 * time.Second
-	MinCloseTimeout     = 1 * time.Second
-	MaxCloseTimeout     = 5 * time.Minute
+	DefaultName            = "lynx-app"
+	DefaultShutdownTimeout = 5 * time.Second
+	MinCloseTimeout        = 1 * time.Second
+	MaxCloseTimeout        = 5 * time.Minute
 )
 
 // Validation errors for Options.
@@ -26,13 +26,13 @@ var (
 )
 
 type Options struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Version        string         `json:"version"`
-	SetFlagsFunc   SetFlagsFunc   `json:"-"`
-	BindConfigFunc BindConfigFunc `json:"-"`
-	ExitSignals    []os.Signal    `json:"-"`
-	CloseTimeout   time.Duration  `json:"close_timeout"`
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	Version         string         `json:"version"`
+	SetFlagsFunc    SetFlagsFunc   `json:"-"`
+	BindConfigFunc  BindConfigFunc `json:"-"`
+	ExitSignals     []os.Signal    `json:"-"`
+	ShutdownTimeout time.Duration  `json:"shutdown_timeout"`
 }
 
 func (o *Options) String() string {
@@ -46,11 +46,11 @@ func (o *Options) Validate() error {
 	if len(o.Name) > 63 {
 		return ErrNameTooLong
 	}
-	if o.CloseTimeout > 0 {
-		if o.CloseTimeout < MinCloseTimeout {
+	if o.ShutdownTimeout > 0 {
+		if o.ShutdownTimeout < MinCloseTimeout {
 			return ErrCloseTimeoutTooSmall
 		}
-		if o.CloseTimeout > MaxCloseTimeout {
+		if o.ShutdownTimeout > MaxCloseTimeout {
 			return ErrCloseTimeoutTooLarge
 		}
 	}
@@ -67,8 +67,8 @@ func (o *Options) EnsureDefaults() {
 		o.Name = DefaultName
 	}
 
-	if o.CloseTimeout == 0 {
-		o.CloseTimeout = DefaultCloseTimeout
+	if o.ShutdownTimeout == 0 {
+		o.ShutdownTimeout = DefaultShutdownTimeout
 	}
 
 	if len(o.ExitSignals) == 0 {
@@ -123,18 +123,18 @@ func WithExitSignals(signals ...os.Signal) Option {
 	}
 }
 
-func WithCloseTimeout(timeout time.Duration) Option {
+func WithShutdownTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
-		o.CloseTimeout = timeout
+		o.ShutdownTimeout = timeout
 	}
 }
 
 func NewOptions(opts ...Option) *Options {
 	id, _ := os.Hostname()
 	op := &Options{
-		ID:           id,
-		ExitSignals:  []os.Signal{syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL},
-		CloseTimeout: DefaultCloseTimeout,
+		ID:              id,
+		ExitSignals:     []os.Signal{syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL},
+		ShutdownTimeout: DefaultShutdownTimeout,
 	}
 	for _, o := range opts {
 		o(op)

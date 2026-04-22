@@ -88,15 +88,15 @@ func NameFromContext(ctx context.Context) string {
 
 type lynx struct {
 	*hooks
-	mu              sync.Mutex
-	o               *Options
-	f               *pflag.FlagSet
-	c               *viper.Viper
-	ctx             context.Context
-	cancelCtx       context.CancelFunc
-	runG            *run.Group
-	logger          *slog.Logger
-	healthCheckers  []health.Checker
+	mu             sync.Mutex
+	o              *Options
+	f              *pflag.FlagSet
+	c              *viper.Viper
+	ctx            context.Context
+	cancelCtx      context.CancelFunc
+	runG           *run.Group
+	logger         *slog.Logger
+	healthCheckers []health.Checker
 }
 
 func (app *lynx) Hooks(hooks ...HookOption) error {
@@ -287,7 +287,6 @@ func (app *lynx) Run() error {
 		app.Close()
 	})
 
-	closeTimeout := app.o.CloseTimeout
 	app.runG.Add(func() error {
 		exitCh := make(chan os.Signal, 1)
 		signal.Notify(exitCh, app.o.ExitSignals...)
@@ -304,7 +303,8 @@ func (app *lynx) Run() error {
 		app.cancelCtx()
 
 		// Step 2: Execute OnStop hooks with timeout
-		ctx, cancelCtx := context.WithTimeout(context.Background(), closeTimeout)
+		timeout := app.o.ShutdownTimeout
+		ctx, cancelCtx := context.WithTimeout(context.Background(), timeout)
 		defer cancelCtx()
 		app.Logger().Info("run on-stop hooks")
 		var shutdownErrors ShutdownErrors
