@@ -63,10 +63,18 @@ func NewConsumer(eventName string, broker pubsub.Broker, options ConsumerOptions
 	return consumer
 }
 
+// messageReader is the subset of *kafka.Reader used by Consumer.
+// It exists as a seam so tests can inject a fake reader.
+type messageReader interface {
+	FetchMessage(ctx context.Context) (kafka.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
+}
+
 type Consumer struct {
 	app       lynx.Lynx
 	options   ConsumerOptions
-	reader    *kafka.Reader
+	reader    messageReader
 	eventName string
 	broker    pubsub.Broker
 	ctx       context.Context

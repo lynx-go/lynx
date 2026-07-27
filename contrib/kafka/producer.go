@@ -12,9 +12,16 @@ import (
 	"github.com/spf13/cast"
 )
 
+// messageWriter is the subset of *kafka.Writer used by Producer.
+// It exists as a seam so tests can inject a fake writer.
+type messageWriter interface {
+	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
+}
+
 type Producer struct {
 	options ProducerOptions
-	writer  *kafka.Writer
+	writer  messageWriter
 }
 
 type ProducerOptions struct {
