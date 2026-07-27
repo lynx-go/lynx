@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	"gocloud.dev/server/health"
 	"gocloud.dev/server/requestlog"
 )
@@ -170,6 +173,58 @@ func TestTimeoutAppliedToServer(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("Start() did not return after Stop()")
+	}
+}
+
+func TestServerTracingProducesSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	// Grab a free port, then release it for the server to bind.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	srv := NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), WithAddr(addr), WithTracerProvider(tp))
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start(context.Background()) }()
+	waitForDial(t, addr)
+
+	resp, err := http.Get("http://" + addr + "/")
+	if err != nil {
+		t.Fatalf("GET error = %v", err)
+	}
+	_ = resp.Body.Close()
+
+	srv.Stop(context.Background())
+	select {
+	case err := <-startErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Start() error = %v, want nil or http.ErrServerClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start() did not return after Stop()")
+	}
+
+	spans := recorder.Ended()
+	if len(spans) == 0 {
+		t.Fatal("expected at least one span from the HTTP request, got none")
+	}
+	var found bool
+	for _, s := range spans {
+		if s.SpanKind() == trace.SpanKindServer {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a server-kind span, got: %v", spans)
 	}
 }
 

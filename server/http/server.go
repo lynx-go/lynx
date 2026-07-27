@@ -8,6 +8,9 @@ import (
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/x/log"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"gocloud.dev/server"
 	"gocloud.dev/server/health"
 )
@@ -23,11 +26,14 @@ func NewRouter() *http.ServeMux {
 }
 
 type Options struct {
-	Addr        string
-	Timeout     time.Duration
-	HealthCheck lynx.HealthCheckFunc
-	Logger      *slog.Logger
-	RequestLog  bool
+	Addr           string
+	Timeout        time.Duration
+	HealthCheck    lynx.HealthCheckFunc
+	Logger         *slog.Logger
+	RequestLog     bool
+	TracerProvider trace.TracerProvider
+	MeterProvider  metric.MeterProvider
+	Propagator     propagation.TextMapPropagator
 }
 
 type Option func(*Options)
@@ -59,6 +65,32 @@ func WithLogger(l *slog.Logger) Option {
 func WithRequestLog(requestLog bool) Option {
 	return func(o *Options) {
 		o.RequestLog = requestLog
+	}
+}
+
+// WithTracerProvider sets the OpenTelemetry TracerProvider used by the
+// server's instrumentation. When nil, the global (noop by default) provider
+// is used. The provider's lifecycle (init, shutdown) is the caller's
+// responsibility.
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(o *Options) {
+		o.TracerProvider = tp
+	}
+}
+
+// WithMeterProvider sets the OpenTelemetry MeterProvider used by the server's
+// instrumentation. When nil, the global (noop by default) provider is used.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(o *Options) {
+		o.MeterProvider = mp
+	}
+}
+
+// WithPropagator sets the propagator used to extract trace context from
+// incoming requests. When nil, the global propagator is used.
+func WithPropagator(p propagation.TextMapPropagator) Option {
+	return func(o *Options) {
+		o.Propagator = p
 	}
 }
 
@@ -108,9 +140,11 @@ func (s *Server) Start(ctx context.Context) error {
 		driver.Server.WriteTimeout = s.o.Timeout
 	}
 	opts := &server.Options{
-		HealthChecks: healthChecks,
-		//TraceTextMapPropagator: sdserver.NewTextMapPropagator(),
-		Driver: driver,
+		HealthChecks:           healthChecks,
+		TraceProvider:          s.o.TracerProvider,
+		MetricsProvider:        s.o.MeterProvider,
+		TraceTextMapPropagator: s.o.Propagator,
+		Driver:                 driver,
 	}
 	if s.o.RequestLog {
 		opts.RequestLogger = NewRequestLogger(s.logger, func(err error) {
