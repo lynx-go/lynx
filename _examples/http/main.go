@@ -8,7 +8,6 @@ import (
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/zap"
-	"github.com/lynx-go/lynx/pkg/errors"
 	"github.com/lynx-go/lynx/server/http"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -50,15 +49,19 @@ func main() {
 		logger := app.Logger()
 		logger.Info("parsed config", "config", config)
 
-		errors.Fatal(app.Hooks(lynx.OnStart(func(ctx context.Context) error {
+		if err := app.Hooks(lynx.OnStart(func(ctx context.Context) error {
 			app.Logger().Info("on start")
 			return nil
-		})))
+		})); err != nil {
+			return err
+		}
 
-		errors.Fatal(app.Hooks(lynx.OnStop(func(ctx context.Context) error {
+		if err := app.Hooks(lynx.OnStop(func(ctx context.Context) error {
 			app.Logger().Info("on stop")
 			return nil
-		})))
+		})); err != nil {
+			return err
+		}
 		router := http.NewRouter()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			name := lynx.NameFromContext(app.Context())
@@ -80,10 +83,12 @@ func main() {
 			return err
 		}
 
-		errors.Fatal(app.Hooks(lynx.OnStart(func(ctx context.Context) error {
+		if err := app.Hooks(lynx.OnStart(func(ctx context.Context) error {
 			time.Sleep(1 * time.Second)
 			return nil
-		})))
+		})); err != nil {
+			return err
+		}
 
 		return nil
 	})

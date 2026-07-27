@@ -32,14 +32,14 @@ Lynx 目前为团队内部使用的 Go 微服务框架，计划对外推广开�
 
 ### A3 测试与 CI（本阶段重心）
 
-- [ ] 核心包：生命周期启停顺序、Hooks/addComponents 并发安全（`-race`）、优雅关闭与 OnStop 错误聚合、command 重试退避、Options 校验、context helpers
-- [ ] `contrib/schedule`、`contrib/pubsub` 单元测试（schedule 用测试锁住 A1 修复）
-- [ ] `contrib/kafka` mock 测试先行，集成测试（testcontainers）后置
-- [ ] GitHub Actions：多模块 `go test -race -cover` + golangci-lint + 覆盖率上传
+- [x] 核心包：生命周期启停顺序、Hooks/addComponents 并发安全（`-race`）、优雅关闭与 OnStop 错误聚合、command 重试退避、Options 校验、context helpers
+- [x] `contrib/schedule`、`contrib/pubsub` 单元测试（schedule 用测试锁住 A1 修复）
+- [x] `contrib/kafka` mock 测试先行，集成测试（testcontainers）后置
+- [x] GitHub Actions：多模块 `go test -race -cover` + golangci-lint + 覆盖率上传
 
 ### A4 API 精简
 
-- [ ] 移除 `pkg/errors`（与根 `errors.go` 职责重叠，仅示例引用），示例改用标准错误处理
+- [x] 移除 `pkg/errors`（与根 `errors.go` 职责重叠，仅示例引用），示例改用标准错误处理
 
 ## Phase B — 可观测性（v0.9.0）
 

@@ -8,7 +8,6 @@ import (
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/lynx-go/lynx/contrib/zap"
-	"github.com/lynx-go/lynx/pkg/errors"
 	"github.com/lynx-go/x/log"
 )
 
@@ -29,9 +28,13 @@ func main() {
 			logLevel = "debug"
 		}
 		zlogger, err := zap.NewZapLoggerToFile(logLevel, "cli.out")
-		errors.Fatal(err)
+		if err != nil {
+			return err
+		}
 		slogger, err := zap.NewSLogger(zlogger, logLevel)
-		errors.Fatal(err)
+		if err != nil {
+			return err
+		}
 		app.SetLogger(slogger)
 
 		config := &Config{}
