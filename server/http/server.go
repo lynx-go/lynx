@@ -34,6 +34,7 @@ type Options struct {
 	TracerProvider trace.TracerProvider
 	MeterProvider  metric.MeterProvider
 	Propagator     propagation.TextMapPropagator
+	Middlewares    []Middleware
 }
 
 type Option func(*Options)
@@ -152,7 +153,7 @@ func (s *Server) Start(ctx context.Context) error {
 		})
 	}
 
-	hs := server.New(s.handler, opts)
+	hs := server.New(chain(s.handler, s.o.Middlewares), opts)
 	s.Server = hs
 	return s.ListenAndServe(s.o.Addr)
 }
