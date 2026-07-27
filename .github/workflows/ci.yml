@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.24.2"
+
+jobs:
+  test:
+    name: test (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { module: ., flag: core }
+          - { module: _examples, flag: examples }
+          - { module: contrib/kafka, flag: kafka }
+          - { module: contrib/pubsub, flag: pubsub }
+          - { module: contrib/schedule, flag: schedule }
+          - { module: contrib/zap, flag: zap }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # go.work is gitignored; recreate the workspace so contrib modules
+      # resolve github.com/lynx-go/lynx to the checked-out source.
+      - name: Initialize Go workspace
+        run: go work init . _examples contrib/kafka contrib/pubsub contrib/schedule contrib/zap
+
+      - name: Vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+      - name: Test
+        working-directory: ${{ matrix.module }}
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: ${{ matrix.module }}/coverage.out
+          flags: ${{ matrix.flag }}
+          fail_ci_if_error: false
+
+  lint:
+    name: lint (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [., _examples, contrib/kafka, contrib/pubsub, contrib/schedule, contrib/zap]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Initialize Go workspace
+        run: go work init . _examples contrib/kafka contrib/pubsub contrib/schedule contrib/zap
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.8.0
+          working-directory: ${{ matrix.module }}
