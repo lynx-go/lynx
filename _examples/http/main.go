@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	gohttp "net/http"
 	"time"
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/zap"
 	"github.com/lynx-go/lynx/server/http"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
@@ -75,10 +77,29 @@ func main() {
 		})
 
 		addr := app.Config().GetString("addr")
+
+		shutdown, tp, mp, propagator, err := setupOTel()
+		if err != nil {
+			return err
+		}
+		// Provider lifecycle belongs to the caller: shut them down when the
+		// app stops, not when this setup function returns.
+		if err := app.Hooks(lynx.OnStop(func(ctx context.Context) error {
+			return shutdown(ctx)
+		})); err != nil {
+			return err
+		}
+
+		router.Handle("/metrics", promhttp.Handler())
+
 		if err := app.Hooks(lynx.Components(http.NewServer(router,
 			http.WithAddr(addr),
 			http.WithHealthCheck(app.HealthCheckFunc()),
 			http.WithLogger(app.Logger("logger", "http-requestlog")),
+			http.WithTracerProvider(tp),
+			http.WithMeterProvider(mp),
+			http.WithPropagator(propagator),
+			http.WithMiddleware(latencyMiddleware),
 		))); err != nil {
 			return err
 		}
@@ -93,4 +114,13 @@ func main() {
 		return nil
 	})
 	cli.Run()
+}
+
+// latencyMiddleware is a demo lynx http.Middleware logging request latency.
+func latencyMiddleware(next gohttp.Handler) gohttp.Handler {
+	return gohttp.HandlerFunc(func(w gohttp.ResponseWriter, r *gohttp.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		slog.Default().InfoContext(r.Context(), "request handled", "path", r.URL.Path, "latency", time.Since(start))
+	})
 }
