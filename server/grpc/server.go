@@ -10,6 +10,9 @@ import (
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/server/grpc/interceptor"
 	"github.com/lynx-go/x/log"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -23,10 +26,12 @@ const (
 )
 
 type Options struct {
-	Addr         string
-	Timeout      time.Duration
-	Logger       *slog.Logger
-	Interceptors []grpc.UnaryServerInterceptor
+	Addr           string
+	Timeout        time.Duration
+	Logger         *slog.Logger
+	Interceptors   []grpc.UnaryServerInterceptor
+	TracerProvider trace.TracerProvider
+	MeterProvider  metric.MeterProvider
 }
 
 type Option func(*Options)
@@ -55,6 +60,23 @@ func WithInterceptors(interceptors ...grpc.UnaryServerInterceptor) Option {
 	}
 }
 
+// WithTracerProvider sets the OpenTelemetry TracerProvider used by the
+// server's stats handler. When nil, the global (noop by default) provider is
+// used. The provider's lifecycle is the caller's responsibility.
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(o *Options) {
+		o.TracerProvider = tp
+	}
+}
+
+// WithMeterProvider sets the OpenTelemetry MeterProvider used by the server's
+// stats handler. When nil, the global (noop by default) provider is used.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(o *Options) {
+		o.MeterProvider = mp
+	}
+}
+
 func NewServer(opts ...Option) *Server {
 	options := Options{
 		Addr:    DefaultGRPCAddr,
@@ -74,7 +96,15 @@ func NewServer(opts ...Option) *Server {
 		interceptor.Recovery(),
 	}
 	interceptors = append(interceptors, options.Interceptors...)
+	statsOpts := []otelgrpc.Option{}
+	if options.TracerProvider != nil {
+		statsOpts = append(statsOpts, otelgrpc.WithTracerProvider(options.TracerProvider))
+	}
+	if options.MeterProvider != nil {
+		statsOpts = append(statsOpts, otelgrpc.WithMeterProvider(options.MeterProvider))
+	}
 	grpcOpts := []grpc.ServerOption{
+		grpc.StatsHandler(otelgrpc.NewServerHandler(statsOpts...)),
 		grpc.ChainUnaryInterceptor(
 			interceptors...,
 		),

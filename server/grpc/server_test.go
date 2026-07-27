@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding"
@@ -209,5 +211,58 @@ func TestStopForcesStopAfterTimeout(t *testing.T) {
 	case <-startErr:
 	case <-time.After(5 * time.Second):
 		t.Error("Start() did not return after Stop()")
+	}
+}
+
+func TestServerTracingProducesSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	addr := freeAddr(t)
+	s := NewServer(WithAddr(addr), WithTracerProvider(tp))
+	s.server.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "test.Ping",
+		HandlerType: (*interface{})(nil),
+		Methods: []grpc.MethodDesc{{
+			MethodName: "Call",
+			Handler: func(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+				m := new(struct{})
+				if err := dec(m); err != nil {
+					return nil, err
+				}
+				return m, nil
+			},
+		}},
+	}, struct{}{})
+
+	go func() { _ = s.Start(context.Background()) }()
+	waitRunning(t, s)
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if err := conn.Invoke(context.Background(), "/test.Ping/Call", &struct{}{}, &struct{}{}, grpc.ForceCodec(rawCodec{})); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+
+	s.Stop(context.Background())
+
+	spans := recorder.Ended()
+	var found bool
+	for _, sp := range spans {
+		if strings.Contains(sp.Name(), "test.Ping/Call") {
+			found = true
+		}
+	}
+	if !found {
+		names := make([]string, 0, len(spans))
+		for _, sp := range spans {
+			names = append(names, sp.Name())
+		}
+		t.Errorf("expected a span for test.Ping/Call, got spans: %v", names)
 	}
 }
