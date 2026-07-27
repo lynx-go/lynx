@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -23,6 +24,7 @@ func setupOTel() (shutdown func(context.Context) error, tp *sdktrace.TracerProvi
 
 	promExporter, err := prometheus.New()
 	if err != nil {
+		_ = tp.Shutdown(context.Background())
 		return nil, nil, nil, nil, err
 	}
 	mp = sdkmetric.NewMeterProvider(sdkmetric.WithReader(promExporter))
@@ -30,10 +32,7 @@ func setupOTel() (shutdown func(context.Context) error, tp *sdktrace.TracerProvi
 	propagator = propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
 
 	shutdown = func(ctx context.Context) error {
-		if err := tp.Shutdown(ctx); err != nil {
-			return err
-		}
-		return mp.Shutdown(ctx)
+		return errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx))
 	}
 	return shutdown, tp, mp, propagator, nil
 }

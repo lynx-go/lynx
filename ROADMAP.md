@@ -46,9 +46,9 @@ Lynx 目前为团队内部使用的 Go 微服务框架，计划对外推广开�
 目标：让框架从"能跑"变成"能上线"。
 
 - [x] OpenTelemetry tracing 接入 HTTP/gRPC（go.mod 已有 otel 间接依赖，转为显式支持）
-- [x] Prometheus metrics 中间件
+- [x] Prometheus metrics（otel 插装 + exporter 接入）
 - [x] HTTP 侧最小中间件抽象（前置设计决策：当前 HTTP 直接裸 `http.Handler`，metrics/tracing 需要挂载点）
-- [x] 统一日志字段规范（trace_id 注入等），zap/slog 两条线行为一致
+- [x] 日志 trace 上下文注入（slog/zap 共用 NewTraceHandler 装饰器）
 
 ## Phase C — v1.0 冲刺（文档 + API 冻结）
 
