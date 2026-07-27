@@ -120,12 +120,12 @@ func (s *Server) Start(ctx context.Context) error {
 
 	hs := server.New(s.handler, opts)
 	s.Server = hs
-	return s.Server.ListenAndServe(s.o.Addr)
+	return s.ListenAndServe(s.o.Addr)
 }
 
 func (s *Server) Stop(ctx context.Context) {
 	log.InfoContext(ctx, "stopping HTTP server")
-	if err := s.Server.Shutdown(ctx); err != nil {
+	if err := s.Shutdown(ctx); err != nil {
 		log.ErrorContext(ctx, "failed to shutting down http server", err)
 	}
 }

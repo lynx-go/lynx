@@ -108,8 +108,8 @@ func (app *lynx) Hooks(hooks ...HookOption) error {
 		hook(options)
 	}
 
-	app.hooks.onStarts = append(app.hooks.onStarts, options.onStarts...)
-	app.hooks.onStops = append(app.hooks.onStops, options.onStops...)
+	app.onStarts = append(app.onStarts, options.onStarts...)
+	app.onStops = append(app.onStops, options.onStops...)
 	if err := app.addComponents(options.components...); err != nil {
 		return err
 	}
@@ -274,15 +274,13 @@ func (app *lynx) Run() error {
 	app.Logger().Info("starting")
 	app.runG.Add(func() error {
 		app.Logger().Info("run on-start hooks")
-		for _, fn := range app.hooks.onStarts {
+		for _, fn := range app.onStarts {
 			if err := fn(app.ctx); err != nil {
 				return err
 			}
 		}
-		select {
-		case <-app.ctx.Done():
-			return nil
-		}
+		<-app.ctx.Done()
+		return nil
 	}, func(err error) {
 		app.Close()
 	})
@@ -308,7 +306,7 @@ func (app *lynx) Run() error {
 		defer cancelCtx()
 		app.Logger().Info("run on-stop hooks")
 		var shutdownErrors ShutdownErrors
-		for _, fn := range app.hooks.onStops {
+		for _, fn := range app.onStops {
 			fn := fn
 			if hookErr := fn(ctx); hookErr != nil {
 				app.logger.ErrorContext(ctx, "on-stop hook called error", "error", hookErr)

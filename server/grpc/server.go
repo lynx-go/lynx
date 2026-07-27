@@ -141,7 +141,7 @@ func (s *Server) Stop(ctx context.Context) {
 
 	// Close the listener first to stop accepting new connections
 	if s.listener != nil {
-		s.listener.Close()
+		_ = s.listener.Close()
 	}
 
 	if s.server == nil {
