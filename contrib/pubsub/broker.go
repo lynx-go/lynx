@@ -36,7 +36,8 @@ type HandlerOptions interface {
 }
 
 func MessageIDFromContext(ctx context.Context) string {
-	return ctx.Value(MessageIDKey).(string)
+	v, _ := ctx.Value(MessageIDKey).(string)
+	return v
 }
 
 func ContextWithMessageID(ctx context.Context, msgId string) context.Context {

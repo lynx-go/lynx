@@ -13,7 +13,7 @@ require (
 	github.com/ThreeDotsLabs/watermill v1.5.1
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/lynx-go/lynx v0.3.7
-	github.com/lynx-go/lynx/contrib/pubsub v0.0.1
+	github.com/lynx-go/lynx/contrib/pubsub v0.7.2
 	github.com/lynx-go/x v0.1.0
 	github.com/segmentio/kafka-go v0.4.49
 	github.com/spf13/cast v1.10.0

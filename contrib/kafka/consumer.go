@@ -125,7 +125,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 			if c.options.LogMessage {
 				log.DebugContext(ctx, "recv kafka message", "message", string(msg.Value), "msg_id", newMsg.UUID, "topic", msg.Topic, "offset", msg.Offset, "partition", msg.Partition)
 			}
-			if err := c.broker.Publish(ctx, c.eventName, NewMessage(msg), pubsub.FromBinder()); err != nil {
+			if err := c.broker.Publish(ctx, c.eventName, newMsg, pubsub.FromBinder()); err != nil {
 				log.ErrorContext(ctx, "failed to publish message to broker", err, "topic", c.options.Topic, "msg_id", newMsg.UUID)
 				if !c.options.StillCommitOnBrokerError {
 					continue
@@ -144,7 +144,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 
 func (c *Consumer) Stop(ctx context.Context) {
 	if err := c.reader.Close(); err != nil {
-		slog.ErrorContext(ctx, "Error closing kafka reader", err)
+		slog.ErrorContext(ctx, "Error closing kafka reader", "error", err)
 	}
 	c.closeCtx()
 	log.InfoContext(ctx, "stopped kafka consumer", "event_name", c.eventName)

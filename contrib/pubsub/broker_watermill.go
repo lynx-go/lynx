@@ -57,6 +57,9 @@ func (b *broker) ID() string {
 }
 
 func (b *broker) CheckHealth() error {
+	if b.router == nil {
+		return errors.New("broker is not initialized")
+	}
 	if b.router.IsRunning() {
 		return nil
 	}
@@ -64,6 +67,9 @@ func (b *broker) CheckHealth() error {
 }
 
 func (b *broker) IsRunning() bool {
+	if b.router == nil {
+		return false
+	}
 	return b.router.IsRunning()
 }
 
@@ -202,7 +208,7 @@ func (b *broker) Subscribe(eventName, handlerName string, h HandlerFunc, opts ..
 			return handler(msg)
 		}
 	}
-	log.InfoContext(context.TODO(), "broker subscribing to topic", "eventName", eventName, "handlerName", handlerName)
+	log.InfoContext(b.app.Context(), "broker subscribing to topic", "eventName", eventName, "handlerName", handlerName)
 	b.router.AddConsumerHandler(handlerName, eventName, b.subscriber, handler)
 	if b.router.IsRunning() {
 		return b.router.RunHandlers(b.app.Context())

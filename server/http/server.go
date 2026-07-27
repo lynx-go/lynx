@@ -100,10 +100,17 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.o.HealthCheck != nil {
 		healthChecks = s.o.HealthCheck()
 	}
+	driver := server.NewDefaultDriver()
+	if s.o.Timeout > 0 {
+		// Apply the configured timeout to the underlying http.Server read/write timeouts.
+		driver.Server.ReadHeaderTimeout = s.o.Timeout
+		driver.Server.ReadTimeout = s.o.Timeout
+		driver.Server.WriteTimeout = s.o.Timeout
+	}
 	opts := &server.Options{
 		HealthChecks: healthChecks,
 		//TraceTextMapPropagator: sdserver.NewTextMapPropagator(),
-		Driver: server.NewDefaultDriver(),
+		Driver: driver,
 	}
 	if s.o.RequestLog {
 		opts.RequestLogger = NewRequestLogger(s.logger, func(err error) {

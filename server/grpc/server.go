@@ -148,6 +148,13 @@ func (s *Server) Stop(ctx context.Context) {
 		return
 	}
 
+	// Fall back to the configured timeout when the caller's context has no deadline.
+	if _, ok := ctx.Deadline(); !ok && s.o.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.o.Timeout)
+		defer cancel()
+	}
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

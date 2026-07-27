@@ -133,12 +133,15 @@ func NewKafkaMessage(msg *message.Message, opts ...MessageOption) kafka.Message 
 	return kmsg
 }
 
-func NewKafkaMessageJSON(data any, opts ...MessageOption) kafka.Message {
+func NewKafkaMessageJSON(data any, opts ...MessageOption) (kafka.Message, error) {
 	o := &MessageOptions{}
 	for _, opt := range opts {
 		opt(o)
 	}
-	bytes, _ := json.Marshal(data)
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		return kafka.Message{}, err
+	}
 	msg := kafka.Message{
 		Value: bytes,
 	}
@@ -156,5 +159,5 @@ func NewKafkaMessageJSON(data any, opts ...MessageOption) kafka.Message {
 		}
 	}
 
-	return msg
+	return msg, nil
 }

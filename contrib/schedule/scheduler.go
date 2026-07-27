@@ -3,7 +3,9 @@ package schedule
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/x/log"
@@ -15,6 +17,7 @@ type Scheduler struct {
 	tasks   []Task
 	cron    *cron.Cron
 	app     lynx.Lynx
+	started atomic.Bool
 }
 
 type Options struct {
@@ -27,6 +30,9 @@ func (s *Scheduler) CheckHealth() error {
 	if s.cron == nil {
 		return errors.New("scheduler not initialized")
 	}
+	if !s.started.Load() {
+		return errors.New("scheduler not running")
+	}
 	return nil
 }
 
@@ -36,23 +42,18 @@ func (s *Scheduler) Name() string {
 
 func (s *Scheduler) Init(app lynx.Lynx) error {
 	s.app = app
-	for _, t := range s.tasks {
-		if _, err := s.cron.AddFunc(t.Cron(), func() {
-			t.HandlerFunc()
-		}); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
+	s.started.Store(true)
 	s.cron.Run()
 	return nil
 }
 
 func (s *Scheduler) Stop(ctx context.Context) {
 	s.cron.Stop()
+	s.started.Store(false)
 }
 
 var _ lynx.ServerLike = new(Scheduler)
@@ -105,6 +106,11 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 		task := tasks[i]
 		if _, err := scheduler.cron.AddFunc(task.Cron(), func() {
 			ctx := log.WithContext(context.Background(), "component", "scheduler", "task_name", task.Name())
+			defer func() {
+				if r := recover(); r != nil {
+					log.ErrorContext(ctx, "schedule task panic", fmt.Errorf("%v", r))
+				}
+			}()
 			if err := task.HandlerFunc()(ctx); err != nil {
 				log.ErrorContext(ctx, "schedule task execute error", err)
 			}

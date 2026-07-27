@@ -40,12 +40,12 @@ func NewLogger(app lynx.Lynx) (*slog.Logger, error) {
 }
 
 func NewZapLoggerToFile(logLevel string, logFile string) (*zap.Logger, error) {
-	level := slog.LevelDebug
 	atomicLevel := zap.NewAtomicLevel()
 
 	zapLevel := zap.DebugLevel
-	_ = level.UnmarshalText([]byte(logLevel))
-	_ = zapLevel.UnmarshalText([]byte(logLevel))
+	if err := zapLevel.UnmarshalText([]byte(logLevel)); err != nil {
+		return nil, err
+	}
 	atomicLevel.SetLevel(zapLevel)
 
 	zapConfig := zap.NewProductionConfig()
@@ -56,12 +56,12 @@ func NewZapLoggerToFile(logLevel string, logFile string) (*zap.Logger, error) {
 }
 
 func NewZapLogger(logLevel string) (*zap.Logger, error) {
-	level := slog.LevelDebug
 	atomicLevel := zap.NewAtomicLevel()
 
 	zapLevel := zap.DebugLevel
-	_ = level.UnmarshalText([]byte(logLevel))
-	_ = zapLevel.UnmarshalText([]byte(logLevel))
+	if err := zapLevel.UnmarshalText([]byte(logLevel)); err != nil {
+		return nil, err
+	}
 	atomicLevel.SetLevel(zapLevel)
 
 	zapConfig := zap.NewProductionConfig()
@@ -84,7 +84,8 @@ func NewSLogger(zlogger *zap.Logger, logLevel string) (*slog.Logger, error) {
 	}
 	atomicLevel.SetLevel(zapLevel)
 
-	slog.SetLogLoggerLevel(level)
+	// The level is applied per-handler instead of slog.SetLogLoggerLevel to avoid
+	// mutating global slog state, which would affect unrelated loggers.
 	logger := slog.New(slogzap.Option{Level: level, Logger: zlogger}.NewZapHandler())
 	return logger, nil
 }
