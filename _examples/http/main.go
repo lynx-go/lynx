@@ -90,6 +90,10 @@ func main() {
 			return err
 		}
 
+		// Note: /metrics is served on the main router for demo simplicity, so
+		// every Prometheus scrape also flows through the otel instrumentation
+		// and latencyMiddleware. In production, consider serving it on a
+		// separate mux or listener to avoid self-referential spans/metrics.
 		router.Handle("/metrics", promhttp.Handler())
 
 		if err := app.Hooks(lynx.Components(http.NewServer(router,

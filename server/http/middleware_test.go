@@ -66,8 +66,10 @@ func TestServerAppliesMiddleware(t *testing.T) {
 	startErr := make(chan error, 1)
 	go func() { startErr <- srv.Start(context.Background()) }()
 	waitForDial(t, addr)
+	defer srv.Stop(context.Background())
 
-	resp, err := http.Get("http://" + addr + "/")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + addr + "/")
 	if err != nil {
 		t.Fatalf("GET error = %v", err)
 	}

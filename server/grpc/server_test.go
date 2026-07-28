@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/grpc"
@@ -238,6 +240,8 @@ func TestServerTracingProducesSpan(t *testing.T) {
 
 	go func() { _ = s.Start(context.Background()) }()
 	waitRunning(t, s)
+	// Failure-path cleanup; the explicit Stop below is the normal path.
+	defer s.Stop(context.Background())
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -264,5 +268,52 @@ func TestServerTracingProducesSpan(t *testing.T) {
 			names = append(names, sp.Name())
 		}
 		t.Errorf("expected a span for test.Ping/Call, got spans: %v", names)
+	}
+}
+
+// TestServerMetricsProduced verifies the WithMeterProvider wiring: with a
+// MeterProvider passed in, the server's stats handler emits RPC metrics.
+func TestServerMetricsProduced(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() { _ = mp.Shutdown(context.Background()) }()
+
+	addr := freeAddr(t)
+	s := NewServer(WithAddr(addr), WithMeterProvider(mp))
+	s.server.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "test.Ping",
+		HandlerType: (*interface{})(nil),
+		Methods: []grpc.MethodDesc{{
+			MethodName: "Call",
+			Handler: func(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+				m := new(struct{})
+				if err := dec(m); err != nil {
+					return nil, err
+				}
+				return m, nil
+			},
+		}},
+	}, struct{}{})
+
+	go func() { _ = s.Start(context.Background()) }()
+	waitRunning(t, s)
+	defer s.Stop(context.Background())
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if err := conn.Invoke(context.Background(), "/test.Ping/Call", &struct{}{}, &struct{}{}, grpc.ForceCodec(rawCodec{})); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+
+	var md metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &md); err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if len(md.ScopeMetrics) == 0 {
+		t.Error("expected metrics from the RPC, got none")
 	}
 }

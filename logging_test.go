@@ -60,8 +60,8 @@ func TestTraceHandlerInvalidSpanContext(t *testing.T) {
 	logger.InfoContext(ctx, "hello")
 
 	out := buf.String()
-	if strings.Contains(out, "trace_id") {
-		t.Errorf("invalid span context should not add trace_id, got: %s", out)
+	if strings.Contains(out, "trace_id") || strings.Contains(out, "span_id") {
+		t.Errorf("invalid span context should not add trace fields, got: %s", out)
 	}
 }
 
@@ -93,8 +93,9 @@ func TestTraceHandlerWithGroupKeepsDecoration(t *testing.T) {
 	logger.InfoContext(ctx, "hello")
 
 	out := buf.String()
-	if !strings.Contains(out, `"trace_id"`) {
-		t.Errorf("trace_id lost after WithGroup, got: %s", out)
+	// The trace fields must be nested inside the group, not outside it.
+	if !strings.Contains(out, `"g":{"trace_id":"`+sc.TraceID().String()+`"`) {
+		t.Errorf("trace_id lost or not nested in group after WithGroup, got: %s", out)
 	}
 }
 

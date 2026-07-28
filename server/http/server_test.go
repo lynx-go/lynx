@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -196,6 +199,9 @@ func TestServerTracingProducesSpan(t *testing.T) {
 	startErr := make(chan error, 1)
 	go func() { startErr <- srv.Start(context.Background()) }()
 	waitForDial(t, addr)
+	// Failure-path cleanup; the explicit Stop below is the normal path and
+	// Shutdown is idempotent.
+	defer srv.Stop(context.Background())
 
 	resp, err := http.Get("http://" + addr + "/")
 	if err != nil {
@@ -225,6 +231,109 @@ func TestServerTracingProducesSpan(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a server-kind span, got: %v", spans)
+	}
+}
+
+// TestServerMetricsProduced verifies the WithMeterProvider wiring: with a
+// MeterProvider passed in, the server's instrumentation emits metrics for
+// handled requests.
+func TestServerMetricsProduced(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() { _ = mp.Shutdown(context.Background()) }()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	srv := NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), WithAddr(addr), WithMeterProvider(mp))
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start(context.Background()) }()
+	waitForDial(t, addr)
+	defer srv.Stop(context.Background())
+
+	resp, err := http.Get("http://" + addr + "/")
+	if err != nil {
+		t.Fatalf("GET error = %v", err)
+	}
+	_ = resp.Body.Close()
+
+	var md metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &md); err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if len(md.ScopeMetrics) == 0 {
+		t.Error("expected metrics from the HTTP request, got none")
+	}
+}
+
+// TestServerPropagatorExtractsTraceParent verifies the WithPropagator wiring:
+// an incoming traceparent header is extracted and linked to the server span.
+// (gocloud wraps the handler with otelhttp's public-endpoint option, so the
+// remote context becomes a span link rather than a parent.)
+func TestServerPropagatorExtractsTraceParent(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	srv := NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), WithAddr(addr), WithTracerProvider(tp), WithPropagator(propagation.TraceContext{}))
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start(context.Background()) }()
+	waitForDial(t, addr)
+	defer srv.Stop(context.Background())
+
+	const traceID = "0102030405060708090a0b0c0d0e0f10"
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("traceparent", "00-"+traceID+"-1112131415161718-01")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET error = %v", err)
+	}
+	_ = resp.Body.Close()
+
+	srv.Stop(context.Background())
+	select {
+	case err := <-startErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Start() error = %v, want nil or http.ErrServerClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start() did not return after Stop()")
+	}
+
+	spans := recorder.Ended()
+	if len(spans) == 0 {
+		t.Fatal("expected at least one span from the HTTP request, got none")
+	}
+	var linked bool
+	for _, s := range spans {
+		for _, link := range s.Links() {
+			if link.SpanContext.TraceID().String() == traceID {
+				linked = true
+			}
+		}
+	}
+	if !linked {
+		t.Errorf("no span links to the incoming traceparent trace %s", traceID)
 	}
 }
 
