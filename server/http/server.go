@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/lynx-go/lynx"
@@ -114,6 +115,9 @@ func NewServer(handler http.Handler, opts ...Option) *Server {
 
 type Server struct {
 	*server.Server
+	// mu guards the embedded *server.Server, which is assigned in Start and
+	// read in Stop; the two may run on different goroutines during shutdown.
+	mu      sync.RWMutex
 	logger  *slog.Logger
 	o       Options
 	handler http.Handler
@@ -154,13 +158,21 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	hs := server.New(chain(s.handler, s.o.Middlewares), opts)
+	s.mu.Lock()
 	s.Server = hs
+	s.mu.Unlock()
 	return s.ListenAndServe(s.o.Addr)
 }
 
 func (s *Server) Stop(ctx context.Context) {
 	log.InfoContext(ctx, "stopping HTTP server")
-	if err := s.Shutdown(ctx); err != nil {
+	s.mu.RLock()
+	srv := s.Server
+	s.mu.RUnlock()
+	if srv == nil {
+		return
+	}
+	if err := srv.Shutdown(ctx); err != nil {
 		log.ErrorContext(ctx, "failed to shutting down http server", err)
 	}
 }

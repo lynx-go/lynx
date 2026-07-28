@@ -243,3 +243,11 @@ func waitForDial(t *testing.T, addr string) {
 }
 
 var _ lynx.Component = (*Server)(nil)
+
+// TestStopBeforeStartIsNoop ensures Stop is safe before Start has assigned
+// the underlying server (e.g. shutdown during startup), and does not panic
+// on the nil embedded server.
+func TestStopBeforeStartIsNoop(t *testing.T) {
+	srv := NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Stop(context.Background())
+}
