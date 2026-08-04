@@ -25,6 +25,7 @@ var (
 	ErrCloseTimeoutTooLarge = errors.New("close timeout must be at most 5 minutes")
 )
 
+// Options 是 Lynx 应用的核心配置项。
 type Options struct {
 	ID              string         `json:"id"`
 	Name            string         `json:"name"`
@@ -78,32 +79,38 @@ func (o *Options) EnsureDefaults() {
 	}
 }
 
+// Option 用于配置 Options 的选项函数。
 type Option func(*Options)
 
+// WithID 设置应用实例 ID。
 func WithID(id string) Option {
 	return func(o *Options) {
 		o.ID = id
 	}
 }
 
+// WithName 设置应用名称。
 func WithName(name string) Option {
 	return func(o *Options) {
 		o.Name = name
 	}
 }
 
+// WithVersion 设置应用版本号。
 func WithVersion(v string) Option {
 	return func(o *Options) {
 		o.Version = v
 	}
 }
 
+// WithSetFlagsFunc 设置自定义的命令行 flags 注册函数。
 func WithSetFlagsFunc(f SetFlagsFunc) Option {
 	return func(o *Options) {
 		o.SetFlagsFunc = f
 	}
 }
 
+// WithUseDefaultConfigFlagsFunc 使用默认的命令行 flags 注册函数与配置绑定函数。
 func WithUseDefaultConfigFlagsFunc() Option {
 	return func(o *Options) {
 		o.BindConfigFunc = DefaultBindConfigFunc
@@ -111,24 +118,28 @@ func WithUseDefaultConfigFlagsFunc() Option {
 	}
 }
 
+// WithBindConfigFunc 设置自定义的配置绑定函数。
 func WithBindConfigFunc(f BindConfigFunc) Option {
 	return func(o *Options) {
 		o.BindConfigFunc = f
 	}
 }
 
+// WithExitSignals 设置触发应用退出的操作系统信号。
 func WithExitSignals(signals ...os.Signal) Option {
 	return func(o *Options) {
 		o.ExitSignals = signals
 	}
 }
 
+// WithShutdownTimeout 设置应用优雅关停的超时时间。
 func WithShutdownTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.ShutdownTimeout = timeout
 	}
 }
 
+// NewOptions 创建带默认值的 Options，并按顺序应用给定的选项。
 func NewOptions(opts ...Option) *Options {
 	id, _ := os.Hostname()
 	op := &Options{
@@ -142,10 +153,12 @@ func NewOptions(opts ...Option) *Options {
 	return op
 }
 
+// TagNameJSON 将 mapstructure 解码器配置为使用 json tag 解析字段名。
 func TagNameJSON(config *mapstructure.DecoderConfig) {
 	config.TagName = "json"
 }
 
+// TagNameYAML 将 mapstructure 解码器配置为使用 yaml tag 解析字段名。
 func TagNameYAML(config *mapstructure.DecoderConfig) {
 	config.TagName = "yaml"
 }

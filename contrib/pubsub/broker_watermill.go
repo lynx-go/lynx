@@ -15,15 +15,20 @@ import (
 	"go.uber.org/multierr"
 )
 
+// Options 是 watermill 消息代理的配置项；Publisher/Subscriber 为空时使用进程内 GoChannel。
 type Options struct {
 	Publisher       message.Publisher
 	Subscriber      message.Subscriber
 	OnlyFirstBinder bool
 }
 
+// TopicNameFunc 将事件名映射为主题名。
 type TopicNameFunc func(string) string
+
+// TraceIDFunc 从上下文中提取追踪 ID。
 type TraceIDFunc func(ctx context.Context) string
 
+// NewBroker 创建 watermill 消息代理，并将自身注入所有 Binder。
 func NewBroker(opts Options, binders []Binder) Broker {
 	b := &broker{
 		options:    &opts,
@@ -164,18 +169,22 @@ func (b *broker) Publish(ctx context.Context, eventName string, msg *message.Mes
 	return errs
 }
 
+// SetMessageKey 将消息 key 写入消息元数据。
 func SetMessageKey(msg *message.Message, key string) {
 	msg.Metadata.Set(MessageKeyKey.String(), key)
 }
 
+// GetMessageKey 从消息元数据中读取消息 key。
 func GetMessageKey(msg *message.Message) string {
 	return msg.Metadata.Get(MessageKeyKey.String())
 }
 
+// SetMessageID 将消息 ID 写入消息元数据。
 func SetMessageID(msg *message.Message, msgId string) {
 	msg.Metadata.Set(MessageIDKey.String(), msgId)
 }
 
+// GetMessageID 从消息元数据中读取消息 ID。
 func GetMessageID(msg *message.Message) string {
 	return msg.Metadata.Get(MessageIDKey.String())
 }

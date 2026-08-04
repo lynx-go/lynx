@@ -9,6 +9,7 @@ import (
 	"github.com/pkg/errors"
 )
 
+// CommandFunc 是命令组件执行的业务函数，返回错误时视为命令失败。
 type CommandFunc func(ctx context.Context) error
 
 // CommandOptions configures the command component behavior.

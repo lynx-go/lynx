@@ -21,10 +21,12 @@ func getLevel(app lynx.Lynx) string {
 	return logLevel
 }
 
+// MustNewLogger 创建基于 zap 的 slog 实例，创建失败时 panic。
 func MustNewLogger(app lynx.Lynx) *slog.Logger {
 	return lo.Must1(NewLogger(app))
 }
 
+// NewLogger 根据应用配置的日志级别创建基于 zap 的 slog 实例，并注入服务标识字段。
 func NewLogger(app lynx.Lynx) (*slog.Logger, error) {
 	logLevel := getLevel(app)
 	zapLogger, err := NewZapLogger(logLevel)
@@ -39,6 +41,7 @@ func NewLogger(app lynx.Lynx) (*slog.Logger, error) {
 	return slogger.With("service_id", lynx.IDFromContext(app.Context()), "service_name", lynx.NameFromContext(app.Context()), "version", lynx.VersionFromContext(app.Context())), nil
 }
 
+// NewZapLoggerToFile 创建输出到指定文件的 zap 实例，日志格式为生产配置。
 func NewZapLoggerToFile(logLevel string, logFile string) (*zap.Logger, error) {
 	atomicLevel := zap.NewAtomicLevel()
 
@@ -55,6 +58,7 @@ func NewZapLoggerToFile(logLevel string, logFile string) (*zap.Logger, error) {
 	return zapConfig.Build()
 }
 
+// NewZapLogger 创建按生产配置输出的 zap 实例。
 func NewZapLogger(logLevel string) (*zap.Logger, error) {
 	atomicLevel := zap.NewAtomicLevel()
 
@@ -70,6 +74,7 @@ func NewZapLogger(logLevel string) (*zap.Logger, error) {
 	return zapConfig.Build()
 }
 
+// NewSLogger 将 zap 实例包装为 slog 实例，日志级别按 handler 设置。
 func NewSLogger(zlogger *zap.Logger, logLevel string) (*slog.Logger, error) {
 	level := slog.LevelDebug
 	atomicLevel := zap.NewAtomicLevel()

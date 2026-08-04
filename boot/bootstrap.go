@@ -4,6 +4,7 @@ import (
 	"github.com/lynx-go/lynx"
 )
 
+// Bootstrap 聚合应用启动所需的钩子函数、组件与组件构建器。
 type Bootstrap struct {
 	StartHooks              []lynx.HookFunc
 	StopHooks               []lynx.HookFunc
@@ -12,6 +13,7 @@ type Bootstrap struct {
 	ComponentBuilderSetFunc lynx.ComponentBuilderSetFunc
 }
 
+// New 创建 Bootstrap 实例。
 func New(
 	onStarts lynx.OnStartHooks,
 	onStops lynx.OnStopHooks,
@@ -28,6 +30,7 @@ func New(
 	}
 }
 
+// Bind 将 Bootstrap 中的钩子函数、组件与组件构建器绑定到 Lynx 应用。
 func (b *Bootstrap) Bind(app lynx.Lynx) error {
 	if err := app.Hooks(lynx.OnStart(b.StartHooks...)); err != nil {
 		return err

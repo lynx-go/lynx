@@ -22,10 +22,12 @@ const (
 	DefaultTimeout  = 60 * time.Second
 )
 
+// NewRouter 创建新的 HTTP 路由复用器。
 func NewRouter() *http.ServeMux {
 	return http.NewServeMux()
 }
 
+// Options 是 HTTP 服务组件的配置项。
 type Options struct {
 	Addr           string
 	Timeout        time.Duration
@@ -38,32 +40,38 @@ type Options struct {
 	Middlewares    []Middleware
 }
 
+// Option 用于配置 HTTP 服务 Options 的选项函数。
 type Option func(*Options)
 
+// WithAddr 设置 HTTP 服务监听地址。
 func WithAddr(addr string) Option {
 	return func(o *Options) {
 		o.Addr = addr
 	}
 }
 
+// WithTimeout 设置 HTTP 服务的读写超时时间。
 func WithTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.Timeout = timeout
 	}
 }
 
+// WithHealthCheck 设置 HTTP 服务的健康检查函数。
 func WithHealthCheck(hc lynx.HealthCheckFunc) Option {
 	return func(o *Options) {
 		o.HealthCheck = hc
 	}
 }
 
+// WithLogger 设置 HTTP 服务的日志实例。
 func WithLogger(l *slog.Logger) Option {
 	return func(o *Options) {
 		o.Logger = l
 	}
 }
 
+// WithRequestLog 设置是否记录 HTTP 请求日志。
 func WithRequestLog(requestLog bool) Option {
 	return func(o *Options) {
 		o.RequestLog = requestLog
@@ -96,6 +104,7 @@ func WithPropagator(p propagation.TextMapPropagator) Option {
 	}
 }
 
+// NewServer 创建 HTTP 服务组件，使用给定的 handler 与配置项。
 func NewServer(handler http.Handler, opts ...Option) *Server {
 	options := Options{
 		Addr:    DefaultHTTPAddr,
@@ -113,6 +122,7 @@ func NewServer(handler http.Handler, opts ...Option) *Server {
 	}
 }
 
+// Server 是 HTTP 服务组件，实现 lynx.Component 接口。
 type Server struct {
 	*server.Server
 	// mu guards the embedded *server.Server, which is assigned in Start and
@@ -123,14 +133,17 @@ type Server struct {
 	handler http.Handler
 }
 
+// Name 返回组件名称 "http"。
 func (s *Server) Name() string {
 	return "http"
 }
 
+// Init 初始化组件，HTTP 服务无需在初始化阶段做额外工作。
 func (s *Server) Init(app lynx.Lynx) error {
 	return nil
 }
 
+// Start 启动 HTTP 服务并开始监听，阻塞至服务退出。
 func (s *Server) Start(ctx context.Context) error {
 	log.InfoContext(ctx, "starting HTTP server, listening on "+s.o.Addr)
 	var healthChecks []health.Checker
@@ -164,6 +177,7 @@ func (s *Server) Start(ctx context.Context) error {
 	return s.ListenAndServe(s.o.Addr)
 }
 
+// Stop 优雅关停 HTTP 服务；服务尚未启动时直接返回。
 func (s *Server) Stop(ctx context.Context) {
 	log.InfoContext(ctx, "stopping HTTP server")
 	s.mu.RLock()

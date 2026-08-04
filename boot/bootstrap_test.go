@@ -45,10 +45,10 @@ func TestNew(t *testing.T) {
 	setFunc := func() lynx.ComponentBuilderSet { return nil }
 
 	b := boot.New(onStarts, onStops, nil, nil, setFunc)
-	if b == nil {
+	if b == nil { //nolint:staticcheck // SA5011 关联信息：t.Fatal 已保证 b 非 nil
 		t.Fatal("New() returned nil")
 	}
-	if len(b.StartHooks) != 1 {
+	if len(b.StartHooks) != 1 { //nolint:staticcheck // SA5011 误报：上面的 t.Fatal 已保证 b 非 nil
 		t.Errorf("len(StartHooks) = %d, want 1", len(b.StartHooks))
 	}
 	if len(b.StopHooks) != 1 {

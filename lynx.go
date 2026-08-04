@@ -15,9 +15,13 @@ import (
 	"gocloud.dev/server/health"
 )
 
+// BindConfigFunc 将命令行 flags 绑定到 viper 配置实例。
 type BindConfigFunc func(f *pflag.FlagSet, v *viper.Viper) error
+
+// SetFlagsFunc 定义应用启动时需要注册的命令行 flags。
 type SetFlagsFunc func(f *pflag.FlagSet)
 
+// Lynx 是 Lynx 应用实例的核心接口，提供配置、上下文、组件与生命周期管理能力。
 type Lynx interface {
 	// Close 关闭应用实例
 	Close()
@@ -32,7 +36,7 @@ type Lynx interface {
 
 	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
 	HealthCheckFunc() HealthCheckFunc
-	// Run 启用 CLI
+	// Run 运行应用主流程：执行 on-start 钩子、启动所有组件并等待退出信号
 	Run() error
 	// SetLogger 设置 logger
 	SetLogger(logger *slog.Logger)
@@ -165,6 +169,7 @@ func (app *lynx) init() error {
 	return nil
 }
 
+// DefaultSetFlagsFunc 注册默认的命令行 flags：配置文件路径、类型、目录与日志级别。
 func DefaultSetFlagsFunc(f *pflag.FlagSet) {
 	f.StringP("config", "c", "", "config file path")
 	f.String("config-type", "yaml", "config file type, default yaml")
@@ -172,6 +177,7 @@ func DefaultSetFlagsFunc(f *pflag.FlagSet) {
 	f.String("log-level", "info", "log level, default info")
 }
 
+// DefaultBindConfigFunc 将默认 flags 中的配置文件路径、目录与类型绑定到 viper。
 func DefaultBindConfigFunc(f *pflag.FlagSet, v *viper.Viper) error {
 	if c, _ := f.GetString("config"); c != "" {
 		v.SetConfigFile(c)
