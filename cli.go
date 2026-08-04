@@ -2,44 +2,50 @@ package lynx
 
 import (
 	"context"
-	"fmt"
-	"os"
+	"log"
 )
 
-// SetupFunc 是应用初始化回调，在 CLI 运行前执行，用于注册组件与 hooks。
-type SetupFunc func(ctx context.Context, app Lynx) error
+// BuildFunc 是应用初始化回调，在 Builder 运行前执行，用于注册组件与 hooks。
+type BuildFunc func(ctx context.Context, app App) error
 
-// CLI 是 Lynx 应用的命令行入口，封装应用实例与初始化回调。
-type CLI struct {
-	setup SetupFunc
-	lynx  Lynx
+// Builder 是 App 应用的命令行入口，封装应用实例与初始化回调。
+type Builder struct {
+	build BuildFunc
+	app   App
 }
 
-// New 创建 CLI 实例；初始化失败时输出错误并退出进程。
-func New(o *Options, setup SetupFunc) *CLI {
+// New 创建 Builder 实例；初始化失败时输出错误并退出进程。
+func New(o *Options, setup BuildFunc) *Builder {
 	app, err := newLynx(o)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		log.Fatalln(err)
 	}
-	return &CLI{
-		setup: setup,
-		lynx:  app,
-	}
-}
-
-// Run 运行 CLI 应用，发生错误时输出到 stderr 并以非零状态码退出进程。
-func (app *CLI) Run() {
-	if err := app.RunE(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	return &Builder{
+		build: setup,
+		app:   app,
 	}
 }
 
-// RunE 运行 CLI 应用并返回错误，由调用方决定错误处理方式。
-func (app *CLI) RunE() error {
-	if err := app.setup(app.lynx.Context(), app.lynx); err != nil {
+// Run 运行 Builder 应用，发生错误时输出到 stderr 并以非零状态码退出进程。
+func (b *Builder) Run() {
+	if err := b.RunE(); err != nil {
+		log.Fatalln(err)
+	}
+}
+
+// Build 运行初始化回调并返回应用实例，回调失败时返回错误。
+func (b *Builder) Build() (App, error) {
+	if err := b.build(b.app.Context(), b.app); err != nil {
+		return nil, err
+	}
+	return b.app, nil
+}
+
+// RunE 运行 Builder 应用并返回错误，由调用方决定错误处理方式。
+func (b *Builder) RunE() error {
+	app, err := b.Build()
+	if err != nil {
 		return err
 	}
-	return app.lynx.Run()
+	return app.Run()
 }

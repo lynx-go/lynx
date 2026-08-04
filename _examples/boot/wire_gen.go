@@ -18,7 +18,7 @@ import (
 
 // Injectors from wire.go:
 
-func wireBootstrap(app lynx.Lynx, slogger *slog.Logger) (*boot.Bootstrap, func(), error) {
+func wireBootstrap(app lynx.App, slogger *slog.Logger) (*boot.Bootstrap, func(), error) {
 	onStartHooks := NewOnStarts(app)
 	onStopHooks := NewOnStops(app)
 	server := NewHttpServer(app)

@@ -20,7 +20,7 @@ type blockingComponent struct {
 
 func (c *blockingComponent) Name() string { return c.name }
 
-func (c *blockingComponent) Init(app Lynx) error { return nil }
+func (c *blockingComponent) Init(app App) error { return nil }
 
 func (c *blockingComponent) Start(ctx context.Context) error {
 	c.started.Store(true)
@@ -44,7 +44,7 @@ type failInitComponent struct {
 }
 
 func (c *failInitComponent) Name() string                    { return c.name }
-func (c *failInitComponent) Init(app Lynx) error             { return c.err }
+func (c *failInitComponent) Init(app App) error              { return c.err }
 func (c *failInitComponent) Start(ctx context.Context) error { return nil }
 func (c *failInitComponent) Stop(ctx context.Context)        {}
 
@@ -55,7 +55,7 @@ type failStartComponent struct {
 }
 
 func (c *failStartComponent) Name() string                    { return c.name }
-func (c *failStartComponent) Init(app Lynx) error             { return nil }
+func (c *failStartComponent) Init(app App) error              { return nil }
 func (c *failStartComponent) Start(ctx context.Context) error { return c.err }
 func (c *failStartComponent) Stop(ctx context.Context)        {}
 
@@ -65,8 +65,8 @@ type checkerComponent struct {
 	name string
 }
 
-func (c *checkerComponent) Name() string        { return c.name }
-func (c *checkerComponent) Init(app Lynx) error { return nil }
+func (c *checkerComponent) Name() string       { return c.name }
+func (c *checkerComponent) Init(app App) error { return nil }
 func (c *checkerComponent) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil

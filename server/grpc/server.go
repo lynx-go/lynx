@@ -151,7 +151,7 @@ func (s *Server) Name() string {
 }
 
 // Init 初始化组件，gRPC 服务无需在初始化阶段做额外工作。
-func (s *Server) Init(app lynx.Lynx) error {
+func (s *Server) Init(app lynx.App) error {
 	return nil
 }
 

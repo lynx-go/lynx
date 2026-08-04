@@ -21,7 +21,7 @@ func (r *Router) Name() string {
 }
 
 // Init 初始化组件，Router 无需在初始化阶段做额外工作。
-func (r *Router) Init(app lynx.Lynx) error {
+func (r *Router) Init(app lynx.App) error {
 	return nil
 }
 

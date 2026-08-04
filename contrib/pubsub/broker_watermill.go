@@ -45,7 +45,7 @@ func NewBroker(opts Options, binders []Binder) Broker {
 
 type broker struct {
 	options    *Options
-	app        lynx.Lynx
+	app        lynx.App
 	router     *message.Router
 	publisher  message.Publisher
 	subscriber message.Subscriber
@@ -82,7 +82,7 @@ func (b *broker) Name() string {
 	return "pubsub-watermill"
 }
 
-func (b *broker) Init(app lynx.Lynx) error {
+func (b *broker) Init(app lynx.App) error {
 	b.app = app
 	slogger := b.app.Logger("component", "watermill")
 	logger := watermill.NewSlogLogger(slogger)

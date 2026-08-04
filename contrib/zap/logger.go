@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-func getLevel(app lynx.Lynx) string {
+func getLevel(app lynx.App) string {
 	logLevel := app.Config().GetString("logging.level")
 	if logLevel == "" {
 		logLevel = app.Config().GetString("log_level")
@@ -22,12 +22,12 @@ func getLevel(app lynx.Lynx) string {
 }
 
 // MustNewLogger 创建基于 zap 的 slog 实例，创建失败时 panic。
-func MustNewLogger(app lynx.Lynx) *slog.Logger {
+func MustNewLogger(app lynx.App) *slog.Logger {
 	return lo.Must1(NewLogger(app))
 }
 
 // NewLogger 根据应用配置的日志级别创建基于 zap 的 slog 实例，并注入服务标识字段。
-func NewLogger(app lynx.Lynx) (*slog.Logger, error) {
+func NewLogger(app lynx.App) (*slog.Logger, error) {
 	logLevel := getLevel(app)
 	zapLogger, err := NewZapLogger(logLevel)
 	if err != nil {
@@ -109,7 +109,7 @@ func (l *SyncableLogger) Sync() error {
 
 // NewSyncableLogger creates a SyncableLogger that wraps both slog and zap loggers.
 // This allows using slog for structured logging while retaining the ability to Sync.
-func NewSyncableLogger(app lynx.Lynx) (*SyncableLogger, error) {
+func NewSyncableLogger(app lynx.App) (*SyncableLogger, error) {
 	logLevel := getLevel(app)
 	zapLogger, err := NewZapLogger(logLevel)
 	if err != nil {

@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-// fakeApp is a minimal lynx.Lynx implementation for tests.
+// fakeApp is a minimal lynx.App implementation for tests.
 type fakeApp struct {
 	ctx    context.Context
 	logger *slog.Logger
@@ -27,17 +27,17 @@ func newFakeApp() *fakeApp {
 	}
 }
 
-func (f *fakeApp) Close()                                 {}
-func (f *fakeApp) Config() *viper.Viper                   { return nil }
-func (f *fakeApp) Context() context.Context               { return f.ctx }
-func (f *fakeApp) CLI(lynx.CommandFunc) error             { return nil }
-func (f *fakeApp) Hooks(...lynx.HookOption) error         { return nil }
-func (f *fakeApp) HealthCheckFunc() lynx.HealthCheckFunc  { return nil }
-func (f *fakeApp) Run() error                             { return nil }
-func (f *fakeApp) SetLogger(logger *slog.Logger)          { f.logger = logger }
-func (f *fakeApp) Logger(kwargs ...any) *slog.Logger      { return f.logger.With(kwargs...) }
+func (f *fakeApp) Close()                                {}
+func (f *fakeApp) Config() *viper.Viper                  { return nil }
+func (f *fakeApp) Context() context.Context              { return f.ctx }
+func (f *fakeApp) CLI(lynx.CommandFunc) error            { return nil }
+func (f *fakeApp) Hooks(...lynx.HookOption) error        { return nil }
+func (f *fakeApp) HealthCheckFunc() lynx.HealthCheckFunc { return nil }
+func (f *fakeApp) Run() error                            { return nil }
+func (f *fakeApp) SetLogger(logger *slog.Logger)         { f.logger = logger }
+func (f *fakeApp) Logger(kwargs ...any) *slog.Logger     { return f.logger.With(kwargs...) }
 
-var _ lynx.Lynx = (*fakeApp)(nil)
+var _ lynx.App = (*fakeApp)(nil)
 
 func pollUntil(deadline time.Duration, interval time.Duration, cond func() bool) bool {
 	end := time.Now().Add(deadline)

@@ -21,8 +21,8 @@ type BindConfigFunc func(f *pflag.FlagSet, v *viper.Viper) error
 // SetFlagsFunc 定义应用启动时需要注册的命令行 flags。
 type SetFlagsFunc func(f *pflag.FlagSet)
 
-// Lynx 是 Lynx 应用实例的核心接口，提供配置、上下文、组件与生命周期管理能力。
-type Lynx interface {
+// App 是 App 应用实例的核心接口，提供配置、上下文、组件与生命周期管理能力。
+type App interface {
 	// Close 关闭应用实例
 	Close()
 	// Config 获取配置实例
@@ -327,7 +327,7 @@ func (app *lynx) Run() error {
 	return app.runG.Run()
 }
 
-func newLynx(o *Options) (Lynx, error) {
+func newLynx(o *Options) (App, error) {
 	o.EnsureDefaults()
 	app := &lynx{
 		o:    o,

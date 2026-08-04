@@ -8,12 +8,12 @@ import (
 
 // LifecycleManaged 定义组件的生命周期管理接口：初始化、启动与停止。
 type LifecycleManaged interface {
-	Init(app Lynx) error
+	Init(app App) error
 	Start(ctx context.Context) error
 	Stop(ctx context.Context)
 }
 
-// Component 是可由 Lynx 托管生命周期的命名组件。
+// Component 是可由 App 托管生命周期的命名组件。
 type Component interface {
 	Name() string
 	LifecycleManaged

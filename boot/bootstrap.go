@@ -31,7 +31,7 @@ func New(
 }
 
 // Bind 将 Bootstrap 中的钩子函数、组件与组件构建器绑定到 Lynx 应用。
-func (b *Bootstrap) Bind(app lynx.Lynx) error {
+func (b *Bootstrap) Bind(app lynx.App) error {
 	if err := app.Hooks(lynx.OnStart(b.StartHooks...)); err != nil {
 		return err
 	}

@@ -12,7 +12,7 @@ import (
 	"gocloud.dev/server/health"
 )
 
-// fakeLynx is a minimal lynx.Lynx implementation that records Hooks calls.
+// fakeLynx is a minimal lynx.App implementation that records Hooks calls.
 type fakeLynx struct {
 	hooksCalls int
 	failOnCall int // 1-based Hooks call index that should fail; 0 means never fail
@@ -37,7 +37,7 @@ func (f *fakeLynx) HealthCheckFunc() lynx.HealthCheckFunc {
 	return func() []health.Checker { return nil }
 }
 
-var _ lynx.Lynx = (*fakeLynx)(nil)
+var _ lynx.App = (*fakeLynx)(nil)
 
 func TestNew(t *testing.T) {
 	onStarts := lynx.OnStartHooks{func(ctx context.Context) error { return nil }}

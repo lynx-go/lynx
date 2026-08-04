@@ -35,7 +35,7 @@ func (c *sequenceChecker) Calls() int {
 	return c.calls
 }
 
-func newAppWithCheckers(t *testing.T, checkers ...health.Checker) Lynx {
+func newAppWithCheckers(t *testing.T, checkers ...health.Checker) App {
 	t.Helper()
 	app, err := newLynx(NewOptions())
 	if err != nil {

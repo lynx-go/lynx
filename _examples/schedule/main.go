@@ -20,7 +20,7 @@ func main() {
 		//lynx.WithUseDefaultConfigFlagsFunc(),
 	)
 
-	cli := lynx.New(options, func(ctx context.Context, app lynx.Lynx) error {
+	cli := lynx.New(options, func(ctx context.Context, app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 		task1 := &task{}
 		_ = app.Hooks(lynx.OnStart(func(ctx context.Context) error {

@@ -25,7 +25,7 @@ var (
 	ErrCloseTimeoutTooLarge = errors.New("close timeout must be at most 5 minutes")
 )
 
-// Options 是 Lynx 应用的核心配置项。
+// Options 是 App 应用的核心配置项。
 type Options struct {
 	ID              string         `json:"id"`
 	Name            string         `json:"name"`

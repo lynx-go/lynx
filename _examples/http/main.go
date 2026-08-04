@@ -40,7 +40,7 @@ func main() {
 		}),
 	)
 
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 
 		config := &Config{}

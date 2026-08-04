@@ -23,7 +23,7 @@ type BinderOptions struct {
 type Binder struct {
 	options                BinderOptions
 	broker                 pubsub.Broker
-	app                    lynx.Lynx
+	app                    lynx.App
 	running                atomic.Bool
 	consumerBuilders       map[string]*ConsumerBuilder
 	producers              map[string]*Producer
@@ -108,7 +108,7 @@ func (b *Binder) Name() string {
 }
 
 // Init 初始化 Binder，创建组件上下文并构建消费者与生产者。
-func (b *Binder) Init(app lynx.Lynx) error {
+func (b *Binder) Init(app lynx.App) error {
 	b.app = app
 	b.ctx, b.closeCtx = context.WithCancel(app.Context())
 	b.initConsumersAndProducers(b.ctx)

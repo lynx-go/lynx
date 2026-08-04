@@ -17,7 +17,7 @@ type Scheduler struct {
 	options *Options
 	tasks   []Task
 	cron    *cron.Cron
-	app     lynx.Lynx
+	app     lynx.App
 	started atomic.Bool
 }
 
@@ -45,7 +45,7 @@ func (s *Scheduler) Name() string {
 }
 
 // Init 记录应用实例。
-func (s *Scheduler) Init(app lynx.Lynx) error {
+func (s *Scheduler) Init(app lynx.App) error {
 	s.app = app
 	return nil
 }

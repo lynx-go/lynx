@@ -50,7 +50,7 @@ func NewCommand(fn CommandFunc, opts ...CommandOption) Component {
 
 type command struct {
 	fn      CommandFunc
-	lynx    Lynx
+	lynx    App
 	options *CommandOptions
 }
 
@@ -58,7 +58,7 @@ func (cmd *command) Name() string {
 	return "command"
 }
 
-func (cmd *command) Init(app Lynx) error {
+func (cmd *command) Init(app App) error {
 	cmd.lynx = app
 	return nil
 }

@@ -21,7 +21,7 @@ func main() {
 		lynx.WithUseDefaultConfigFlagsFunc(),
 	)
 
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
 
 		logLevel := app.Config().GetString("log-level")
 		if logLevel == "" {

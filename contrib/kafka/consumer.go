@@ -77,7 +77,7 @@ type messageReader interface {
 
 // Consumer 是 Kafka 消费者组件，消费消息并转发到消息代理。
 type Consumer struct {
-	app       lynx.Lynx
+	app       lynx.App
 	options   ConsumerOptions
 	reader    messageReader
 	eventName string
@@ -92,7 +92,7 @@ func (c *Consumer) Name() string {
 }
 
 // Init 记录应用实例。
-func (c *Consumer) Init(app lynx.Lynx) error {
+func (c *Consumer) Init(app lynx.App) error {
 	c.app = app
 	return nil
 }

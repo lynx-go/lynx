@@ -190,14 +190,14 @@ func (b *fakeBroker) subscribeCalls() int {
 
 func (b *fakeBroker) CheckHealth() error          { return nil }
 func (b *fakeBroker) Name() string                { return "fake-broker" }
-func (b *fakeBroker) Init(lynx.Lynx) error        { return nil }
+func (b *fakeBroker) Init(lynx.App) error         { return nil }
 func (b *fakeBroker) Start(context.Context) error { return nil }
 func (b *fakeBroker) Stop(context.Context)        {}
 func (b *fakeBroker) ID() string                  { return "fake-broker" }
 func (b *fakeBroker) IsRunning() bool             { return true }
 func (b *fakeBroker) Binders() []pubsub.Binder    { return nil }
 
-// fakeApp implements lynx.Lynx with no-ops; only Context() is meaningful.
+// fakeApp implements lynx.App with no-ops; only Context() is meaningful.
 type fakeApp struct {
 	ctx context.Context
 }

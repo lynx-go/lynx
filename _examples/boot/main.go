@@ -18,7 +18,7 @@ func main() {
 		f.StringP("loglevel", "l", "debug", "log level")
 	}))
 
-	app := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+	app := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 		boot, cleanup, err := wireBootstrap(app, app.Logger())
 		if err != nil {
@@ -35,7 +35,7 @@ func main() {
 	app.Run()
 }
 
-func NewHttpServer(app lynx.Lynx) *http.Server {
+func NewHttpServer(app lynx.App) *http.Server {
 	router := http.NewRouter()
 	router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 		_, _ = rw.Write([]byte("hello"))
