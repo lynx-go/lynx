@@ -133,15 +133,13 @@ import (
 )
 
 func main() {
-	opts := lynx.NewOptions(
-		lynx.WithName("custom-component"),
-	)
-
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		return app.Hooks(
 			lynx.ComponentBuilders(NewWorkerBuilder("worker", 2)),
 		)
-	})
+	},
+		lynx.WithName("custom-component"),
+	)
 	cli.Run()
 }
 

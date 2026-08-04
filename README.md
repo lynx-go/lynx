@@ -43,12 +43,7 @@ import (
 )
 
 func main() {
-    opts := lynx.NewOptions(
-        lynx.WithName("my-app"),
-        lynx.WithVersion("1.0.0"),
-    )
-
-    cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+    cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
         // 创建 HTTP 路由
         router := http.NewRouter()
         router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +60,10 @@ func main() {
                 http.WithHealthCheck(app.HealthCheckFunc()),
             ),
         ))
-    })
+    },
+        lynx.WithName("my-app"),
+        lynx.WithVersion("1.0.0"),
+    )
 
     cli.Run()
 }

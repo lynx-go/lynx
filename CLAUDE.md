@@ -175,7 +175,7 @@ Components implementing `health.Checker` interface are automatically registered 
 
 ### Application Entry Point
 
-The `lynx.New()` function creates a `*CLI` instance with two run methods:
+The `lynx.NewBuilder()` function creates a `*Builder` instance with two run methods:
 - `cli.Run()` - Panics on error
 - `cli.RunE()` - Returns error for handling
 

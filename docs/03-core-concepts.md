@@ -4,9 +4,9 @@
 
 ## 3.1 应用生命周期
 
-一个 Lynx 应用的完整生命周期由 `lynx.New` 和 `cli.Run()` 串起来：
+一个 Lynx 应用的完整生命周期由 `lynx.NewBuilder` 和 `cli.Run()` 串起来：
 
-1. `lynx.New(opts, setup)` 创建应用实例（返回 `*Builder`）：先调用 `EnsureDefaults` 补全 Options，再解析命令行参数、读取配置文件，最后把应用名称、ID、版本注入应用 Context（见 3.5 节）。
+1. `lynx.NewBuilder(setup, opts...)` 创建应用实例（返回 `*Builder`）：先调用 `EnsureDefaults` 补全 Options，再解析命令行参数、读取配置文件，最后把应用名称、ID、版本注入应用 Context（见 3.5 节）。
 2. `cli.Run()` 首先调用 `setup` 回调：在这里注册组件和钩子。组件的 `Init(app)` 在注册时（即 `app.Hooks` 调用时）同步执行，返回 error 会直接导致启动失败。
 3. `setup` 返回后进入 `Run()`：启动所有组件的 `Start(ctx)`，并阻塞等待退出信号。
 4. 收到退出信号（或某个执行单元结束）后进入关闭流程，依次执行 `OnStop` 钩子并调用各组件的 `Stop(ctx)`。
@@ -91,7 +91,7 @@ return app.Hooks(
 - 名称长度不能超过 63 个字符，否则返回 `ErrNameTooLong`。
 - `ShutdownTimeout` 大于 0 时，必须在 `[MinCloseTimeout, MaxCloseTimeout]` 区间内，即不小于 1 秒（否则 `ErrCloseTimeoutTooSmall`）、不大于 5 分钟（否则 `ErrCloseTimeoutTooLarge`）。`ShutdownTimeout` 为 0 视为合法，表示"使用默认值"。
 
-需要注意：框架在 `lynx.New` 时只调用 `EnsureDefaults()`，并不会自动调用 `Validate()`。如果希望启动前强制校验（例如在配置来自外部输入时），请显式调用：
+需要注意：框架在 `lynx.NewBuilder` 时只调用 `EnsureDefaults()`，并不会自动调用 `Validate()`。如果希望启动前强制校验（例如在配置来自外部输入时），请显式调用：
 
 ```go
 opts := lynx.NewOptions(lynx.WithName(nameFromInput))
@@ -102,7 +102,7 @@ if err := opts.Validate(); err != nil {
 
 ### EnsureDefaults
 
-`EnsureDefaults()` 在 `lynx.New` 内部自动调用，为未设置的字段填充默认值：
+`EnsureDefaults()` 在 `lynx.NewBuilder` 内部自动调用，为未设置的字段填充默认值：
 
 - `ID` 为空时取主机名；
 - `Name` 为空时取 `DefaultName`（`"lynx-app"`）；
@@ -216,13 +216,7 @@ import (
 )
 
 func main() {
-	opts := lynx.NewOptions(
-		lynx.WithName("core-concepts"),
-		lynx.WithVersion("1.0.0"),
-		lynx.WithShutdownTimeout(10*time.Second),
-	)
-
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		return app.Hooks(
 			lynx.OnStart(func(ctx context.Context) error {
 				app.Logger().Info("on-start hook",
@@ -238,7 +232,11 @@ func main() {
 			}),
 			lynx.Components(&myComponent{}),
 		)
-	})
+	},
+		lynx.WithName("core-concepts"),
+		lynx.WithVersion("1.0.0"),
+		lynx.WithShutdownTimeout(10*time.Second),
+	)
 	cli.Run()
 }
 

@@ -142,16 +142,14 @@ func main() {
         w.Write([]byte("Hello, Lynx!"))
     })
 
-    opts := lynx.NewOptions(
-        lynx.WithName("my-app"),
-        lynx.WithVersion("1.0.0"),
-    )
-
-    cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+    cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
         return app.Hooks(lynx.Components(
             http.NewServer(router, http.WithAddr(":8080")),
         ))
-    })
+    },
+        lynx.WithName("my-app"),
+        lynx.WithVersion("1.0.0"),
+    )
 
     cli.Run()
 }

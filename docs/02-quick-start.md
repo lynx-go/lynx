@@ -27,12 +27,7 @@ import (
 )
 
 func main() {
-	opts := lynx.NewOptions(
-		lynx.WithName("http-example"),
-		lynx.WithVersion("1.0.0"),
-	)
-
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		router := http.NewRouter()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			name := lynx.NameFromContext(app.Context())
@@ -51,7 +46,10 @@ func main() {
 				http.WithHealthCheck(app.HealthCheckFunc()),
 			),
 		))
-	})
+	},
+		lynx.WithName("http-example"),
+		lynx.WithVersion("1.0.0"),
+	)
 	cli.Run()
 }
 ```
@@ -71,7 +69,7 @@ go run main.go
 代码要点：
 
 - `lynx.NewOptions` 通过 `WithName`、`WithVersion` 等选项配置应用元信息。
-- `lynx.New(opts, setup)` 创建应用实例，`setup` 回调中通过 `app.Hooks(lynx.Components(...))` 注册组件。
+- `lynx.NewBuilder(setup, opts...)` 创建应用实例，`setup` 回调中通过 `app.Hooks(lynx.Components(...))` 注册组件。
 - `http.NewServer` 创建一个 HTTP 服务器组件，`WithAddr` 指定监听地址，`WithHealthCheck` 开启健康检查（见 2.5 节）。
 - `cli.Run()` 启动应用并阻塞，直到收到退出信号后优雅关闭。
 
@@ -142,17 +140,15 @@ import (
 )
 
 func main() {
-	opts := lynx.NewOptions(
-		lynx.WithName("cli-example"),
-		lynx.WithUseDefaultConfigFlagsFunc(),
-	)
-
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		return app.CLI(func(ctx context.Context) error {
 			fmt.Println("hello cli")
 			return nil
 		})
-	})
+	},
+		lynx.WithName("cli-example"),
+		lynx.WithUseDefaultConfigFlagsFunc(),
+	)
 	cli.Run()
 }
 ```

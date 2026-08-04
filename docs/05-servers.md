@@ -54,11 +54,7 @@ import (
 )
 
 func main() {
-	opts := lynx.NewOptions(
-		lynx.WithName("http-demo"),
-		lynx.WithVersion("1.0.0"),
-	)
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		router := http.NewRouter()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			_, _ = rw.Write([]byte("hello lynx"))
@@ -70,7 +66,10 @@ func main() {
 			http.WithRequestLog(true),
 			http.WithMiddleware(latencyMiddleware),
 		)))
-	})
+	},
+		lynx.WithName("http-demo"),
+		lynx.WithVersion("1.0.0"),
+	)
 	cli.Run()
 }
 
@@ -148,11 +147,7 @@ import (
 )
 
 func main() {
-	opts := lynx.NewOptions(
-		lynx.WithName("grpc-demo"),
-		lynx.WithVersion("1.0.0"),
-	)
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		srv := grpc.NewServer(
 			grpc.WithAddr(":9090"),
 			grpc.WithLogger(app.Logger()),
@@ -162,7 +157,10 @@ func main() {
 		// 实际项目中服务描述由 protoc 生成，这里手写一个最小 Echo 服务作演示。
 		srv.GetServer().RegisterService(&echoServiceDesc, &echoService{})
 		return app.Hooks(lynx.Components(srv))
-	})
+	},
+		lynx.WithName("grpc-demo"),
+		lynx.WithVersion("1.0.0"),
+	)
 	cli.Run()
 }
 
