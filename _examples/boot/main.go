@@ -13,12 +13,7 @@ import (
 )
 
 func main() {
-	opts := lynx.NewOptions(lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
-		f.String("addr", ":8080", "http listen address")
-		f.StringP("loglevel", "l", "debug", "log level")
-	}))
-
-	app := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+	builder := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 		boot, cleanup, err := wireBootstrap(app, app.Logger())
 		if err != nil {
@@ -31,8 +26,13 @@ func main() {
 			return err
 		}
 		return boot.Bind(app)
-	})
-	app.Run()
+	},
+		lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
+			f.String("addr", ":8080", "http listen address")
+			f.StringP("loglevel", "l", "debug", "log level")
+		}),
+	)
+	builder.Run()
 }
 
 func NewHttpServer(app lynx.App) *http.Server {

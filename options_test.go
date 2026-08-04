@@ -41,22 +41,22 @@ func TestOptionsValidate(t *testing.T) {
 		},
 		{
 			name:    "shutdown timeout below minimum",
-			options: Options{ShutdownTimeout: MinCloseTimeout - time.Millisecond},
+			options: Options{ShutdownTimeout: MinShutdownTimeout - time.Millisecond},
 			wantErr: ErrCloseTimeoutTooSmall,
 		},
 		{
 			name:    "shutdown timeout at minimum",
-			options: Options{ShutdownTimeout: MinCloseTimeout},
+			options: Options{ShutdownTimeout: MinShutdownTimeout},
 			wantErr: nil,
 		},
 		{
 			name:    "shutdown timeout at maximum",
-			options: Options{ShutdownTimeout: MaxCloseTimeout},
+			options: Options{ShutdownTimeout: MaxShutdownTimeout},
 			wantErr: nil,
 		},
 		{
 			name:    "shutdown timeout above maximum",
-			options: Options{ShutdownTimeout: MaxCloseTimeout + time.Millisecond},
+			options: Options{ShutdownTimeout: MaxShutdownTimeout + time.Millisecond},
 			wantErr: ErrCloseTimeoutTooLarge,
 		},
 	}

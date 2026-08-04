@@ -20,27 +20,7 @@ type Config struct {
 }
 
 func main() {
-	opts := lynx.NewOptions(
-		lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
-			f.StringP("config", "c", "./configs", "config file path")
-			f.String("addr", "", "http listen address")
-			f.StringP("log_level", "l", "debug", "log level")
-		}),
-		lynx.WithBindConfigFunc(func(f *pflag.FlagSet, v *viper.Viper) error {
-			if c, _ := f.GetString("config"); c != "" {
-				v.SetConfigFile(c)
-			}
-			v.SetEnvPrefix("LYNX_")
-			v.AutomaticEnv()
-
-			if err := v.BindEnv("addr", "LYNX_ADDR"); err != nil {
-				return err
-			}
-			return nil
-		}),
-	)
-
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 
 		config := &Config{}
@@ -116,7 +96,25 @@ func main() {
 		}
 
 		return nil
-	})
+	},
+		lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
+			f.StringP("config", "c", "./configs", "config file path")
+			f.String("addr", "", "http listen address")
+			f.StringP("log_level", "l", "debug", "log level")
+		}),
+		lynx.WithBindConfigFunc(func(f *pflag.FlagSet, v *viper.Viper) error {
+			if c, _ := f.GetString("config"); c != "" {
+				v.SetConfigFile(c)
+			}
+			v.SetEnvPrefix("LYNX_")
+			v.AutomaticEnv()
+
+			if err := v.BindEnv("addr", "LYNX_ADDR"); err != nil {
+				return err
+			}
+			return nil
+		}),
+	)
 	cli.Run()
 }
 

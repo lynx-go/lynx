@@ -14,8 +14,8 @@ import (
 const (
 	DefaultName            = "lynx-app"
 	DefaultShutdownTimeout = 5 * time.Second
-	MinCloseTimeout        = 1 * time.Second
-	MaxCloseTimeout        = 5 * time.Minute
+	MinShutdownTimeout     = 1 * time.Second
+	MaxShutdownTimeout     = 5 * time.Minute
 )
 
 // Validation errors for Options.
@@ -48,10 +48,10 @@ func (o *Options) Validate() error {
 		return ErrNameTooLong
 	}
 	if o.ShutdownTimeout > 0 {
-		if o.ShutdownTimeout < MinCloseTimeout {
+		if o.ShutdownTimeout < MinShutdownTimeout {
 			return ErrCloseTimeoutTooSmall
 		}
-		if o.ShutdownTimeout > MaxCloseTimeout {
+		if o.ShutdownTimeout > MaxShutdownTimeout {
 			return ErrCloseTimeoutTooLarge
 		}
 	}

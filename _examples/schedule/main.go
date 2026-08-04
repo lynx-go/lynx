@@ -14,13 +14,7 @@ import (
 )
 
 func main() {
-	options := lynx.NewOptions(
-		lynx.WithID(lo.Must1(os.Hostname())),
-		lynx.WithName("pubsub"),
-		//lynx.WithUseDefaultConfigFlagsFunc(),
-	)
-
-	cli := lynx.New(options, func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 		task1 := &task{}
 		_ = app.Hooks(lynx.OnStart(func(ctx context.Context) error {
@@ -33,7 +27,11 @@ func main() {
 		mux := gohttp.NewServeMux()
 		hs := http.NewServer(mux, http.WithAddr(":8089"))
 		return app.Hooks(lynx.Components(scheduler, hs))
-	})
+	},
+		lynx.WithID(lo.Must1(os.Hostname())),
+		lynx.WithName("pubsub"),
+		//lynx.WithUseDefaultConfigFlagsFunc(),
+	)
 	cli.Run()
 }
 

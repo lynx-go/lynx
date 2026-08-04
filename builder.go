@@ -14,14 +14,18 @@ type Builder struct {
 	app   App
 }
 
-// New 创建 Builder 实例；初始化失败时输出错误并退出进程。
-func New(o *Options, setup BuildFunc) *Builder {
+// NewBuilder 创建 Builder 实例；初始化失败时输出错误并退出进程。
+func NewBuilder(build BuildFunc, opts ...Option) *Builder {
+	o := &Options{}
+	for _, opt := range opts {
+		opt(o)
+	}
 	app, err := newLynx(o)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	return &Builder{
-		build: setup,
+		build: build,
 		app:   app,
 	}
 }
@@ -34,18 +38,14 @@ func (b *Builder) Run() {
 }
 
 // Build 运行初始化回调并返回应用实例，回调失败时返回错误。
-func (b *Builder) Build() (App, error) {
+func (b *Builder) Build() App {
 	if err := b.build(b.app.Context(), b.app); err != nil {
-		return nil, err
+		log.Fatalln(err)
 	}
-	return b.app, nil
+	return b.app
 }
 
 // RunE 运行 Builder 应用并返回错误，由调用方决定错误处理方式。
 func (b *Builder) RunE() error {
-	app, err := b.Build()
-	if err != nil {
-		return err
-	}
-	return app.Run()
+	return b.Build().Run()
 }

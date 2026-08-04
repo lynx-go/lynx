@@ -16,12 +16,7 @@ type Config struct {
 }
 
 func main() {
-	opts := lynx.NewOptions(
-		lynx.WithName("cli-example"),
-		lynx.WithUseDefaultConfigFlagsFunc(),
-	)
-
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 
 		logLevel := app.Config().GetString("log-level")
 		if logLevel == "" {
@@ -66,7 +61,10 @@ func main() {
 			logger.Info("command executed successfully")
 			return nil
 		})
-	})
+	},
+		lynx.WithName("cli-example"),
+		lynx.WithUseDefaultConfigFlagsFunc(),
+	)
 	cli.Run()
 }
 
