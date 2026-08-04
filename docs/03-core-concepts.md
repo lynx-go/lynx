@@ -118,7 +118,7 @@ Lynx 的配置体系基于 Viper（读取与合并）加 pflag（命令行参数
 3. 调用 `ReadInConfig` 读取配置文件；
 4. 调用 `BindPFlags` 把命令行参数合并进 Viper。
 
-之后在 `setup` 回调中通过 `app.Config()` 获取 `*viper.Viper` 读取配置——可以 `Unmarshal` 到结构体，也可以按 `GetString` 等方法逐键读取（用法见第 2 章 2.3 节）。
+之后在 `setup` 回调中通过 `app.Config()` 获取 `lynx.Config` 接口读取配置（默认由 `*viper.Viper` 适配实现，`Unmarshal` 支持 `lynx.TagNameJSON` 等解码选项）——可以 `Unmarshal` 到结构体，也可以按 `GetString` 等方法逐键读取（用法见第 2 章 2.3 节）。需要 Viper 完整能力时，可在 `BindConfigFunc` 中持有 `*viper.Viper` 引用，或通过 `lynx.NewViperConfig` 包装自己的实例。
 
 ### 内置参数
 

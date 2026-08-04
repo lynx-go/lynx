@@ -11,7 +11,6 @@ import (
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
-	"github.com/spf13/viper"
 )
 
 // fakeApp is a minimal lynx.App implementation for tests.
@@ -28,7 +27,7 @@ func newFakeApp() *fakeApp {
 }
 
 func (f *fakeApp) Close()                                {}
-func (f *fakeApp) Config() *viper.Viper                  { return nil }
+func (f *fakeApp) Config() lynx.Config                  { return nil }
 func (f *fakeApp) Context() context.Context              { return f.ctx }
 func (f *fakeApp) CLI(lynx.CommandFunc) error            { return nil }
 func (f *fakeApp) Hooks(...lynx.HookOption) error        { return nil }

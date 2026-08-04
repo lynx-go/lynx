@@ -25,8 +25,8 @@ type SetFlagsFunc func(f *pflag.FlagSet)
 type App interface {
 	// Close 关闭应用实例
 	Close()
-	// Config 获取配置实例
-	Config() *viper.Viper
+	// Config 获取配置实例（默认由 *viper.Viper 适配实现）
+	Config() Config
 	// Context 获取应用上下文
 	Context() context.Context
 	// CLI 注册启动的命令，用于 CLI 模式
@@ -236,8 +236,8 @@ func (app *lynx) addComponentBuilders(builders ...ComponentBuilder) error {
 	return nil
 }
 
-func (app *lynx) Config() *viper.Viper {
-	return app.c
+func (app *lynx) Config() Config {
+	return NewViperConfig(app.c)
 }
 
 func (app *lynx) Logger(kwargs ...any) *slog.Logger {

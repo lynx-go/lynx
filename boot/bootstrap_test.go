@@ -27,7 +27,7 @@ func (f *fakeLynx) Hooks(hooks ...lynx.HookOption) error {
 }
 
 func (f *fakeLynx) Close()                            {}
-func (f *fakeLynx) Config() *viper.Viper              { return viper.New() }
+func (f *fakeLynx) Config() lynx.Config              { return lynx.NewViperConfig(viper.New()) }
 func (f *fakeLynx) Context() context.Context          { return context.Background() }
 func (f *fakeLynx) CLI(cmd lynx.CommandFunc) error    { return nil }
 func (f *fakeLynx) Run() error                        { return nil }

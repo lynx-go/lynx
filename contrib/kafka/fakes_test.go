@@ -207,7 +207,7 @@ func newFakeApp() *fakeApp {
 }
 
 func (a *fakeApp) Close()                     {}
-func (a *fakeApp) Config() *viper.Viper       { return viper.New() }
+func (a *fakeApp) Config() lynx.Config       { return lynx.NewViperConfig(viper.New()) }
 func (a *fakeApp) Context() context.Context   { return a.ctx }
 func (a *fakeApp) CLI(lynx.CommandFunc) error { return nil }
 func (a *fakeApp) Hooks(...lynx.HookOption) error {
