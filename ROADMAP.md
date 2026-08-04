@@ -52,11 +52,11 @@ Lynx 目前为团队内部使用的 Go 微服务框架，计划对外推广开�
 
 ## Phase C — v1.0 冲刺（文档 + API 冻结）
 
-- [ ] 补齐 `docs/` 第 02-05 章（README 已引用但不存在）
-- [ ] `_examples` 各示例补 README，补完 `_examples/boot` 中空的 `AppConfig`
-- [ ] GoDoc 全覆盖；README 与代码现状对齐（如 `cli/`、`command/` 目录描述）
-- [ ] 全量 API 审查并冻结（含 `CLI` 命名、接口残留注释清理）
-- [ ] Taskfile release 变量参数化，补 `RELEASE.md` 说明多模块打 tag 流程
+- [x] 补齐 `docs/` 第 02-05 章（README 已引用但不存在）
+- [x] `_examples` 各示例补 README，补完 `_examples/boot` 中空的 `AppConfig`
+- [x] GoDoc 全覆盖；README 与代码现状对齐（如 `cli/`、`command/` 目录描述）
+- [x] 全量 API 审查并冻结（含 `CLI` 命名、接口残留注释清理）
+- [x] Taskfile release 变量参数化，补 `RELEASE.md` 说明多模块打 tag 流程
 
 ## 原则
 
