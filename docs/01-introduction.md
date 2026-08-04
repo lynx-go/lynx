@@ -147,7 +147,7 @@ func main() {
         lynx.WithVersion("1.0.0"),
     )
 
-    cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+    cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
         return app.Hooks(lynx.Components(
             http.NewServer(router, http.WithAddr(":8080")),
         ))

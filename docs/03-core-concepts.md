@@ -6,7 +6,7 @@
 
 一个 Lynx 应用的完整生命周期由 `lynx.New` 和 `cli.Run()` 串起来：
 
-1. `lynx.New(opts, setup)` 创建应用实例（返回 `*CLI`）：先调用 `EnsureDefaults` 补全 Options，再解析命令行参数、读取配置文件，最后把应用名称、ID、版本注入应用 Context（见 3.5 节）。
+1. `lynx.New(opts, setup)` 创建应用实例（返回 `*Builder`）：先调用 `EnsureDefaults` 补全 Options，再解析命令行参数、读取配置文件，最后把应用名称、ID、版本注入应用 Context（见 3.5 节）。
 2. `cli.Run()` 首先调用 `setup` 回调：在这里注册组件和钩子。组件的 `Init(app)` 在注册时（即 `app.Hooks` 调用时）同步执行，返回 error 会直接导致启动失败。
 3. `setup` 返回后进入 `Run()`：启动所有组件的 `Start(ctx)`，并阻塞等待退出信号。
 4. 收到退出信号（或某个执行单元结束）后进入关闭流程，依次执行 `OnStop` 钩子并调用各组件的 `Stop(ctx)`。
@@ -222,7 +222,7 @@ func main() {
 		lynx.WithShutdownTimeout(10*time.Second),
 	)
 
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
 		return app.Hooks(
 			lynx.OnStart(func(ctx context.Context) error {
 				app.Logger().Info("on-start hook",
@@ -246,7 +246,7 @@ type myComponent struct{}
 
 func (c *myComponent) Name() string { return "my-component" }
 
-func (c *myComponent) Init(app lynx.Lynx) error { return nil }
+func (c *myComponent) Init(app lynx.App) error { return nil }
 
 func (c *myComponent) Start(ctx context.Context) error {
 	<-ctx.Done()

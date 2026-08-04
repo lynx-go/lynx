@@ -58,7 +58,7 @@ func main() {
 		lynx.WithName("http-demo"),
 		lynx.WithVersion("1.0.0"),
 	)
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
 		router := http.NewRouter()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			_, _ = rw.Write([]byte("hello lynx"))
@@ -152,7 +152,7 @@ func main() {
 		lynx.WithName("grpc-demo"),
 		lynx.WithVersion("1.0.0"),
 	)
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
 		srv := grpc.NewServer(
 			grpc.WithAddr(":9090"),
 			grpc.WithLogger(app.Logger()),

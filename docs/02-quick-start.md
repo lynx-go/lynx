@@ -32,7 +32,7 @@ func main() {
 		lynx.WithVersion("1.0.0"),
 	)
 
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
 		router := http.NewRouter()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			name := lynx.NameFromContext(app.Context())
@@ -147,7 +147,7 @@ func main() {
 		lynx.WithUseDefaultConfigFlagsFunc(),
 	)
 
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
 		return app.CLI(func(ctx context.Context) error {
 			fmt.Println("hello cli")
 			return nil
@@ -189,7 +189,7 @@ type myComponent struct {
 }
 
 func (c *myComponent) Name() string             { return "my-component" }
-func (c *myComponent) Init(app lynx.Lynx) error { c.SetHealthy(true); return nil }
+func (c *myComponent) Init(app lynx.App) error { c.SetHealthy(true); return nil }
 func (c *myComponent) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil

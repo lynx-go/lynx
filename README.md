@@ -48,7 +48,7 @@ func main() {
         lynx.WithVersion("1.0.0"),
     )
 
-    cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+    cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
         // 创建 HTTP 路由
         router := http.NewRouter()
         router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +176,7 @@ app.Hooks(lynx.Components(scheduler))
 ```go
 type Component interface {
     Name() string
-    Init(app Lynx) error
+    Init(app App) error
     Start(ctx context.Context) error
     Stop(ctx context.Context)
 }

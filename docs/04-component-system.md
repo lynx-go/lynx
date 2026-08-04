@@ -8,7 +8,7 @@
 
 ```go
 type LifecycleManaged interface {
-	Init(app Lynx) error
+	Init(app App) error
 	Start(ctx context.Context) error
 	Stop(ctx context.Context)
 }
@@ -22,7 +22,7 @@ type Component interface {
 四个方法的契约如下：
 
 - `Name() string`：组件名称，用于启动/停止日志中的标识。框架不检查唯一性，多个实例可以重名。
-- `Init(app Lynx) error`：注册组件时（即 `app.Hooks(lynx.Components(...))` 调用时）**同步**执行，用于初始化依赖——可以通过参数 `app` 访问 `app.Config()`、`app.Logger()`、`app.Context()` 等。返回 error 会让 `Hooks` 直接返回错误，启动失败。
+- `Init(app App) error`：注册组件时（即 `app.Hooks(lynx.Components(...))` 调用时）**同步**执行，用于初始化依赖——可以通过参数 `app` 访问 `app.Config()`、`app.Logger()`、`app.Context()` 等。返回 error 会让 `Hooks` 直接返回错误，启动失败。
 - `Start(ctx context.Context) error`：`cli.Run()` 启动后，每个组件在 run group 中作为独立 actor **并发**调用。通常是阻塞式的（监听端口、消费消息），收到 `ctx` 取消时应返回。任何一个组件的 `Start` 返回（无论是否出错）都会触发整个应用的优雅关闭（见 3.1 节并发模型）。
 - `Stop(ctx context.Context)`：关闭阶段由 run group 的中断函数调用，用于释放资源。注意框架是先调用 `Stop` 再取消组件 Context（见 3.1 节），因此 `Stop` 中不要等待 `ctx.Done()`。
 
@@ -137,7 +137,7 @@ func main() {
 		lynx.WithName("custom-component"),
 	)
 
-	cli := lynx.New(opts, func(ctx context.Context, app lynx.Lynx) error {
+	cli := lynx.New(opts, func(ctx context.Context, app lynx.App) error {
 		return app.Hooks(
 			lynx.ComponentBuilders(NewWorkerBuilder("worker", 2)),
 		)
@@ -154,7 +154,7 @@ type worker struct {
 
 func (w *worker) Name() string { return w.name }
 
-func (w *worker) Init(app lynx.Lynx) error {
+func (w *worker) Init(app lynx.App) error {
 	w.SetHealthy(true) // 也可以等 Start 中就绪后再置为健康
 	return nil
 }
