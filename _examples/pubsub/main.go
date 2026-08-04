@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	builder := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 		binder := kafka.NewBinder(kafka.BinderOptions{
 			SubscribeOptions: map[string]kafka.ConsumerOptions{
@@ -75,7 +75,7 @@ func main() {
 		lynx.WithName("pubsub"),
 		//lynx.WithUseDefaultConfigFlagsFunc(),
 	)
-	cli.Run()
+	builder.Run()
 }
 
 type helloHandler struct {

@@ -20,7 +20,7 @@ type Config struct {
 }
 
 func main() {
-	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	builder := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 
 		config := &Config{}
@@ -115,7 +115,7 @@ func main() {
 			return nil
 		}),
 	)
-	cli.Run()
+	builder.Run()
 }
 
 // latencyMiddleware is a demo lynx http.Middleware logging request latency.

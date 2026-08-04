@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	builder := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 		task1 := &task{}
 		_ = app.Hooks(lynx.OnStart(func(ctx context.Context) error {
@@ -32,7 +32,7 @@ func main() {
 		lynx.WithName("pubsub"),
 		//lynx.WithUseDefaultConfigFlagsFunc(),
 	)
-	cli.Run()
+	builder.Run()
 }
 
 type task struct {

@@ -16,7 +16,7 @@ type Config struct {
 }
 
 func main() {
-	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	builder := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 
 		logLevel := app.Config().GetString("log-level")
 		if logLevel == "" {
@@ -65,7 +65,7 @@ func main() {
 		lynx.WithName("cli-example"),
 		lynx.WithUseDefaultConfigFlagsFunc(),
 	)
-	cli.Run()
+	builder.Run()
 }
 
 type helloHandler struct {
