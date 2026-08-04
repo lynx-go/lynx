@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/pflag"
-	"github.com/spf13/viper"
 )
 
 func TestOptionsValidate(t *testing.T) {
@@ -155,7 +154,7 @@ func TestWithSetFlagsAndBindConfig(t *testing.T) {
 	bindCalled := false
 	o := NewOptions(
 		WithSetFlagsFunc(func(f *pflag.FlagSet) { flagsSet = true }),
-		WithBindConfigFunc(func(f *pflag.FlagSet, v *viper.Viper) error {
+		WithBindConfigFunc(func(f *pflag.FlagSet, v Config) error {
 			bindCalled = true
 			return nil
 		}),

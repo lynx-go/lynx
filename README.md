@@ -93,7 +93,7 @@ opts := lynx.NewOptions(
     lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
         f.StringP("config", "c", "config.yaml", "config file path")
     }),
-    lynx.WithBindConfigFunc(func(f *pflag.FlagSet, v *viper.Viper) error {
+    lynx.WithBindConfigFunc(func(f *pflag.FlagSet, v lynx.Config) error {
         if c, _ := f.GetString("config"); c != "" {
             v.SetConfigFile(c)
         }

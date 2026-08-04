@@ -9,9 +9,9 @@ import (
 // 底层类型相同，可通过显式转换互相转换。
 type DecoderConfigOption func(*mapstructure.DecoderConfig)
 
-// Config 是应用配置的访问接口，默认实现为适配 *viper.Viper 的适配器。
-// 需要 Viper 完整能力（如自定义配置源）时，可在 BindConfigFunc 中持有
-// *viper.Viper 引用，或通过 NewViperConfig 包装自己的实例。
+// Config 是应用配置的访问接口，同时覆盖配置源的绑定与配置读取，
+// 默认实现为适配 *viper.Viper 的适配器。
+// 需要更完整的 Viper API 时，可自行创建 *viper.Viper 并用 NewViperConfig 包装。
 type Config interface {
 	// Get 返回 key 对应的值，未设置时返回 nil。
 	Get(key string) any
@@ -32,6 +32,20 @@ type Config interface {
 	// Unmarshal 将配置解码到 rawVal 指向的结构体，可通过 DecoderConfigOption
 	// 定制解码行为（如 lynx.TagNameJSON / lynx.TagNameYAML）。
 	Unmarshal(rawVal any, opts ...DecoderConfigOption) error
+
+	// SetConfigFile 设置配置文件路径。
+	SetConfigFile(in string)
+	// AddConfigPath 添加配置文件搜索目录。
+	AddConfigPath(in string)
+	// SetConfigType 设置配置文件类型（如 yaml、json）。
+	SetConfigType(in string)
+	// SetEnvPrefix 设置环境变量前缀。
+	SetEnvPrefix(in string)
+	// AutomaticEnv 启用环境变量自动匹配。
+	AutomaticEnv()
+	// BindEnv 将 key 绑定到环境变量；第一个参数为 key，其余为环境变量名，
+	// 未指定时使用 key 的默认环境变量形式。
+	BindEnv(input ...string) error
 }
 
 // NewViperConfig 将 *viper.Viper 包装为 Config，是 Config 的默认实现。
@@ -82,4 +96,28 @@ func (c *viperConfig) Unmarshal(rawVal any, opts ...DecoderConfigOption) error {
 		viperOpts = append(viperOpts, viper.DecoderConfigOption(opt))
 	}
 	return c.v.Unmarshal(rawVal, viperOpts...)
+}
+
+func (c *viperConfig) SetConfigFile(in string) {
+	c.v.SetConfigFile(in)
+}
+
+func (c *viperConfig) AddConfigPath(in string) {
+	c.v.AddConfigPath(in)
+}
+
+func (c *viperConfig) SetConfigType(in string) {
+	c.v.SetConfigType(in)
+}
+
+func (c *viperConfig) AutomaticEnv() {
+	c.v.AutomaticEnv()
+}
+
+func (c *viperConfig) SetEnvPrefix(in string) {
+	c.v.SetEnvPrefix(in)
+}
+
+func (c *viperConfig) BindEnv(input ...string) error {
+	return c.v.BindEnv(input...)
 }

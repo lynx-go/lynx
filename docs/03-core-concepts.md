@@ -114,11 +114,11 @@ if err := opts.Validate(); err != nil {
 Lynx 的配置体系基于 Viper（读取与合并）加 pflag（命令行参数），在应用初始化阶段按固定顺序执行：
 
 1. 调用 `SetFlagsFunc` 声明参数，并解析 `os.Args[1:]`；
-2. 调用 `BindConfigFunc` 把参数绑定到 Viper（设置配置文件路径、环境变量等）；
+2. 调用 `BindConfigFunc` 把参数绑定到应用配置（配置文件路径、环境变量等）；
 3. 调用 `ReadInConfig` 读取配置文件；
-4. 调用 `BindPFlags` 把命令行参数合并进 Viper。
+4. 调用 `BindPFlags` 把命令行参数合并进配置。
 
-之后在 `setup` 回调中通过 `app.Config()` 获取 `lynx.Config` 接口读取配置（默认由 `*viper.Viper` 适配实现，`Unmarshal` 支持 `lynx.TagNameJSON` 等解码选项）——可以 `Unmarshal` 到结构体，也可以按 `GetString` 等方法逐键读取（用法见第 2 章 2.3 节）。需要 Viper 完整能力时，可在 `BindConfigFunc` 中持有 `*viper.Viper` 引用，或通过 `lynx.NewViperConfig` 包装自己的实例。
+之后在 `setup` 回调中通过 `app.Config()` 获取 `lynx.Config` 接口读取配置（默认由 `*viper.Viper` 适配实现，`Unmarshal` 支持 `lynx.TagNameJSON` 等解码选项）——可以 `Unmarshal` 到结构体，也可以按 `GetString` 等方法逐键读取（用法见第 2 章 2.3 节）。`BindConfigFunc` 接收的同样是 `lynx.Config`，绑定阶段所需的 `SetConfigFile`/`AutomaticEnv`/`BindEnv` 等方法都包含在接口内；需要更完整的 Viper API 时，可自行创建 `*viper.Viper` 并用 `lynx.NewViperConfig` 包装。
 
 ### 内置参数
 
@@ -136,7 +136,7 @@ Lynx 的配置体系基于 Viper（读取与合并）加 pflag（命令行参数
 环境变量支持不是框架自动开启的，需要在自定义的 `WithBindConfigFunc` 中显式启用（取自 `_examples/http/main.go`）：
 
 ```go
-lynx.WithBindConfigFunc(func(f *pflag.FlagSet, v *viper.Viper) error {
+lynx.WithBindConfigFunc(func(f *pflag.FlagSet, v lynx.Config) error {
 	if c, _ := f.GetString("config"); c != "" {
 		v.SetConfigFile(c)
 	}

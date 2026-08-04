@@ -15,8 +15,8 @@ import (
 	"gocloud.dev/server/health"
 )
 
-// BindConfigFunc 将命令行 flags 绑定到 viper 配置实例。
-type BindConfigFunc func(f *pflag.FlagSet, v *viper.Viper) error
+// BindConfigFunc 将命令行 flags 绑定到应用配置（Config 实例）。
+type BindConfigFunc func(f *pflag.FlagSet, v Config) error
 
 // SetFlagsFunc 定义应用启动时需要注册的命令行 flags。
 type SetFlagsFunc func(f *pflag.FlagSet)
@@ -177,8 +177,8 @@ func DefaultSetFlagsFunc(f *pflag.FlagSet) {
 	f.String("log-level", "info", "log level, default info")
 }
 
-// DefaultBindConfigFunc 将默认 flags 中的配置文件路径、目录与类型绑定到 viper。
-func DefaultBindConfigFunc(f *pflag.FlagSet, v *viper.Viper) error {
+// DefaultBindConfigFunc 将默认 flags 中的配置文件路径、目录与类型绑定到应用配置。
+func DefaultBindConfigFunc(f *pflag.FlagSet, v Config) error {
 	if c, _ := f.GetString("config"); c != "" {
 		v.SetConfigFile(c)
 	}
@@ -200,7 +200,7 @@ func (app *lynx) initConfigure() error {
 	}
 
 	if fn := app.o.BindConfigFunc; fn != nil {
-		if err := fn(app.f, app.c); err != nil {
+		if err := fn(app.f, NewViperConfig(app.c)); err != nil {
 			return err
 		}
 
