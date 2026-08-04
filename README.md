@@ -1,6 +1,6 @@
 # Lynx
 
-[![Go Version](https://img.shields.io/badge/Go-1.24.2+-00ADD8?logo=go)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 Lynx 是一个轻量级的 Go 微服务框架，提供了开箱即用的应用生命周期管理、组件系统、HTTP 服务器、健康检查、配置管理和事件驱动等功能。
@@ -11,6 +11,7 @@ Lynx 是一个轻量级的 Go 微服务框架，提供了开箱即用的应用�
 - **组件系统** - 基于 `Component` 接口的插件化架构
 - **HTTP 服务器** - 内置 HTTP 服务器，支持健康检查和请求日志
 - **健康检查** - 集成健康检查机制，便于监控和服务发现
+- **可观测性** - 集成 OpenTelemetry tracing/metrics 与 Prometheus
 - **配置管理** - 基于 Viper 的灵活配置系统，支持多来源配置
 - **事件驱动** - 内置 PubSub 支持，轻松实现异步消息处理
 - **Kafka 集成** - 提供 Kafka Binder，简化消息队列的使用
@@ -221,18 +222,19 @@ func InitializeApp() (*Bootstrap, error) {
 ```
 lynx/
 ├── boot/           # 应用引导和依赖注入
-├── cli/            # CLI 模式支持
-├── command/        # 命令行命令
+├── cli.go          # CLI 模式支持
+├── command.go      # 命令行命令
 ├── component.go    # 组件接口定义
 ├── contrib/        # 扩展组件
 │   ├── kafka/      # Kafka 支持
 │   ├── pubsub/     # 消息发布订阅
 │   ├── schedule/   # 定时任务
 │   └── zap/        # Zap 日志集成
+├── docs/           # 文档
 ├── hooks.go        # Hooks 机制
 ├── options.go      # 配置选项
-├── pkg/            # 内部工具包
 ├── server/         # 服务器实现
+│   ├── grpc/       # gRPC 服务器
 │   └── http/       # HTTP 服务器
 └── _examples/      # 示例代码
     ├── boot/       # 依赖注入示例
@@ -285,7 +287,7 @@ github.com/lynx-go/lynx/contrib/zap
 
 ## 依赖要求
 
-- Go 1.24.2 或更高版本
+- Go 1.25 或更高版本
 
 ## License
 
@@ -297,5 +299,5 @@ Apache License 2.0
 
 ## 相关链接
 
-- [文档](https://github.com/lynx-go/lynx/wiki)
+- [文档](./docs/01-introduction.md)
 - [示例](https://github.com/lynx-go/lynx/tree/main/_examples)

@@ -89,7 +89,7 @@ Lynx 适用于以下场景：
 
 Lynx 构建于以下优秀的开源项目之上：
 
-- **Go 1.24.2+**：编程语言
+- **Go 1.25+**：编程语言
 - **gocloud.dev**：云原生 API 支持
 - **Viper**：配置管理
 - **Cobra**：命令行框架
@@ -103,13 +103,12 @@ Lynx 构建于以下优秀的开源项目之上：
 ```
 lynx/
 ├── boot/           # 应用引导和依赖注入
-├── cli/            # CLI 模式支持
-├── command/        # 命令行命令
 ├── contrib/        # 扩展组件
 │   ├── kafka/      # Kafka 支持
 │   ├── pubsub/     # 消息发布订阅
 │   ├── schedule/   # 定时任务
 │   └── zap/        # Zap 日志集成
+├── docs/           # 文档
 ├── server/         # 服务器实现
 │   ├── http/       # HTTP 服务器
 │   └── grpc/       # gRPC 服务器
