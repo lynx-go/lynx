@@ -33,10 +33,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      # go.work is gitignored; recreate the workspace so contrib modules
-      # resolve github.com/lynx-go/lynx to the checked-out source.
-      - name: Initialize Go workspace
-        run: go work init . _examples contrib/kafka contrib/metrics contrib/pubsub contrib/schedule contrib/zap
+      # go.work and go.work.sum are tracked in version control (b95b49a);
+      # the checked-out workspace resolves all modules, no re-init needed.
 
       - name: Vet
         working-directory: ${{ matrix.module }}
@@ -45,6 +43,17 @@ jobs:
       - name: Test
         working-directory: ${{ matrix.module }}
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      # ROADMAP v1.0 标准：CI 强制覆盖率门槛。核心模块门槛 70%，低于则失败。
+      - name: Coverage threshold (core)
+        if: matrix.flag == 'core'
+        working-directory: .
+        run: |
+          cov=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}' | tr -d '%')
+          echo "core coverage: ${cov}%"
+          if awk -v c="$cov" 'BEGIN{exit !(c < 70)}'; then
+            echo "coverage ${cov}% is below the 70% threshold"; exit 1
+          fi
 
       - name: Upload coverage
         uses: codecov/codecov-action@v5
@@ -66,9 +75,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-
-      - name: Initialize Go workspace
-        run: go work init . _examples contrib/kafka contrib/metrics contrib/pubsub contrib/schedule contrib/zap
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8

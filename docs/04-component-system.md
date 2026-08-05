@@ -57,7 +57,7 @@ app.RegisterBuilders(myBuilder)
 
 框架对 builder 的处理逻辑（`lynx.go` 的 `addComponentBuilders`）：
 
-1. 调用 `Options()` 获取构建选项，`Instances` 为 0 时按 1 处理；
+1. 调用 `Options()` 获取构建选项，`Instances` 小于 1 时按 1 处理；
 2. 循环调用 `Instances` 次 `Build()`，每次得到一个**全新**的组件实例；
 3. 把这些实例逐一走与 `app.Register` 相同的注册流程（各自独立 `Init`/独立 Context/独立 run group actor）。
 
@@ -112,7 +112,7 @@ func (s *Scheduler) CheckHealth() error {
 1. 实现 `Name/Init/Start/Stop` 四个方法，`Start` 一般阻塞在 `ctx.Done()` 上；
 2. 需要多实例时再配一个实现 `Build/Options` 的 builder，`Build()` 每次返回新实例；
 3. 需要参与就绪检查就实现 `CheckHealth() error`，或直接内嵌 `lynx.HealthChecker`；
-4. 在 `setup` 回调中用 `lynx.Components` 或 `lynx.ComponentBuilders` 注册。
+4. 在 `setup` 回调中用 `app.Register`（或 `app.RegisterBuilders` 注册 builder）挂载组件。
 
 下面是一个完整可编译的示例：一个 worker 组件内嵌 `HealthChecker` 参与就绪检查，并通过 builder 以 2 个实例运行：
 
@@ -309,13 +309,18 @@ var _ schedule.Task = new(task)
 
 ### zap：日志集成
 
-`contrib/zap` 把 zap 包装成 `*slog.Logger`，日志级别读取配置中的 `logging.level`（或 `log_level`，默认 `debug`），并自动附加 `service_id`、`service_name`、`version` 三个字段。一行接入（取自 `_examples/pubsub/main.go`）：
+`contrib/zap` 把 zap 包装成 `*slog.Logger`，日志级别依次读取配置中的 `logging.level`、`log_level`、`log-level`（框架默认 flag 的键），均未设置时默认 `info`（与框架一致）；并自动附加 `service_id`、`service_name`、`version` 三个字段。一行接入（取自 `_examples/pubsub/main.go`）：
 
 ```go
 app.SetLogger(zap.MustNewLogger(app))
 ```
 
-如果需要在退出前 flush 缓冲日志，可以改用 `NewSyncableLogger`，在 `OnStop` 钩子中调用其 `Sync()` 方法。
+如果需要在退出前 flush 缓冲日志，可以改用 `NewSyncableLogger`，并用 `zap.SyncOnStop(logger)` 生成一个 `OnStop` 钩子注册进应用：
+
+```go
+logger, _ := zap.NewSyncableLogger(app)
+app.OnStop(zap.SyncOnStop(logger))
+```
 
 ## 4.6 下一步
 

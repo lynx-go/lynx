@@ -5,11 +5,13 @@
 ## 运行
 
 ```bash
+go run . -c config.yaml --addr=:8080
+# 或仅用 flag 默认值
 go run . --addr=:8080
 ```
 
-flag：`--addr`（HTTP 监听地址，默认 `:8080`）、`-l/--loglevel`（日志级别，默认 `debug`）。
-`config.yaml` 展示与 `AppConfig` 对应的配置格式（键 `addr`，对应 `mapstructure:"addr"`）。
+flag：`-c/--config`（配置文件路径）、`--addr`（HTTP 监听地址，默认 `:8080`）、`-l/--loglevel`（日志级别，默认 `debug`）。
+`config.yaml` 与 `AppConfig` 对应（键 `addr`，对应 `mapstructure:"addr"`）；`--addr` flag 会覆盖配置文件中的值。
 
 ## 关键代码点
 

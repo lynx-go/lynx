@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lynx is a lightweight Go microservice framework built on Go 1.24.2+ that provides application lifecycle management, a component-based architecture, and integrations for HTTP servers, messaging (Kafka/PubSub), scheduling, and configuration management.
+Lynx is a lightweight Go microservice framework built on Go 1.25+ that provides application lifecycle management, a component-based architecture, and integrations for HTTP servers, messaging (Kafka/PubSub), scheduling, and configuration management.
 
 ## Development Commands
 
@@ -148,7 +148,7 @@ This pattern is particularly useful for complex applications with many component
 **HTTP Server** (server/http/server.go)
 - Wraps `gocloud.dev/server` with health check integration
 - Support for request logging and custom timeouts
-- Automatically registers health check endpoint at `/health`
+- Automatically registers health check endpoints at `/healthz/liveness` and `/healthz/readiness`
 
 **gRPC Server** (server/grpc/server.go)
 - Wraps `google.golang.org/grpc` with health check and reflection
@@ -180,7 +180,7 @@ This pattern is particularly useful for complex applications with many component
 
 ### Health Checks
 
-Components implementing `health.Checker` interface are automatically registered in the health check endpoint. HTTP server exposes these at `/health`, gRPC server uses `grpc.health.v1.Health`.
+Components implementing `health.Checker` interface are automatically registered in the health check endpoint. HTTP server exposes these at `/healthz/liveness` and `/healthz/readiness`, gRPC server uses `grpc.health.v1.Health`.
 
 ### Application Entry Point
 

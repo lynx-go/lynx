@@ -5,7 +5,6 @@ import (
 	"log"
 	gohttp "net/http"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/zap"
 	"github.com/lynx-go/lynx/server/http"
@@ -29,6 +28,13 @@ func main() {
 		lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
 			f.String("addr", ":8080", "http listen address")
 			f.StringP("loglevel", "l", "debug", "log level")
+			f.StringP("config", "c", "", "config file path")
+		}),
+		lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
+			if cf, _ := f.GetString("config"); cf != "" {
+				c.SetFile(cf)
+			}
+			return nil
 		}),
 	)
 	builder.Run()

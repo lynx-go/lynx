@@ -86,7 +86,7 @@ log_level: "debug"
 ```go
 opts := lynx.NewOptions(
 	lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
-		f.StringP("config", "c", "./configs", "config file path")
+		f.StringP("config", "c", "./config.yaml", "config file path")
 		f.String("addr", "", "http listen address")
 		f.StringP("log_level", "l", "debug", "log level")
 	}),
@@ -167,7 +167,7 @@ go run main.go
 为 HTTP 服务器传入 `http.WithHealthCheck(app.HealthCheckFunc())` 后，服务器会自动暴露两个健康检查端点（由底层 gocloud.dev 服务器提供）：
 
 - `/healthz/liveness`：存活检查，进程存活即返回 200，用于探活。
-- `/healthz/readiness`：就绪检查，依次调用所有注册的健康检查器，全部通过才返回 200，否则返回 503。
+- `/healthz/readiness`：就绪检查，依次调用所有注册的健康检查器，全部通过才返回 200，否则返回 500。
 
 验证方式：
 
@@ -176,7 +176,7 @@ curl -i http://localhost:8080/healthz/liveness
 curl -i http://localhost:8080/healthz/readiness
 ```
 
-`app.HealthCheckFunc()` 会收集所有实现了 `health.Checker` 接口的组件作为就绪检查项——收集发生在组件注册时，框架对每个通过 `lynx.Components` 注册的组件做 `health.Checker` 类型断言，通过断言的才会加入就绪检查列表。
+`app.HealthCheckFunc()` 会收集所有实现了 `health.Checker` 接口的组件作为就绪检查项——收集发生在组件注册时，框架对每个通过 `app.Register` 注册的组件做 `health.Checker` 类型断言，通过断言的才会加入就绪检查列表。
 
 框架还提供了开箱即用的 `lynx.HealthChecker`，可通过 `SetHealthy(true/false)` 动态控制就绪状态。需要注意：`lynx.HealthChecker` 只实现了 `health.Checker` 接口，并不是 `Component`，单独创建它不会产生任何效果。正确的用法是把它内嵌到自己的组件中，再把组件注册进应用：
 
@@ -201,7 +201,7 @@ app.Register(&myComponent{HealthChecker: &lynx.HealthChecker{}})
 return nil
 ```
 
-由于内嵌，`myComponent` 自动满足 `health.Checker` 接口，注册后即成为 `/healthz/readiness` 的检查项；之后在业务逻辑中调用 `c.SetHealthy(false)` 即可让就绪检查返回 503。这对于需要"预热后再接流量"或"运维时临时摘流"的场景非常实用。
+由于内嵌，`myComponent` 自动满足 `health.Checker` 接口，注册后即成为 `/healthz/readiness` 的检查项；之后在业务逻辑中调用 `c.SetHealthy(false)` 即可让就绪检查返回 500。这对于需要"预热后再接流量"或"运维时临时摘流"的场景非常实用。
 
 ## 2.6 下一步
 

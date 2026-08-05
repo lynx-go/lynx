@@ -7,7 +7,7 @@
 一个 Lynx 应用的完整生命周期由 `lynx.NewBuilder` 和 `cli.Run()` 串起来：
 
 1. `lynx.NewBuilder(setup, opts...)` 创建应用实例（返回 `*Builder`）：先调用 `EnsureDefaults` 补全 Options，再解析命令行参数、读取配置文件，最后把应用名称、ID、版本注入应用 Context（见 3.5 节）。
-2. `cli.Run()` 首先调用 `setup` 回调：在这里注册组件和钩子。组件的 `Init(app)` 在注册时（即 `app.Hooks` 调用时）同步执行，返回 error 会直接导致启动失败。
+2. `cli.Run()` 首先调用 `setup` 回调：在这里注册组件和钩子。组件的 `Init(app)` 在注册时（即 `app.Register` 调用时）同步执行，返回 error 会被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
 3. `setup` 返回后进入 `Run()`：启动所有组件的 `Start(ctx)`，并阻塞等待退出信号。
 4. 收到退出信号（或某个执行单元结束）后进入关闭流程，依次执行 `OnStop` 钩子并调用各组件的 `Stop(ctx)`。
 
@@ -19,12 +19,12 @@
 
 ### 并发模型：run group
 
-Lynx 使用 oklog/run 的 `run.Group` 管理所有并发执行单元。每个通过 `lynx.Components` 注册的组件是一个 actor，此外 `Run()` 还会注册两个框架 actor：
+Lynx 使用 oklog/run 的 `run.Group` 管理所有并发执行单元。每个通过 `app.Register` / `app.RegisterBuilders` 注册的组件是一个 actor；此外 `Run()` 还会注册一个信号 actor。
 
-- OnStart 钩子 actor：按注册顺序串行执行所有 `OnStart` 钩子，然后阻塞在应用 Context 上，直到应用关闭。
-- 信号 actor：监听退出信号（见 3.6 节），等待信号或应用 Context 取消。
+- `OnStart` 钩子不占用 run group actor：在 `Run()` 中、组件启动前按注册顺序串行执行，全部成功后才启动组件（见 3.2 节）。
+- 信号 actor：监听退出信号（见 3.6 节）或应用 Context 取消。一旦触发，先在 actor 内按顺序执行所有 `OnStop` 钩子，然后返回，run group 随之中断各组件。
 
-run group 的语义是：所有 actor 并发运行；一旦有任何一个 actor 返回——组件 `Start` 出错、CLI 命令执行完毕（`app.CLI` 注册的命令结束时调用 `app.Close()`）、或收到退出信号——框架会调用其余所有 actor 的中断函数，整个应用随之进入统一关闭流程。这意味着任何一个组件失败都会触发整体优雅关闭，不会出现"半个应用还在跑"的状态。
+run group 的语义是：所有组件 actor 并发运行；一旦有任何一个 actor 返回——组件 `Start` 出错、CLI 命令执行完毕（`app.CLI` 注册的命令结束时调用 `app.Close()`）、或信号 actor 返回——框架会中断其余所有 actor，整个应用随之进入统一关闭流程。这意味着任何一个组件失败都会触发整体优雅关闭，不会出现"半个应用还在跑"的状态。
 
 需要注意一个细节：每个组件拥有独立的 Context（注册组件时创建）。关闭时 run group 对每个组件 actor 先调用 `Stop(ctx)`，再取消其 Context。因此组件的 `Stop` 实现不要等待 `ctx.Done()`——它永远不会等到；`Start` 中阻塞在 `<-ctx.Done()` 上的逻辑会在 `Stop` 返回后被解除。
 
@@ -52,8 +52,8 @@ return nil
 
 两类钩子的执行时机和语义不同：
 
-- `OnStart`：在 `Run()` 启动阶段按注册顺序串行执行，收到的 `ctx` 是应用 Context。任何一个钩子返回 error，该 actor 立即返回，触发整个应用关闭。
-- `OnStop`：在关闭阶段按注册顺序串行执行，收到的 `ctx` 带有 `ShutdownTimeout` 超时（见 3.6 节），钩子应尊重该超时。
+- `OnStart`：在 `Run()` 启动阶段、组件启动前按注册顺序串行执行，收到的 `ctx` 是应用 Context。任何一个钩子返回 error，`Run()` 立即返回该错误，组件不会启动。
+- `OnStop`：在关闭阶段、组件 `Stop` 之前按注册顺序串行执行，收到带有 `ShutdownTimeout` 超时的 `ctx`（见 3.6 节）；单个钩子阻塞超过时限会被判定超时并继续执行后续钩子，不会挂起整个关闭流程。
 
 `OnStop` 钩子的错误处理使用 `errors.go` 中的 `ShutdownErrors` 做聚合：某个钩子出错不会中断后续钩子的执行，所有错误被收集后以分号连接成一条日志输出。`ShutdownErrors` 的 API：
 
@@ -64,7 +64,7 @@ return nil
 
 该类型内部使用互斥锁保护，可并发使用。框架自身只在关闭流程中用到它：聚合结果只记录日志，不会向上传递——进程此时已经在退出路径上。
 
-`_examples/boot/main.go` 中有 `OnStart` 的实际用例：Wire 构建的依赖图返回了 `cleanup` 函数，示例把它放在 `OnStart` 钩子里执行，在应用正式启动后释放构建期的临时资源。
+`_examples/boot/main.go` 中有 `OnStop` 的实际用例：Wire 构建的依赖图返回了 `cleanup` 函数，示例把它放在 `OnStop` 钩子里执行，在应用优雅关闭时释放资源。
 
 ## 3.3 Options
 
@@ -88,9 +88,9 @@ return nil
 `Options.Validate()` 定义了两条校验规则（相关常量与错误均定义在 `options.go`）：
 
 - 名称长度不能超过 63 个字符，否则返回 `ErrNameTooLong`。
-- `ShutdownTimeout` 大于 0 时，必须在 `[MinCloseTimeout, MaxCloseTimeout]` 区间内，即不小于 1 秒（否则 `ErrCloseTimeoutTooSmall`）、不大于 5 分钟（否则 `ErrCloseTimeoutTooLarge`）。`ShutdownTimeout` 为 0 视为合法，表示"使用默认值"。
+- `ShutdownTimeout` 大于 0 时，必须在 `[MinShutdownTimeout, MaxShutdownTimeout]` 区间内，即不小于 1 秒（否则 `ErrCloseTimeoutTooSmall`）、不大于 5 分钟（否则 `ErrCloseTimeoutTooLarge`）。`ShutdownTimeout` 为 0 视为合法，表示"使用默认值"。
 
-需要注意：框架在 `lynx.NewBuilder` 时只调用 `EnsureDefaults()`，并不会自动调用 `Validate()`。如果希望启动前强制校验（例如在配置来自外部输入时），请显式调用：
+`lynx.NewBuilder` 在调用 `EnsureDefaults()` 补齐默认值后会自动调用 `Validate()`，校验失败会让 `Run()`/`RunE()` 返回对应错误。如果需要在创建应用之前单独校验配置（例如来自外部输入），也可以显式调用：
 
 ```go
 opts := lynx.NewOptions(lynx.WithName(nameFromInput))
@@ -189,7 +189,7 @@ router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 
 ### 信号处理
 
-框架默认监听 `SIGTERM`、`SIGQUIT`、`SIGINT`、`SIGKILL` 四个信号（其中 `SIGKILL` 无法被进程捕获，保留在默认列表中但不产生实际效果）。可通过 `WithExitSignals` 自定义：
+框架默认监听 `SIGTERM`、`SIGQUIT`、`SIGINT` 三个信号（`SIGKILL` 无法被进程捕获，因此不在默认列表中）。可通过 `WithExitSignals` 自定义：
 
 ```go
 opts := lynx.NewOptions(

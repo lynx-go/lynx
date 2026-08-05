@@ -68,13 +68,13 @@ func main() {
 }
 ```
 
-运行：
+运行（监听地址已在代码中用 `http.WithAddr(":8080")` 指定）：
 
 ```bash
-go run main.go --addr=:8080
+go run main.go
 ```
 
-访问 http://localhost:8080 查看结果，访问 http://localhost:8080/health 查看健康状态。
+访问 http://localhost:8080 查看结果，访问 http://localhost:8080/healthz/liveness 与 http://localhost:8080/healthz/readiness 查看健康状态。
 
 ### 使用配置文件
 
@@ -152,7 +152,7 @@ import "github.com/lynx-go/lynx/contrib/schedule"
 type MyTask struct{}
 
 func (t *MyTask) Name() string { return "my-task" }
-func (t *MyTask) Cron() string { return "*/5 * * * *" } // 每5分钟执行
+func (t *MyTask) Cron() string { return "0 */5 * * * *" } // 每5分钟执行（含秒字段，共6段）
 func (t *MyTask) HandlerFunc() schedule.HandlerFunc {
     return func(ctx context.Context) error {
         fmt.Println("Task executed!")
@@ -217,16 +217,20 @@ func InitializeApp() (*Bootstrap, error) {
 ```
 lynx/
 ├── boot/           # 应用引导和依赖注入
-├── cli.go          # CLI 模式支持
-├── command.go      # 命令行命令
+├── builder.go      # Builder 入口（NewBuilder）
+├── command.go      # CLI 命令组件
 ├── component.go    # 组件接口定义
 ├── contrib/        # 扩展组件
 │   ├── kafka/      # Kafka 支持
+│   ├── metrics/    # OpenTelemetry 生命周期托管
 │   ├── pubsub/     # 消息发布订阅
 │   ├── schedule/   # 定时任务
 │   └── zap/        # Zap 日志集成
 ├── docs/           # 文档
+├── errors.go       # 错误聚合
+├── health.go       # 健康检查工具
 ├── hooks.go        # Hooks 机制
+├── logging.go      # trace 日志注入
 ├── options.go      # 配置选项
 ├── server/         # 服务器实现
 │   ├── grpc/       # gRPC 服务器

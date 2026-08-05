@@ -1,6 +1,6 @@
 # 5. 服务器与可观测性
 
-Lynx 在 `server/http` 与 `server/grpc` 两个包中提供了开箱即用的服务器组件，它们都实现了第 4 章介绍的 `Component` 接口，可以直接通过 `lynx.Components` 注册进应用。本章先逐一介绍两个服务器的全部配置项，再讲解可观测性接入：OpenTelemetry trace/metrics 的开箱即用（`contrib/metrics`）与手动接入、Prometheus 指标暴露、HTTP 中间件链序，以及日志与链路的关联（`lynx.NewTraceHandler`）。
+Lynx 在 `server/http` 与 `server/grpc` 两个包中提供了开箱即用的服务器组件，它们都实现了第 4 章介绍的 `Component` 接口，可以直接通过 `app.Register` 注册进应用。本章先逐一介绍两个服务器的全部配置项，再讲解可观测性接入：OpenTelemetry trace/metrics 的开箱即用（`contrib/metrics`）与手动接入、Prometheus 指标暴露、HTTP 中间件链序，以及日志与链路的关联（`lynx.NewTraceHandler`）。
 
 ## 5.1 HTTP 服务器
 
@@ -17,7 +17,8 @@ func NewServer(handler http.Handler, opts ...Option) *Server
 默认值（`server/http/server.go` 顶部的常量）：
 
 - 监听地址 `:8080`（`DefaultHTTPAddr`）
-- 超时 60 秒（`DefaultTimeout`）
+- 请求读写超时 60 秒（`DefaultTimeout`）
+- 优雅关闭超时 10 秒（`DefaultShutdownTimeout`）
 - 日志器 `slog.Default()`
 
 返回的 `*Server` 实现了 `lynx.Component`，`Name()` 为 `"http"`，注册方式与其他组件一致。
@@ -27,7 +28,8 @@ func NewServer(handler http.Handler, opts ...Option) *Server
 全部 Options 定义在 `server/http/server.go` 与 `server/http/middleware.go`：
 
 - `WithAddr(addr string)`：监听地址，默认 `:8080`。
-- `WithTimeout(timeout time.Duration)`：超时时间，默认 60 秒。该值会同时设置为底层 `http.Server` 的 `ReadHeaderTimeout`、`ReadTimeout` 和 `WriteTimeout`；传入 0 或负数则不设置（保持底层默认值）。
+- `WithTimeout(timeout time.Duration)`：请求读写超时，默认 60 秒。该值会同时设置为底层 `http.Server` 的 `ReadHeaderTimeout`、`ReadTimeout` 和 `WriteTimeout`；传入 0 或负数则不设置（保持底层默认值）。
+- `WithShutdownTimeout(timeout time.Duration)`：优雅关闭超时，默认 10 秒。调用方 Context 无 deadline 时生效：`Stop` 以它为上限等待 `Shutdown` 排空连接，超时后强制 `Close()` 活动连接，避免长轮询/流式 handler 让关闭无限挂起。
 - `WithHealthCheck(hc lynx.HealthCheckFunc)`：健康检查函数。传入后服务器自动暴露两个端点（由底层 gocloud.dev 服务器提供）：`/healthz/liveness` 恒返回 200，`/healthz/readiness` 依次调用所有收集到的检查器。通常直接传 `app.HealthCheckFunc()`，收集规则见 2.5 节与 4.3 节。两个端点始终注册；不传该 Option 只是就绪检查列表为空，此时 `/healthz/readiness` 恒返回 200。
 - `WithLogger(l *slog.Logger)`：请求日志使用的日志器，默认 `slog.Default()`。
 - `WithRequestLog(requestLog bool)`：是否记录访问日志，默认 `false`。开启后每个请求以 Stackdriver 兼容的 JSON 格式输出一条 `Debug` 级别日志（`server/http/requestlog.go`），字段包含方法、URL、状态码、耗时、remote IP 以及 `trace`/`spanId`——注意需要日志器级别为 debug 才能看到。
@@ -103,9 +105,10 @@ func NewServer(opts ...Option) *Server
 ### Options 一览
 
 - `WithAddr(addr string)`：监听地址，默认 `:9090`。
-- `WithTimeout(timeout time.Duration)`：优雅关闭的超时时间，默认 60 秒。注意它**不是**请求处理超时——gRPC 服务器本身没有读/写超时选项，该值只在 `Stop` 时生效：若传入的 Context 没有 deadline，则以它为上限等待 `GracefulStop`，超时后强制 `Stop()`。
+- `WithTimeout(timeout time.Duration)`：优雅关闭的超时时间，默认 60 秒。注意它**不是**请求处理超时——gRPC 服务器本身没有读/写超时选项，该值只在 `Stop` 时生效：它是 `GracefulStop` 等待时长的**上限**（调用方 Context 已有更早的 deadline 时取较小者），超时后强制 `Stop()`。
 - `WithLogger(l *slog.Logger)`：内置 Logging 拦截器使用的日志器。
 - `WithInterceptors(interceptors ...grpc.UnaryServerInterceptor)`：追加自定义一元拦截器，链序见下文。
+- `WithServerOptions(options ...grpc.ServerOption)`：透传原生 `grpc.ServerOption`（TLS 凭据、消息大小限制、keepalive、最大并发流等），在内部选项之后应用到 `grpc.NewServer`。例如启用 TLS：`grpc.WithServerOptions(grpc.Creds(creds))`。
 - `WithTracerProvider(tp trace.TracerProvider)` / `WithMeterProvider(mp metric.MeterProvider)`：otel provider，传给 `otelgrpc.NewServerHandler` 的 stats handler。为 nil 时使用全局 provider，生命周期归调用方（同 5.3.2 节）。
 
 与 HTTP 服务器相比有两点差异：
@@ -115,18 +118,20 @@ func NewServer(opts ...Option) *Server
 
 ### 拦截器
 
-`NewServer` 总是先安装两个内置拦截器（`server/grpc/interceptor/interceptor.go`），再通过 `WithInterceptors` 追加自定义拦截器，最终用 `grpc.ChainUnaryInterceptor` 串联，执行顺序为：
+`NewServer` 总是先安装内置拦截器（`server/grpc/interceptor/interceptor.go`），再通过 `WithInterceptors` 追加自定义拦截器。一元 RPC 用 `grpc.ChainUnaryInterceptor` 串联，执行顺序为：
 
 ```
 Logging → Recovery → 自定义拦截器（按声明顺序） → handler
 ```
 
-- `Logging(logger)`：请求前后各打一条日志，包含 `FullMethod` 与耗时；handler 返回错误时打 `Error` 级别。
-- `Recovery()`：recover handler 中的 panic，转换为 `codes.Internal` 错误返回，避免单个请求的 panic 拖垮整个进程。
+流式 RPC 同样安装了 `LoggingStream` 与 `RecoveryStream` 两个内置流式拦截器——gRPC 对流式 handler 的 panic 没有内置保护，不拦截会直接崩溃整个进程。
+
+- `Logging(logger)` / `LoggingStream(logger)`：请求前后各打一条日志，包含 `FullMethod` 与耗时；handler 返回错误时打 `Error` 级别。
+- `Recovery()` / `RecoveryStream()`：recover handler（含流式）中的 panic，转换为 `codes.Internal` 错误返回，避免单个请求的 panic 拖垮整个进程。
 
 ### 健康检查与反射
 
-- **健康检查**：`NewServer` 时自动注册 `grpc.health.v1` 标准健康检查服务；`Start` 时将服务名 `"grpc"` 置为 `SERVING`，`Stop` 时置为 `NOT_SERVING`。负载均衡器/k8s 可以直接使用标准 gRPC 健康检查协议探测。
+- **健康检查**：`NewServer` 时自动注册 `grpc.health.v1` 标准健康检查服务；`Start` 时将服务名 `"grpc"` 与标准的空服务名 `""`（大多数 gRPC 健康探针使用）置为 `SERVING`，`Stop` 时均置为 `NOT_SERVING`。负载均衡器/k8s 可以直接使用标准 gRPC 健康检查协议探测。
 - **反射**：`Start` 时自动注册 reflection 服务，因此可以直接用 `grpcurl localhost:9090 list` 之类的工具调试，无需额外配置。
 
 ### 完整示例
