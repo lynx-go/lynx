@@ -154,6 +154,15 @@ lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
 
 另外，应用名称、ID、版本这三个元信息也参与配置合并：如果配置中存在 `name`、`id`、`version` 键，会覆盖 `Options` 中的对应值，最终注入应用 Context 的是合并后的结果。
 
+### 配置接口
+
+框架对配置的访问抽象为两个通用接口，与具体配置库解耦（默认实现适配 `*viper.Viper`，通过 `lynx.NewViperConfig` 包装）：
+
+- `lynx.Config`：**只读**配置接口，`app.Config()` 返回。`Get(path)` 按点分路径取值（如 `"logging.level"`），`GetString`/`GetBool`/`GetInt`/`GetStringMap`/`GetStringSlice` 是类型化取值，`IsSet` 判断键是否存在，`Unmarshal(out)` 把配置整体解码到结构体。
+- `lynx.ConfigSource`：`Config` 的超集，供初始化绑定阶段（`BindConfigFunc`）使用，额外提供 `Set` 与配置源管理方法：`SetFile`（配置文件路径）、`AddSearchPath`（搜索目录）、`SetFileFormat`（文件格式）、`SetEnvPrefix`（环境变量前缀）、`AutomaticEnv`（环境变量自动匹配）、`BindEnv`（显式环境变量绑定）。
+
+接入其他配置库（如 koanf）时，只需实现 `Config` 与 `ConfigSource` 两个接口，并在 `BindConfigFunc` 中完成来源绑定，框架其余部分无需改动。
+
 ## 3.5 Context 辅助函数
 
 框架在初始化时把应用元信息注入应用 Context（`app.Context()`），并提供三个取值函数（均定义在 `lynx.go`）：

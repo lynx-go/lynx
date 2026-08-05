@@ -121,6 +121,8 @@ if err := app.Config().Unmarshal(config); err != nil {
 addr := app.Config().GetString("addr")
 ```
 
+`app.Config()` 返回 `lynx.Config` 接口（默认实现适配 `*viper.Viper`），`Unmarshal` 按结构体 tag（`mapstructure` 或 `json`）解码，`GetString` 等类型化方法按点分路径取单值（详见第 3 章 3.4 节）。
+
 配置来源的优先级遵循 Viper 的规则：命令行参数、环境变量、配置文件可以组合使用。上面的示例同时演示了三种来源——`--addr` 命令行参数、`LYNX_ADDR` 环境变量和 `config.yaml` 文件。
 
 如果只需要框架内置的配置参数（`--config`、`--config-type`、`--config-dir`、`--log-level`），可以直接使用 `lynx.WithUseDefaultConfigFlagsFunc()`，无需自定义上述两个函数。

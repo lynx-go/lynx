@@ -111,12 +111,19 @@ The application context carries standard values (lynx.go:43-65):
 
 ### Configuration System
 
-Uses Viper for configuration with pflag for CLI argument parsing. Configuration flow:
+Configuration is exposed through two generic interfaces, decoupled from the underlying library (the default implementation adapts `*viper.Viper` via `lynx.NewViperConfig`):
+
+- `lynx.Config` - read-only config access, returned by `app.Config()`: `Get(path)` (dot-separated paths), typed getters (`GetString`/`GetBool`/`GetInt`/`GetStringMap`/`GetStringSlice`), `IsSet`, `Unmarshal(out)`
+- `lynx.ConfigSource` - superset of `Config`, received by `BindConfigFunc`: adds `Set`, `SetFile`, `AddSearchPath`, `SetFileFormat`, `SetEnvPrefix`, `AutomaticEnv`, `BindEnv`
+
+Other config libraries (e.g. koanf) can be integrated by implementing these two interfaces.
+
+Configuration flow:
 1. `SetFlagsFunc` - Register CLI flags
 2. `BindConfigFunc` - Bind flags to the app ConfigSource, set config file paths
 3. Flags are parsed, config file is read, env vars are bound
 
-Default flags (lynx.go:140-145):
+Default flags (see `DefaultSetFlagsFunc` in lynx.go):
 - `--config/-c` - Config file path
 - `--config-type` - File type (yaml, json, etc.)
 - `--config-dir` - Config directory
@@ -182,7 +189,7 @@ The `lynx.NewBuilder()` function creates a `*Builder` instance with two run meth
 ## Code Style
 
 - Uses EditorConfig: Go files use tabs, 4-space indent
-- No unit tests currently exist in the codebase
+- Unit tests exist for core packages and most contrib modules; run `go test -race ./...` per module
 - Uses slog for structured logging (Go 1.24+)
 - Uses local `pkg/errors` package with panic-based `Fatal()` helper
 - External logging utilities from `github.com/lynx-go/x/log`

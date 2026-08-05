@@ -251,6 +251,8 @@ Lynx 使用 Viper 进行配置管理，支持多种配置来源：
 - 配置文件（JSON/YAML/TOML）
 - 远程配置中心
 
+配置通过统一的 `lynx.Config` 接口访问（`app.Config()`），绑定阶段使用其超集 `lynx.ConfigSource`——接口与具体配置库解耦，默认实现适配 `*viper.Viper`，可替换为其他配置库。
+
 默认支持的命令行参数：
 
 ```bash
