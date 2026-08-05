@@ -20,17 +20,22 @@ type Builder struct {
 
 // NewBuilder 创建 Builder 实例。初始化失败不会立即退出进程，
 // 错误会延迟到 RunE/Run 返回，以便调用方自行处理。
+// build 为 nil 时记 ErrBuildFuncNil，由 RunE 返回。
 func NewBuilder(build BuildFunc, opts ...Option) *Builder {
 	o := &Options{}
 	for _, opt := range opts {
 		opt(o)
 	}
 	app, err := newLynx(o)
-	return &Builder{
+	b := &Builder{
 		build: build,
 		app:   app,
 		err:   err,
 	}
+	if build == nil && err == nil {
+		b.err = ErrBuildFuncNil
+	}
+	return b
 }
 
 // Run 运行 Builder 应用，发生错误时输出到 stderr 并以非零状态码退出进程。
@@ -41,12 +46,20 @@ func (b *Builder) Run() {
 }
 
 // Build 运行一次初始化回调并返回应用实例。回调失败或初始化失败时返回 nil，
-// 具体错误可通过 RunE 获取。Build 只执行一次回调，重复调用返回同一实例。
+// 具体错误可通过 RunE 获取。Build 只执行一次回调；失败后的后续调用
+// 同样返回 nil（而非未初始化实例），保证契约一致。
 func (b *Builder) Build() App {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.err != nil || b.built {
+	if b.err != nil {
+		return nil
+	}
+	if b.built {
 		return b.app
+	}
+	if b.build == nil {
+		b.err = ErrBuildFuncNil
+		return nil
 	}
 	if err := b.build(b.app.Context(), b.app); err != nil {
 		b.err = err

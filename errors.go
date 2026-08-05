@@ -56,6 +56,8 @@ func (e *ShutdownErrors) Errors() []error {
 var (
 	// ErrNotInitialized 表示组件在 Init 之前被使用（如 Command 在未注册时直接 Start）。
 	ErrNotInitialized = errorf("component not initialized")
+	// ErrBuildFuncNil 表示 NewBuilder 未提供初始化回调。
+	ErrBuildFuncNil = errorf("build func is nil")
 )
 
 type wrappedError struct {

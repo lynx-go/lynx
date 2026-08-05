@@ -84,12 +84,12 @@ func (cmd *command) Start(ctx context.Context) error {
 	if cmd.lynx == nil {
 		return ErrNotInitialized
 	}
-	checkers := cmd.lynx.HealthCheckFunc()()
 	expBackoff := backoff.NewExponentialBackOff()
 	expBackoff.InitialInterval = cmd.options.InitialBackoff
 	expBackoff.MaxInterval = cmd.options.MaxBackoff
 	if _, err := backoff.Retry(ctx, func() (any, error) {
-		for _, checker := range checkers {
+		// 每轮重试重新获取健康检查快照：Start 之后注册的组件也纳入等待范围。
+		for _, checker := range cmd.lynx.HealthCheckFunc()() {
 			if err := checker.CheckHealth(); err != nil {
 				log.WarnContext(ctx, "waiting for dependent component ready", "error", err)
 				return nil, err
@@ -97,7 +97,7 @@ func (cmd *command) Start(ctx context.Context) error {
 		}
 		return nil, nil
 	}, backoff.WithMaxTries(cmd.options.MaxTries), backoff.WithBackOff(expBackoff)); err != nil {
-		return fmt.Errorf("failed to start components: %w", err)
+		return fmt.Errorf("timed out waiting for dependencies to be healthy: %w", err)
 	}
 	return cmd.fn(ctx)
 }

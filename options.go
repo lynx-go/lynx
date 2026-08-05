@@ -12,6 +12,7 @@ import (
 const (
 	DefaultName            = "lynx-app"
 	DefaultShutdownTimeout = 5 * time.Second
+	DefaultStopTimeout     = 5 * time.Second
 	MinShutdownTimeout     = 1 * time.Second
 	MaxShutdownTimeout     = 5 * time.Minute
 )
@@ -21,6 +22,8 @@ var (
 	ErrNameTooLong          = errors.New("name must be at most 63 characters")
 	ErrCloseTimeoutTooSmall = errors.New("close timeout must be at least 1 second")
 	ErrCloseTimeoutTooLarge = errors.New("close timeout must be at most 5 minutes")
+	ErrStopTimeoutTooSmall  = errors.New("stop timeout must be at least 1 second")
+	ErrStopTimeoutTooLarge  = errors.New("stop timeout must be at most 5 minutes")
 )
 
 // Options 是 App 应用的核心配置项。
@@ -32,6 +35,9 @@ type Options struct {
 	BindConfigFunc  BindConfigFunc `json:"-"`
 	ExitSignals     []os.Signal    `json:"-"`
 	ShutdownTimeout time.Duration  `json:"shutdown_timeout"`
+	// StopTimeout 是单个组件 Stop 的最长等待时长，超过后跳过并记录错误，
+	// 防止挂死的组件阻塞整个关停流程。
+	StopTimeout time.Duration `json:"stop_timeout"`
 }
 
 func (o *Options) String() string {
@@ -53,6 +59,14 @@ func (o *Options) Validate() error {
 			return ErrCloseTimeoutTooLarge
 		}
 	}
+	if o.StopTimeout > 0 {
+		if o.StopTimeout < MinShutdownTimeout {
+			return ErrStopTimeoutTooSmall
+		}
+		if o.StopTimeout > MaxShutdownTimeout {
+			return ErrStopTimeoutTooLarge
+		}
+	}
 	return nil
 }
 
@@ -69,6 +83,10 @@ func (o *Options) EnsureDefaults() {
 
 	if o.ShutdownTimeout == 0 {
 		o.ShutdownTimeout = DefaultShutdownTimeout
+	}
+
+	if o.StopTimeout == 0 {
+		o.StopTimeout = DefaultStopTimeout
 	}
 
 	if len(o.ExitSignals) == 0 {
@@ -136,6 +154,13 @@ func WithExitSignals(signals ...os.Signal) Option {
 func WithShutdownTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.ShutdownTimeout = timeout
+	}
+}
+
+// WithStopTimeout 设置单个组件 Stop 的最长等待时长，超过后跳过并记录错误。
+func WithStopTimeout(timeout time.Duration) Option {
+	return func(o *Options) {
+		o.StopTimeout = timeout
 	}
 }
 

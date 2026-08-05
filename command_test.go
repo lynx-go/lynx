@@ -151,8 +151,8 @@ func TestCommandStartExhaustsRetries(t *testing.T) {
 	if err == nil {
 		t.Fatal("Start() error = nil, want retry exhaustion error")
 	}
-	if !strings.Contains(err.Error(), "failed to start components") {
-		t.Errorf("Start() error = %v, want it to mention %q", err, "failed to start components")
+	if !strings.Contains(err.Error(), "timed out waiting for dependencies to be healthy") {
+		t.Errorf("Start() error = %v, want it to mention %q", err, "timed out waiting for dependencies to be healthy")
 	}
 	if got := checker.Calls(); got != 3 {
 		t.Errorf("health checked %d times, want 3 (MaxTries)", got)

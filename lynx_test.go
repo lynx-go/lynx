@@ -139,6 +139,163 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) 
 	t.Fatalf("timeout waiting for %s", msg)
 }
 
+// initAppAccessorComponent 在 Init 中调用需要 app.mu 的 App 方法：
+// Init 若在持锁时执行（旧的 addComponents 路径）会死锁。
+type initAppAccessorComponent struct{}
+
+func (c *initAppAccessorComponent) Name() string { return "accessor" }
+func (c *initAppAccessorComponent) Init(app App) error {
+	app.HealthCheckFunc()
+	app.OnStart(func(ctx context.Context) error { return nil })
+	app.OnStop(func(ctx context.Context) error { return nil })
+	app.Config()
+	app.Context()
+	return nil
+}
+func (c *initAppAccessorComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (c *initAppAccessorComponent) Stop(ctx context.Context)        {}
+
+// stopRecorder 在 Stop 时向缓冲 chan 发送组件名，用于失败清理断言。
+type stopRecorder struct {
+	name    string
+	stopped chan string
+}
+
+func (c *stopRecorder) Name() string                    { return c.name }
+func (c *stopRecorder) Init(app App) error              { return nil }
+func (c *stopRecorder) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (c *stopRecorder) Stop(ctx context.Context)        { c.stopped <- c.name }
+
+// hangStopComponent 的 Stop 永不返回，用于验证 StopTimeout 有界兜底。
+type hangStopComponent struct{ name string }
+
+func (c *hangStopComponent) Name() string                    { return c.name }
+func (c *hangStopComponent) Init(app App) error              { return nil }
+func (c *hangStopComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (c *hangStopComponent) Stop(ctx context.Context)        { select {} }
+
+func TestInitCanCallAppMethods(t *testing.T) {
+	cli := NewBuilder(func(ctx context.Context, app App) error {
+		app.Register(&initAppAccessorComponent{})
+		return nil
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cli.Build()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Init deadlocked while calling App methods (Init must run outside app.mu)")
+	}
+}
+
+func TestInitFailureStopsPreviouslyInitializedComponents(t *testing.T) {
+	stopped := make(chan string, 10)
+	good := &stopRecorder{name: "good", stopped: stopped}
+	bad := &failInitComponent{name: "bad", err: errors.New("init boom")}
+	cli := NewBuilder(func(ctx context.Context, app App) error {
+		app.Register(good, bad)
+		return nil
+	})
+	if err := cli.RunE(); err == nil {
+		t.Fatal("expected init error")
+	}
+	select {
+	case name := <-stopped:
+		if name != "good" {
+			t.Fatalf("stopped %q, want good", name)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("previously initialized component was not stopped after init failure")
+	}
+}
+
+func TestOnStartHookErrorStopsInitializedComponents(t *testing.T) {
+	stopped := make(chan string, 10)
+	comp := &stopRecorder{name: "comp", stopped: stopped}
+	cli := NewBuilder(func(ctx context.Context, app App) error {
+		app.Register(comp)
+		app.OnStart(func(ctx context.Context) error { return errors.New("hook boom") })
+		return nil
+	})
+	if err := cli.RunE(); err == nil {
+		t.Fatal("expected on-start hook error")
+	}
+	select {
+	case name := <-stopped:
+		if name != "comp" {
+			t.Fatalf("stopped %q, want comp", name)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("component was not stopped after on-start hook failure")
+	}
+}
+
+func TestRunReturnsOnStopHookErrors(t *testing.T) {
+	cli := NewBuilder(func(ctx context.Context, app App) error {
+		app.Register(&blockingComponent{name: "c"})
+		app.OnStop(func(ctx context.Context) error { return errors.New("drain failed") })
+		return nil
+	})
+	app := cli.Build()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		app.Close()
+	}()
+	err := cli.RunE()
+	if err == nil || !strings.Contains(err.Error(), "drain failed") {
+		t.Fatalf("Run() error = %v, want drain failed", err)
+	}
+}
+
+func TestComponentStopBoundedByTimeout(t *testing.T) {
+	cli := NewBuilder(func(ctx context.Context, app App) error {
+		app.Register(&hangStopComponent{name: "hang"})
+		return nil
+	}, WithStopTimeout(time.Second))
+	app := cli.Build()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		app.Close()
+	}()
+	start := time.Now()
+	if err := cli.RunE(); err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("shutdown hung: elapsed %v, want bounded by StopTimeout", elapsed)
+	}
+}
+
+func TestBuilderNilBuildFunc(t *testing.T) {
+	b := NewBuilder(nil)
+	if app := b.Build(); app != nil {
+		t.Fatalf("Build() = %v, want nil", app)
+	}
+	if err := b.RunE(); !errors.Is(err, ErrBuildFuncNil) {
+		t.Fatalf("RunE() error = %v, want ErrBuildFuncNil", err)
+	}
+}
+
+func TestBuilderBuildReturnsNilAfterCallbackFailure(t *testing.T) {
+	calls := 0
+	b := NewBuilder(func(ctx context.Context, app App) error {
+		calls++
+		return errors.New("build boom")
+	})
+	if app := b.Build(); app != nil {
+		t.Fatalf("first Build() = %v, want nil", app)
+	}
+	if app := b.Build(); app != nil {
+		t.Fatalf("second Build() = %v, want nil (consistent contract after failure)", app)
+	}
+	if calls != 1 {
+		t.Fatalf("build called %d times, want 1", calls)
+	}
+}
+
 func TestNewLynx(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
@@ -376,8 +533,13 @@ func TestRunOnStopHooksAllExecutedDespiteErrors(t *testing.T) {
 
 	select {
 	case err := <-runErr:
-		if err != nil {
-			t.Fatalf("Run() error = %v, want nil", err)
+		// A4: OnStop 错误随 Run() 上抛，让调用方（如 K8s）感知关停失败。
+		if err == nil {
+			t.Fatalf("Run() error = nil, want shutdown errors to surface")
+		}
+		if !strings.Contains(err.Error(), "hook1 failed") ||
+			!strings.Contains(err.Error(), "hook2 failed") {
+			t.Fatalf("Run() error = %v, want hook1/hook2 failures", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run() did not return after Close()")
@@ -555,8 +717,9 @@ func TestOnStopHookBlockingBoundedByTimeout(t *testing.T) {
 
 	select {
 	case err := <-runErr:
-		if err != nil {
-			t.Fatalf("Run() error = %v, want nil", err)
+		// A4: 超时错误随 Run() 上抛，调用方可感知关停失败。
+		if err == nil || !strings.Contains(err.Error(), "on-stop hook timed out") {
+			t.Fatalf("Run() error = %v, want on-stop hook timed out", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run() did not return; blocking OnStop hook was not bounded")

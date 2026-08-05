@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lynx-go/x/log"
 	"github.com/oklog/run"
@@ -113,6 +114,8 @@ type lynx struct {
 	runG           *run.Group
 	logger         *slog.Logger
 	healthCheckers []health.Checker
+	// components 按注册顺序记录已 Init 成功的组件，用于失败路径的逆序清理。
+	components []Component
 
 	onStarts []HookFunc
 	onStops  []HookFunc
@@ -134,25 +137,38 @@ func (app *lynx) OnStop(fns ...HookFunc) {
 
 func (app *lynx) Register(components ...Component) {
 	app.mu.Lock()
-	defer app.mu.Unlock()
-	if app.initErr != nil {
+	initErr := app.initErr
+	app.mu.Unlock()
+	if initErr != nil {
 		return
 	}
+	// addComponents 在锁外执行 Init：组件 Init 内调用 app.HealthCheckFunc()、
+	// OnStart 等需要 app.mu 的方法时不会死锁。
 	if err := app.addComponents(components...); err != nil {
-		app.initErr = err
+		app.recordInitError(err)
 		log.ErrorContext(app.ctx, "failed to register components", err)
 	}
 }
 
 func (app *lynx) RegisterBuilders(builders ...ComponentBuilder) {
 	app.mu.Lock()
-	defer app.mu.Unlock()
-	if app.initErr != nil {
+	initErr := app.initErr
+	app.mu.Unlock()
+	if initErr != nil {
 		return
 	}
 	if err := app.addComponentBuilders(builders...); err != nil {
-		app.initErr = err
+		app.recordInitError(err)
 		log.ErrorContext(app.ctx, "failed to register component builders", err)
+	}
+}
+
+// recordInitError 记录注册阶段产生的首个错误；仅首个生效，后续错误被忽略。
+func (app *lynx) recordInitError(err error) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.initErr == nil {
+		app.initErr = err
 	}
 }
 
@@ -173,8 +189,16 @@ func (app *lynx) HealthCheckFunc() HealthCheckFunc {
 
 func (app *lynx) CLI(cmd CommandFunc) error {
 	app.mu.Lock()
-	defer app.mu.Unlock()
-	return app.addComponents(NewCommand(cmd))
+	initErr := app.initErr
+	app.mu.Unlock()
+	if initErr != nil {
+		return initErr
+	}
+	if err := app.addComponents(NewCommand(cmd)); err != nil {
+		app.recordInitError(err)
+		return err
+	}
+	return nil
 }
 
 func (app *lynx) Close() {
@@ -337,59 +361,108 @@ func (app *lynx) addComponents(components ...Component) error {
 		// OnStop hooks 先于组件 Stop 执行。
 		ctx, cancel := context.WithCancel(context.WithoutCancel(app.ctx))
 		log.InfoContext(ctx, "initializing component", "component", component.Name())
+		// Init 在锁外执行（调用方不持 app.mu）：Init 内调用 app.HealthCheckFunc()
+		// 等需要 app.mu 的方法时不会死锁。
 		if err := component.Init(app); err != nil {
 			cancel()
+			// 逆序有界停止本批及此前已 Init 成功的组件，释放其打开的资源。
+			app.stopComponents(app.ctx)
 			return err
 		}
 		log.InfoContext(ctx, "initialized component", "component", component.Name())
+		app.mu.Lock()
+		app.components = append(app.components, component)
 		app.runG.Add(func() error {
 			log.InfoContext(ctx, "starting component", "component", component.Name())
 			return component.Start(ctx)
 		}, func(err error) {
 			log.InfoContext(ctx, "stopping component", "component", component.Name())
-			component.Stop(ctx)
+			// cancel 在 Stop 之后执行：Stop 收到的 ctx 在 Stop 期间保持存活，
+			// 组件可用它作为优雅关停的宽限期（如 HTTP 的 Shutdown）。
+			// 挂死（如等待 ctx.Done()）的 Stop 由 StopTimeout 有界兜底。
+			app.stopComponentBounded(ctx, component)
 			cancel()
 		})
 		if hc, ok := component.(health.Checker); ok {
 			app.healthCheckers = append(app.healthCheckers, hc)
 		}
+		app.mu.Unlock()
 	}
 	return nil
 }
 
+// stopComponentBounded 有界停止单个组件：超过 StopTimeout 后记录错误并继续，
+// 防止挂死的组件 Stop 阻塞整个关停流程。
+func (app *lynx) stopComponentBounded(ctx context.Context, component Component) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		component.Stop(ctx)
+	}()
+	select {
+	case <-done:
+	case <-time.After(app.o.StopTimeout):
+		app.logger.ErrorContext(app.ctx, "component stop timed out",
+			"component", component.Name(), "timeout", app.o.StopTimeout.String())
+	}
+}
+
+// stopComponents 逆序停止已注册组件，用于 Init/OnStart 失败路径的资源清理。
+func (app *lynx) stopComponents(ctx context.Context) {
+	app.mu.Lock()
+	comps := append([]Component(nil), app.components...)
+	app.mu.Unlock()
+	for i := len(comps) - 1; i >= 0; i-- {
+		app.stopComponentBounded(ctx, comps[i])
+	}
+}
+
 func (app *lynx) Run() error {
-	if app.initErr != nil {
-		return app.initErr
+	app.mu.Lock()
+	initErr := app.initErr
+	app.mu.Unlock()
+	if initErr != nil {
+		return initErr
 	}
 	app.Logger().Info("starting")
 
+	// 退出信号提前注册：OnStart hook 阻塞期间收到的信号进入缓冲 chan，
+	// hook 结束后立即触发关停——此前信号注册在 hook 之后，阻塞的 hook
+	// 会使进程对 SIGTERM/SIGINT 无响应。
+	exitCh := make(chan os.Signal, 1)
+	signal.Notify(exitCh, app.o.ExitSignals...)
+	defer signal.Stop(exitCh)
+
 	// 顺序执行 OnStart hooks，全部成功后组件才开始启动。
 	if err := app.runOnStartHooks(); err != nil {
+		// 未进入 run.Group：已 Init 的组件需手动逆序清理，释放资源。
+		app.stopComponents(app.ctx)
 		return err
 	}
 
 	// 关闭 actor：收到退出信号或应用上下文被取消时，先在 actor 内执行
 	// OnStop hooks，返回后 run.Group 才按注册顺序停止组件——保证清理逻辑
-	//（如从服务发现注销）发生在组件仍在服务期间。
-	var shutdownOnce sync.Once
+	//（如从服务发现注销）发生在组件仍在服务期间。OnStop 错误随 Run() 上抛，
+	// 让调用方（如 K8s）感知关停失败。
+	var (
+		shutdownOnce sync.Once
+		shutdownErr  error
+	)
 	shutdown := func() {
 		app.Logger().Info("shutting down")
 		// Step 1: 取消应用上下文，通知组件开始收尾。
 		app.cancelCtx()
 		// Step 2: 在 ShutdownTimeout 内执行 OnStop hooks。
-		app.runOnStopHooks()
+		shutdownErr = app.runOnStopHooks()
 	}
 	app.runG.Add(func() error {
-		exitCh := make(chan os.Signal, 1)
-		signal.Notify(exitCh, app.o.ExitSignals...)
-		defer signal.Stop(exitCh)
 		select {
 		case <-app.ctx.Done():
 			shutdownOnce.Do(shutdown)
-			return nil
+			return shutdownErr
 		case <-exitCh:
 			shutdownOnce.Do(shutdown)
-			return nil
+			return shutdownErr
 		}
 	}, func(err error) {
 		app.Close()
@@ -416,7 +489,8 @@ func (app *lynx) runOnStartHooks() error {
 
 // runOnStopHooks 在 ShutdownTimeout 内顺序执行所有 OnStop hooks。
 // 单个 hook 阻塞不会挂起整个关闭流程：超过时限后记录错误并继续。
-func (app *lynx) runOnStopHooks() {
+// 收集到的错误（含超时）以 *ShutdownErrors 返回，由 Run() 上抛给调用方。
+func (app *lynx) runOnStopHooks() error {
 	app.mu.Lock()
 	hooks := append([]HookFunc(nil), app.onStops...)
 	app.mu.Unlock()
@@ -447,7 +521,9 @@ func (app *lynx) runOnStopHooks() {
 	}
 	if shutdownErrors.HasErrors() {
 		app.logger.ErrorContext(app.ctx, "shutdown completed with errors", "errors", shutdownErrors.Error())
+		return &shutdownErrors
 	}
+	return nil
 }
 
 func newLynx(o *Options) (App, error) {
@@ -465,6 +541,7 @@ func newLynx(o *Options) (App, error) {
 		onStops:  []HookFunc{},
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
+	app.components = []Component{}
 	if err := app.init(); err != nil {
 		return nil, err
 	}
