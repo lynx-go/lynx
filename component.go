@@ -31,7 +31,7 @@ type BuildOptions struct {
 }
 
 func (o *BuildOptions) ensureDefaults() {
-	if o.Instances == 0 {
+	if o.Instances < 1 {
 		o.Instances = 1
 	}
 }

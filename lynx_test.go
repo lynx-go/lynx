@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -198,6 +200,7 @@ func TestComponentBuildersInstances(t *testing.T) {
 		wantBuilds int32
 	}{
 		{name: "zero instances defaults to one", instances: 0, wantBuilds: 1},
+		{name: "negative instances defaults to one", instances: -3, wantBuilds: 1},
 		{name: "one instance", instances: 1, wantBuilds: 1},
 		{name: "three instances", instances: 3, wantBuilds: 3},
 	}
@@ -292,15 +295,15 @@ func TestRunLifecycleStartStopOrdering(t *testing.T) {
 		t.Errorf("events = %v, want both components started", events)
 	}
 
-	// Stop ordering is deterministic: components stop in registration order,
-	// then OnStop hooks run during shutdown.
+	// Shutdown ordering is deterministic: OnStop hooks run before components
+	// stop, and components stop in registration order.
 	var stops []string
 	for _, e := range events {
 		if e == "stop:c1" || e == "stop:c2" || e == "onstop" {
 			stops = append(stops, e)
 		}
 	}
-	want := []string{"stop:c1", "stop:c2", "onstop"}
+	want := []string{"onstop", "stop:c1", "stop:c2"}
 	if len(stops) != len(want) {
 		t.Fatalf("stop events = %v, want %v", stops, want)
 	}
@@ -460,5 +463,168 @@ func TestSetLogger(t *testing.T) {
 	app.SetLogger(logger)
 	if app.Logger() != logger {
 		t.Error("Logger() should return the logger set via SetLogger")
+	}
+}
+
+// TestConfigFileNotFoundIsNotFatal 验证未显式指定配置文件且不存在配置文件时
+// 应用仍能启动（配置是可选的），即修复 C1。
+func TestConfigFileNotFoundIsNotFatal(t *testing.T) {
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+	os.Args = []string{"lynx"}
+
+	if _, err := newLynx(NewOptions(WithUseDefaultConfigFlagsFunc())); err != nil {
+		t.Fatalf("newLynx() error = %v, want nil when no config file is present", err)
+	}
+}
+
+// TestExplicitConfigFileMissingIsFatal 验证显式指定的配置文件缺失时仍为硬错误。
+func TestExplicitConfigFileMissingIsFatal(t *testing.T) {
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+	os.Args = []string{"lynx", "-c", "does-not-exist.yaml"}
+
+	if _, err := newLynx(NewOptions(WithUseDefaultConfigFlagsFunc())); err == nil {
+		t.Fatal("newLynx() error = nil, want error when explicit config file is missing")
+	}
+}
+
+// TestOnStartRunsBeforeComponentsStart 验证 OnStart hooks 在组件启动前顺序执行。
+func TestOnStartRunsBeforeComponentsStart(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+
+	rec := &eventRecorder{}
+	c := &blockingComponent{name: "c1", record: rec.record}
+	app.Register(c)
+	app.OnStart(func(ctx context.Context) error {
+		if c.started.Load() {
+			t.Error("OnStart hook ran after component had already started")
+		}
+		rec.record("onstart")
+		return nil
+	})
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- app.Run()
+	}()
+
+	waitFor(t, 2*time.Second, func() bool { return c.started.Load() }, "component to start")
+	app.Close()
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after Close()")
+	}
+
+	events := rec.snapshot()
+	if len(events) == 0 || events[0] != "onstart" {
+		t.Fatalf("events = %v, want onstart recorded before component start", events)
+	}
+}
+
+// TestOnStopHookBlockingBoundedByTimeout 验证忽略 ctx 的阻塞 OnStop hook
+// 不会挂起关闭流程，总时长受 ShutdownTimeout 约束（M3）。
+func TestOnStopHookBlockingBoundedByTimeout(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	// 白盒收紧超时，避免 Options.Validate 的 MinShutdownTimeout 限制。
+	app.(*lynx).o.ShutdownTimeout = 100 * time.Millisecond
+
+	app.OnStop(func(ctx context.Context) error {
+		time.Sleep(5 * time.Second) // 故意忽略 ctx
+		return nil
+	})
+
+	start := time.Now()
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- app.Run()
+	}()
+	time.Sleep(50 * time.Millisecond)
+	app.Close()
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return; blocking OnStop hook was not bounded")
+	}
+
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("shutdown took %v, want bounded by shutdown timeout", elapsed)
+	}
+}
+
+// TestBuilderBuildIsIdempotent 验证 Build() 只运行一次构建回调（M6）。
+func TestBuilderBuildIsIdempotent(t *testing.T) {
+	var calls atomic.Int32
+	builder := NewBuilder(func(ctx context.Context, app App) error {
+		calls.Add(1)
+		return nil
+	})
+	b := builder.Build()
+	if b == nil {
+		t.Fatal("Build() returned nil")
+	}
+	b2 := builder.Build()
+	if b2 != b {
+		t.Error("Build() should return the same app on subsequent calls")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("build callback called %d times, want 1", got)
+	}
+}
+
+// TestBuilderRunEReturnsInitError 验证 newLynx 初始化失败（如 Options 校验）
+// 通过 RunE 返回而非直接退出进程（L7）。
+func TestBuilderRunEReturnsInitError(t *testing.T) {
+	builder := NewBuilder(func(ctx context.Context, app App) error { return nil },
+		WithName(strings.Repeat("a", 64))) // 触发 ErrNameTooLong
+	if err := builder.RunE(); !errors.Is(err, ErrNameTooLong) {
+		t.Fatalf("RunE() error = %v, want ErrNameTooLong", err)
+	}
+}
+
+// TestCommandStartBeforeInit 验证未注册的 command 直接 Start 返回 ErrNotInitialized（L3）。
+func TestCommandStartBeforeInit(t *testing.T) {
+	cmd := NewCommand(func(ctx context.Context) error { return nil })
+	if err := cmd.Start(context.Background()); !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("Start() error = %v, want ErrNotInitialized", err)
+	}
+}
+
+// TestParseLogLevel 验证日志级别解析（M12）。
+func TestParseLogLevel(t *testing.T) {
+	tests := []struct {
+		in   string
+		want slog.Level
+	}{
+		{"debug", slog.LevelDebug},
+		{"DEBUG", slog.LevelDebug},
+		{"info", slog.LevelInfo},
+		{"warn", slog.LevelWarn},
+		{"warning", slog.LevelWarn},
+		{"error", slog.LevelError},
+	}
+	for _, tt := range tests {
+		lvl, err := parseLogLevel(tt.in)
+		if err != nil || lvl != tt.want {
+			t.Errorf("parseLogLevel(%q) = %v, %v; want %v", tt.in, lvl, err, tt.want)
+		}
+	}
+	if _, err := parseLogLevel("bogus"); err == nil {
+		t.Error("parseLogLevel(\"bogus\") should return an error")
 	}
 }

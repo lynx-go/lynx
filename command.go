@@ -2,11 +2,11 @@ package lynx
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
 	"github.com/lynx-go/x/log"
-	"github.com/pkg/errors"
 )
 
 // CommandFunc 是命令组件执行的业务函数，返回错误时视为命令失败。
@@ -14,6 +14,7 @@ type CommandFunc func(ctx context.Context) error
 
 // CommandOptions configures the command component behavior.
 type CommandOptions struct {
+	Name           string
 	MaxTries       uint
 	InitialBackoff time.Duration
 	MaxBackoff     time.Duration
@@ -21,6 +22,11 @@ type CommandOptions struct {
 
 // CommandOption is a function that configures CommandOptions.
 type CommandOption func(*CommandOptions)
+
+// WithCommandName sets the command component name used in logs.
+func WithCommandName(name string) CommandOption {
+	return func(o *CommandOptions) { o.Name = name }
+}
 
 // WithMaxTries sets the maximum number of retry attempts.
 func WithMaxTries(n uint) CommandOption {
@@ -38,12 +44,23 @@ func WithBackoff(initial, max time.Duration) CommandOption {
 // NewCommand creates a new command component with the given function and options.
 func NewCommand(fn CommandFunc, opts ...CommandOption) Component {
 	options := &CommandOptions{
+		Name:           "command",
 		MaxTries:       10,
 		InitialBackoff: 100 * time.Millisecond,
 		MaxBackoff:     30 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(options)
+	}
+	// 钳制非法值，避免 0 次尝试（backoff 视为无限重试）导致启动永久挂起。
+	if options.MaxTries == 0 {
+		options.MaxTries = 1
+	}
+	if options.InitialBackoff <= 0 {
+		options.InitialBackoff = time.Millisecond
+	}
+	if options.MaxBackoff < options.InitialBackoff {
+		options.MaxBackoff = options.InitialBackoff
 	}
 	return &command{fn: fn, options: options}
 }
@@ -55,7 +72,7 @@ type command struct {
 }
 
 func (cmd *command) Name() string {
-	return "command"
+	return cmd.options.Name
 }
 
 func (cmd *command) Init(app App) error {
@@ -64,11 +81,14 @@ func (cmd *command) Init(app App) error {
 }
 
 func (cmd *command) Start(ctx context.Context) error {
+	if cmd.lynx == nil {
+		return ErrNotInitialized
+	}
 	checkers := cmd.lynx.HealthCheckFunc()()
 	expBackoff := backoff.NewExponentialBackOff()
 	expBackoff.InitialInterval = cmd.options.InitialBackoff
 	expBackoff.MaxInterval = cmd.options.MaxBackoff
-	if _, err := backoff.Retry[any](ctx, func() (any, error) {
+	if _, err := backoff.Retry(ctx, func() (any, error) {
 		for _, checker := range checkers {
 			if err := checker.CheckHealth(); err != nil {
 				log.WarnContext(ctx, "waiting for dependent component ready", "error", err)
@@ -77,11 +97,13 @@ func (cmd *command) Start(ctx context.Context) error {
 		}
 		return nil, nil
 	}, backoff.WithMaxTries(cmd.options.MaxTries), backoff.WithBackOff(expBackoff)); err != nil {
-		return errors.Wrap(err, "failed to start components")
+		return fmt.Errorf("failed to start components: %w", err)
 	}
 	return cmd.fn(ctx)
 }
 
 func (cmd *command) Stop(ctx context.Context) {
-	cmd.lynx.Close()
+	if cmd.lynx != nil {
+		cmd.lynx.Close()
+	}
 }

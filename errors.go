@@ -54,9 +54,8 @@ func (e *ShutdownErrors) Errors() []error {
 
 // Common errors that can be used throughout the framework.
 var (
-	ErrNotInitialized  = errorf("component not initialized")
-	ErrConfigNotFound  = errorf("config not found")
-	ErrComponentFailed = errorf("component failed")
+	// ErrNotInitialized 表示组件在 Init 之前被使用（如 Command 在未注册时直接 Start）。
+	ErrNotInitialized = errorf("component not initialized")
 )
 
 type wrappedError struct {

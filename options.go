@@ -56,7 +56,8 @@ func (o *Options) Validate() error {
 	return nil
 }
 
-// EnsureDefaults sets default values for unset fields and validates the options.
+// EnsureDefaults sets default values for unset fields.
+// 校验由 Validate 单独负责，newLynx 会在 EnsureDefaults 后调用它。
 func (o *Options) EnsureDefaults() {
 	if o.ID == "" {
 		o.ID, _ = os.Hostname()
@@ -71,8 +72,9 @@ func (o *Options) EnsureDefaults() {
 	}
 
 	if len(o.ExitSignals) == 0 {
+		// SIGKILL 无法被捕获，列入默认列表只会误导调用方。
 		o.ExitSignals = []os.Signal{
-			syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL,
+			syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT,
 		}
 	}
 }
@@ -142,7 +144,7 @@ func NewOptions(opts ...Option) *Options {
 	id, _ := os.Hostname()
 	op := &Options{
 		ID:              id,
-		ExitSignals:     []os.Signal{syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGKILL},
+		ExitSignals:     []os.Signal{syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT},
 		ShutdownTimeout: DefaultShutdownTimeout,
 	}
 	for _, o := range opts {

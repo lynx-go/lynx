@@ -80,10 +80,4 @@ func TestWrappedError(t *testing.T) {
 	if got := ErrNotInitialized.Error(); got != "component not initialized" {
 		t.Errorf("ErrNotInitialized = %q", got)
 	}
-	if got := ErrConfigNotFound.Error(); got != "config not found" {
-		t.Errorf("ErrConfigNotFound = %q", got)
-	}
-	if got := ErrComponentFailed.Error(); got != "component failed" {
-		t.Errorf("ErrComponentFailed = %q", got)
-	}
 }

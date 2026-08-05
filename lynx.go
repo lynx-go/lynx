@@ -1,11 +1,15 @@
+// Package lynx 是 Lynx 微服务框架的核心包：提供应用生命周期管理、
+// 组件系统、Hooks 机制、配置管理与 Context 辅助函数。
 package lynx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 
 	"github.com/lynx-go/x/log"
@@ -159,7 +163,11 @@ func (app *lynx) SetLogger(logger *slog.Logger) {
 
 func (app *lynx) HealthCheckFunc() HealthCheckFunc {
 	return func() []health.Checker {
-		return app.healthCheckers
+		app.mu.Lock()
+		defer app.mu.Unlock()
+		out := make([]health.Checker, len(app.healthCheckers))
+		copy(out, app.healthCheckers)
+		return out
 	}
 }
 
@@ -194,7 +202,43 @@ func (app *lynx) init() error {
 	}
 	app.ctx = context.WithValue(app.ctx, keyVersion, version)
 
+	app.applyLogLevel()
 	return nil
+}
+
+// applyLogLevel 读取配置中的日志级别（--log-level / log_level）并应用到
+// 应用默认 logger 上。仅当用户未通过 SetLogger 覆盖时生效——init 在
+// 构建回调之前运行，构建回调里的 SetLogger 会再次替换 app.logger。
+func (app *lynx) applyLogLevel() {
+	levelStr := app.c.GetString("log-level")
+	if levelStr == "" {
+		levelStr = app.c.GetString("log_level")
+	}
+	if levelStr == "" {
+		return
+	}
+	level, err := parseLogLevel(levelStr)
+	if err != nil {
+		app.logger.Warn("invalid log level, using default", "level", levelStr)
+		return
+	}
+	var levelVar slog.LevelVar
+	levelVar.Set(level)
+	app.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &levelVar}))
+}
+
+func parseLogLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return slog.LevelInfo, fmt.Errorf("unrecognized log level %q", s)
 }
 
 // DefaultSetFlagsFunc 注册默认的命令行 flags：配置文件路径、类型、目录与日志级别。
@@ -233,7 +277,13 @@ func (app *lynx) initConfigure() error {
 		}
 
 		if err := app.c.ReadInConfig(); err != nil {
-			return fmt.Errorf("failed to read config: %w", err)
+			// 未显式指定配置文件且搜索路径下也不存在配置文件时，配置是可选的，
+			// 不应阻止应用启动。只有显式指定的文件（如 -c missing.yaml）或
+			// 解析错误才是硬失败。
+			var notFound viper.ConfigFileNotFoundError
+			if !errors.As(err, &notFound) {
+				return fmt.Errorf("failed to read config: %w", err)
+			}
 		}
 	}
 
@@ -282,7 +332,10 @@ func (app *lynx) Option() *Options {
 
 func (app *lynx) addComponents(components ...Component) error {
 	for _, component := range components {
-		ctx, cancel := context.WithCancel(context.Background())
+		// 组件上下文携带应用元数据（name/id/version），但不继承取消信号：
+		// 组件仍由 run.Group 中断（Stop + cancel）来停止，从而保证关闭时
+		// OnStop hooks 先于组件 Stop 执行。
+		ctx, cancel := context.WithCancel(context.WithoutCancel(app.ctx))
 		log.InfoContext(ctx, "initializing component", "component", component.Name())
 		if err := component.Init(app); err != nil {
 			cancel()
@@ -309,61 +362,103 @@ func (app *lynx) Run() error {
 		return app.initErr
 	}
 	app.Logger().Info("starting")
-	app.runG.Add(func() error {
-		app.Logger().Info("run on-start hooks")
-		for _, fn := range app.onStarts {
-			if err := fn(app.ctx); err != nil {
-				return err
-			}
-		}
-		<-app.ctx.Done()
-		return nil
-	}, func(err error) {
-		app.Close()
-	})
 
+	// 顺序执行 OnStart hooks，全部成功后组件才开始启动。
+	if err := app.runOnStartHooks(); err != nil {
+		return err
+	}
+
+	// 关闭 actor：收到退出信号或应用上下文被取消时，先在 actor 内执行
+	// OnStop hooks，返回后 run.Group 才按注册顺序停止组件——保证清理逻辑
+	//（如从服务发现注销）发生在组件仍在服务期间。
+	var shutdownOnce sync.Once
+	shutdown := func() {
+		app.Logger().Info("shutting down")
+		// Step 1: 取消应用上下文，通知组件开始收尾。
+		app.cancelCtx()
+		// Step 2: 在 ShutdownTimeout 内执行 OnStop hooks。
+		app.runOnStopHooks()
+	}
 	app.runG.Add(func() error {
 		exitCh := make(chan os.Signal, 1)
 		signal.Notify(exitCh, app.o.ExitSignals...)
+		defer signal.Stop(exitCh)
 		select {
 		case <-app.ctx.Done():
+			shutdownOnce.Do(shutdown)
 			return nil
 		case <-exitCh:
+			shutdownOnce.Do(shutdown)
 			return nil
 		}
 	}, func(err error) {
-		app.Logger().Info("shutting down")
+		app.Close()
+		shutdownOnce.Do(shutdown)
+	})
 
-		// Step 1: Cancel context first to signal components to stop
-		app.cancelCtx()
+	// Step 3: run.Group 在第一个 actor 返回后停止所有组件。
+	return app.runG.Run()
+}
 
-		// Step 2: Execute OnStop hooks with timeout
-		timeout := app.o.ShutdownTimeout
-		ctx, cancelCtx := context.WithTimeout(context.Background(), timeout)
-		defer cancelCtx()
-		app.Logger().Info("run on-stop hooks")
-		var shutdownErrors ShutdownErrors
-		for _, fn := range app.onStops {
-			fn := fn
-			if hookErr := fn(ctx); hookErr != nil {
-				app.logger.ErrorContext(ctx, "on-stop hook called error", "error", hookErr)
+func (app *lynx) runOnStartHooks() error {
+	app.mu.Lock()
+	hooks := append([]HookFunc(nil), app.onStarts...)
+	app.mu.Unlock()
+
+	app.Logger().Info("run on-start hooks")
+	for _, fn := range hooks {
+		if err := fn(app.ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runOnStopHooks 在 ShutdownTimeout 内顺序执行所有 OnStop hooks。
+// 单个 hook 阻塞不会挂起整个关闭流程：超过时限后记录错误并继续。
+func (app *lynx) runOnStopHooks() {
+	app.mu.Lock()
+	hooks := append([]HookFunc(nil), app.onStops...)
+	app.mu.Unlock()
+
+	app.Logger().Info("run on-stop hooks")
+	ctx, cancel := context.WithTimeout(context.Background(), app.o.ShutdownTimeout)
+	defer cancel()
+
+	var shutdownErrors ShutdownErrors
+	for _, fn := range hooks {
+		if ctx.Err() != nil {
+			shutdownErrors.Add(errors.New("shutdown timeout exceeded while running on-stop hooks"))
+			break
+		}
+		fn := fn
+		done := make(chan error, 1)
+		go func() { done <- fn(ctx) }()
+		select {
+		case hookErr := <-done:
+			if hookErr != nil {
+				app.logger.ErrorContext(app.ctx, "on-stop hook called error", "error", hookErr)
 				shutdownErrors.Add(hookErr)
 			}
+		case <-ctx.Done():
+			app.logger.ErrorContext(app.ctx, "on-stop hook did not complete within shutdown timeout")
+			shutdownErrors.Add(errors.New("on-stop hook timed out"))
 		}
-		if shutdownErrors.HasErrors() {
-			app.logger.ErrorContext(ctx, "shutdown completed with errors", "errors", shutdownErrors.Error())
-		}
-		// Step 3: run.Group will automatically stop all components after this
-	})
-	return app.runG.Run()
+	}
+	if shutdownErrors.HasErrors() {
+		app.logger.ErrorContext(app.ctx, "shutdown completed with errors", "errors", shutdownErrors.Error())
+	}
 }
 
 func newLynx(o *Options) (App, error) {
 	o.EnsureDefaults()
+	if err := o.Validate(); err != nil {
+		return nil, err
+	}
 	app := &lynx{
 		o:        o,
 		c:        viper.New(),
-		f:        pflag.CommandLine,
+		f:        pflag.NewFlagSet(os.Args[0], pflag.ContinueOnError),
 		runG:     &run.Group{},
 		logger:   slog.Default(),
 		onStarts: []HookFunc{},

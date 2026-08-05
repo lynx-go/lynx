@@ -3,6 +3,7 @@ package lynx
 import (
 	"context"
 	"log"
+	"sync"
 )
 
 // BuildFunc 是应用初始化回调，在 Builder 运行前执行，用于注册组件与 hooks。
@@ -12,21 +13,23 @@ type BuildFunc func(ctx context.Context, app App) error
 type Builder struct {
 	build BuildFunc
 	app   App
+	err   error
+	mu    sync.Mutex
+	built bool
 }
 
-// NewBuilder 创建 Builder 实例；初始化失败时输出错误并退出进程。
+// NewBuilder 创建 Builder 实例。初始化失败不会立即退出进程，
+// 错误会延迟到 RunE/Run 返回，以便调用方自行处理。
 func NewBuilder(build BuildFunc, opts ...Option) *Builder {
 	o := &Options{}
 	for _, opt := range opts {
 		opt(o)
 	}
 	app, err := newLynx(o)
-	if err != nil {
-		log.Fatalln(err)
-	}
 	return &Builder{
 		build: build,
 		app:   app,
+		err:   err,
 	}
 }
 
@@ -37,15 +40,35 @@ func (b *Builder) Run() {
 	}
 }
 
-// Build 运行初始化回调并返回应用实例，回调失败时返回错误。
+// Build 运行一次初始化回调并返回应用实例。回调失败或初始化失败时返回 nil，
+// 具体错误可通过 RunE 获取。Build 只执行一次回调，重复调用返回同一实例。
 func (b *Builder) Build() App {
-	if err := b.build(b.app.Context(), b.app); err != nil {
-		log.Fatalln(err)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.err != nil || b.built {
+		return b.app
 	}
+	if err := b.build(b.app.Context(), b.app); err != nil {
+		b.err = err
+		return nil
+	}
+	b.built = true
 	return b.app
 }
 
 // RunE 运行 Builder 应用并返回错误，由调用方决定错误处理方式。
 func (b *Builder) RunE() error {
-	return b.Build().Run()
+	if b.err != nil {
+		return b.err
+	}
+	if b.app == nil {
+		return ErrNotInitialized
+	}
+	if !b.built {
+		b.Build()
+	}
+	if b.err != nil {
+		return b.err
+	}
+	return b.app.Run()
 }
