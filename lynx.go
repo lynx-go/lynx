@@ -344,5 +344,8 @@ func newLynx(o *Options) (App, error) {
 	if err := app.init(); err != nil {
 		return nil, err
 	}
+	if err := app.initOTel(); err != nil {
+		return nil, err
+	}
 	return app, nil
 }

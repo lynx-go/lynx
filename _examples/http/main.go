@@ -57,18 +57,6 @@ func main() {
 
 		addr := app.Config().GetString("addr")
 
-		shutdown, tp, mp, propagator, err := setupOTel()
-		if err != nil {
-			return err
-		}
-		// Provider lifecycle belongs to the caller: shut them down when the
-		// app stops, not when this setup function returns.
-		if err := app.Hooks(lynx.OnStop(func(ctx context.Context) error {
-			return shutdown(ctx)
-		})); err != nil {
-			return err
-		}
-
 		// Note: /metrics is served on the main router for demo simplicity, so
 		// every Prometheus scrape also flows through the otel instrumentation
 		// and latencyMiddleware. In production, consider serving it on a
@@ -79,9 +67,6 @@ func main() {
 			http.WithAddr(addr),
 			http.WithHealthCheck(app.HealthCheckFunc()),
 			http.WithLogger(app.Logger("logger", "http-requestlog")),
-			http.WithTracerProvider(tp),
-			http.WithMeterProvider(mp),
-			http.WithPropagator(propagator),
 			http.WithMiddleware(latencyMiddleware),
 		))); err != nil {
 			return err
@@ -113,6 +98,7 @@ func main() {
 			}
 			return nil
 		}),
+		lynx.WithOTel(),
 	)
 	builder.Run()
 }

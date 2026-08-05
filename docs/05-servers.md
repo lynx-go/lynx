@@ -1,6 +1,6 @@
 # 5. 服务器与可观测性
 
-Lynx 在 `server/http` 与 `server/grpc` 两个包中提供了开箱即用的服务器组件，它们都实现了第 4 章介绍的 `Component` 接口，可以直接通过 `lynx.Components` 注册进应用。本章先逐一介绍两个服务器的全部配置项，再讲解可观测性接入：OpenTelemetry trace/metrics 的 provider 初始化、Prometheus 指标暴露、HTTP 中间件链序，以及日志与链路的关联（`lynx.NewTraceHandler`）。
+Lynx 在 `server/http` 与 `server/grpc` 两个包中提供了开箱即用的服务器组件，它们都实现了第 4 章介绍的 `Component` 接口，可以直接通过 `lynx.Components` 注册进应用。本章先逐一介绍两个服务器的全部配置项，再讲解可观测性接入：OpenTelemetry trace/metrics 的开箱即用（`lynx.WithOTel`）与手动接入、Prometheus 指标暴露、HTTP 中间件链序，以及日志与链路的关联（`lynx.NewTraceHandler`）。
 
 ## 5.1 HTTP 服务器
 
@@ -38,7 +38,7 @@ func NewServer(handler http.Handler, opts ...Option) *Server
 
 ### 完整示例
 
-下面的示例最小改自 `_examples/http/main.go`，演示了常用 Options 的组合（otel 相关三个 Option 的取值见 5.3 节）：
+下面的示例最小改自 `_examples/http/main.go`，演示了常用 Options 的组合（otel 选项见 5.3 节）：
 
 ```go
 package main
@@ -105,7 +105,7 @@ func NewServer(opts ...Option) *Server
 - `WithTimeout(timeout time.Duration)`：优雅关闭的超时时间，默认 60 秒。注意它**不是**请求处理超时——gRPC 服务器本身没有读/写超时选项，该值只在 `Stop` 时生效：若传入的 Context 没有 deadline，则以它为上限等待 `GracefulStop`，超时后强制 `Stop()`。
 - `WithLogger(l *slog.Logger)`：内置 Logging 拦截器使用的日志器。
 - `WithInterceptors(interceptors ...grpc.UnaryServerInterceptor)`：追加自定义一元拦截器，链序见下文。
-- `WithTracerProvider(tp trace.TracerProvider)` / `WithMeterProvider(mp metric.MeterProvider)`：otel provider，传给 `otelgrpc.NewServerHandler` 的 stats handler。为 nil 时使用全局 provider，生命周期归调用方（同 5.3.1 节）。
+- `WithTracerProvider(tp trace.TracerProvider)` / `WithMeterProvider(mp metric.MeterProvider)`：otel provider，传给 `otelgrpc.NewServerHandler` 的 stats handler。为 nil 时使用全局 provider，生命周期归调用方（同 5.3.2 节）。
 
 与 HTTP 服务器相比有两点差异：
 
@@ -216,17 +216,51 @@ var echoServiceDesc = gogrpc.ServiceDesc{
 
 ## 5.3 可观测性接入
 
-### 5.3.1 职责划分：Provider 由用户侧持有
+### 5.3.1 开箱即用：lynx.WithOTel（框架托管）
 
-Lynx 的服务器组件只**消费** otel provider：通过 `WithTracerProvider`/`WithMeterProvider`/`WithPropagator` 传给服务器即可，框架从不创建也不关闭它们。**exporter 与 provider 的初始化、 shutdown 都是用户侧的职责**——典型的做法是在应用初始化函数里创建 provider，并把 shutdown 注册进 `OnStop` 钩子（取自 `_examples/http/main.go`）：
+框架提供一条托管路径，一行开启，provider 的创建、全局注册与优雅关闭 flush 全部由框架处理：
+
+```go
+builder := lynx.NewBuilder(setup,
+    lynx.WithOTel(),
+)
+```
+
+`WithOTel` 默认创建：
+
+- **TracerProvider**：stdout trace exporter（pretty print）批量导出，开发调试直接看 stdout；
+- **MeterProvider**：Prometheus metric reader；
+- **propagator**：W3C TraceContext + Baggage 组合。
+
+创建后的 provider 会**自动设置为 otel 全局 provider**（`otel.SetTracerProvider` 等），因此服务器无需任何 otel 配置即自动采集——`WithTracerProvider`/`WithMeterProvider`/`WithPropagator` 为 nil 时服务器本就使用全局 provider。应用优雅关闭时，框架自动注册的 `OnStop` 钩子会 flush 并 shutdown provider，无需手动注册。
+
+Prometheus 指标仍需自行挂载 `/metrics`（见 5.3.4 节）；默认 exporter 使用 Prometheus 默认注册表，与 `promhttp.Handler()` 直接兼容。
+
+自定义导出目标通过 `OTelOption` 替换：
+
+```go
+lynx.WithOTel(
+    lynx.WithOTelTraceExporter(otlpTraceExporter), // 替换默认 stdout（示例见 5.3.3 节）
+    lynx.WithOTelMetricReader(otlpMetricReader),   // 替换默认 Prometheus
+    lynx.WithOTelPropagator(customPropagator),     // 替换默认 TraceContext+Baggage
+)
+```
+
+- `WithOTelTraceExporter(exporter sdktrace.SpanExporter)`：自定义 trace exporter；
+- `WithOTelMetricReader(reader sdkmetric.Reader)`：自定义 metric reader（OTLP 等后端 exporter 均实现 `Reader` 接口）；
+- `WithOTelPropagator(p propagation.TextMapPropagator)`：自定义传播器。
+
+需要完全掌控 provider（共享实例、精细调参、自定义关闭时机）时，可放弃 `WithOTel` 走手动路径，见 5.3.2 节。
+
+### 5.3.2 高阶自定义：手动创建 provider
+
+不走 `WithOTel` 时，exporter 与 provider 的初始化、shutdown **都是调用方的职责**——典型的做法是在应用初始化函数里创建 provider，并通过服务器 `WithTracerProvider`/`WithMeterProvider`/`WithPropagator` 传入、把 shutdown 注册进 `OnStop` 钩子：
 
 ```go
 shutdown, tp, mp, propagator, err := setupOTel()
 if err != nil {
 	return err
 }
-// Provider lifecycle belongs to the caller: shut them down when the
-// app stops, not when this setup function returns.
 if err := app.Hooks(lynx.OnStop(func(ctx context.Context) error {
 	return shutdown(ctx)
 })); err != nil {
@@ -234,19 +268,11 @@ if err := app.Hooks(lynx.OnStop(func(ctx context.Context) error {
 }
 ```
 
-这样 provider 的存活周期覆盖整个应用运行期，且在优雅关闭时被正确 flush。
+一个需要留意的副作用：HTTP 服务器底层 gocloud.dev 在 `Start` 时会把传入的非 nil TracerProvider/MeterProvider/Propagator **同时设置为 otel 全局 provider**（即替你调用了 `otel.SetTracerProvider` 等）。单服务进程里这通常正合预期（业务代码可以直接用全局 tracer）；但如果你已自行设置过全局 provider、或同一进程跑多个服务器，要意识到后启动的服务器会覆盖全局值。使用 5.3.1 节的托管路径时，全局值由框架在启动前设置，不存在该副作用。
 
-一个需要留意的副作用：HTTP 服务器底层 gocloud.dev 在 `Start` 时会把传入的非 nil TracerProvider/MeterProvider/Propagator **同时设置为 otel 全局 provider**（即替你调用了 `otel.SetTracerProvider` 等）。单服务进程里这通常正合预期（业务代码可以直接用全局 tracer）；但如果你已自行设置过全局 provider、或同一进程跑多个服务器，要意识到后启动的服务器会覆盖全局值。
-
-### 5.3.2 开发环境：stdouttrace
-
-开发调试时最方便的是把 span 打到 stdout。下面的 `setupOTel` 完整取自 `_examples/http/otel.go`，同时初始化了 stdout trace exporter、Prometheus metrics exporter 与 W3C propagator：
+开发调试最方便的是把 span 打到 stdout。下面是一个完整的 `setupOTel` 模板，同时初始化 stdout trace exporter、Prometheus metrics exporter 与 W3C propagator（需要的依赖：`go.opentelemetry.io/otel/exporters/stdout/stdouttrace`、`go.opentelemetry.io/otel/exporters/prometheus`、`go.opentelemetry.io/otel/sdk` 与 `go.opentelemetry.io/otel/sdk/metric`；使用 5.3.1 托管路径时这些依赖框架已内置，无需单独引入）：
 
 ```go
-// setupOTel initializes a stdout trace exporter and a Prometheus metrics
-// exporter for demonstration purposes. In production, initialize exporters
-// in your own bootstrap and pass the providers to the lynx server options;
-// their lifecycle stays with the caller.
 func setupOTel() (shutdown func(context.Context) error, tp *sdktrace.TracerProvider, mp *sdkmetric.MeterProvider, propagator propagation.TextMapPropagator, err error) {
 	traceExporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
 	if err != nil {
@@ -270,39 +296,39 @@ func setupOTel() (shutdown func(context.Context) error, tp *sdktrace.TracerProvi
 }
 ```
 
-需要的依赖：`go.opentelemetry.io/otel/exporters/stdout/stdouttrace`、`go.opentelemetry.io/otel/exporters/prometheus`、`go.opentelemetry.io/otel/sdk` 与 `go.opentelemetry.io/otel/sdk/metric`。
-
 ### 5.3.3 生产环境：OTLP Exporter
 
-生产环境通常把 span 推给 OTLP collector（Jaeger、Tempo、厂商 APM 等）。需要额外引入 exporter 依赖：
+生产环境通常把 span 推给 OTLP collector（Jaeger、Tempo、厂商 APM 等）。框架内置的默认 exporter 不含 OTLP，需要额外引入：
 
 ```bash
 go get go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc
 ```
 
-初始化代码（注意返回的 `shutdown` 同样应注册进 `OnStop` 钩子，见 5.3.1 节）：
+初始化 exporter（注意：这里创建的是 **exporter** 而不是 TracerProvider，可以直接交给 5.3.1 的 `lynx.WithOTelTraceExporter` 由框架托管；手动路径则自行包成 provider）：
 
 ```go
-// setupTracerProvider 初始化 OTLP gRPC exporter 与 TracerProvider。
-// 返回的 shutdown 应在应用停止时调用（例如注册进 lynx.OnStop 钩子）。
-func setupTracerProvider(ctx context.Context, endpoint string) (tp *sdktrace.TracerProvider, shutdown func(context.Context) error, err error) {
-	exporter, err := otlptracegrpc.New(ctx,
+// setupOTLPExporter 初始化 OTLP gRPC trace exporter。
+func setupOTLPExporter(ctx context.Context, endpoint string) (sdktrace.SpanExporter, error) {
+	return otlptracegrpc.New(ctx,
 		otlptracegrpc.WithEndpoint(endpoint),
 		otlptracegrpc.WithInsecure(), // 生产环境应配置 TLS，或改用 HTTP 协议的 otlptracehttp
 	)
-	if err != nil {
-		return nil, nil, err
-	}
-	tp = sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter))
-	return tp, tp.Shutdown, nil
 }
 ```
 
-得到的 `tp` 直接传给 `http.WithTracerProvider(tp)` 或 `grpc.WithTracerProvider(tp)` 即可。如果 collector 只暴露 HTTP 端口，把 `otlptracegrpc` 换成 `otlptracehttp`，API 形状一致。endpoint 也支持通过环境变量 `OTEL_EXPORTER_OTLP_ENDPOINT` 配置（不传 `WithEndpoint` 时生效）。
+托管路径用法：
+
+```go
+lynx.WithOTel(
+	lynx.WithOTelTraceExporter(exporter), // exporter 由上面的 setupOTLPExporter 创建
+)
+```
+
+如果 collector 只暴露 HTTP 端口，把 `otlptracegrpc` 换成 `otlptracehttp`，API 形状一致。endpoint 也支持通过环境变量 `OTEL_EXPORTER_OTLP_ENDPOINT` 配置（不传 `WithEndpoint` 时生效）。metrics 侧同理：`go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc` 的 exporter 实现了 `sdkmetric.Reader`，交给 `lynx.WithOTelMetricReader` 即可。
 
 ### 5.3.4 Prometheus 指标与 /metrics
 
-metrics 一侧的关键点：`go.opentelemetry.io/otel/exporters/prometheus` 的 exporter 本身就是一个 Prometheus registry，把它作为 `Reader` 装进 `MeterProvider`（见 5.3.2 节的 `setupOTel`），再把标准库 `promhttp.Handler()` 挂到路由上即可暴露指标（取自 `_examples/http/main.go`）：
+metrics 一侧的关键点：`go.opentelemetry.io/otel/exporters/prometheus` 的 exporter 本身就是一个 Prometheus registry，把它作为 `Reader` 装进 `MeterProvider`（5.3.1 托管路径的默认 reader 就是它；手动路径见 5.3.2 节模板），再把标准库 `promhttp.Handler()` 挂到路由上即可暴露指标（取自 `_examples/http/main.go`）：
 
 ```go
 // Note: /metrics is served on the main router for demo simplicity, so
