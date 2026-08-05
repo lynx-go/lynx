@@ -38,9 +38,12 @@ type TopicOptions struct {
 type ConsumerOptions struct {
 	GroupID   string `mapstructure:"group_id"`
 	Instances int    `mapstructure:"instances"`
-	// CommitInterval 是 offset 自动提交间隔 → sarama Consumer.Offsets.CommitInterval。
+	// CommitInterval 是 offset 自动提交间隔 → sarama Consumer.Offsets.AutoCommit.Interval。
 	CommitInterval time.Duration `mapstructure:"commit_interval"`
-	LogMessage     bool          `mapstructure:"log_message"`
+	// InitialOffset 是首次消费的初始 offset：oldest 或 newest（缺省 newest）
+	// → sarama Consumer.Offsets.Initial（OffsetOldest / OffsetNewest）。
+	InitialOffset string `mapstructure:"initial_offset"`
+	LogMessage    bool   `mapstructure:"log_message"`
 	// NackResendSleep 是 Nack 后消息重投的等待时长 → watermill SubscriberConfig.NackResendSleep。
 	NackResendSleep time.Duration `mapstructure:"nack_resend_sleep"`
 	// ReconnectRetrySleep 是重连失败后的下次重试间隔 → watermill SubscriberConfig.ReconnectRetrySleep。
@@ -300,7 +303,17 @@ func (t *Transport) buildSaramaConfig(brokers []string, consumer *ConsumerOption
 	cfg := sarama.NewConfig()
 	if consumer != nil {
 		if consumer.CommitInterval > 0 {
-			cfg.Consumer.Offsets.CommitInterval = consumer.CommitInterval
+			cfg.Consumer.Offsets.AutoCommit.Interval = consumer.CommitInterval
+		}
+		if consumer.InitialOffset != "" {
+			switch consumer.InitialOffset {
+			case "oldest":
+				cfg.Consumer.Offsets.Initial = sarama.OffsetOldest
+			case "newest":
+				cfg.Consumer.Offsets.Initial = sarama.OffsetNewest
+			default:
+				return nil, fmt.Errorf("kafka: invalid initial_offset %q (want oldest or newest)", consumer.InitialOffset)
+			}
 		}
 		if consumer.SessionTimeout > 0 {
 			cfg.Consumer.Group.Session.Timeout = consumer.SessionTimeout

@@ -128,6 +128,7 @@ kafka:
       group_id: orders-group
       instances: 3
       commit_interval: 1s
+      initial_offset: oldest
       log_message: true
       nack_resend_sleep: 500ms
       reconnect_retry_sleep: 3s
@@ -179,6 +180,9 @@ kafka:
 	}
 	if orders.Consumer.CommitInterval != time.Second {
 		t.Fatalf("bad commit interval: %v", orders.Consumer.CommitInterval)
+	}
+	if orders.Consumer.InitialOffset != "oldest" {
+		t.Fatalf("bad initial offset: %q", orders.Consumer.InitialOffset)
 	}
 	if orders.Producer == nil || orders.Producer.Topic != "topic_orders_v2" || !orders.Producer.LogMessage {
 		t.Fatalf("bad producer: %+v", orders.Producer)
@@ -246,6 +250,7 @@ func TestBuildSaramaConfigMappings(t *testing.T) {
 				Consumer: &ConsumerOptions{
 					GroupID:             "g1",
 					CommitInterval:      2 * time.Second,
+					InitialOffset:       "oldest",
 					NackResendSleep:     500 * time.Millisecond,
 					ReconnectRetrySleep: 3 * time.Second,
 					SessionTimeout:      45 * time.Second,
@@ -310,7 +315,8 @@ func TestBuildSaramaConfigMappings(t *testing.T) {
 		got  any
 		want any
 	}{
-		{"commit interval", consumerCfg.Consumer.Offsets.CommitInterval, 2 * time.Second},
+		{"auto commit interval", consumerCfg.Consumer.Offsets.AutoCommit.Interval, 2 * time.Second},
+		{"initial offset", consumerCfg.Consumer.Offsets.Initial, sarama.OffsetOldest},
 		{"session timeout", consumerCfg.Consumer.Group.Session.Timeout, 45 * time.Second},
 		{"heartbeat interval", consumerCfg.Consumer.Group.Heartbeat.Interval, 5 * time.Second},
 		{"fetch min bytes", consumerCfg.Consumer.Fetch.Min, int32(1024)},
@@ -350,6 +356,27 @@ func TestCompressionInvalid(t *testing.T) {
 	}, cap)
 	if err := tr.Publish("orders", message.NewMessage("id", nil)); err == nil {
 		t.Fatal("expected Publish error for invalid compression")
+	}
+}
+
+func TestInitialOffsetInvalid(t *testing.T) {
+	cap := &captureFactory{pub: newFakePubSub()}
+	tr := newCapturingTransport(Options{
+		Topics: map[string]TopicOptions{
+			"orders": {
+				Brokers: []string{"b1"},
+				Topics:  []string{"t1"},
+				Consumer: &ConsumerOptions{
+					GroupID:       "g1",
+					InitialOffset: "bogus",
+				},
+			},
+		},
+	}, cap)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := tr.Subscribe(ctx, "orders", pubsub.SubscriptionOptions{}); err == nil {
+		t.Fatal("expected Subscribe error for invalid initial_offset")
 	}
 }
 

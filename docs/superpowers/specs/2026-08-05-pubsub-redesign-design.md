@@ -203,7 +203,8 @@ type TopicOptions struct {
 type ConsumerOptions struct {
     GroupID        string        // 订阅组；代码 WithGroup 可覆盖，两者皆空则 Subscribe 报错
     Instances      int           // 同组消费者成员数，缺省 1
-    CommitInterval time.Duration // 映射 sarama Config.Consumer.Offsets.CommitInterval（经 OverwriteSaramaConfig 透传）
+    CommitInterval time.Duration // 映射 sarama Config.Consumer.Offsets.AutoCommit.Interval（经 OverwriteSaramaConfig 透传；sarama 的 Offsets.CommitInterval 已弃用）
+    InitialOffset  string        // 首次消费初始 offset：oldest/newest（缺省 newest）→ sarama Offsets.Initial
     LogMessage     bool
     // 其余消费参数按 watermill-kafka v3 SubscriberConfig 字段映射
     //（ConsumerGroup / NackResendSleep / ReconnectRetrySleep 等）
@@ -319,3 +320,4 @@ UnmarshalKey(path string, out any) error
 5. `PublishOptions` 额外提供 `WithMetadata` / `WithMetadataField`（合并进消息头）；handler 回调会注入 message ID/key 上下文（`ContextWithMessageID`/`ContextWithMessageKey`），设计未列。
 6. 内存 Transport 返回 `*MemoryTransport` 具体类型（设计写 `*Transport`），`Topics()` 返回 nil（仅作默认回退，不参与自动路由）。
 7. 常用配置项补齐（用户需求）：`ConsumerOptions` 新增 `NackResendSleep`/`ReconnectRetrySleep`（→ watermill `SubscriberConfig`）/`SessionTimeout`/`HeartbeatInterval`/`FetchMinBytes`/`FetchMaxBytes`/`FetchMaxWait`/`ClientID`（→ sarama）；`ProducerOptions` 新增 `RequiredAcks`（0 视为未设置，保持 sarama 默认 WaitForLocal）/`RetryMax`/`Timeout`/`FlushBytes`/`FlushFrequency`/`Compression`（none/gzip/snappy/lz4/zstd，非法值报错）/`ClientID`（→ sarama）。`buildSaramaConfig` 签名改为 `(brokers, consumer, producer)` 并返回 error；`newSubscriber` seam 改为接收 `subscriberParams`（含 watermill 层参数）。仍按集群缓存、不加锁（调用方持 `t.mu`），首个调用方的参数生效。
+8. `CommitInterval` 映射目标更正（用户指出，sarama v1.43.3 弃用 `Consumer.Offsets.CommitInterval`，赋非零值仅打印弃用警告且**被忽略**）：映射改为 `Consumer.Offsets.AutoCommit.Interval`（字段名与配置键不变）；`ConsumerOptions` 新增 `InitialOffset`（`initial_offset: oldest|newest`，非法值报错，缺省 newest）→ `Consumer.Offsets.Initial`。
