@@ -22,6 +22,8 @@ type Config interface {
 	IsSet(path string) bool
 	// Unmarshal 将配置解码到 out 指向的结构体。
 	Unmarshal(out any) error
+	// UnmarshalKey 将 path 对应的配置子树解码到 out 指向的结构体。
+	UnmarshalKey(path string, out any) error
 }
 
 // ConfigSource 是配置源的绑定接口，在初始化绑定阶段（BindConfigFunc）
@@ -86,6 +88,10 @@ func (c *viperConfig) IsSet(key string) bool {
 
 func (c *viperConfig) Unmarshal(out any) error {
 	return c.v.Unmarshal(out)
+}
+
+func (c *viperConfig) UnmarshalKey(key string, out any) error {
+	return c.v.UnmarshalKey(key, out)
 }
 
 func (c *viperConfig) Set(key string, value any) {
