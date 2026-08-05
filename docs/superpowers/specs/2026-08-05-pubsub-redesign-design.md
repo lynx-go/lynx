@@ -203,26 +203,27 @@ type TopicOptions struct {
 type ConsumerOptions struct {
     GroupID        string        // 订阅组；代码 WithGroup 可覆盖，两者皆空则 Subscribe 报错
     Instances      int           // 同组消费者成员数，缺省 1
-    CommitInterval time.Duration // 映射 watermill-kafka SubscriberConfig.CommitInterval
+    CommitInterval time.Duration // 映射 sarama Config.Consumer.Offsets.CommitInterval（经 OverwriteSaramaConfig 透传）
     LogMessage     bool
-    // 其余消费参数按 watermill-kafka v4 SubscriberConfig 支持的字段映射
+    // 其余消费参数按 watermill-kafka v3 SubscriberConfig 字段映射
+    //（ConsumerGroup / NackResendSleep / ReconnectRetrySleep 等）
 }
 
 type ProducerOptions struct {
     Topic       string // 发布物理 topic；缺省 = Topics[0]
     LogMessage  bool
-    BatchSize   int    // 映射 watermill-kafka PublisherConfig.BatchSize
-    // 其余发布参数按 watermill-kafka v4 PublisherConfig 支持的字段映射
-    //（BatchTimeout / WriteTimeout / Async / Acks 等，命名沿用旧 ProducerOptions 习惯）
+    BatchSize   int    // 映射 sarama Config.Producer.Flush（经 OverwriteSaramaConfig 透传）
+    // 其余发布参数按 watermill-kafka v3 PublisherConfig 字段映射
+    //（OverwriteSaramaConfig 承载的 Producer 侧 sarama 参数）
 }
 ```
 
 实现要点：
 
-- **引擎**：watermill 官方 `watermill-kafka`（**v4 / franz-go**，v3/segmentio 已弃用——用户已确认接受此替换）。
+- **引擎**：watermill 官方 `watermill-kafka/v3`（`github.com/ThreeDotsLabs/watermill-kafka/v3/pkg/kafka`，IBM/sarama 客户端，官方当前版本；替代现用 segmentio/kafka-go——用户已确认接受此替换）。
 - **客户端分组**：内部按 brokers 集合去重分组，每组一套 watermill-kafka Publisher + 按消费组缓存的 Subscriber；同集群 topic 共享客户端，异集群各自一套。
 - **`Publish(logical, msgs)`**：查 `config.Topics[logical].Producer` → 物理名（`Producer.Topic` 缺省 `Topics[0]`）→ 对应分组 Publisher。
-- **`Subscribe(ctx, logical, opts)`**：查 `config.Topics[logical].Consumer`；Group = `opts.Group` 非空优先，否则 `GroupID`，再否则报错；Instances = `opts.Instances > 0` 优先，否则 `Instances`（缺省 1）。物理展开：`len(Topics) × Instances` 个组成员（每个物理 topic 各 N 个同组消费者，与旧 `Instances` 语义一致），fan-in 到单一返回 channel（消息保留各自 Topic 字段；跨物理 topic 无顺序保证）。组内 Subscriber 按 group 缓存复用。
+- **`Subscribe(ctx, logical, opts)`**：查 `config.Topics[logical].Consumer`；Group = `opts.Group` 非空优先，否则 `GroupID`，再否则报错；Instances = `opts.Instances > 0` 优先，否则 `Instances`（缺省 1）。物理展开：`len(Topics) × Instances` 个组成员（每个物理 topic 各 N 个同组消费者，与旧 `Instances` 语义一致），fan-in 到单一返回 channel（watermill `Message` 无来源 topic 字段，不暴露物理 topic；跨物理 topic 无顺序保证）。组内 Subscriber 按 group 缓存复用。
 - **`Topics()`**：返回 `Options.Topics` 的全部 key（自动路由用）。
 - **生命周期**：`NewTransport(opts)` 构造客户端；`Init(app)` 校验 brokers 非空；`Start` 标记 running；`Stop` 关闭全部集群客户端；健康检查 = 组件 running 状态。GroupID 校验推迟到 `Subscribe` 调用时（代码 `WithGroup` 可补位，Init 阶段无法预知）。
 
@@ -231,7 +232,7 @@ type ProducerOptions struct {
 ```
 出站: app → broker.Publish("orders", msg)
         → 路由表: "orders" → kafkaT
-        → kafkaT.Publish("orders") → 物理 "topic_orders_v2" → franz-go → Kafka
+        → kafkaT.Publish("orders") → 物理 "topic_orders_v2" → sarama → Kafka
        （无进程内跳转，无 Producer 组件）
 
 入站: Kafka topic_orders / topic_orders_v2 → kafkaT.Subscribe("orders")
@@ -253,7 +254,7 @@ type ProducerOptions struct {
 | kafka `Brokers` 为空 | `kafkaT.Init` 返回错误 |
 | 订阅 topic 的 `GroupID` 缺失（代码 `WithGroup` 与配置皆无） | `kafkaT.Subscribe` 返回错误 → `Broker.Start` 报错 |
 | 处理失败 | Retry×3 → Nack；`ContinueOnError` → Ack 继续；`AutoAck` → 先 Ack 再执行（at-most-once） |
-| Kafka 连接中断 | franz-go 内部重连；fetch 错误由 watermill 层重试 |
+| Kafka 连接中断 | sarama 内部重连；fetch 错误由 watermill 层重试 |
 
 ### 8. 生命周期与健康检查
 
@@ -299,7 +300,7 @@ UnmarshalKey(path string, out any) error
 
 **新增**：`Message` 及构造器、`MessageOption`、`Transport`、`SubscriptionOptions`、`Options{Transports, DefaultTransport}`、`NewBroker(Options)`、`Route`、`WithGroup`、`WithInstances`、`memory.NewMemoryTransport`、kafka `Options` / `TopicOptions` / `ConsumerOptions` / `ProducerOptions` / `NewTransport`；核心 `lynx.Config.UnmarshalKey`
 
-**依赖变化**：`contrib/kafka` 的 `segmentio/kafka-go` → `watermill-kafka/v4`（franz-go 间接依赖）；`contrib/kafka` 仍依赖 `contrib/pubsub`（Transport 接口）与 watermill。
+**依赖变化**：`contrib/kafka` 的 `segmentio/kafka-go` → `watermill-kafka/v3`（IBM/sarama 间接依赖）；`contrib/kafka` 仍依赖 `contrib/pubsub`（Transport 接口）与 watermill。
 
 ### 12. 未来扩展（本次不做）
 
