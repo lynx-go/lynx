@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/pflag"
 )
 
@@ -154,7 +153,7 @@ func TestWithSetFlagsAndBindConfig(t *testing.T) {
 	bindCalled := false
 	o := NewOptions(
 		WithSetFlagsFunc(func(f *pflag.FlagSet) { flagsSet = true }),
-		WithBindConfigFunc(func(f *pflag.FlagSet, v Config) error {
+		WithBindConfigFunc(func(f *pflag.FlagSet, c ConfigSource) error {
 			bindCalled = true
 			return nil
 		}),
@@ -192,19 +191,5 @@ func TestOptionsString(t *testing.T) {
 	}
 	if !strings.Contains(s, `"version":"v1"`) {
 		t.Errorf("String() = %q, want it to contain version", s)
-	}
-}
-
-func TestTagNameFuncs(t *testing.T) {
-	jsonCfg := &mapstructure.DecoderConfig{}
-	TagNameJSON(jsonCfg)
-	if jsonCfg.TagName != "json" {
-		t.Errorf("TagName = %q, want %q", jsonCfg.TagName, "json")
-	}
-
-	yamlCfg := &mapstructure.DecoderConfig{}
-	TagNameYAML(yamlCfg)
-	if yamlCfg.TagName != "yaml" {
-		t.Errorf("TagName = %q, want %q", yamlCfg.TagName, "yaml")
 	}
 }

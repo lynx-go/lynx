@@ -93,9 +93,9 @@ opts := lynx.NewOptions(
     lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
         f.StringP("config", "c", "config.yaml", "config file path")
     }),
-    lynx.WithBindConfigFunc(func(f *pflag.FlagSet, v lynx.Config) error {
-        if c, _ := f.GetString("config"); c != "" {
-            v.SetConfigFile(c)
+    lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
+        if cf, _ := f.GetString("config"); cf != "" {
+            c.SetFile(cf)
         }
         return nil
     }),

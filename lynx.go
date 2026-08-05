@@ -15,8 +15,8 @@ import (
 	"gocloud.dev/server/health"
 )
 
-// BindConfigFunc 将命令行 flags 绑定到应用配置（Config 实例）。
-type BindConfigFunc func(f *pflag.FlagSet, v Config) error
+// BindConfigFunc 将命令行 flags 绑定到应用配置源（ConfigSource 实例）。
+type BindConfigFunc func(f *pflag.FlagSet, c ConfigSource) error
 
 // SetFlagsFunc 定义应用启动时需要注册的命令行 flags。
 type SetFlagsFunc func(f *pflag.FlagSet)
@@ -177,16 +177,16 @@ func DefaultSetFlagsFunc(f *pflag.FlagSet) {
 	f.String("log-level", "info", "log level, default info")
 }
 
-// DefaultBindConfigFunc 将默认 flags 中的配置文件路径、目录与类型绑定到应用配置。
-func DefaultBindConfigFunc(f *pflag.FlagSet, v Config) error {
-	if c, _ := f.GetString("config"); c != "" {
-		v.SetConfigFile(c)
+// DefaultBindConfigFunc 将默认 flags 中的配置文件路径、目录与类型绑定到应用配置源。
+func DefaultBindConfigFunc(f *pflag.FlagSet, c ConfigSource) error {
+	if cf, _ := f.GetString("config"); cf != "" {
+		c.SetFile(cf)
 	}
 	if cd, _ := f.GetString("config-dir"); cd != "" {
-		v.AddConfigPath(cd)
+		c.AddSearchPath(cd)
 	}
 	if t, _ := f.GetString("config-type"); t != "" {
-		v.SetConfigType(t)
+		c.SetFileFormat(t)
 	}
 	return nil
 }

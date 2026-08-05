@@ -113,7 +113,7 @@ The application context carries standard values (lynx.go:43-65):
 
 Uses Viper for configuration with pflag for CLI argument parsing. Configuration flow:
 1. `SetFlagsFunc` - Register CLI flags
-2. `BindConfigFunc` - Bind flags to the app Config, set config file paths
+2. `BindConfigFunc` - Bind flags to the app ConfigSource, set config file paths
 3. Flags are parsed, config file is read, env vars are bound
 
 Default flags (lynx.go:140-145):

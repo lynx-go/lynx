@@ -101,14 +101,14 @@ func main() {
 			f.String("addr", "", "http listen address")
 			f.StringP("log_level", "l", "debug", "log level")
 		}),
-		lynx.WithBindConfigFunc(func(f *pflag.FlagSet, v lynx.Config) error {
-			if c, _ := f.GetString("config"); c != "" {
-				v.SetConfigFile(c)
+		lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
+			if cf, _ := f.GetString("config"); cf != "" {
+				c.SetFile(cf)
 			}
-			v.SetEnvPrefix("LYNX_")
-			v.AutomaticEnv()
+			c.SetEnvPrefix("LYNX_")
+			c.AutomaticEnv()
 
-			if err := v.BindEnv("addr", "LYNX_ADDR"); err != nil {
+			if err := c.BindEnv("addr", "LYNX_ADDR"); err != nil {
 				return err
 			}
 			return nil

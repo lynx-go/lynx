@@ -6,8 +6,6 @@ import (
 	"os"
 	"syscall"
 	"time"
-
-	"github.com/go-viper/mapstructure/v2"
 )
 
 // Default values for Options.
@@ -151,14 +149,4 @@ func NewOptions(opts ...Option) *Options {
 		o(op)
 	}
 	return op
-}
-
-// TagNameJSON 将 mapstructure 解码器配置为使用 json tag 解析字段名。
-func TagNameJSON(config *mapstructure.DecoderConfig) {
-	config.TagName = "json"
-}
-
-// TagNameYAML 将 mapstructure 解码器配置为使用 yaml tag 解析字段名。
-func TagNameYAML(config *mapstructure.DecoderConfig) {
-	config.TagName = "yaml"
 }
