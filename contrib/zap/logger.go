@@ -1,6 +1,9 @@
+// Package zap 将 zap 高性能日志库包装为 *slog.Logger，
+// 提供与框架一致的日志级别与服务标识字段。
 package zap
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/lynx-go/lynx"
@@ -11,14 +14,14 @@ import (
 )
 
 func getLevel(app lynx.App) string {
-	logLevel := app.Config().GetString("logging.level")
-	if logLevel == "" {
-		logLevel = app.Config().GetString("log_level")
+	// 依次检查：zap 专属键 → 示例/历史约定的 log_level → 框架默认 flag 的
+	// log-level（DefaultSetFlagsFunc 注册的是连字符版本）。默认 info 与框架一致。
+	for _, key := range []string{"logging.level", "log_level", "log-level"} {
+		if lvl := app.Config().GetString(key); lvl != "" {
+			return lvl
+		}
 	}
-	if logLevel == "" {
-		logLevel = "debug"
-	}
-	return logLevel
+	return "info"
 }
 
 // MustNewLogger 创建基于 zap 的 slog 实例，创建失败时 panic。
@@ -105,6 +108,16 @@ type SyncableLogger struct {
 // Sync flushes any buffered log entries. Should be called before application exit.
 func (l *SyncableLogger) Sync() error {
 	return l.zapLogger.Sync()
+}
+
+// SyncOnStop 返回一个 OnStop 钩子，在应用关闭前刷新缓冲的 zap 日志，
+// 避免进程退出时丢失未落盘的日志记录。
+//
+//	app.OnStop(zap.SyncOnStop(logger))
+func SyncOnStop(l *SyncableLogger) lynx.HookFunc {
+	return func(ctx context.Context) error {
+		return l.Sync()
+	}
 }
 
 // NewSyncableLogger creates a SyncableLogger that wraps both slog and zap loggers.

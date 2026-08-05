@@ -1,3 +1,5 @@
+// Package pubsub 提供基于 Watermill 的消息发布订阅抽象：
+// Broker、Binder、Router 与消息 Handler。
 package pubsub
 
 import (

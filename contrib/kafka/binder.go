@@ -1,3 +1,5 @@
+// Package kafka 提供 Kafka 绑定组件：Binder、消费者与生产者，
+// 通过 pubsub.Broker 接入应用事件总线。
 package kafka
 
 import (

@@ -1,3 +1,4 @@
+// Package schedule 提供基于 robfig/cron 的定时任务调度组件。
 package schedule
 
 import (
@@ -19,6 +20,8 @@ type Scheduler struct {
 	cron    *cron.Cron
 	app     lynx.App
 	started atomic.Bool
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 // Options 是调度器组件的配置项。
@@ -44,9 +47,14 @@ func (s *Scheduler) Name() string {
 	return "cron-scheduler"
 }
 
-// Init 记录应用实例。
+// Init 记录应用实例并创建任务上下文（携带 app 元数据，关闭时取消）。
 func (s *Scheduler) Init(app lynx.App) error {
 	s.app = app
+	if app == nil {
+		s.ctx, s.cancel = context.WithCancel(context.Background())
+		return nil
+	}
+	s.ctx, s.cancel = context.WithCancel(context.WithoutCancel(app.Context()))
 	return nil
 }
 
@@ -57,10 +65,23 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop 停止 cron 调度器。
+// Stop 停止 cron 调度器并等待在途任务结束（受调用方截止时间约束）。
+// 任务上下文会被取消，让任务及时感知关闭。
 func (s *Scheduler) Stop(ctx context.Context) {
-	s.cron.Stop()
 	s.started.Store(false)
+	if s.cancel != nil {
+		s.cancel()
+	}
+	// cron.Stop 返回一个在运行任务结束时会话取消的上下文。
+	stopped := s.cron.Stop()
+	if _, ok := ctx.Deadline(); ok {
+		select {
+		case <-stopped.Done():
+		case <-ctx.Done():
+		}
+	} else {
+		<-stopped.Done()
+	}
 }
 
 var _ lynx.ServerLike = new(Scheduler)
@@ -112,14 +133,24 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	if o.Cron != nil {
 		cronInstance = o.Cron
 	} else {
-		cronInstance = cron.New(cron.WithSeconds(), cron.WithLogger(logger), cron.WithChain(cron.Recover(logger)))
+		cronInstance = cron.New(
+			cron.WithSeconds(),
+			cron.WithLogger(logger),
+			// SkipIfStillRunning 防止任务执行时间超过间隔时重叠运行。
+			cron.WithChain(cron.Recover(logger), cron.SkipIfStillRunning(logger)),
+		)
 	}
 
 	scheduler := &Scheduler{options: o, cron: cronInstance, tasks: tasks}
 	for i := range tasks {
 		task := tasks[i]
 		if _, err := scheduler.cron.AddFunc(task.Cron(), func() {
-			ctx := log.WithContext(context.Background(), "component", "scheduler", "task_name", task.Name())
+			// 任务上下文取自调度器（Init 创建），携带 app 元数据并在关闭时取消。
+			taskCtx := scheduler.ctx
+			if taskCtx == nil {
+				taskCtx = context.Background()
+			}
+			ctx := log.WithContext(taskCtx, "component", "scheduler", "task_name", task.Name())
 			defer func() {
 				if r := recover(); r != nil {
 					log.ErrorContext(ctx, "schedule task panic", fmt.Errorf("%v", r))

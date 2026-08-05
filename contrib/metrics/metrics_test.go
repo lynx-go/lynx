@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,6 +72,27 @@ func TestCustomProviders(t *testing.T) {
 	comp.Stop(context.Background())
 }
 
+// TestStopShutsDownProviders verifies the module's core lifecycle promise:
+// Stop must flush and shut down the created providers.
+func TestStopShutsDownProviders(t *testing.T) {
+	exporter := &recordingSpanExporter{}
+	comp := New(WithTraceExporter(exporter))
+	if err := comp.Init(nil); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	comp.Stop(context.Background())
+	if got := exporter.shutdownCount.Load(); got != 1 {
+		t.Errorf("exporter Shutdown called %d times, want 1", got)
+	}
+}
+
+// TestStopBeforeInitDoesNotPanic verifies Stop is safe when Init was never
+// called (providers are nil).
+func TestStopBeforeInitDoesNotPanic(t *testing.T) {
+	comp := New()
+	comp.Stop(context.Background()) // must not panic on nil providers
+}
+
 var _ lynx.Component = new(otelComponent)
 
 type fakeSpanExporter struct{}
@@ -80,5 +102,19 @@ func (e *fakeSpanExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan)
 }
 
 func (e *fakeSpanExporter) Shutdown(context.Context) error {
+	return nil
+}
+
+// recordingSpanExporter records how many times Shutdown was called.
+type recordingSpanExporter struct {
+	shutdownCount atomic.Int32
+}
+
+func (e *recordingSpanExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error {
+	return nil
+}
+
+func (e *recordingSpanExporter) Shutdown(context.Context) error {
+	e.shutdownCount.Add(1)
 	return nil
 }

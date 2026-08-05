@@ -278,6 +278,49 @@ func TestSchedulerCheckHealthLifecycle(t *testing.T) {
 	}
 }
 
+// TestSchedulerSkipsOverlappingRuns verifies the default SkipIfStillRunning
+// chain: a task that takes longer than its interval must not run concurrently.
+func TestSchedulerSkipsOverlappingRuns(t *testing.T) {
+	var running atomic.Int32
+	var maxRunning atomic.Int32
+	task := &testTask{
+		name: "slow",
+		cron: "@every 100ms",
+		handler: func(ctx context.Context) error {
+			cur := running.Add(1)
+			for {
+				old := maxRunning.Load()
+				if cur <= old || maxRunning.CompareAndSwap(old, cur) {
+					break
+				}
+			}
+			defer running.Add(-1)
+			select {
+			case <-ctx.Done():
+			case <-time.After(500 * time.Millisecond):
+			}
+			return nil
+		},
+	}
+
+	s, err := NewScheduler([]Task{task}, WithLogger(discardLogger()))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); _ = s.Start(context.Background()) }()
+
+	// First run blocks for 500ms; subsequent ticks must be skipped, not
+	// started concurrently.
+	time.Sleep(1200 * time.Millisecond)
+	s.Stop(context.Background())
+	<-done
+
+	if got := maxRunning.Load(); got > 1 {
+		t.Errorf("max concurrent executions = %d, want 1 (overlapping runs not skipped)", got)
+	}
+}
+
 func TestSchedulerHandlerErrorDoesNotStopScheduler(t *testing.T) {
 	var count atomic.Int32
 	task := &testTask{

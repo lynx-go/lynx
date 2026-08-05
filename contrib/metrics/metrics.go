@@ -96,11 +96,15 @@ func (c *otelComponent) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop 自动 flush 并关闭 provider。
+// Stop 自动 flush 并关闭 provider。未 Init（provider 为空）时安全返回。
 func (c *otelComponent) Stop(ctx context.Context) {
 	var shutdownErrors lynx.ShutdownErrors
-	shutdownErrors.Add(c.tp.Shutdown(ctx))
-	shutdownErrors.Add(c.mp.Shutdown(ctx))
+	if c.tp != nil {
+		shutdownErrors.Add(c.tp.Shutdown(ctx))
+	}
+	if c.mp != nil {
+		shutdownErrors.Add(c.mp.Shutdown(ctx))
+	}
 	if shutdownErrors.HasErrors() {
 		slog.ErrorContext(ctx, "otel shutdown errors", "errors", shutdownErrors.Error())
 	}
