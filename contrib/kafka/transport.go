@@ -179,7 +179,7 @@ func (t *Transport) Publish(topic string, msgs ...*message.Message) error {
 	if err != nil {
 		return err
 	}
-	if to.Producer.LogMessage {
+	if to.Producer.LogMessage && t.app != nil {
 		for _, msg := range msgs {
 			log.DebugContext(t.app.Context(), "sending kafka message", "message", string(msg.Payload), "topic", physical)
 		}
@@ -221,17 +221,21 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts pubsub.Sub
 		return nil, err
 	}
 
+	// 派生 ctx：展开中途任一 Subscribe 失败时取消它，已建立的子订阅
+	// channel 随之关闭，避免泄漏。
+	subCtx, cancel := context.WithCancel(ctx)
 	chans := make([]<-chan *message.Message, 0, len(to.Topics)*instances)
 	for _, physical := range to.Topics {
 		for i := 0; i < instances; i++ {
-			ch, err := sub.Subscribe(ctx, physical)
+			ch, err := sub.Subscribe(subCtx, physical)
 			if err != nil {
+				cancel()
 				return nil, err
 			}
 			chans = append(chans, ch)
 		}
 	}
-	return fanIn(chans), nil
+	return fanIn(chans, cancel), nil
 }
 
 // buildSaramaConfig 按集群构建 sarama.Config：首个 topic 的便捷参数
@@ -283,8 +287,9 @@ func (t *Transport) subscriberFor(brokers []string, group string, commitInterval
 	return s, nil
 }
 
-// fanIn 合并多个订阅 channel 为单一 channel；全部输入关闭后关闭输出。
-func fanIn(chans []<-chan *message.Message) <-chan *message.Message {
+// fanIn 合并多个订阅 channel 为单一 channel；全部输入关闭后关闭输出，
+// 并调用 done（用于取消 Subscribe 的派生 ctx，释放子订阅）。
+func fanIn(chans []<-chan *message.Message, done func()) <-chan *message.Message {
 	out := make(chan *message.Message)
 	var wg sync.WaitGroup
 	for _, ch := range chans {
@@ -299,6 +304,9 @@ func fanIn(chans []<-chan *message.Message) <-chan *message.Message {
 	go func() {
 		wg.Wait()
 		close(out)
+		if done != nil {
+			done()
+		}
 	}()
 	return out
 }

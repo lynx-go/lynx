@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -17,6 +18,12 @@ import (
 	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/spf13/viper"
 )
+
+// pubSubClient 是 client seam 的最小接口，供 fake（fakePubSub / failingPubSub）实现。
+type pubSubClient interface {
+	message.Publisher
+	message.Subscriber
+}
 
 // fakePubSub 是 client seam 的 fake：记录 Publish/Subscribe 调用。
 type fakePubSub struct {
@@ -63,7 +70,7 @@ func (f *fakePubSub) subscribeCount(topic string) int {
 }
 
 // newTestTransport 构造注入 fake client seam 的 Transport。
-func newTestTransport(opts Options, pub *fakePubSub) *Transport {
+func newTestTransport(opts Options, pub pubSubClient) *Transport {
 	t := &Transport{
 		opts:          opts,
 		publishers:    map[string]message.Publisher{},
@@ -374,6 +381,100 @@ func TestTransportLifecycle(t *testing.T) {
 	}
 	if err := tr.CheckHealth(); err == nil {
 		t.Fatal("expected CheckHealth error after Stop")
+	}
+}
+
+func TestTransportPublishLogMessageWithoutInit(t *testing.T) {
+	// 未 Init（t.app == nil）即 Publish 且 log_message=true 不得 panic。
+	pub := newFakePubSub()
+	tr := newTestTransport(Options{
+		Topics: map[string]TopicOptions{
+			"orders": {
+				Brokers:  []string{"b1"},
+				Topics:   []string{"t1"},
+				Producer: &ProducerOptions{LogMessage: true},
+			},
+		},
+	}, pub)
+	if err := tr.Publish("orders", message.NewMessage("id", []byte("hello"))); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got := pub.publishTopics(); len(got) != 1 || got[0] != "t1" {
+		t.Fatalf("expected publish to t1, got %v", got)
+	}
+}
+
+// failingPubSub 是 client seam 的 fake：第 failOn 次 Subscribe 返回错误，
+// 其余订阅的 channel 在 ctx 取消时关闭（模拟 watermill 订阅语义）。
+type failingPubSub struct {
+	failOn int32
+	subs   int32
+	mu     sync.Mutex
+	chans  []chan *message.Message
+}
+
+func newFailingPubSub(failOn int) *failingPubSub {
+	return &failingPubSub{failOn: int32(failOn)}
+}
+
+func (f *failingPubSub) Publish(topic string, msgs ...*message.Message) error { return nil }
+
+func (f *failingPubSub) Subscribe(ctx context.Context, topic string) (<-chan *message.Message, error) {
+	if atomic.AddInt32(&f.subs, 1) >= f.failOn {
+		return nil, errors.New("subscribe failed")
+	}
+	ch := make(chan *message.Message)
+	f.mu.Lock()
+	f.chans = append(f.chans, ch)
+	f.mu.Unlock()
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
+	return ch, nil
+}
+
+func (f *failingPubSub) Close() error { return nil }
+
+func (f *failingPubSub) channels() []chan *message.Message {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]chan *message.Message(nil), f.chans...)
+}
+
+func TestTransportSubscribeExpansionFailureCleansUp(t *testing.T) {
+	// 展开中途第 3 个子订阅失败：已建立的子订阅 channel 必须随
+	// 派生 ctx 取消而关闭，不得泄漏。
+	pub := newFailingPubSub(3)
+	tr := newTestTransport(Options{
+		Topics: map[string]TopicOptions{
+			"orders": {
+				Brokers:  []string{"b1"},
+				Topics:   []string{"t1", "t2", "t3"},
+				Consumer: &ConsumerOptions{GroupID: "g1"},
+			},
+		},
+	}, pub)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := tr.Subscribe(ctx, "orders", pubsub.SubscriptionOptions{}); err == nil {
+		t.Fatal("expected Subscribe error when the 3rd underlying subscribe fails")
+	}
+
+	chans := pub.channels()
+	if len(chans) != 2 {
+		t.Fatalf("expected 2 established subscriptions before failure, got %d", len(chans))
+	}
+	for i, ch := range chans {
+		select {
+		case _, ok := <-ch:
+			if ok {
+				t.Fatalf("subscription channel %d still open after cleanup", i)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("subscription channel %d not closed after cleanup", i)
+		}
 	}
 }
 
