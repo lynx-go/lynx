@@ -1,0 +1,12 @@
+kafka:
+  hello:
+    brokers: ["127.0.0.1:19092"]
+    topics: [topic_hello]
+    consumer:
+      group_id: consumer_hello
+      instances: 3
+      log_message: true
+      session_timeout: 45s
+    producer:
+      log_message: true
+      required_acks: -1

@@ -14,7 +14,7 @@ Lynx 是一个轻量级的 Go 微服务框架，提供了开箱即用的应用�
 - **可观测性** - 集成 OpenTelemetry tracing/metrics 与 Prometheus
 - **配置管理** - 基于 Viper 的灵活配置系统，支持多来源配置
 - **事件驱动** - 内置 PubSub 支持，轻松实现异步消息处理
-- **Kafka 集成** - 提供 Kafka Binder，简化消息队列的使用
+- **Kafka 集成** - 提供 Kafka Transport，简化消息队列的使用
 - **定时任务** - 基于 Cron 的调度器支持
 - **日志集成** - 支持 `slog` 和 `zap` 日志库
 - **CLI 模式** - 支持命令行工具开发
@@ -106,41 +106,36 @@ opts := lynx.NewOptions(
 ```go
 import "github.com/lynx-go/lynx/contrib/pubsub"
 
-// 定义事件处理器
-handler := pubsub.HandlerFunc(func(ctx context.Context, msg *message.Message) error {
-    fmt.Printf("Received message: %s\n", msg.Payload)
+handler := pubsub.HandlerFunc(func(ctx context.Context, msg *pubsub.Message) error {
+    // msg.ID / msg.Key / msg.Headers / msg.Payload
     return nil
 })
 
-// 订阅主题
-broker.Subscribe("user.created", "handler-1", handler)
-
-// 发布消息
-msg := pubsub.NewJSONMessage(map[string]string{"user": "alice"})
-broker.Publish(ctx, "user.created", msg)
+msg := pubsub.MustJSONMessage(map[string]string{"user": "alice"})
+err := broker.Publish(ctx, "user.created", msg, pubsub.WithMessageKey("alice"))
 ```
 
-### 使用 Kafka Binder
+### 使用 Kafka Transport
 
 ```go
 import "github.com/lynx-go/lynx/contrib/kafka"
 
-binder := kafka.NewBinder(kafka.BinderOptions{
-    SubscribeOptions: map[string]kafka.ConsumerOptions{
+// 从配置文件加载（config.yaml 的 kafka 段），或代码构造：
+kafkaT, err := kafka.NewTransport(kafka.Options{
+    Topics: map[string]kafka.TopicOptions{
         "user.created": {
-            Brokers: []string{"localhost:9092"},
-            GroupID: "my-group",
-        },
-    },
-    PublishOptions: map[string]kafka.ProducerOptions{
-        "user.created": {
-            Brokers: []string{"localhost:9092"},
+            Brokers: []string{"127.0.0.1:9092"},
+            Topics:  []string{"user_created"},
+            Consumer: &kafka.ConsumerOptions{GroupID: "users", Instances: 3},
+            Producer: &kafka.ProducerOptions{LogMessage: true},
         },
     },
 })
-
-app.RegisterBuilders(binder.ConsumerBuilders()...)
-app.Register(binder)
+broker := pubsub.NewBroker(pubsub.Options{
+    Transports:       []pubsub.Transport{kafkaT},
+    DefaultTransport: pubsub.NewMemoryTransport(),
+})
+app.Register(kafkaT, broker)
 ```
 
 ### 使用定时任务

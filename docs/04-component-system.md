@@ -89,7 +89,7 @@ type HealthCheckFunc func() []health.Checker
 - HTTP 服务器的就绪端点：传入 `http.WithHealthCheck(app.HealthCheckFunc())` 后，`/healthz/readiness` 会依次调用所有收集到的检查器，全部通过才返回 200（见 2.5 节）。
 - `app.CLI` 注册的命令：命令执行前会带退避重试地等待所有检查器就绪（`command.go`），保证 CLI 命令不会抢在依赖组件就绪之前运行。
 
-框架内置组件中，`server/grpc` 的 Server、`contrib/pubsub` 的 Broker、`contrib/kafka` 的 Binder、`contrib/schedule` 的 Scheduler 都实现了 `CheckHealth`。典型的实现语义是：未 `Start` 前返回 error，`Start` 成功后返回 nil，`Stop` 后再次返回 error（以 `contrib/schedule` 为例）：
+框架内置组件中，`server/grpc` 的 Server、`contrib/pubsub` 的 Broker、`contrib/kafka` 的 Transport、`contrib/schedule` 的 Scheduler 都实现了 `CheckHealth`。典型的实现语义是：未 `Start` 前返回 error，`Start` 成功后返回 nil，`Stop` 后再次返回 error（以 `contrib/schedule` 为例）：
 
 ```go
 func (s *Scheduler) CheckHealth() error {
@@ -198,19 +198,22 @@ go get github.com/lynx-go/lynx/contrib/zap
 
 `contrib/pubsub` 基于 Watermill 提供进程内/跨进程的事件发布订阅。核心概念：
 
-- `Broker`：事件总线，本身是 `ServerLike` 组件，提供 `Publish`/`Subscribe`。`NewBroker(opts, binders)` 创建时不传 Publisher/Subscriber 则默认使用进程内 GoChannel。
-- `Binder`：把外部消息系统（如 Kafka）绑定到 Broker 的桥接层，见下文的 kafka 模块。
-- `Router`：把一组 `Handler` 注册到 Broker 的组件。`Handler` 接口由 `EventName()`、`HandlerName()`、`HandlerFunc()` 三个方法组成。
+- `Broker`：事件总线门面，本身是 `ServerLike` 组件，提供 `Publish`/`Subscribe`/`Route`。内部维护一张 topic → Transport 路由表：`Options.Transports` 中每个 Transport 通过 `Topics()` 声明自己承接的逻辑 topic，`Init` 时自动建表；`Route(topic, t)` 可显式覆盖自动路由；未命中的 topic 回退到 `DefaultTransport`（两者皆无则返回错误）。
+- `Transport`：消息后端组件（kafka/内存），topic 参数一律是逻辑名，物理名解析在实现内部，见下文的 kafka 模块。
+- `Router`：把一组 `Handler` 在 `Init` 期缓冲订阅到 Broker 的组件，无时序依赖。`Handler` 接口由 `EventName()`、`HandlerName()`、`HandlerFunc()` 三个方法组成，公共 API 使用自有 `pubsub.Message` 类型（`ID`/`Key`/`Headers`/`Payload`），与底层 Watermill 解耦。
 
 用法（取自 `_examples/pubsub/main.go`）：
 
 ```go
-broker := pubsub.NewBroker(pubsub.Options{}, []pubsub.Binder{binder})
-app.Register(broker)
-router := pubsub.NewRouter(broker, []pubsub.Handler{
-	&helloHandler{},
+memT := pubsub.NewMemoryTransport()
+broker := pubsub.NewBroker(pubsub.Options{
+	Transports:       []pubsub.Transport{kafkaT},
+	DefaultTransport: memT,
 })
-app.Register(router)
+app.Register(memT)
+app.Register(kafkaT)
+app.Register(broker)
+app.Register(pubsub.NewRouter(broker, []pubsub.Handler{&helloHandler{}}))
 ```
 
 Handler 的实现：
@@ -221,7 +224,7 @@ type helloHandler struct{}
 func (h *helloHandler) EventName() string   { return "hello" }
 func (h *helloHandler) HandlerName() string { return "helloHandler" }
 func (h *helloHandler) HandlerFunc() pubsub.HandlerFunc {
-	return func(ctx context.Context, event *message.Message) error {
+	return func(ctx context.Context, event *pubsub.Message) error {
 		log.InfoContext(ctx, "hello event", "payload", string(event.Payload))
 		return nil
 	}
@@ -234,46 +237,64 @@ var _ pubsub.Handler = new(helloHandler)
 
 ```go
 _ = broker.Publish(ctx, "hello",
-	pubsub.NewJSONMessage(map[string]any{"message": "hello"}),
+	pubsub.MustJSONMessage(map[string]any{"message": "hello"}),
 	pubsub.WithMessageKey(uuid.NewString()),
 )
 ```
 
-### kafka：Kafka 绑定（Binder）
+### kafka：Kafka 传输（Transport）
 
-`contrib/kafka` 提供 `pubsub.Binder` 的 Kafka 实现。通过 `BinderOptions` 声明订阅（`SubscribeOptions`）与发布（`PublishOptions`）配置，`MappedEvent` 把 Kafka topic 映射为 pubsub 事件名（取自 `_examples/pubsub/main.go`）：
+`contrib/kafka` 提供 `pubsub.Transport` 的 Kafka 实现，配置驱动：`app.Config().UnmarshalKey("kafka", &opts)` 把配置文件 `kafka` 段整表加载为 `kafka.Options`（`map[逻辑topic]TopicOptions`），再交给 `kafka.NewTransport` 构造。`TopicOptions` 声明 brokers、订阅的物理 topics、consumer/producer 参数：`Consumer == nil` 表示该 topic 只发布，`Producer == nil` 表示只订阅。内部按 brokers 集合分组复用客户端；订阅按（消费组 × 物理 topic × 实例数）展开后 fan-in 到单一 channel（取自 `_examples/pubsub/main.go` 与 `config.yaml`）：
+
+`config.yaml`：
+
+```yaml
+kafka:
+  hello:
+    brokers: ["127.0.0.1:19092"]
+    topics: [topic_hello]
+    consumer:
+      group_id: consumer_hello
+      instances: 3
+      log_message: true
+      session_timeout: 45s
+      heartbeat_interval: 5s
+    producer:
+      log_message: true
+      required_acks: -1
+      compression: gzip
+```
+
+加载与注册：
 
 ```go
-binder := kafka.NewBinder(kafka.BinderOptions{
-	SubscribeOptions: map[string]kafka.ConsumerOptions{
-		"hello": {
-			Brokers:     []string{"127.0.0.1:19092"},
-			Topic:       "topic_hello",
-			Group:       "consumer_hello",
-			Instances:   3, // 3 个 consumer 实例，就是 ComponentBuilder 的多实例机制
-			MappedEvent: "hello",
-		},
-	},
-	PublishOptions: map[string]kafka.ProducerOptions{
-		"hello": {
-			Brokers:     []string{"127.0.0.1:19092"},
-			Topic:       "topic_hello",
-			MappedEvent: "hello",
+var kafkaOpts kafka.Options
+if err := app.Config().UnmarshalKey("kafka", &kafkaOpts); err != nil {
+	return err
+}
+kafkaT, err := kafka.NewTransport(kafkaOpts)
+if err != nil {
+	return err
+}
+app.Register(kafkaT)
+```
+
+也可以代码直接构造（不依赖配置文件）：
+
+```go
+kafkaT, err := kafka.NewTransport(kafka.Options{
+	Topics: map[string]kafka.TopicOptions{
+		"user.created": {
+			Brokers: []string{"127.0.0.1:9092"},
+			Topics:  []string{"user_created"},
+			Consumer: &kafka.ConsumerOptions{GroupID: "users", Instances: 3},
+			Producer: &kafka.ProducerOptions{LogMessage: true},
 		},
 	},
 })
 ```
 
-注册顺序有一个硬性要求（`_examples/pubsub/main.go` 中的注释）：binder 的 consumer builders 在 `Init()` 中才完成初始化，因此 `binder.ConsumerBuilders()` 必须在 binder 注册**之后**单独注册：
-
-```go
-app.Register(broker)
-app.Register(binder)
-// 因为 binder 中需要先在 Init() 中初始化 consumer builders，所以 binder.ConsumerBuilders() 不能和 binder 同时注入
-app.RegisterBuilders(binder.ConsumerBuilders()...)
-```
-
-`ConsumerOptions.Instances` 字段会被透传到 builder 的 `BuildOptions.Instances`，上例即为 `hello` 事件启动 3 个并发 consumer。
+`ConsumerOptions.GroupID` / `Instances` 是订阅的默认值，可用 `pubsub.WithGroup` / `pubsub.WithInstances` 在代码中覆盖（显式值优先）；两者皆空时 `Subscribe` 报错。`ConsumerOptions.Instances` 是该 topic 同消费组的并发消费者成员数，上例即为 `hello` 事件启动 3 个并发 consumer。
 
 ### schedule：定时任务（Scheduler/Task）
 

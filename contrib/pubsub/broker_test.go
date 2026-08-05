@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func newFakeApp() *fakeApp {
 }
 
 func (f *fakeApp) Close()                                    {}
-func (f *fakeApp) Config() lynx.Config                      { return nil }
+func (f *fakeApp) Config() lynx.Config                       { return nil }
 func (f *fakeApp) Context() context.Context                  { return f.ctx }
 func (f *fakeApp) CLI(lynx.CommandFunc) error                { return nil }
 func (f *fakeApp) OnStart(...lynx.HookFunc)                  {}
@@ -52,173 +53,112 @@ func pollUntil(deadline time.Duration, interval time.Duration, cond func() bool)
 	return cond()
 }
 
-func TestMessageIDFromContext(t *testing.T) {
-	tests := []struct {
-		name string
-		ctx  context.Context
-		want string
-	}{
-		{
-			name: "missing key returns empty string without panic",
-			ctx:  context.Background(),
-			want: "",
-		},
-		{
-			name: "round-trip via ContextWithMessageID",
-			ctx:  ContextWithMessageID(context.Background(), "msg-123"),
-			want: "msg-123",
-		},
-		{
-			name: "wrong value type returns empty string",
-			ctx:  context.WithValue(context.Background(), MessageIDKey, 42),
-			want: "",
-		},
-	}
+// fakeTransport 记录 Publish 调用并可注入订阅消息。
+type fakeTransport struct {
+	mu        sync.Mutex
+	topics    []string
+	published []string
+	subCh     chan *message.Message
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Regression: previously an unchecked type assertion panicked on
-			// a missing key.
-			if got := MessageIDFromContext(tt.ctx); got != tt.want {
-				t.Fatalf("MessageIDFromContext() = %q, want %q", got, tt.want)
+func newFakeTransport(topics ...string) *fakeTransport {
+	return &fakeTransport{topics: topics, subCh: make(chan *message.Message)}
+}
+
+func (f *fakeTransport) Name() string                { return "fake-transport" }
+func (f *fakeTransport) Init(lynx.App) error         { return nil }
+func (f *fakeTransport) Start(context.Context) error { return nil }
+func (f *fakeTransport) Stop(context.Context)        {}
+func (f *fakeTransport) CheckHealth() error          { return nil }
+func (f *fakeTransport) Topics() []string            { return f.topics }
+
+func (f *fakeTransport) Publish(topic string, msgs ...*message.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.published = append(f.published, topic)
+	return nil
+}
+
+func (f *fakeTransport) Subscribe(ctx context.Context, topic string, opts SubscriptionOptions) (<-chan *message.Message, error) {
+	out := make(chan *message.Message)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg := <-f.subCh:
+				out <- msg
 			}
-		})
-	}
+		}
+	}()
+	return out, nil
 }
 
-func TestMessageKeyFromContext(t *testing.T) {
-	if got := MessageKeyFromContext(context.Background()); got != "" {
-		t.Fatalf("expected empty string for missing key, got %q", got)
-	}
-	ctx := ContextWithMessageKey(context.Background(), "key-1")
-	if got := MessageKeyFromContext(ctx); got != "key-1" {
-		t.Fatalf("MessageKeyFromContext() = %q, want %q", got, "key-1")
-	}
+func (f *fakeTransport) publishedTopics() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.published...)
 }
 
-func TestMessageMetadataHelpers(t *testing.T) {
-	msg := message.NewMessage("uuid-1", []byte("payload"))
-
-	SetMessageKey(msg, "k1")
-	if got := GetMessageKey(msg); got != "k1" {
-		t.Fatalf("GetMessageKey() = %q, want %q", got, "k1")
-	}
-
-	SetMessageID(msg, "id-1")
-	if got := GetMessageID(msg); got != "id-1" {
-		t.Fatalf("GetMessageID() = %q, want %q", got, "id-1")
-	}
-
-	fresh := message.NewMessage("uuid-2", nil)
-	if got := GetMessageKey(fresh); got != "" {
-		t.Fatalf("expected empty message key, got %q", got)
-	}
-	if got := GetMessageID(fresh); got != "" {
-		t.Fatalf("expected empty message id, got %q", got)
-	}
-}
-
-func TestNewJSONMessage(t *testing.T) {
-	msg := NewJSONMessage(map[string]string{"hello": "world"})
-	if msg.UUID == "" {
-		t.Fatalf("expected non-empty message UUID")
-	}
-	if got := string(msg.Payload); got != `{"hello":"world"}` {
-		t.Fatalf("unexpected payload: %s", got)
-	}
-}
-
-func TestBrokerBeforeInit(t *testing.T) {
-	// Regression: IsRunning/CheckHealth with a nil router must not panic.
-	b := NewBroker(Options{}, nil)
-
-	if b.IsRunning() {
-		t.Fatalf("expected IsRunning() = false before Init")
-	}
-	if err := b.CheckHealth(); err == nil {
-		t.Fatalf("expected CheckHealth() error before Init")
-	}
-	if got := b.Binders(); len(got) != 0 {
-		t.Fatalf("expected no binders, got %d", len(got))
-	}
-	if got := b.ID(); got != "" {
-		t.Fatalf("expected empty broker ID before Init, got %q", got)
-	}
-	if got := b.Name(); got != "pubsub-watermill" {
-		t.Fatalf("unexpected Name(): %q", got)
-	}
-}
-
-// startBroker creates a broker backed by the in-memory gochannel pubsub,
-// initializes it, subscribes handler to topic, and starts the router. It
-// returns the broker once the router reports running.
-func startBroker(t *testing.T, opts Options, topic, handlerName string, h HandlerFunc, subOpts ...SubscribeOption) Broker {
+// startBroker 创建内存默认 Transport 的 Broker，注册订阅并启动。
+func startBroker(t *testing.T, h HandlerFunc, subOpts ...SubscribeOption) (Broker, chan error) {
 	t.Helper()
-
-	b := NewBroker(opts, nil)
-	app := newFakeApp()
-	if err := b.Init(app); err != nil {
+	b := NewBroker(Options{DefaultTransport: NewMemoryTransport()})
+	if err := b.Init(newFakeApp()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if b.IsRunning() {
-		t.Fatalf("router should not be running right after Init")
-	}
-	if err := b.CheckHealth(); err == nil {
-		t.Fatalf("expected CheckHealth error after Init but before Start")
-	}
-
-	if err := b.Subscribe(topic, handlerName, h, subOpts...); err != nil {
+	if err := b.Subscribe(context.Background(), "test.event", "test-handler", h, subOpts...); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	startDone := make(chan error, 1)
-	go func() {
-		startDone <- b.Start(ctx)
-	}()
+	done := make(chan error, 1)
+	go func() { done <- b.Start(ctx) }()
 
-	if !pollUntil(5*time.Second, 10*time.Millisecond, b.IsRunning) {
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return b.CheckHealth() == nil }) {
 		cancel()
-		t.Fatalf("broker router did not start within 5s")
+		t.Fatalf("broker did not become healthy")
 	}
-	if err := b.CheckHealth(); err != nil {
-		cancel()
-		t.Fatalf("expected healthy broker while running, got %v", err)
-	}
-	// Give gochannel a brief moment to finish wiring subscriptions.
+	// 等待 gochannel 完成订阅接线。
 	time.Sleep(200 * time.Millisecond)
 
 	t.Cleanup(func() {
 		cancel()
 		b.Stop(context.Background())
 		select {
-		case <-startDone:
+		case <-done:
 		case <-time.After(3 * time.Second):
-			t.Errorf("router did not shut down within 3s")
+			t.Errorf("broker did not stop within 3s")
 		}
 	})
-	return b
+	return b, done
+}
+
+func TestBrokerBeforeInit(t *testing.T) {
+	b := NewBroker(Options{})
+	if err := b.CheckHealth(); err == nil {
+		t.Fatal("expected CheckHealth error before Init")
+	}
 }
 
 func TestBrokerPublishSubscribe(t *testing.T) {
 	type result struct {
 		ctx context.Context
-		msg *message.Message
+		msg *Message
 	}
 	received := make(chan result, 1)
 
-	b := startBroker(t, Options{}, "test.event", "test-handler",
-		func(ctx context.Context, msg *message.Message) error {
-			received <- result{ctx: ctx, msg: msg}
-			return nil
-		})
+	b, _ := startBroker(t, func(ctx context.Context, msg *Message) error {
+		received <- result{ctx: ctx, msg: msg}
+		return nil
+	})
 
-	published := NewJSONMessage(map[string]string{"hello": "world"})
-	err := b.Publish(context.Background(), "test.event", published,
+	published := MustJSONMessage(map[string]string{"hello": "world"})
+	if err := b.Publish(context.Background(), "test.event", published,
 		WithMessageKey("key-1"),
 		WithMetadataField("foo", "bar"),
-	)
-	if err != nil {
+	); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
@@ -227,125 +167,287 @@ func TestBrokerPublishSubscribe(t *testing.T) {
 		if string(r.msg.Payload) != string(published.Payload) {
 			t.Errorf("payload = %s, want %s", r.msg.Payload, published.Payload)
 		}
-		if got := r.msg.Metadata.Get("foo"); got != "bar" {
-			t.Errorf("metadata foo = %q, want %q", got, "bar")
+		if r.msg.Key != "key-1" {
+			t.Errorf("key = %q, want key-1", r.msg.Key)
 		}
-		if got := GetMessageKey(r.msg); got != "key-1" {
-			t.Errorf("message key = %q, want %q", got, "key-1")
+		if r.msg.Headers["foo"] != "bar" {
+			t.Errorf("header foo = %q, want bar", r.msg.Headers["foo"])
 		}
-		// The subscriber wrapper must put the message UUID into the context.
-		if got := MessageIDFromContext(r.ctx); got != published.UUID {
-			t.Errorf("MessageIDFromContext() = %q, want %q", got, published.UUID)
+		if got := MessageIDFromContext(r.ctx); got != published.ID {
+			t.Errorf("MessageIDFromContext() = %q, want %q", got, published.ID)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatalf("did not receive published message within 5s")
+		t.Fatal("did not receive published message within 5s")
 	}
 }
 
 func TestBrokerStop(t *testing.T) {
-	b := NewBroker(Options{}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	b := NewBroker(Options{DefaultTransport: NewMemoryTransport()})
 	if err := b.Init(newFakeApp()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if err := b.Subscribe("noop.event", "noop-handler", func(ctx context.Context, msg *message.Message) error {
+	if err := b.Subscribe(ctx, "noop.event", "noop-handler", func(ctx context.Context, msg *Message) error {
 		return nil
 	}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	startDone := make(chan error, 1)
-	go func() {
-		startDone <- b.Start(ctx)
-	}()
-	if !pollUntil(5*time.Second, 10*time.Millisecond, b.IsRunning) {
-		cancel()
-		t.Fatalf("broker router did not start within 5s")
+	done := make(chan error, 1)
+	go func() { done <- b.Start(ctx) }()
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return b.CheckHealth() == nil }) {
+		t.Fatal("broker did not start")
 	}
-
 	cancel()
 	b.Stop(context.Background())
-
 	select {
-	case <-startDone:
+	case <-done:
 	case <-time.After(3 * time.Second):
-		t.Fatalf("Start did not return after Stop")
-	}
-
-	// NOTE: watermill's Router.IsRunning is documented as "not aware of router
-	// closing", so IsRunning/CheckHealth still report running after Stop.
-	// What must fail is publishing on the closed gochannel pubsub.
-	if err := b.Publish(context.Background(), "noop.event", NewJSONMessage(nil)); err == nil {
-		t.Fatalf("expected Publish error after Stop")
+		t.Fatal("Start did not return after Stop")
 	}
 }
 
 func TestBrokerRetriesFailedHandler(t *testing.T) {
 	var calls atomic.Int32
 	done := make(chan struct{}, 1)
-
-	// The broker wires middleware.Retry{MaxRetries: 3}; a failing handler
-	// (without WithContinueOnError) must be invoked more than once.
-	b := startBroker(t, Options{}, "retry.event", "retry-handler",
-		func(ctx context.Context, msg *message.Message) error {
-			if calls.Add(1) >= 2 {
-				select {
-				case done <- struct{}{}:
-				default:
-				}
+	b, _ := startBroker(t, func(ctx context.Context, msg *Message) error {
+		if calls.Add(1) >= 2 {
+			select {
+			case done <- struct{}{}:
+			default:
 			}
-			return errors.New("handler failed")
-		})
+		}
+		return errors.New("handler failed")
+	})
 
-	if err := b.Publish(context.Background(), "retry.event", NewJSONMessage(nil)); err != nil {
+	if err := b.Publish(context.Background(), "test.event", MustJSONMessage(nil)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatalf("handler was not retried (calls=%d)", calls.Load())
 	}
-	_ = b
 }
 
 func TestBrokerContinueOnErrorAcks(t *testing.T) {
 	var calls atomic.Int32
 	receivedSecond := make(chan struct{}, 1)
+	b, _ := startBroker(t, func(ctx context.Context, msg *Message) error {
+		if calls.Add(1) == 1 {
+			return errors.New("first message fails")
+		}
+		select {
+		case receivedSecond <- struct{}{}:
+		default:
+		}
+		return nil
+	}, WithContinueOnError())
 
-	b := startBroker(t, Options{}, "coe.event", "coe-handler",
-		func(ctx context.Context, msg *message.Message) error {
-			n := calls.Add(1)
-			if n == 1 {
-				return errors.New("first message fails")
-			}
-			select {
-			case receivedSecond <- struct{}{}:
-			default:
-			}
-			return nil
-		}, WithContinueOnError())
-
-	if err := b.Publish(context.Background(), "coe.event", NewJSONMessage(nil)); err != nil {
+	if err := b.Publish(context.Background(), "test.event", MustJSONMessage(nil)); err != nil {
 		t.Fatalf("Publish first: %v", err)
 	}
-	// Wait for the first (failing) message to be processed.
 	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return calls.Load() >= 1 }) {
-		t.Fatalf("first message was not processed")
+		t.Fatal("first message was not processed")
 	}
-
-	// The router must still be alive and able to deliver the next message.
 	if err := b.CheckHealth(); err != nil {
 		t.Fatalf("broker unhealthy after failing handler: %v", err)
 	}
-	if err := b.Publish(context.Background(), "coe.event", NewJSONMessage(nil)); err != nil {
+	if err := b.Publish(context.Background(), "test.event", MustJSONMessage(nil)); err != nil {
 		t.Fatalf("Publish second: %v", err)
 	}
-
 	select {
 	case <-receivedSecond:
 	case <-time.After(5 * time.Second):
-		t.Fatalf("second message was not delivered after ContinueOnError")
+		t.Fatal("second message was not delivered after ContinueOnError")
 	}
-	_ = b
+}
+
+func TestBrokerRouteExplicitAndFallback(t *testing.T) {
+	ft := newFakeTransport("orders")
+	b := NewBroker(Options{DefaultTransport: NewMemoryTransport()})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	b.Route("orders", ft)
+
+	if err := b.Publish(context.Background(), "orders", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish routed: %v", err)
+	}
+	if got := ft.publishedTopics(); len(got) != 1 || got[0] != "orders" {
+		t.Fatalf("expected routed publish, got %v", got)
+	}
+
+	// 未命中路由表的 topic 走默认 Transport（内存）——不报错。
+	if err := b.Publish(context.Background(), "local.event", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish fallback: %v", err)
+	}
+}
+
+func TestBrokerPublishNoTransport(t *testing.T) {
+	b := NewBroker(Options{})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := b.Publish(context.Background(), "orders", MustJSONMessage(nil)); err == nil {
+		t.Fatal("expected Publish error with no route and no default transport")
+	}
+}
+
+func TestBrokerSubscribeNoTransportFailsAtStart(t *testing.T) {
+	b := NewBroker(Options{})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := b.Subscribe(context.Background(), "orders", "h", func(ctx context.Context, msg *Message) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Subscribe buffered: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := b.Start(ctx); err == nil {
+		t.Fatal("expected Start error for un-routed subscription")
+	}
+}
+
+func TestBrokerAutoRouteFromTransports(t *testing.T) {
+	ft := newFakeTransport("orders")
+	b := NewBroker(Options{Transports: []Transport{ft}})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := b.Publish(context.Background(), "orders", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish auto-routed: %v", err)
+	}
+	if got := ft.publishedTopics(); len(got) != 1 {
+		t.Fatalf("expected auto-routed publish, got %v", got)
+	}
+}
+
+func TestBrokerAutoRouteConflict(t *testing.T) {
+	ft1 := newFakeTransport("orders")
+	ft2 := newFakeTransport("orders")
+	b := NewBroker(Options{Transports: []Transport{ft1, ft2}})
+	if err := b.Init(newFakeApp()); err == nil {
+		t.Fatal("expected Init error for conflicting auto routes")
+	}
+}
+
+func TestBrokerSubscribeAfterStartFails(t *testing.T) {
+	b, _ := startBroker(t, func(ctx context.Context, msg *Message) error { return nil })
+	if err := b.Subscribe(context.Background(), "late.event", "late-handler", func(ctx context.Context, msg *Message) error {
+		return nil
+	}); err == nil {
+		t.Fatal("expected Subscribe error after Start")
+	}
+}
+
+func TestBrokerExplicitRouteOverridesAutoRoute(t *testing.T) {
+	ft1 := newFakeTransport("orders")
+	ft2 := newFakeTransport("orders")
+	b := NewBroker(Options{Transports: []Transport{ft2}})
+	b.Route("orders", ft1) // 显式 Route 先于 Init 自动路由
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init must not conflict when explicit Route precedes auto route: %v", err)
+	}
+	if err := b.Publish(context.Background(), "orders", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got := ft1.publishedTopics(); len(got) != 1 {
+		t.Fatalf("expected publish routed to explicit transport ft1, got %v", got)
+	}
+	if got := ft2.publishedTopics(); len(got) != 0 {
+		t.Fatalf("expected no publish to auto-routed transport ft2, got %v", got)
+	}
+}
+
+func TestBrokerStartFailureRecovery(t *testing.T) {
+	b := NewBroker(Options{})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := b.Subscribe(context.Background(), "orders", "h", func(ctx context.Context, msg *Message) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := b.Start(ctx); err == nil {
+		t.Fatal("expected Start error for un-routed subscription")
+	}
+
+	// Start 失败后状态可恢复：补充 Route 后重新 Start 成功。
+	ft := newFakeTransport("orders")
+	b.Route("orders", ft)
+	done := make(chan error, 1)
+	go func() { done <- b.Start(ctx) }()
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return b.CheckHealth() == nil }) {
+		t.Fatal("broker did not become healthy after re-Start")
+	}
+	if err := b.Publish(context.Background(), "orders", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got := ft.publishedTopics(); len(got) != 1 {
+		t.Fatalf("expected routed publish after recovery, got %v", got)
+	}
+	cancel()
+	b.Stop(context.Background())
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after Stop")
+	}
+}
+
+func TestBrokerAutoAckNoRetry(t *testing.T) {
+	var calls atomic.Int32
+	b, _ := startBroker(t, func(ctx context.Context, msg *Message) error {
+		calls.Add(1)
+		return errors.New("handler failed")
+	}, WithAutoAck())
+
+	if err := b.Publish(context.Background(), "test.event", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return calls.Load() >= 1 }) {
+		t.Fatal("first message was not processed")
+	}
+	// 给 Retry 中间件留出触发窗口：AutoAck 下失败 handler 不得被重试。
+	time.Sleep(500 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler called %d times, want 1 (AutoAck must not trigger Retry)", got)
+	}
+	// 消息已确认，不阻塞后续消息。
+	if err := b.Publish(context.Background(), "test.event", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish second: %v", err)
+	}
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return calls.Load() == 2 }) {
+		t.Fatalf("second message was not processed after AutoAck failure (calls=%d)", calls.Load())
+	}
+}
+
+func TestBrokerPublishDoesNotMutateMessage(t *testing.T) {
+	b := NewBroker(Options{DefaultTransport: NewMemoryTransport()})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	msg := MustJSONMessage(map[string]string{"a": "b"})
+	msg.Key = "original-key"
+	msg.Headers = map[string]string{"k": "v"}
+	if err := b.Publish(context.Background(), "orders", msg,
+		WithMessageKey("override"),
+		WithMetadata(map[string]string{"k2": "v2"}),
+	); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if msg.Key != "original-key" {
+		t.Errorf("msg.Key mutated by Publish: %q", msg.Key)
+	}
+	if _, ok := msg.Headers["k2"]; ok {
+		t.Error("msg.Headers mutated by Publish")
+	}
+	if msg.Headers["k"] != "v" {
+		t.Errorf("original header lost: %v", msg.Headers)
+	}
 }

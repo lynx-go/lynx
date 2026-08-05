@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/lynx-go/lynx/contrib/zap"
@@ -40,7 +39,7 @@ func main() {
 		logger := app.Logger()
 		logger.Info("parsed config", "config", config)
 
-		broker := pubsub.NewBroker(pubsub.Options{}, nil)
+		broker := pubsub.NewBroker(pubsub.Options{DefaultTransport: pubsub.NewMemoryTransport()})
 		app.Register(broker)
 		router := pubsub.NewRouter(broker, []pubsub.Handler{
 			&helloHandler{},
@@ -50,7 +49,7 @@ func main() {
 		fmt.Println("hello cli")
 
 		return app.CLI(func(ctx context.Context) error {
-			if err := broker.Publish(ctx, "hello", pubsub.NewJSONMessage(map[string]any{"message": "hello world"})); err != nil {
+			if err := broker.Publish(ctx, "hello", pubsub.MustJSONMessage(map[string]any{"message": "hello world"})); err != nil {
 				return err
 			}
 			//time.Sleep(1 * time.Second)
@@ -68,7 +67,6 @@ type helloHandler struct {
 }
 
 func (h *helloHandler) EventName() string {
-	//return kafka.ToConsumerName("hello")
 	return "hello"
 }
 
@@ -77,7 +75,7 @@ func (h *helloHandler) HandlerName() string {
 }
 
 func (h *helloHandler) HandlerFunc() pubsub.HandlerFunc {
-	return func(ctx context.Context, event *message.Message) error {
+	return func(ctx context.Context, event *pubsub.Message) error {
 		log.InfoContext(ctx, "recv hello event", "payload", string(event.Payload))
 		return nil
 	}
