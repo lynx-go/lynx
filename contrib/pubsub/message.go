@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/google/uuid"
@@ -124,4 +125,22 @@ func fromWatermill(wm *message.Message) *Message {
 		m.Headers[k] = v
 	}
 	return m
+}
+
+// NewJSONMessage 将数据 JSON 序列化后创建消息。
+func NewJSONMessage(data any, opts ...MessageOption) (*Message, error) {
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	return NewMessage(bytes, opts...), nil
+}
+
+// MustJSONMessage 将数据 JSON 序列化后创建消息，序列化失败时 panic。
+func MustJSONMessage(data any, opts ...MessageOption) *Message {
+	msg, err := NewJSONMessage(data, opts...)
+	if err != nil {
+		panic(err)
+	}
+	return msg
 }
