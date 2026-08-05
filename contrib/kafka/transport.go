@@ -39,7 +39,11 @@ type ConsumerOptions struct {
 	GroupID   string `mapstructure:"group_id"`
 	Instances int    `mapstructure:"instances"`
 	// CommitInterval 是 offset 自动提交间隔 → sarama Consumer.Offsets.AutoCommit.Interval。
+	// AutoCommit.Enable 为 false 时无效（watermill 每条消息 Ack 即显式提交）。
 	CommitInterval time.Duration `mapstructure:"commit_interval"`
+	// AutoCommitEnabled 是否自动提交 offset，nil = 保持 sarama 默认 true；
+	// false = watermill 在每条消息 Ack 时显式提交（CommitInterval 不生效）。
+	AutoCommitEnabled *bool `mapstructure:"auto_commit_enabled"`
 	// InitialOffset 是首次消费的初始 offset：oldest 或 newest（缺省 newest）
 	// → sarama Consumer.Offsets.Initial（OffsetOldest / OffsetNewest）。
 	InitialOffset string `mapstructure:"initial_offset"`
@@ -302,6 +306,9 @@ func (t *Transport) buildSaramaConfig(brokers []string, consumer *ConsumerOption
 	}
 	cfg := sarama.NewConfig()
 	if consumer != nil {
+		if consumer.AutoCommitEnabled != nil {
+			cfg.Consumer.Offsets.AutoCommit.Enable = *consumer.AutoCommitEnabled
+		}
 		if consumer.CommitInterval > 0 {
 			cfg.Consumer.Offsets.AutoCommit.Interval = consumer.CommitInterval
 		}

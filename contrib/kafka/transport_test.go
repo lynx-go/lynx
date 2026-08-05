@@ -19,6 +19,9 @@ import (
 	"github.com/spf13/viper"
 )
 
+// boolPtr 返回指向 b 的指针（测试辅助）。
+func boolPtr(b bool) *bool { return &b }
+
 // pubSubClient 是 client seam 的最小接口，供 fake（fakePubSub / failingPubSub）实现。
 type pubSubClient interface {
 	message.Publisher
@@ -128,6 +131,7 @@ kafka:
       group_id: orders-group
       instances: 3
       commit_interval: 1s
+      auto_commit_enabled: false
       initial_offset: oldest
       log_message: true
       nack_resend_sleep: 500ms
@@ -183,6 +187,9 @@ kafka:
 	}
 	if orders.Consumer.InitialOffset != "oldest" {
 		t.Fatalf("bad initial offset: %q", orders.Consumer.InitialOffset)
+	}
+	if orders.Consumer.AutoCommitEnabled == nil || *orders.Consumer.AutoCommitEnabled {
+		t.Fatalf("bad auto commit enabled: %v", orders.Consumer.AutoCommitEnabled)
 	}
 	if orders.Producer == nil || orders.Producer.Topic != "topic_orders_v2" || !orders.Producer.LogMessage {
 		t.Fatalf("bad producer: %+v", orders.Producer)
@@ -250,6 +257,7 @@ func TestBuildSaramaConfigMappings(t *testing.T) {
 				Consumer: &ConsumerOptions{
 					GroupID:             "g1",
 					CommitInterval:      2 * time.Second,
+					AutoCommitEnabled:   boolPtr(false),
 					InitialOffset:       "oldest",
 					NackResendSleep:     500 * time.Millisecond,
 					ReconnectRetrySleep: 3 * time.Second,
@@ -316,6 +324,7 @@ func TestBuildSaramaConfigMappings(t *testing.T) {
 		want any
 	}{
 		{"auto commit interval", consumerCfg.Consumer.Offsets.AutoCommit.Interval, 2 * time.Second},
+		{"auto commit enabled", consumerCfg.Consumer.Offsets.AutoCommit.Enable, false},
 		{"initial offset", consumerCfg.Consumer.Offsets.Initial, sarama.OffsetOldest},
 		{"session timeout", consumerCfg.Consumer.Group.Session.Timeout, 45 * time.Second},
 		{"heartbeat interval", consumerCfg.Consumer.Group.Heartbeat.Interval, 5 * time.Second},
