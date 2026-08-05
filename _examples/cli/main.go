@@ -67,7 +67,6 @@ type helloHandler struct {
 }
 
 func (h *helloHandler) EventName() string {
-	//return kafka.ToConsumerName("hello")
 	return "hello"
 }
 
