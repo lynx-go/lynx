@@ -51,7 +51,7 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./_examples` - Example applications
 - `./contrib/zap` - Zap logger integration
 - `./contrib/pubsub` - PubSub abstraction layer (uses Watermill)
-- `./contrib/kafka` - Kafka binder/consumer/producer
+- `./contrib/kafka` - Kafka Transport component (watermill-kafka/v3)
 - `./contrib/metrics` - OpenTelemetry lifecycle management (trace/metrics providers)
 - `./contrib/schedule` - Cron scheduler
 
@@ -157,16 +157,14 @@ This pattern is particularly useful for complex applications with many component
 - Health check service registered at `grpc.health.v1.Health`
 
 **PubSub** (contrib/pubsub/)
-- Abstraction over Watermill message library
-- `Broker` interface provides Publish/Subscribe
-- `Binder` interface for event-to-topic mapping
-- Message context utilities for tracking message ID and keys
+- Broker 门面组件：topic → Transport 路由表（自动路由 + 显式 Route + 默认回退）
+- Transport 接口：后端即组件（kafka/内存），公共 API 使用自有 Message 类型
+- Router 组件：Init 期缓冲注册 Handler 订阅，无时序依赖
 
-**Kafka Binder** (contrib/kafka/binder.go)
-- Maps event names to Kafka topics
-- Creates consumers and producers from configuration
-- Uses PubSub broker abstraction internally
-- Pattern: subscribe to internal topic, produce to external Kafka
+**Kafka Transport** (contrib/kafka/transport.go)
+- 配置驱动：UnmarshalKey("kafka") 加载 map[逻辑topic] 配置（brokers/topics/consumer/producer）
+- 内部按 brokers 分组客户端，订阅按（组 × 物理 topic × 实例数）展开后 fan-in
+- 基于 watermill-kafka/v3（IBM/sarama）
 
 **Scheduler** (contrib/schedule/scheduler.go)
 - Cron-based task scheduling using robfig/cron

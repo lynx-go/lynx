@@ -307,3 +307,14 @@ UnmarshalKey(path string, out any) error
 - redis-stream / nats：各一个 contrib 模块，实现 `Transport` + `Topics()` 即可接入，可复用 `pubsub/tests` 一致性套件
 - 前缀 / 通配路由（`RoutePrefix`）：路由表扩展点，YAGNI
 - kafka 级默认 brokers 段：若同集群 topic 增多，可加"默认 brokers + topic 级覆盖"，纯配置扩展不动结构
+
+## 实施偏差记录（2026-08-05，Task 6 同步）
+
+实施与上述设计的差异，均为不影响目标架构的小偏差：
+
+1. `SetMessageKey` / `GetMessageKey` / `SetMessageID` / `GetMessageID` 未按第 11 节迁移清单删除，保留为 `Deprecated`（`broker.go`），公共 API 由 `Message` 字段与 `WithKey`/`WithID` 承载。
+2. `NewBroker(opts)` 返回未导出的 `*broker` 具体类型（设计写的是导出的 `*Broker`）；`Broker` 接口本身公开导出，调用方以接口形态使用，无实质影响。
+3. kafka 客户端（publisher/subscriber）为**懒创建**：首次 `Publish`/`Subscribe` 时才经工厂建立并按 brokers/组缓存，而非 `NewTransport` 时构造（设计 5 节"生命周期"）。
+4. `ConsumerOptions` / `ProducerOptions` 仅实现设计列出的字段子集（`GroupID`/`Instances`/`CommitInterval`/`LogMessage` 与 `Topic`/`LogMessage`/`BatchSize`），watermill-kafka v3 的其余 sarama 参数未透传。
+5. `PublishOptions` 额外提供 `WithMetadata` / `WithMetadataField`（合并进消息头）；handler 回调会注入 message ID/key 上下文（`ContextWithMessageID`/`ContextWithMessageKey`），设计未列。
+6. 内存 Transport 返回 `*MemoryTransport` 具体类型（设计写 `*Transport`），`Topics()` 返回 nil（仅作默认回退，不参与自动路由）。
