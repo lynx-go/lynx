@@ -257,8 +257,12 @@ kafka:
       group_id: consumer_hello
       instances: 3
       log_message: true
+      session_timeout: 45s
+      heartbeat_interval: 5s
     producer:
       log_message: true
+      required_acks: -1
+      compression: gzip
 ```
 
 加载与注册：

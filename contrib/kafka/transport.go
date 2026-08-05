@@ -36,17 +36,50 @@ type TopicOptions struct {
 
 // ConsumerOptions 是消费侧配置。
 type ConsumerOptions struct {
-	GroupID        string        `mapstructure:"group_id"`
-	Instances      int           `mapstructure:"instances"`
+	GroupID   string `mapstructure:"group_id"`
+	Instances int    `mapstructure:"instances"`
+	// CommitInterval 是 offset 自动提交间隔 → sarama Consumer.Offsets.CommitInterval。
 	CommitInterval time.Duration `mapstructure:"commit_interval"`
 	LogMessage     bool          `mapstructure:"log_message"`
+	// NackResendSleep 是 Nack 后消息重投的等待时长 → watermill SubscriberConfig.NackResendSleep。
+	NackResendSleep time.Duration `mapstructure:"nack_resend_sleep"`
+	// ReconnectRetrySleep 是重连失败后的下次重试间隔 → watermill SubscriberConfig.ReconnectRetrySleep。
+	ReconnectRetrySleep time.Duration `mapstructure:"reconnect_retry_sleep"`
+	// SessionTimeout 是消费组会话超时 → sarama Consumer.Group.Session.Timeout。
+	SessionTimeout time.Duration `mapstructure:"session_timeout"`
+	// HeartbeatInterval 是消费组心跳间隔 → sarama Consumer.Group.Heartbeat.Interval。
+	HeartbeatInterval time.Duration `mapstructure:"heartbeat_interval"`
+	// FetchMinBytes 是单次 fetch 的最小字节数 → sarama Consumer.Fetch.Min。
+	FetchMinBytes int32 `mapstructure:"fetch_min_bytes"`
+	// FetchMaxBytes 是单次 fetch 的最大字节数 → sarama Consumer.Fetch.Max。
+	FetchMaxBytes int32 `mapstructure:"fetch_max_bytes"`
+	// FetchMaxWait 是 broker 凑满 FetchMinBytes 的最长等待 → sarama Consumer.MaxWaitTime。
+	FetchMaxWait time.Duration `mapstructure:"fetch_max_wait"`
+	// ClientID 是客户端标识 → sarama ClientID。
+	ClientID string `mapstructure:"client_id"`
 }
 
 // ProducerOptions 是发布侧配置。
 type ProducerOptions struct {
 	Topic      string `mapstructure:"topic"` // 发布物理 topic，缺省 = Topics[0]
 	LogMessage bool   `mapstructure:"log_message"`
-	BatchSize  int    `mapstructure:"batch_size"`
+	// BatchSize 是批量攒够多少条消息后发送 → sarama Producer.Flush.Messages。
+	BatchSize int `mapstructure:"batch_size"`
+	// RequiredAcks 是 broker 应答级别（0=NoResponse/1=WaitForLocal/-1=WaitForAll，
+	// 0 视为未设置）→ sarama Producer.RequiredAcks。
+	RequiredAcks int16 `mapstructure:"required_acks"`
+	// RetryMax 是发送失败的最大重试次数 → sarama Producer.Retry.Max。
+	RetryMax int `mapstructure:"retry_max"`
+	// Timeout 是 broker 等待 RequiredAcks 的最长时长 → sarama Producer.Timeout。
+	Timeout time.Duration `mapstructure:"timeout"`
+	// FlushBytes 是批量攒够多少字节后发送 → sarama Producer.Flush.Bytes。
+	FlushBytes int `mapstructure:"flush_bytes"`
+	// FlushFrequency 是批量消息的最长滞留时长 → sarama Producer.Flush.Frequency。
+	FlushFrequency time.Duration `mapstructure:"flush_frequency"`
+	// Compression 是压缩算法（none/gzip/snappy/lz4/zstd）→ sarama Producer.Compression。
+	Compression string `mapstructure:"compression"`
+	// ClientID 是客户端标识 → sarama ClientID。
+	ClientID string `mapstructure:"client_id"`
 }
 
 // Transport 是 Kafka 后端组件：内部按 brokers 分组客户端，
@@ -62,11 +95,21 @@ type Transport struct {
 
 	// 客户端工厂 seam：测试注入 fake。
 	newPublisher  func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error)
-	newSubscriber func(brokers []string, group string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Subscriber, error)
+	newSubscriber func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error)
 
 	running atomic.Bool
 	ctx     context.Context
 	cancel  context.CancelFunc
+}
+
+// subscriberParams 是 newSubscriber seam 的参数：sarama.Config 之外的
+// watermill 订阅参数也在此传递。
+type subscriberParams struct {
+	brokers             []string
+	group               string
+	sarama              *sarama.Config
+	nackResendSleep     time.Duration
+	reconnectRetrySleep time.Duration
 }
 
 // NewTransport 创建 Kafka Transport。
@@ -79,8 +122,14 @@ func NewTransport(opts Options) (*Transport, error) {
 		newPublisher: func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
 			return watermillkafka.NewPublisher(watermillkafka.PublisherConfig{Brokers: brokers, OverwriteSaramaConfig: cfg}, logger)
 		},
-		newSubscriber: func(brokers []string, group string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Subscriber, error) {
-			subCfg := watermillkafka.SubscriberConfig{Brokers: brokers, ConsumerGroup: group, OverwriteSaramaConfig: cfg}
+		newSubscriber: func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error) {
+			subCfg := watermillkafka.SubscriberConfig{
+				Brokers:               p.brokers,
+				ConsumerGroup:         p.group,
+				OverwriteSaramaConfig: p.sarama,
+				NackResendSleep:       p.nackResendSleep,
+				ReconnectRetrySleep:   p.reconnectRetrySleep,
+			}
 			return watermillkafka.NewSubscriber(subCfg, logger)
 		},
 	}
@@ -171,11 +220,7 @@ func (t *Transport) Publish(topic string, msgs ...*message.Message) error {
 		}
 		physical = to.Topics[0]
 	}
-	batchSize := 0
-	if to.Producer.BatchSize > 0 {
-		batchSize = to.Producer.BatchSize
-	}
-	p, err := t.publisherFor(to.Brokers, batchSize)
+	p, err := t.publisherFor(to.Brokers, to.Producer)
 	if err != nil {
 		return err
 	}
@@ -212,11 +257,7 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts pubsub.Sub
 		instances = 1
 	}
 
-	commitInterval := time.Duration(0)
-	if to.Consumer.CommitInterval > 0 {
-		commitInterval = to.Consumer.CommitInterval
-	}
-	sub, err := t.subscriberFor(to.Brokers, group, commitInterval)
+	sub, err := t.subscriberFor(to.Brokers, group, to.Consumer)
 	if err != nil {
 		return nil, err
 	}
@@ -238,33 +279,94 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts pubsub.Sub
 	return fanIn(chans, cancel), nil
 }
 
-// buildSaramaConfig 按集群构建 sarama.Config：首个 topic 的便捷参数
-// （CommitInterval / BatchSize）生效，同集群共享客户端配置。
-// 调用方必须已持有 t.mu。
-func (t *Transport) buildSaramaConfig(brokers []string, commitInterval time.Duration, batchSize int) *sarama.Config {
-	key := strings.Join(brokers, ",")
-	if cfg, ok := t.saramaConfigs[key]; ok {
-		return cfg
-	}
-	cfg := sarama.NewConfig()
-	if commitInterval > 0 {
-		cfg.Consumer.Offsets.CommitInterval = commitInterval
-	}
-	if batchSize > 0 {
-		cfg.Producer.Flush.Messages = batchSize
-	}
-	t.saramaConfigs[key] = cfg
-	return cfg
+// compressionCodecs 是配置字符串到 sarama 压缩算法的映射。
+var compressionCodecs = map[string]sarama.CompressionCodec{
+	"none":   sarama.CompressionNone,
+	"gzip":   sarama.CompressionGZIP,
+	"snappy": sarama.CompressionSnappy,
+	"lz4":    sarama.CompressionLZ4,
+	"zstd":   sarama.CompressionZSTD,
 }
 
-func (t *Transport) publisherFor(brokers []string, batchSize int) (message.Publisher, error) {
+// buildSaramaConfig 按集群构建 sarama.Config：首个调用方（publisher 或
+// subscriber）的便捷参数生效，同集群共享客户端配置。consumer/producer 为
+// 对应侧的配置（可为 nil，nil 侧参数不映射）。非法 compression 返回 error。
+// 调用方必须已持有 t.mu。
+func (t *Transport) buildSaramaConfig(brokers []string, consumer *ConsumerOptions, producer *ProducerOptions) (*sarama.Config, error) {
+	key := strings.Join(brokers, ",")
+	if cfg, ok := t.saramaConfigs[key]; ok {
+		return cfg, nil
+	}
+	cfg := sarama.NewConfig()
+	if consumer != nil {
+		if consumer.CommitInterval > 0 {
+			cfg.Consumer.Offsets.CommitInterval = consumer.CommitInterval
+		}
+		if consumer.SessionTimeout > 0 {
+			cfg.Consumer.Group.Session.Timeout = consumer.SessionTimeout
+		}
+		if consumer.HeartbeatInterval > 0 {
+			cfg.Consumer.Group.Heartbeat.Interval = consumer.HeartbeatInterval
+		}
+		if consumer.FetchMinBytes > 0 {
+			cfg.Consumer.Fetch.Min = consumer.FetchMinBytes
+		}
+		if consumer.FetchMaxBytes > 0 {
+			cfg.Consumer.Fetch.Max = consumer.FetchMaxBytes
+		}
+		if consumer.FetchMaxWait > 0 {
+			cfg.Consumer.MaxWaitTime = consumer.FetchMaxWait
+		}
+		if consumer.ClientID != "" {
+			cfg.ClientID = consumer.ClientID
+		}
+	}
+	if producer != nil {
+		if producer.BatchSize > 0 {
+			cfg.Producer.Flush.Messages = producer.BatchSize
+		}
+		if producer.RequiredAcks != 0 {
+			cfg.Producer.RequiredAcks = sarama.RequiredAcks(producer.RequiredAcks)
+		}
+		if producer.RetryMax > 0 {
+			cfg.Producer.Retry.Max = producer.RetryMax
+		}
+		if producer.Timeout > 0 {
+			cfg.Producer.Timeout = producer.Timeout
+		}
+		if producer.FlushBytes > 0 {
+			cfg.Producer.Flush.Bytes = producer.FlushBytes
+		}
+		if producer.FlushFrequency > 0 {
+			cfg.Producer.Flush.Frequency = producer.FlushFrequency
+		}
+		if producer.Compression != "" {
+			codec, ok := compressionCodecs[producer.Compression]
+			if !ok {
+				return nil, fmt.Errorf("kafka: unsupported compression %q (none/gzip/snappy/lz4/zstd)", producer.Compression)
+			}
+			cfg.Producer.Compression = codec
+		}
+		if producer.ClientID != "" {
+			cfg.ClientID = producer.ClientID
+		}
+	}
+	t.saramaConfigs[key] = cfg
+	return cfg, nil
+}
+
+func (t *Transport) publisherFor(brokers []string, producer *ProducerOptions) (message.Publisher, error) {
 	key := strings.Join(brokers, ",")
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if p, ok := t.publishers[key]; ok {
 		return p, nil
 	}
-	p, err := t.newPublisher(brokers, t.buildSaramaConfig(brokers, 0, batchSize), t.logger())
+	cfg, err := t.buildSaramaConfig(brokers, nil, producer)
+	if err != nil {
+		return nil, err
+	}
+	p, err := t.newPublisher(brokers, cfg, t.logger())
 	if err != nil {
 		return nil, err
 	}
@@ -272,14 +374,23 @@ func (t *Transport) publisherFor(brokers []string, batchSize int) (message.Publi
 	return p, nil
 }
 
-func (t *Transport) subscriberFor(brokers []string, group string, commitInterval time.Duration) (message.Subscriber, error) {
+func (t *Transport) subscriberFor(brokers []string, group string, consumer *ConsumerOptions) (message.Subscriber, error) {
 	key := strings.Join(brokers, ",") + "|" + group
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if s, ok := t.subscribers[key]; ok {
 		return s, nil
 	}
-	s, err := t.newSubscriber(brokers, group, t.buildSaramaConfig(brokers, commitInterval, 0), t.logger())
+	cfg, err := t.buildSaramaConfig(brokers, consumer, nil)
+	if err != nil {
+		return nil, err
+	}
+	params := subscriberParams{brokers: brokers, group: group, sarama: cfg}
+	if consumer != nil {
+		params.nackResendSleep = consumer.NackResendSleep
+		params.reconnectRetrySleep = consumer.ReconnectRetrySleep
+	}
+	s, err := t.newSubscriber(params, t.logger())
 	if err != nil {
 		return nil, err
 	}

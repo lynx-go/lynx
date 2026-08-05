@@ -79,8 +79,37 @@ func newTestTransport(opts Options, pub pubSubClient) *Transport {
 		newPublisher: func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
 			return pub, nil
 		},
-		newSubscriber: func(brokers []string, group string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Subscriber, error) {
+		newSubscriber: func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error) {
 			return pub, nil
+		},
+	}
+	t.ctx, t.cancel = context.WithCancel(context.Background())
+	return t
+}
+
+// captureFactory 是记录型 fake seam：把工厂收到的 sarama 配置与订阅参数
+// 存入 atomic.Value，供配置映射断言读取。
+type captureFactory struct {
+	pub        *fakePubSub
+	lastCfg    atomic.Value // *sarama.Config
+	lastParams atomic.Value // subscriberParams
+}
+
+// newCapturingTransport 构造注入记录型 fake seam 的 Transport。
+func newCapturingTransport(opts Options, cap *captureFactory) *Transport {
+	t := &Transport{
+		opts:          opts,
+		publishers:    map[string]message.Publisher{},
+		subscribers:   map[string]message.Subscriber{},
+		saramaConfigs: map[string]*sarama.Config{},
+		newPublisher: func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
+			cap.lastCfg.Store(cfg)
+			return cap.pub, nil
+		},
+		newSubscriber: func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error) {
+			cap.lastCfg.Store(p.sarama)
+			cap.lastParams.Store(p)
+			return cap.pub, nil
 		},
 	}
 	t.ctx, t.cancel = context.WithCancel(context.Background())
@@ -100,10 +129,25 @@ kafka:
       instances: 3
       commit_interval: 1s
       log_message: true
+      nack_resend_sleep: 500ms
+      reconnect_retry_sleep: 3s
+      session_timeout: 45s
+      heartbeat_interval: 5s
+      fetch_min_bytes: 1024
+      fetch_max_bytes: 5242880
+      fetch_max_wait: 600ms
+      client_id: orders-app
     producer:
       topic: topic_orders_v2
       log_message: true
       batch_size: 100
+      required_acks: -1
+      retry_max: 8
+      timeout: 15s
+      flush_bytes: 4096
+      flush_frequency: 200ms
+      compression: gzip
+      client_id: orders-app
   payments:
     brokers: ["10.0.0.2:9092"]
     topics: [payments_topic]
@@ -141,6 +185,171 @@ kafka:
 	}
 	if orders.Producer.BatchSize != 100 {
 		t.Fatalf("bad batch size: %d", orders.Producer.BatchSize)
+	}
+	// 新增常用配置项解析。
+	if orders.Consumer.NackResendSleep != 500*time.Millisecond {
+		t.Fatalf("bad nack resend sleep: %v", orders.Consumer.NackResendSleep)
+	}
+	if orders.Consumer.ReconnectRetrySleep != 3*time.Second {
+		t.Fatalf("bad reconnect retry sleep: %v", orders.Consumer.ReconnectRetrySleep)
+	}
+	if orders.Consumer.SessionTimeout != 45*time.Second {
+		t.Fatalf("bad session timeout: %v", orders.Consumer.SessionTimeout)
+	}
+	if orders.Consumer.HeartbeatInterval != 5*time.Second {
+		t.Fatalf("bad heartbeat interval: %v", orders.Consumer.HeartbeatInterval)
+	}
+	if orders.Consumer.FetchMinBytes != 1024 {
+		t.Fatalf("bad fetch min bytes: %d", orders.Consumer.FetchMinBytes)
+	}
+	if orders.Consumer.FetchMaxBytes != 5*1024*1024 {
+		t.Fatalf("bad fetch max bytes: %d", orders.Consumer.FetchMaxBytes)
+	}
+	if orders.Consumer.FetchMaxWait != 600*time.Millisecond {
+		t.Fatalf("bad fetch max wait: %v", orders.Consumer.FetchMaxWait)
+	}
+	if orders.Consumer.ClientID != "orders-app" {
+		t.Fatalf("bad consumer client id: %q", orders.Consumer.ClientID)
+	}
+	if orders.Producer.RequiredAcks != -1 {
+		t.Fatalf("bad required acks: %d", orders.Producer.RequiredAcks)
+	}
+	if orders.Producer.RetryMax != 8 {
+		t.Fatalf("bad retry max: %d", orders.Producer.RetryMax)
+	}
+	if orders.Producer.Timeout != 15*time.Second {
+		t.Fatalf("bad producer timeout: %v", orders.Producer.Timeout)
+	}
+	if orders.Producer.FlushBytes != 4096 {
+		t.Fatalf("bad flush bytes: %d", orders.Producer.FlushBytes)
+	}
+	if orders.Producer.FlushFrequency != 200*time.Millisecond {
+		t.Fatalf("bad flush frequency: %v", orders.Producer.FlushFrequency)
+	}
+	if orders.Producer.Compression != "gzip" {
+		t.Fatalf("bad compression: %q", orders.Producer.Compression)
+	}
+	if orders.Producer.ClientID != "orders-app" {
+		t.Fatalf("bad producer client id: %q", orders.Producer.ClientID)
+	}
+}
+
+func TestBuildSaramaConfigMappings(t *testing.T) {
+	// 消费侧与发布侧各用独立集群（不同 brokers），保证每个 *sarama.Config
+	// 都是首次构建、完整带上各自的映射。
+	cap := &captureFactory{pub: newFakePubSub()}
+	tr := newCapturingTransport(Options{
+		Topics: map[string]TopicOptions{
+			"orders": {
+				Brokers: []string{"b1"},
+				Topics:  []string{"t1"},
+				Consumer: &ConsumerOptions{
+					GroupID:             "g1",
+					CommitInterval:      2 * time.Second,
+					NackResendSleep:     500 * time.Millisecond,
+					ReconnectRetrySleep: 3 * time.Second,
+					SessionTimeout:      45 * time.Second,
+					HeartbeatInterval:   5 * time.Second,
+					FetchMinBytes:       1024,
+					FetchMaxBytes:       5 * 1024 * 1024,
+					FetchMaxWait:        600 * time.Millisecond,
+					ClientID:            "orders-app",
+				},
+			},
+			"notify": {
+				Brokers: []string{"b2"},
+				Topics:  []string{"t2"},
+				Producer: &ProducerOptions{
+					BatchSize:      100,
+					RequiredAcks:   -1,
+					RetryMax:       8,
+					Timeout:        15 * time.Second,
+					FlushBytes:     4096,
+					FlushFrequency: 200 * time.Millisecond,
+					Compression:    "gzip",
+					ClientID:       "notify-app",
+				},
+			},
+		},
+	}, cap)
+
+	// 发布侧：Publish 触发 publisherFor → buildSaramaConfig(brokers, nil, producer)。
+	if err := tr.Publish("notify", message.NewMessage("id", nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	producerCfg := cap.lastCfg.Load().(*sarama.Config)
+	producerChecks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"flush messages (batch_size)", producerCfg.Producer.Flush.Messages, 100},
+		{"required acks", producerCfg.Producer.RequiredAcks, sarama.WaitForAll},
+		{"retry max", producerCfg.Producer.Retry.Max, 8},
+		{"timeout", producerCfg.Producer.Timeout, 15 * time.Second},
+		{"flush bytes", producerCfg.Producer.Flush.Bytes, 4096},
+		{"flush frequency", producerCfg.Producer.Flush.Frequency, 200 * time.Millisecond},
+		{"compression", producerCfg.Producer.Compression, sarama.CompressionGZIP},
+		{"client id", producerCfg.ClientID, "notify-app"},
+	}
+	for _, c := range producerChecks {
+		if c.got != c.want {
+			t.Fatalf("producer %s: got %v, want %v", c.name, c.got, c.want)
+		}
+	}
+
+	// 消费侧：Subscribe 触发 subscriberFor → buildSaramaConfig(brokers, consumer, nil)。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := tr.Subscribe(ctx, "orders", pubsub.SubscriptionOptions{}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	consumerCfg := cap.lastCfg.Load().(*sarama.Config)
+	consumerChecks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"commit interval", consumerCfg.Consumer.Offsets.CommitInterval, 2 * time.Second},
+		{"session timeout", consumerCfg.Consumer.Group.Session.Timeout, 45 * time.Second},
+		{"heartbeat interval", consumerCfg.Consumer.Group.Heartbeat.Interval, 5 * time.Second},
+		{"fetch min bytes", consumerCfg.Consumer.Fetch.Min, int32(1024)},
+		{"fetch max bytes", consumerCfg.Consumer.Fetch.Max, int32(5 * 1024 * 1024)},
+		{"fetch max wait", consumerCfg.Consumer.MaxWaitTime, 600 * time.Millisecond},
+		{"client id", consumerCfg.ClientID, "orders-app"},
+	}
+	for _, c := range consumerChecks {
+		if c.got != c.want {
+			t.Fatalf("consumer %s: got %v, want %v", c.name, c.got, c.want)
+		}
+	}
+
+	// watermill 层参数：NackResendSleep / ReconnectRetrySleep 随 subscriberParams 传递。
+	params := cap.lastParams.Load().(subscriberParams)
+	if params.group != "g1" {
+		t.Fatalf("group: got %q, want g1", params.group)
+	}
+	if params.nackResendSleep != 500*time.Millisecond {
+		t.Fatalf("nack resend sleep: got %v, want 500ms", params.nackResendSleep)
+	}
+	if params.reconnectRetrySleep != 3*time.Second {
+		t.Fatalf("reconnect retry sleep: got %v, want 3s", params.reconnectRetrySleep)
+	}
+}
+
+func TestCompressionInvalid(t *testing.T) {
+	cap := &captureFactory{pub: newFakePubSub()}
+	tr := newCapturingTransport(Options{
+		Topics: map[string]TopicOptions{
+			"orders": {
+				Brokers:  []string{"b1"},
+				Topics:   []string{"t1"},
+				Producer: &ProducerOptions{Compression: "bogus"},
+			},
+		},
+	}, cap)
+	if err := tr.Publish("orders", message.NewMessage("id", nil)); err == nil {
+		t.Fatal("expected Publish error for invalid compression")
 	}
 }
 
