@@ -75,10 +75,11 @@ func (f *fakePubSub) subscribeCount(topic string) int {
 // newTestTransport 构造注入 fake client seam 的 Transport。
 func newTestTransport(opts Options, pub pubSubClient) *Transport {
 	t := &Transport{
-		opts:          opts,
-		publishers:    map[string]message.Publisher{},
-		subscribers:   map[string]message.Subscriber{},
-		saramaConfigs: map[string]*sarama.Config{},
+		opts:             opts,
+		publishers:       map[string]message.Publisher{},
+		subscribers:      map[string]message.Subscriber{},
+		pubSaramaConfigs: map[string]*sarama.Config{},
+		subSaramaConfigs: map[string]*sarama.Config{},
 		newPublisher: func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
 			return pub, nil
 		},
@@ -101,10 +102,11 @@ type captureFactory struct {
 // newCapturingTransport 构造注入记录型 fake seam 的 Transport。
 func newCapturingTransport(opts Options, cap *captureFactory) *Transport {
 	t := &Transport{
-		opts:          opts,
-		publishers:    map[string]message.Publisher{},
-		subscribers:   map[string]message.Subscriber{},
-		saramaConfigs: map[string]*sarama.Config{},
+		opts:             opts,
+		publishers:       map[string]message.Publisher{},
+		subscribers:      map[string]message.Subscriber{},
+		pubSaramaConfigs: map[string]*sarama.Config{},
+		subSaramaConfigs: map[string]*sarama.Config{},
 		newPublisher: func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
 			cap.lastCfg.Store(cfg)
 			return cap.pub, nil
@@ -287,7 +289,7 @@ func TestBuildSaramaConfigMappings(t *testing.T) {
 	}, cap)
 
 	// 发布侧：Publish 触发 publisherFor → buildSaramaConfig(brokers, nil, producer)。
-	if err := tr.Publish("notify", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(),"notify", message.NewMessage("id", nil)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	producerCfg := cap.lastCfg.Load().(*sarama.Config)
@@ -363,7 +365,7 @@ func TestCompressionInvalid(t *testing.T) {
 			},
 		},
 	}, cap)
-	if err := tr.Publish("orders", message.NewMessage("id", nil)); err == nil {
+	if err := tr.Publish(context.Background(),"orders", message.NewMessage("id", nil)); err == nil {
 		t.Fatal("expected Publish error for invalid compression")
 	}
 }
@@ -415,7 +417,7 @@ func TestTransportPublishResolvesPhysicalTopic(t *testing.T) {
 		},
 	}, pub)
 
-	if err := tr.Publish("orders", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(),"orders", message.NewMessage("id", nil)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := pub.publishTopics(); len(got) != 1 || got[0] != "t2" {
@@ -431,7 +433,7 @@ func TestTransportPublishDefaultPhysicalTopic(t *testing.T) {
 		},
 	}, pub)
 
-	if err := tr.Publish("orders", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(),"orders", message.NewMessage("id", nil)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := pub.publishTopics(); len(got) != 1 || got[0] != "t1" {
@@ -447,7 +449,7 @@ func TestTransportPublishNoProducerConfig(t *testing.T) {
 		},
 	}, pub)
 
-	if err := tr.Publish("orders", message.NewMessage("id", nil)); err == nil {
+	if err := tr.Publish(context.Background(),"orders", message.NewMessage("id", nil)); err == nil {
 		t.Fatal("expected Publish error without producer config")
 	}
 }
@@ -455,7 +457,7 @@ func TestTransportPublishNoProducerConfig(t *testing.T) {
 func TestTransportPublishUnknownTopic(t *testing.T) {
 	pub := newFakePubSub()
 	tr := newTestTransport(Options{Topics: map[string]TopicOptions{}}, pub)
-	if err := tr.Publish("nope", message.NewMessage("id", nil)); err == nil {
+	if err := tr.Publish(context.Background(),"nope", message.NewMessage("id", nil)); err == nil {
 		t.Fatal("expected Publish error for unknown topic")
 	}
 }
@@ -641,7 +643,7 @@ func TestTransportPublishLogMessageWithoutInit(t *testing.T) {
 			},
 		},
 	}, pub)
-	if err := tr.Publish("orders", message.NewMessage("id", []byte("hello"))); err != nil {
+	if err := tr.Publish(context.Background(),"orders", message.NewMessage("id", []byte("hello"))); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := pub.publishTopics(); len(got) != 1 || got[0] != "t1" {

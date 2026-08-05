@@ -62,7 +62,7 @@ func (t *MemoryTransport) CheckHealth() error {
 }
 
 // Publish 发布消息到逻辑 topic（gochannel 按 topic 精确匹配）。
-func (t *MemoryTransport) Publish(topic string, msgs ...*message.Message) error {
+func (t *MemoryTransport) Publish(ctx context.Context, topic string, msgs ...*message.Message) error {
 	return t.pubSub.Publish(topic, msgs...)
 }
 

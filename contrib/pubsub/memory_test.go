@@ -26,7 +26,7 @@ func TestMemoryTransportPublishSubscribe(t *testing.T) {
 	}()
 
 	msg := message.NewMessage("id-1", []byte("payload"))
-	if err := tp.Publish("test.event", msg); err != nil {
+	if err := tp.Publish(context.Background(), "test.event", msg); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 

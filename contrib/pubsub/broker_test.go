@@ -72,7 +72,7 @@ func (f *fakeTransport) Stop(context.Context)        {}
 func (f *fakeTransport) CheckHealth() error          { return nil }
 func (f *fakeTransport) Topics() []string            { return f.topics }
 
-func (f *fakeTransport) Publish(topic string, msgs ...*message.Message) error {
+func (f *fakeTransport) Publish(ctx context.Context, topic string, msgs ...*message.Message) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.published = append(f.published, topic)
@@ -358,6 +358,79 @@ func TestBrokerExplicitRouteOverridesAutoRoute(t *testing.T) {
 	}
 	if got := ft2.publishedTopics(); len(got) != 0 {
 		t.Fatalf("expected no publish to auto-routed transport ft2, got %v", got)
+	}
+}
+
+func TestBrokerSubscribeDuplicateHandlerName(t *testing.T) {
+	b := NewBroker(Options{})
+	if err := b.Subscribe(context.Background(), "t1", "dup", func(ctx context.Context, msg *Message) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("first Subscribe: %v", err)
+	}
+	if err := b.Subscribe(context.Background(), "t2", "dup", func(ctx context.Context, msg *Message) error {
+		return nil
+	}); err == nil {
+		t.Fatal("expected duplicate handler name error")
+	}
+	if err := b.Subscribe(context.Background(), "t3", "", func(ctx context.Context, msg *Message) error {
+		return nil
+	}); err == nil {
+		t.Fatal("expected empty handler name error")
+	}
+}
+
+func TestBrokerStartSecondSubscriptionFailureRetry(t *testing.T) {
+	// C2 回归：第二条订阅 resolve 失败（部分注册）后补充 Route 重试，
+	// 不再触发 watermill DuplicateHandlerNameError panic。
+	ft := newFakeTransport("known")
+	b := NewBroker(Options{})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	b.Route("known", ft) // 第一条可注册，第二条失败才是"部分注册"场景
+	for _, s := range []struct{ topic, name string }{
+		{"known", "h1"},
+		{"unknown", "h2"},
+	} {
+		if err := b.Subscribe(context.Background(), s.topic, s.name, func(ctx context.Context, msg *Message) error {
+			return nil
+		}); err != nil {
+			t.Fatalf("Subscribe %s: %v", s.name, err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := b.Start(ctx); err == nil {
+		t.Fatal("expected Start error for un-routed second subscription")
+	}
+
+	// 补充 Route 后重试（旧实现因 h1 已注册残留而 panic）。
+	b.Route("unknown", ft)
+	done := make(chan error, 1)
+	go func() { done <- b.Start(ctx) }()
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return b.CheckHealth() == nil }) {
+		t.Fatal("broker did not become healthy after re-Start")
+	}
+	if err := b.Publish(context.Background(), "known", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got := ft.publishedTopics(); len(got) != 1 {
+		t.Fatalf("expected routed publish after recovery, got %v", got)
+	}
+	cancel()
+	b.Stop(context.Background())
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after Stop")
+	}
+}
+
+func TestBrokerStartBeforeInitFails(t *testing.T) {
+	b := NewBroker(Options{})
+	if err := b.Start(context.Background()); err == nil {
+		t.Fatal("expected error when Start is called before Init")
 	}
 }
 

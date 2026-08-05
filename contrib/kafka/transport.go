@@ -4,8 +4,11 @@ package kafka
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +35,30 @@ type TopicOptions struct {
 	Topics   []string         `mapstructure:"topics"`   // 订阅的物理 topic 列表
 	Consumer *ConsumerOptions `mapstructure:"consumer"` // nil = 该 topic 只发布
 	Producer *ProducerOptions `mapstructure:"producer"` // nil = 该 topic 只订阅
+	// SASL 认证配置（集群级）。同集群多 topic 的认证配置需一致：
+	// 客户端按 brokers 分组共享，先构建者生效。
+	SASL *SASLOptions `mapstructure:"sasl"`
+	// TLS 配置（集群级），约束同 SASL。
+	TLS *TLSOptions `mapstructure:"tls"`
+}
+
+// SASLOptions 配置 Kafka 客户端 SASL 认证。
+type SASLOptions struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	// Mechanism 是 SASL 机制：PLAIN（缺省）/ SCRAM-SHA-256 / SCRAM-SHA-512。
+	Mechanism string `mapstructure:"mechanism"`
+}
+
+// TLSOptions 配置 Kafka 客户端 TLS。
+type TLSOptions struct {
+	Enabled           bool   `mapstructure:"enabled"`
+	InsecureSkipVerify bool  `mapstructure:"insecure_skip_verify"`
+	// CAFile 是自签 CA 证书路径；为空时使用系统信任库。
+	CAFile string `mapstructure:"ca_file"`
+	// ServerName 覆盖 TLS 校验的主机名；为空时使用 broker 地址。
+	ServerName string `mapstructure:"server_name"`
 }
 
 // ConsumerOptions 是消费侧配置。
@@ -95,10 +122,14 @@ type Transport struct {
 	opts Options
 	app  lynx.App
 
-	mu            sync.Mutex
-	publishers    map[string]message.Publisher  // key: brokers 列表
-	subscribers   map[string]message.Subscriber // key: "brokers|group"
-	saramaConfigs map[string]*sarama.Config     // key: brokers 列表（同集群共享客户端配置）
+	mu          sync.Mutex
+	publishers  map[string]message.Publisher  // key: brokers 列表
+	subscribers map[string]message.Subscriber // key: "brokers|group"
+	// pubSaramaConfigs/subSaramaConfigs 按侧缓存 sarama.Config：consumer 与
+	// producer 参数正交（Config 的 Consumer/Producer 段），各侧独立构建，
+	// 避免同集群两侧参数互斥、静默丢配置。
+	pubSaramaConfigs map[string]*sarama.Config // key: brokers 列表
+	subSaramaConfigs map[string]*sarama.Config // key: brokers 列表
 
 	// 客户端工厂 seam：测试注入 fake。
 	newPublisher  func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error)
@@ -122,12 +153,18 @@ type subscriberParams struct {
 // NewTransport 创建 Kafka Transport。
 func NewTransport(opts Options) (*Transport, error) {
 	t := &Transport{
-		opts:          opts,
-		publishers:    map[string]message.Publisher{},
-		subscribers:   map[string]message.Subscriber{},
-		saramaConfigs: map[string]*sarama.Config{},
+		opts:             opts,
+		publishers:       map[string]message.Publisher{},
+		subscribers:      map[string]message.Subscriber{},
+		pubSaramaConfigs: map[string]*sarama.Config{},
+		subSaramaConfigs: map[string]*sarama.Config{},
 		newPublisher: func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
-			return watermillkafka.NewPublisher(watermillkafka.PublisherConfig{Brokers: brokers, OverwriteSaramaConfig: cfg}, logger)
+			return watermillkafka.NewPublisher(watermillkafka.PublisherConfig{
+				Brokers:               brokers,
+				OverwriteSaramaConfig: cfg,
+				// Marshaler 必填：缺省时 NewPublisher 直接报 "missing marshaler"。
+				Marshaler: watermillkafka.DefaultMarshaler{},
+			}, logger)
 		},
 		newSubscriber: func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error) {
 			subCfg := watermillkafka.SubscriberConfig{
@@ -211,8 +248,8 @@ func (t *Transport) logger() watermill.LoggerAdapter {
 	return watermill.NewSlogLogger(t.app.Logger("component", "kafka"))
 }
 
-// Publish 将消息发布到逻辑 topic 对应的物理 topic。
-func (t *Transport) Publish(topic string, msgs ...*message.Message) error {
+// Publish 将消息发布到逻辑 topic 对应的物理 topic；ctx 用于传播 trace/元数据。
+func (t *Transport) Publish(ctx context.Context, topic string, msgs ...*message.Message) error {
 	to, ok := t.opts.Topics[topic]
 	if !ok {
 		return fmt.Errorf("kafka: topic %q not configured", topic)
@@ -227,13 +264,13 @@ func (t *Transport) Publish(topic string, msgs ...*message.Message) error {
 		}
 		physical = to.Topics[0]
 	}
-	p, err := t.publisherFor(to.Brokers, to.Producer)
+	p, err := t.publisherFor(to.Brokers, to.Producer, to.SASL, to.TLS)
 	if err != nil {
 		return err
 	}
-	if to.Producer.LogMessage && t.app != nil {
+	if to.Producer.LogMessage {
 		for _, msg := range msgs {
-			log.DebugContext(t.app.Context(), "sending kafka message", "message", string(msg.Payload), "topic", physical)
+			log.DebugContext(ctx, "sending kafka message", "message", string(msg.Payload), "topic", physical)
 		}
 	}
 	return p.Publish(physical, msgs...)
@@ -264,7 +301,7 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts pubsub.Sub
 		instances = 1
 	}
 
-	sub, err := t.subscriberFor(to.Brokers, group, to.Consumer)
+	sub, err := t.subscriberFor(to.Brokers, group, to.Consumer, to.SASL, to.TLS)
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +316,9 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts pubsub.Sub
 			if err != nil {
 				cancel()
 				return nil, err
+			}
+			if to.Consumer.LogMessage {
+				ch = t.logMessages(subCtx, physical, ch)
 			}
 			chans = append(chans, ch)
 		}
@@ -295,13 +335,98 @@ var compressionCodecs = map[string]sarama.CompressionCodec{
 	"zstd":   sarama.CompressionZSTD,
 }
 
-// buildSaramaConfig 按集群构建 sarama.Config：首个调用方（publisher 或
-// subscriber）的便捷参数生效，同集群共享客户端配置。consumer/producer 为
-// 对应侧的配置（可为 nil，nil 侧参数不映射）。非法 compression 返回 error。
+// applyAuth 将集群级认证（SASL/TLS）应用到 sarama.Config。
+func applyAuth(cfg *sarama.Config, sasl *SASLOptions, tlsOpts *TLSOptions) error {
+	if sasl != nil && sasl.Enabled {
+		cfg.Net.SASL.Enable = true
+		cfg.Net.SASL.User = sasl.User
+		cfg.Net.SASL.Password = sasl.Password
+		switch strings.ToUpper(sasl.Mechanism) {
+		case "", "PLAIN":
+			cfg.Net.SASL.Mechanism = sarama.SASLTypePlaintext
+		case "SCRAM-SHA-256":
+			cfg.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
+		case "SCRAM-SHA-512":
+			cfg.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
+		default:
+			return fmt.Errorf("kafka: unsupported sasl mechanism %q (PLAIN/SCRAM-SHA-256/SCRAM-SHA-512)", sasl.Mechanism)
+		}
+	}
+	if tlsOpts != nil && tlsOpts.Enabled {
+		tc := &tls.Config{InsecureSkipVerify: tlsOpts.InsecureSkipVerify, ServerName: tlsOpts.ServerName}
+		if tlsOpts.CAFile != "" {
+			caCert, err := os.ReadFile(tlsOpts.CAFile)
+			if err != nil {
+				return fmt.Errorf("kafka: read ca_file: %w", err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caCert) {
+				return fmt.Errorf("kafka: ca_file %q contains no valid certificates", tlsOpts.CAFile)
+			}
+			tc.RootCAs = pool
+		}
+		cfg.Net.TLS.Enable = true
+		cfg.Net.TLS.Config = tc
+	}
+	return nil
+}
+
+// buildPublisherConfig 构建并缓存发布侧 sarama.Config（按 brokers 分组）。
+// consumer 与 producer 参数正交，两侧独立构建，互不覆盖。
 // 调用方必须已持有 t.mu。
-func (t *Transport) buildSaramaConfig(brokers []string, consumer *ConsumerOptions, producer *ProducerOptions) (*sarama.Config, error) {
+func (t *Transport) buildPublisherConfig(brokers []string, producer *ProducerOptions, sasl *SASLOptions, tlsOpts *TLSOptions) (*sarama.Config, error) {
 	key := strings.Join(brokers, ",")
-	if cfg, ok := t.saramaConfigs[key]; ok {
+	if cfg, ok := t.pubSaramaConfigs[key]; ok {
+		return cfg, nil
+	}
+	cfg := sarama.NewConfig()
+	// SyncProducer 必需项：watermill-kafka 仅在 OverwriteSaramaConfig 为 nil
+	// 时才应用 DefaultSaramaSyncPublisherConfig（唯一设置 Successes=true 的
+	// 位置），此处显式设置，否则 NewSyncProducer 配置校验直接失败。
+	cfg.Producer.Return.Successes = true
+	cfg.Producer.Return.Errors = true
+	if producer != nil {
+		if producer.BatchSize > 0 {
+			cfg.Producer.Flush.Messages = producer.BatchSize
+		}
+		if producer.RequiredAcks != 0 {
+			cfg.Producer.RequiredAcks = sarama.RequiredAcks(producer.RequiredAcks)
+		}
+		if producer.RetryMax > 0 {
+			cfg.Producer.Retry.Max = producer.RetryMax
+		}
+		if producer.Timeout > 0 {
+			cfg.Producer.Timeout = producer.Timeout
+		}
+		if producer.FlushBytes > 0 {
+			cfg.Producer.Flush.Bytes = producer.FlushBytes
+		}
+		if producer.FlushFrequency > 0 {
+			cfg.Producer.Flush.Frequency = producer.FlushFrequency
+		}
+		if producer.Compression != "" {
+			codec, ok := compressionCodecs[producer.Compression]
+			if !ok {
+				return nil, fmt.Errorf("kafka: unsupported compression %q (none/gzip/snappy/lz4/zstd)", producer.Compression)
+			}
+			cfg.Producer.Compression = codec
+		}
+		if producer.ClientID != "" {
+			cfg.ClientID = producer.ClientID
+		}
+	}
+	if err := applyAuth(cfg, sasl, tlsOpts); err != nil {
+		return nil, err
+	}
+	t.pubSaramaConfigs[key] = cfg
+	return cfg, nil
+}
+
+// buildSubscriberConfig 构建并缓存订阅侧 sarama.Config（按 brokers 分组）。
+// 调用方必须已持有 t.mu。
+func (t *Transport) buildSubscriberConfig(brokers []string, consumer *ConsumerOptions, sasl *SASLOptions, tlsOpts *TLSOptions) (*sarama.Config, error) {
+	key := strings.Join(brokers, ",")
+	if cfg, ok := t.subSaramaConfigs[key]; ok {
 		return cfg, nil
 	}
 	cfg := sarama.NewConfig()
@@ -341,48 +466,21 @@ func (t *Transport) buildSaramaConfig(brokers []string, consumer *ConsumerOption
 			cfg.ClientID = consumer.ClientID
 		}
 	}
-	if producer != nil {
-		if producer.BatchSize > 0 {
-			cfg.Producer.Flush.Messages = producer.BatchSize
-		}
-		if producer.RequiredAcks != 0 {
-			cfg.Producer.RequiredAcks = sarama.RequiredAcks(producer.RequiredAcks)
-		}
-		if producer.RetryMax > 0 {
-			cfg.Producer.Retry.Max = producer.RetryMax
-		}
-		if producer.Timeout > 0 {
-			cfg.Producer.Timeout = producer.Timeout
-		}
-		if producer.FlushBytes > 0 {
-			cfg.Producer.Flush.Bytes = producer.FlushBytes
-		}
-		if producer.FlushFrequency > 0 {
-			cfg.Producer.Flush.Frequency = producer.FlushFrequency
-		}
-		if producer.Compression != "" {
-			codec, ok := compressionCodecs[producer.Compression]
-			if !ok {
-				return nil, fmt.Errorf("kafka: unsupported compression %q (none/gzip/snappy/lz4/zstd)", producer.Compression)
-			}
-			cfg.Producer.Compression = codec
-		}
-		if producer.ClientID != "" {
-			cfg.ClientID = producer.ClientID
-		}
+	if err := applyAuth(cfg, sasl, tlsOpts); err != nil {
+		return nil, err
 	}
-	t.saramaConfigs[key] = cfg
+	t.subSaramaConfigs[key] = cfg
 	return cfg, nil
 }
 
-func (t *Transport) publisherFor(brokers []string, producer *ProducerOptions) (message.Publisher, error) {
+func (t *Transport) publisherFor(brokers []string, producer *ProducerOptions, sasl *SASLOptions, tlsOpts *TLSOptions) (message.Publisher, error) {
 	key := strings.Join(brokers, ",")
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if p, ok := t.publishers[key]; ok {
 		return p, nil
 	}
-	cfg, err := t.buildSaramaConfig(brokers, nil, producer)
+	cfg, err := t.buildPublisherConfig(brokers, producer, sasl, tlsOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -394,14 +492,14 @@ func (t *Transport) publisherFor(brokers []string, producer *ProducerOptions) (m
 	return p, nil
 }
 
-func (t *Transport) subscriberFor(brokers []string, group string, consumer *ConsumerOptions) (message.Subscriber, error) {
+func (t *Transport) subscriberFor(brokers []string, group string, consumer *ConsumerOptions, sasl *SASLOptions, tlsOpts *TLSOptions) (message.Subscriber, error) {
 	key := strings.Join(brokers, ",") + "|" + group
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if s, ok := t.subscribers[key]; ok {
 		return s, nil
 	}
-	cfg, err := t.buildSaramaConfig(brokers, consumer, nil)
+	cfg, err := t.buildSubscriberConfig(brokers, consumer, sasl, tlsOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -416,6 +514,20 @@ func (t *Transport) subscriberFor(brokers []string, group string, consumer *Cons
 	}
 	t.subscribers[key] = s
 	return s, nil
+}
+
+// logMessages 包装订阅 channel：每条消息按 ConsumerOptions.LogMessage
+// 输出 debug 日志（对齐 Producer 侧 LogMessage 语义）。
+func (t *Transport) logMessages(ctx context.Context, physical string, in <-chan *message.Message) <-chan *message.Message {
+	out := make(chan *message.Message)
+	go func() {
+		defer close(out)
+		for msg := range in {
+			log.DebugContext(ctx, "received kafka message", "message", string(msg.Payload), "topic", physical)
+			out <- msg
+		}
+	}()
+	return out
 }
 
 // fanIn 合并多个订阅 channel 为单一 channel；全部输入关闭后关闭输出，

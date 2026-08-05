@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
@@ -28,6 +29,14 @@ type Broker interface {
 	Route(topic string, t Transport)
 }
 
+// RetryOptions 配置 handler 处理失败后的重试行为。
+type RetryOptions struct {
+	// MaxRetries 是最大重试次数，0 表示不重试。
+	MaxRetries int
+	// Backoff 是每次重试的固定间隔，0 表示不等待。
+	Backoff time.Duration
+}
+
 // Options 是 Broker 的配置项。
 type Options struct {
 	// Transports 参与自动路由：每个 Transport.Topics() 声明的 topic
@@ -35,10 +44,15 @@ type Options struct {
 	Transports []Transport
 	// DefaultTransport 承接路由表未命中的 topic。
 	DefaultTransport Transport
+	// Retry 配置 handler 失败重试；nil 时使用默认 {MaxRetries: 3}。
+	// 注意：重试耗尽后消息不确认，依赖 at-least-once 语义的 Transport
+	// （如 Kafka 关闭自动提交）会重投；开启自动提交时 offset 已被提交，
+	// 消息可能静默丢失，需自行权衡。
+	Retry *RetryOptions
 }
 
 // NewBroker 创建消息代理门面。
-func NewBroker(opts Options) *broker {
+func NewBroker(opts Options) Broker {
 	return &broker{
 		options:  opts,
 		routes:   map[string]Transport{},
@@ -193,10 +207,18 @@ func (b *broker) Init(app lynx.App) error {
 	if err != nil {
 		return err
 	}
+	retry := middleware.Retry{MaxRetries: 3}
+	if b.options.Retry != nil {
+		retry.MaxRetries = b.options.Retry.MaxRetries
+		if b.options.Retry.Backoff > 0 {
+			retry.InitialInterval = b.options.Retry.Backoff
+			retry.MaxInterval = b.options.Retry.Backoff
+		}
+	}
 	router.AddMiddleware(
 		middleware.Recoverer,
 		middleware.CorrelationID,
-		middleware.Retry{MaxRetries: 3}.Middleware,
+		retry.Middleware,
 	)
 	router.AddPlugin(plugin.SignalsHandler)
 	b.router = router
@@ -230,29 +252,58 @@ func (b *broker) resolve(topic string) (Transport, error) {
 	return nil, fmt.Errorf("no transport routed for topic %q", topic)
 }
 
-// Start 将缓冲订阅统一注册进 watermill router 并运行；任一订阅
-// 无归属 Transport 时返回错误。注册循环全部成功后才置 started 并清空
-// pending：失败时保持原状，调用方可补充 Route 后重试 Start。
+// Start 将缓冲订阅统一注册进 watermill router 并运行。
+// 两阶段提交：先预校验全部订阅（路由归属 + handler 重名），全部通过后才
+// 注册任何 handler——部分失败不会留下已注册的残留，补充 Route 后重试
+// Start 安全，也不会触发 watermill 的 DuplicateHandlerNameError panic。
 func (b *broker) Start(ctx context.Context) error {
 	b.mu.Lock()
 	if b.started {
 		b.mu.Unlock()
 		return errors.New("broker already started")
 	}
+	if b.router == nil {
+		b.mu.Unlock()
+		return errors.New("broker is not initialized")
+	}
+	type registration struct {
+		topic       string
+		handlerName string
+		adapter     subscriberAdapter
+		handler     message.NoPublishHandlerFunc
+	}
+	registrations := make([]registration, 0, len(b.pending))
+	names := make(map[string]struct{}, len(b.pending))
 	for _, p := range b.pending {
+		if _, dup := names[p.handlerName]; dup {
+			b.mu.Unlock()
+			return fmt.Errorf("duplicate handler name %q", p.handlerName)
+		}
+		names[p.handlerName] = struct{}{}
 		t, err := b.resolve(p.topic)
 		if err != nil {
 			b.mu.Unlock()
 			return err
 		}
-		adapter := subscriberAdapter{
-			t:    t,
-			opts: SubscriptionOptions{Group: p.opts.Group, Instances: p.opts.Instances},
-		}
-		b.router.AddConsumerHandler(p.handlerName, p.topic, adapter, b.wrapHandler(p.handler, p.opts))
+		registrations = append(registrations, registration{
+			topic:       p.topic,
+			handlerName: p.handlerName,
+			adapter: subscriberAdapter{
+				t:    t,
+				opts: SubscriptionOptions{Group: p.opts.Group, Instances: p.opts.Instances},
+			},
+			handler: b.wrapHandler(p.handler, p.opts),
+		})
+	}
+	// 阶段 2：注册。AddConsumerHandler 不返回错误（重名直接 panic），
+	// 阶段 1 的预校验已排除该路径，注册在此不可失败。
+	for _, r := range registrations {
+		b.router.AddConsumerHandler(r.handlerName, r.topic, r.adapter, r.handler)
 	}
 	b.started = true
 	b.pending = nil
+	// 先释放锁再 Run：Run 阻塞至停止，期间 Subscribe 等取锁方法必须可用
+	//（返回 "already started" 错误而非死等）。
 	b.mu.Unlock()
 
 	return b.router.Run(ctx)
@@ -267,16 +318,25 @@ func (b *broker) Stop(ctx context.Context) {
 	}
 }
 
-// Subscribe 缓冲注册订阅；Start 后调用返回错误。
+// Subscribe 缓冲注册订阅；Start 后调用返回错误。handlerName 在缓冲期内
+// 必须唯一（watermill 的 AddConsumerHandler 对重名直接 panic，这里提前报错）。
 func (b *broker) Subscribe(ctx context.Context, topic, handlerName string, h HandlerFunc, opts ...SubscribeOption) error {
 	o := &SubscribeOptions{}
 	for _, opt := range opts {
 		opt(o)
 	}
+	if handlerName == "" {
+		return errors.New("handler name is required")
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.started {
 		return errors.New("cannot subscribe to a started broker")
+	}
+	for _, p := range b.pending {
+		if p.handlerName == handlerName {
+			return fmt.Errorf("duplicate handler name %q", handlerName)
+		}
 	}
 	b.pending = append(b.pending, pendingSubscription{
 		topic: topic, handlerName: handlerName, handler: h, opts: *o,
@@ -347,33 +407,5 @@ func (b *broker) Publish(ctx context.Context, topic string, msg *Message, opts .
 	if err != nil {
 		return err
 	}
-	return t.Publish(topic, toWatermill(m))
-}
-
-// SetMessageKey 将消息 key 写入 watermill 消息元数据。
-//
-// Deprecated: 使用 Message 字段与 WithKey。
-func SetMessageKey(msg *message.Message, key string) {
-	msg.Metadata.Set(MessageKeyKey.String(), key)
-}
-
-// GetMessageKey 从 watermill 消息元数据中读取消息 key。
-//
-// Deprecated: 使用 Message 字段。
-func GetMessageKey(msg *message.Message) string {
-	return msg.Metadata.Get(MessageKeyKey.String())
-}
-
-// SetMessageID 将消息 ID 写入 watermill 消息元数据。
-//
-// Deprecated: 使用 Message 字段与 WithID。
-func SetMessageID(msg *message.Message, msgId string) {
-	msg.Metadata.Set(MessageIDKey.String(), msgId)
-}
-
-// GetMessageID 从 watermill 消息元数据中读取消息 ID。
-//
-// Deprecated: 使用 Message 字段。
-func GetMessageID(msg *message.Message) string {
-	return msg.Metadata.Get(MessageIDKey.String())
+	return t.Publish(ctx, topic, toWatermill(m))
 }
