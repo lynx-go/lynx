@@ -1,0 +1,10 @@
+kafka:
+  hello:
+    brokers: ["127.0.0.1:19092"]
+    topics: [topic_hello]
+    consumer:
+      group_id: consumer_hello
+      instances: 3
+      log_message: true
+    producer:
+      log_message: true
