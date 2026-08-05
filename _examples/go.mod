@@ -5,6 +5,7 @@ go 1.25.0
 replace (
 	github.com/lynx-go/lynx => ../
 	github.com/lynx-go/lynx/contrib/kafka => ../contrib/kafka
+	github.com/lynx-go/lynx/contrib/metrics => ../contrib/metrics
 	github.com/lynx-go/lynx/contrib/pubsub => ../contrib/pubsub
 	github.com/lynx-go/lynx/contrib/schedule => ../contrib/schedule
 	github.com/lynx-go/lynx/contrib/zap => ../contrib/zap
@@ -17,6 +18,7 @@ require (
 	github.com/google/wire v0.7.0
 	github.com/lynx-go/lynx v0.4.0
 	github.com/lynx-go/lynx/contrib/kafka v0.0.0-00010101000000-000000000000
+	github.com/lynx-go/lynx/contrib/metrics v0.0.0-00010101000000-000000000000
 	github.com/lynx-go/lynx/contrib/pubsub v0.7.2
 	github.com/lynx-go/lynx/contrib/schedule v0.0.0-20251205120803-d841a9e8d821
 	github.com/lynx-go/lynx/contrib/zap v0.1.0
@@ -67,10 +69,10 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0 // indirect
-	go.opentelemetry.io/otel v1.45.0 // indirect
+	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.67.0 // indirect
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.45.0 // indirect
-	go.opentelemetry.io/otel/metric v1.45.0 // indirect
+	go.opentelemetry.io/otel/metric v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect

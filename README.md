@@ -275,6 +275,9 @@ github.com/lynx-go/lynx/server/http
 # Kafka 支持
 github.com/lynx-go/lynx/contrib/kafka
 
+# 可观测性（OpenTelemetry 托管）
+github.com/lynx-go/lynx/contrib/metrics
+
 # PubSub 抽象
 github.com/lynx-go/lynx/contrib/pubsub
 

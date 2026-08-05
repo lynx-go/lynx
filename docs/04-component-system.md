@@ -1,6 +1,6 @@
 # 4. 组件系统
 
-组件是 Lynx 应用的基本构建单元：HTTP/gRPC 服务器、消息 Broker、定时调度器，乃至一段需要在应用生命周期内运行的后台逻辑，都可以抽象为一个组件。本章介绍 `Component` 接口契约、`ComponentBuilder` 与多实例机制、`ServerLike`/`CheckHealth` 扩展接口，并通过一个完整示例演示如何编写自定义组件，最后概览 `contrib/` 下的四个官方组件模块。
+组件是 Lynx 应用的基本构建单元：HTTP/gRPC 服务器、消息 Broker、定时调度器，乃至一段需要在应用生命周期内运行的后台逻辑，都可以抽象为一个组件。本章介绍 `Component` 接口契约、`ComponentBuilder` 与多实例机制、`ServerLike`/`CheckHealth` 扩展接口，并通过一个完整示例演示如何编写自定义组件，最后概览 `contrib/` 下的五个官方组件模块。
 
 ## 4.1 Component 接口契约
 
@@ -192,11 +192,12 @@ var _ lynx.ComponentBuilder = (*workerBuilder)(nil)
 
 ## 4.5 contrib 模块概览
 
-`contrib/` 下的四个模块是框架官方维护的组件，各自是独立的 Go module，按需引入：
+`contrib/` 下的五个模块是框架官方维护的组件，各自是独立的 Go module，按需引入：
 
 ```bash
 go get github.com/lynx-go/lynx/contrib/pubsub
 go get github.com/lynx-go/lynx/contrib/kafka
+go get github.com/lynx-go/lynx/contrib/metrics
 go get github.com/lynx-go/lynx/contrib/schedule
 go get github.com/lynx-go/lynx/contrib/zap
 ```

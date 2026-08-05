@@ -41,6 +41,7 @@ The project uses a multi-module release strategy. When releasing, you must tag:
 - contrib/zap: `contrib/zap/{version}`
 - contrib/pubsub: `contrib/pubsub/{version}`
 - contrib/kafka: `contrib/kafka/{version}`
+- contrib/metrics: `contrib/metrics/{version}`
 - contrib/schedule: `contrib/schedule/{version}`
 
 ### Module Structure
@@ -51,6 +52,7 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./contrib/zap` - Zap logger integration
 - `./contrib/pubsub` - PubSub abstraction layer (uses Watermill)
 - `./contrib/kafka` - Kafka binder/consumer/producer
+- `./contrib/metrics` - OpenTelemetry lifecycle management (trace/metrics providers)
 - `./contrib/schedule` - Cron scheduler
 
 Server implementations (within main module):

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/contrib/metrics"
 	"github.com/lynx-go/lynx/contrib/zap"
 	"github.com/lynx-go/lynx/server/http"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -32,7 +33,7 @@ func main() {
 
 		// OTel 组件须先注册：Init 同步创建 provider 并设为全局，
 		// 后续 initMetrics 创建的 instrument 才会挂到真实 MeterProvider 上。
-		if err := app.Hooks(lynx.Components(lynx.NewOTelComponent())); err != nil {
+		if err := app.Hooks(lynx.Components(metrics.New())); err != nil {
 			return err
 		}
 		if err := initMetrics(); err != nil {

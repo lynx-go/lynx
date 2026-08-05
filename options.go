@@ -32,7 +32,6 @@ type Options struct {
 	BindConfigFunc  BindConfigFunc `json:"-"`
 	ExitSignals     []os.Signal    `json:"-"`
 	ShutdownTimeout time.Duration  `json:"shutdown_timeout"`
-	OTel            *OTelOptions   `json:"-"` // 启用框架托管 OTel 初始化（WithOTel）
 }
 
 func (o *Options) String() string {
