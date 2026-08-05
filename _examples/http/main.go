@@ -30,6 +30,15 @@ func main() {
 		logger := app.Logger()
 		logger.Info("parsed config", "config", config)
 
+		// OTel 组件须先注册：Init 同步创建 provider 并设为全局，
+		// 后续 initMetrics 创建的 instrument 才会挂到真实 MeterProvider 上。
+		if err := app.Hooks(lynx.Components(lynx.NewOTelComponent())); err != nil {
+			return err
+		}
+		if err := initMetrics(); err != nil {
+			return err
+		}
+
 		if err := app.Hooks(lynx.OnStart(func(ctx context.Context) error {
 			app.Logger().Info("on start")
 			return nil
@@ -45,6 +54,11 @@ func main() {
 		}
 		router := http.NewRouter()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
+			start := time.Now()
+			helloRequestsCounter.Add(r.Context(), 1)
+			defer func() {
+				helloRequestDuration.Record(r.Context(), time.Since(start).Seconds())
+			}()
 			name := lynx.NameFromContext(app.Context())
 			id := lynx.IDFromContext(app.Context())
 			out, _ := json.Marshal(map[string]any{
@@ -98,7 +112,6 @@ func main() {
 			}
 			return nil
 		}),
-		lynx.WithOTel(),
 	)
 	builder.Run()
 }

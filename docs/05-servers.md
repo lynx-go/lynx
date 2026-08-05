@@ -226,6 +226,15 @@ builder := lynx.NewBuilder(setup,
 )
 ```
 
+同样也可以**以组件形式**注册（与 `WithOTel` 等价，生命周期纳入组件调度，在日志中可见 `component=otel`）：
+
+```go
+// 在 setup 回调中：
+app.Hooks(lynx.Components(lynx.NewOTelComponent()))
+```
+
+> 注意：组件形式的 `Init` 在注册时同步执行，因此业务指标（`otel.Meter` 创建的 instrument）必须在 OTel 组件注册**之后**创建，否则拿到的是 noop meter；`WithOTel`（选项形式）在初始化阶段就位，无此顺序要求。
+
 `WithOTel` 默认创建：
 
 - **TracerProvider**：stdout trace exporter（pretty print）批量导出，开发调试直接看 stdout；
@@ -339,6 +348,49 @@ router.Handle("/metrics", promhttp.Handler())
 ```
 
 注意示例中的提醒：挂在主路由上意味着每次 Prometheus 抓取自己也会产生 span 和指标，生产环境建议把 `/metrics` 放到独立的 mux 或独立的监听端口上。
+
+**业务自定义指标**：托管路径下 provider 已是全局值，业务代码直接用 `otel.Meter` 创建 instrument 即可，采集与导出自动打通（取自 `_examples/http/metrics.go`）：
+
+```go
+var (
+	helloRequestsCounter metric.Int64Counter
+	helloRequestDuration metric.Float64Histogram
+)
+
+func initMetrics() error {
+	meter := otel.Meter("http-example")
+	var err error
+	helloRequestsCounter, err = meter.Int64Counter(
+		"hello.requests.total",
+		metric.WithDescription("total number of requests handled by /"),
+		metric.WithUnit("{request}"),
+	)
+	if err != nil {
+		return err
+	}
+	helloRequestDuration, err = meter.Float64Histogram(
+		"hello.request.duration",
+		metric.WithDescription("request handling duration of /"),
+		metric.WithUnit("s"),
+	)
+	return err
+}
+```
+
+处理器里记录指标（`r.Context()` 携带 span 上下文，指标与链路自动关联）：
+
+```go
+router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
+	start := time.Now()
+	helloRequestsCounter.Add(r.Context(), 1)
+	defer func() {
+		helloRequestDuration.Record(r.Context(), time.Since(start).Seconds())
+	}()
+	// ...业务处理...
+})
+```
+
+抓取 `/metrics` 即可看到 `hello_requests_total` 与 `hello_request_duration_seconds`（含 `otel_scope_name` 等标签）。
 
 ### 5.3.5 HTTP 中间件链序
 

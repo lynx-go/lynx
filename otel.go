@@ -2,6 +2,7 @@ package lynx
 
 import (
 	"context"
+	"log/slog"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/prometheus"
@@ -72,26 +73,12 @@ func (app *lynx) initOTel() error {
 		return nil
 	}
 
-	var err error
-	if o.traceExporter == nil {
-		o.traceExporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
-		if err != nil {
-			return err
-		}
+	tp, mp, err := newOTelProviders(o)
+	if err != nil {
+		return err
 	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(o.traceExporter))
 	otel.SetTracerProvider(tp)
-
-	if o.metricReader == nil {
-		o.metricReader, err = prometheus.New()
-		if err != nil {
-			_ = tp.Shutdown(context.Background())
-			return err
-		}
-	}
-	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(o.metricReader))
 	otel.SetMeterProvider(mp)
-
 	otel.SetTextMapPropagator(o.propagator)
 
 	app.onStops = append(app.onStops, func(ctx context.Context) error {
@@ -104,4 +91,82 @@ func (app *lynx) initOTel() error {
 		return nil
 	})
 	return nil
+}
+
+// newOTelProviders 按 OTelOptions 创建 TracerProvider 与 MeterProvider；
+// 未指定 exporter/reader 时使用默认值（stdout trace + Prometheus）。
+func newOTelProviders(o *OTelOptions) (tp *sdktrace.TracerProvider, mp *sdkmetric.MeterProvider, err error) {
+	if o.traceExporter == nil {
+		o.traceExporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	tp = sdktrace.NewTracerProvider(sdktrace.WithBatcher(o.traceExporter))
+
+	if o.metricReader == nil {
+		o.metricReader, err = prometheus.New()
+		if err != nil {
+			_ = tp.Shutdown(context.Background())
+			return nil, nil, err
+		}
+	}
+	mp = sdkmetric.NewMeterProvider(sdkmetric.WithReader(o.metricReader))
+	return tp, mp, nil
+}
+
+// OTelComponent 是以组件形式托管的 OTel 生命周期：Init 创建 provider 并
+// 设置为 otel 全局值，Start 阻塞至应用关闭，Stop 自动 flush 并 shutdown。
+// 与 WithOTel（Builder 选项）等价，区别是生命周期纳入组件调度；
+// 注意业务指标（otel.Meter 创建 instrument）需在 OTelComponent 注册之后创建，
+// 否则拿到的是 noop meter。
+type OTelComponent struct {
+	options *OTelOptions
+	tp      *sdktrace.TracerProvider
+	mp      *sdkmetric.MeterProvider
+}
+
+// NewOTelComponent 创建托管 OTel 生命周期的组件，选项与 WithOTel 相同。
+func NewOTelComponent(opts ...OTelOption) Component {
+	o := &OTelOptions{
+		propagator: propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}),
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return &OTelComponent{options: o}
+}
+
+// Name 返回组件名称 "otel"。
+func (c *OTelComponent) Name() string {
+	return "otel"
+}
+
+// Init 创建 provider 并设置为 otel 全局值。
+func (c *OTelComponent) Init(app App) error {
+	tp, mp, err := newOTelProviders(c.options)
+	if err != nil {
+		return err
+	}
+	otel.SetTracerProvider(tp)
+	otel.SetMeterProvider(mp)
+	otel.SetTextMapPropagator(c.options.propagator)
+	c.tp, c.mp = tp, mp
+	return nil
+}
+
+// Start 阻塞至应用关闭（组件 actor 语义）。
+func (c *OTelComponent) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
+// Stop 自动 flush 并关闭 provider。
+func (c *OTelComponent) Stop(ctx context.Context) {
+	var shutdownErrors ShutdownErrors
+	shutdownErrors.Add(c.tp.Shutdown(ctx))
+	shutdownErrors.Add(c.mp.Shutdown(ctx))
+	if shutdownErrors.HasErrors() {
+		slog.ErrorContext(ctx, "otel shutdown errors", "errors", shutdownErrors.Error())
+	}
 }

@@ -3,6 +3,7 @@ package lynx
 import (
 	"context"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -82,6 +83,47 @@ func TestWithOTelCustomProviders(t *testing.T) {
 	if got := otel.GetMeterProvider(); got == beforeMP {
 		t.Error("MeterProvider was not replaced")
 	}
+}
+
+func TestOTelComponentLifecycle(t *testing.T) {
+	beforeTP := otel.GetTracerProvider()
+	beforeMP := otel.GetMeterProvider()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(beforeTP)
+		otel.SetMeterProvider(beforeMP)
+	})
+
+	comp := NewOTelComponent()
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx failed: %v", err)
+	}
+	defer app.Close()
+
+	if err := comp.Init(app); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	if tp := otel.GetTracerProvider(); tp == beforeTP {
+		t.Error("TracerProvider was not set to a new global provider")
+	}
+	if mp := otel.GetMeterProvider(); mp == beforeMP {
+		t.Error("MeterProvider was not set to a new global provider")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- comp.Start(ctx) }()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after context cancel")
+	}
+
+	comp.Stop(context.Background())
 }
 
 type fakeSpanExporter struct{}
