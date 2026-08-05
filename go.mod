@@ -4,7 +4,6 @@ go 1.25.0
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/lynx-go/x v0.1.0
 	github.com/oklog/run v1.2.0
 	github.com/pkg/errors v0.9.1
@@ -17,7 +16,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
 	go.opentelemetry.io/otel/trace v1.43.0
 	gocloud.dev v0.46.0
-	google.golang.org/grpc v1.79.3
+	google.golang.org/grpc v1.82.1
 )
 
 require (
@@ -26,6 +25,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/google/wire v0.7.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
@@ -39,6 +39,6 @@ require (
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260316180232-0b37fe3546d5 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
