@@ -24,7 +24,7 @@ type Broker interface {
 	// Subscribe 注册 topic 的消费 handler。Start 前调用为缓冲注册，
 	// Start 后调用返回错误。
 	Subscribe(ctx context.Context, topic, handlerName string, h HandlerFunc, opts ...SubscribeOption) error
-	// Route 显式将 topic 路由到指定 Transport，覆盖自动路由。
+	// Route 显式将 topic 路由到指定 Transport，覆盖自动路由；须在 Start 前调用。
 	Route(topic string, t Transport)
 }
 
@@ -39,7 +39,11 @@ type Options struct {
 
 // NewBroker 创建消息代理门面。
 func NewBroker(opts Options) *broker {
-	return &broker{options: opts, routes: map[string]Transport{}}
+	return &broker{
+		options:  opts,
+		routes:   map[string]Transport{},
+		explicit: map[string]Transport{},
+	}
 }
 
 // HandlerFunc 是事件处理函数，返回错误时按订阅选项决定重试或确认。
@@ -134,18 +138,24 @@ func (a subscriberAdapter) Subscribe(ctx context.Context, topic string) (<-chan 
 	return a.t.Subscribe(ctx, topic, a.opts)
 }
 
-// Close 关闭底层 Transport，满足 watermill message.Subscriber 接口。
-func (a subscriberAdapter) Close() error {
-	a.t.Stop(context.Background())
-	return nil
-}
+// Close 是 no-op：Transport 生命周期由应用统一管理（broker.Stop 不关闭
+// Transport），这里不再委托 Transport.Stop，否则多 broker 共享同一
+// Transport 时，一个 broker 关闭会杀死其他 broker 的客户端。订阅 channel
+// 在订阅 ctx 取消时自行关闭，无需在此处理。
+func (a subscriberAdapter) Close() error { return nil }
 
 // Broker 是 Broker 接口的具体实现。
 type broker struct {
 	options Options
 	app     lynx.App
 	router  *message.Router
-	routes  map[string]Transport
+
+	// routes 与 explicit 由 routeMu 保护：Route 与 Init 自动路由写，
+	// resolve（Publish/Start）读。
+	routeMu  sync.RWMutex
+	routes   map[string]Transport
+	explicit map[string]Transport
+
 	mu      sync.Mutex
 	pending []pendingSubscription
 	started bool
@@ -154,11 +164,12 @@ type broker struct {
 // Name 返回组件名称 "pubsub-broker"。
 func (b *broker) Name() string { return "pubsub-broker" }
 
-// Route 显式将 topic 路由到指定 Transport，覆盖自动路由。
+// Route 显式将 topic 路由到指定 Transport，覆盖自动路由；须在 Start 前调用。
 func (b *broker) Route(topic string, t Transport) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.routeMu.Lock()
+	defer b.routeMu.Unlock()
 	b.routes[topic] = t
+	b.explicit[topic] = t
 }
 
 // CheckHealth 报告 Broker 是否在运行。
@@ -190,8 +201,13 @@ func (b *broker) Init(app lynx.App) error {
 	router.AddPlugin(plugin.SignalsHandler)
 	b.router = router
 
+	b.routeMu.Lock()
+	defer b.routeMu.Unlock()
 	for _, t := range b.options.Transports {
 		for _, topic := range t.Topics() {
+			if _, ok := b.explicit[topic]; ok {
+				continue // 显式 Route 覆盖自动路由，不检查不报错
+			}
 			if prev, ok := b.routes[topic]; ok && prev != t {
 				return fmt.Errorf("topic %q is routed to multiple transports", topic)
 			}
@@ -202,7 +218,10 @@ func (b *broker) Init(app lynx.App) error {
 }
 
 func (b *broker) resolve(topic string) (Transport, error) {
-	if t, ok := b.routes[topic]; ok {
+	b.routeMu.RLock()
+	t, ok := b.routes[topic]
+	b.routeMu.RUnlock()
+	if ok {
 		return t, nil
 	}
 	if b.options.DefaultTransport != nil {
@@ -212,21 +231,18 @@ func (b *broker) resolve(topic string) (Transport, error) {
 }
 
 // Start 将缓冲订阅统一注册进 watermill router 并运行；任一订阅
-// 无归属 Transport 时返回错误。
+// 无归属 Transport 时返回错误。注册循环全部成功后才置 started 并清空
+// pending：失败时保持原状，调用方可补充 Route 后重试 Start。
 func (b *broker) Start(ctx context.Context) error {
 	b.mu.Lock()
 	if b.started {
 		b.mu.Unlock()
 		return errors.New("broker already started")
 	}
-	b.started = true
-	pending := b.pending
-	b.pending = nil
-	b.mu.Unlock()
-
-	for _, p := range pending {
+	for _, p := range b.pending {
 		t, err := b.resolve(p.topic)
 		if err != nil {
+			b.mu.Unlock()
 			return err
 		}
 		adapter := subscriberAdapter{
@@ -235,6 +251,10 @@ func (b *broker) Start(ctx context.Context) error {
 		}
 		b.router.AddConsumerHandler(p.handlerName, p.topic, adapter, b.wrapHandler(p.handler, p.opts))
 	}
+	b.started = true
+	b.pending = nil
+	b.mu.Unlock()
+
 	return b.router.Run(ctx)
 }
 
@@ -283,12 +303,28 @@ func (b *broker) wrapHandler(h HandlerFunc, o SubscribeOptions) message.NoPublis
 		return nil
 	}
 	if o.AutoAck {
+		// AutoAck 语义：先确认再执行，最多执行一次。handler 出错仅记日志
+		// （wrapHandler 内已记录），返回 nil 以免触发 Retry 中间件重试。
 		return func(msg *message.Message) error {
 			msg.Ack()
-			return handler(msg)
+			_ = handler(msg)
+			return nil
 		}
 	}
 	return handler
+}
+
+// cloneMessage 浅拷贝 Message 并深拷贝 Headers，发布时只修改克隆体，
+// 避免 Publish 选项就地改写调用方的消息（同一消息并发发布会竞态）。
+func cloneMessage(m *Message) *Message {
+	cp := *m
+	if m.Headers != nil {
+		cp.Headers = make(map[string]string, len(m.Headers))
+		for k, v := range m.Headers {
+			cp.Headers[k] = v
+		}
+	}
+	return &cp
 }
 
 // Publish 将消息发布到逻辑 topic；路由未命中且无默认 Transport 时返回错误。
@@ -297,20 +333,21 @@ func (b *broker) Publish(ctx context.Context, topic string, msg *Message, opts .
 	for _, opt := range opts {
 		opt(o)
 	}
+	m := cloneMessage(msg)
 	if o.MessageKey != "" {
-		msg.Key = o.MessageKey
+		m.Key = o.MessageKey
 	}
 	for k, v := range o.Metadata {
-		if msg.Headers == nil {
-			msg.Headers = map[string]string{}
+		if m.Headers == nil {
+			m.Headers = map[string]string{}
 		}
-		msg.Headers[k] = v
+		m.Headers[k] = v
 	}
 	t, err := b.resolve(topic)
 	if err != nil {
 		return err
 	}
-	return t.Publish(topic, toWatermill(msg))
+	return t.Publish(topic, toWatermill(m))
 }
 
 // SetMessageKey 将消息 key 写入 watermill 消息元数据。

@@ -341,3 +341,113 @@ func TestBrokerSubscribeAfterStartFails(t *testing.T) {
 		t.Fatal("expected Subscribe error after Start")
 	}
 }
+
+func TestBrokerExplicitRouteOverridesAutoRoute(t *testing.T) {
+	ft1 := newFakeTransport("orders")
+	ft2 := newFakeTransport("orders")
+	b := NewBroker(Options{Transports: []Transport{ft2}})
+	b.Route("orders", ft1) // 显式 Route 先于 Init 自动路由
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init must not conflict when explicit Route precedes auto route: %v", err)
+	}
+	if err := b.Publish(context.Background(), "orders", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got := ft1.publishedTopics(); len(got) != 1 {
+		t.Fatalf("expected publish routed to explicit transport ft1, got %v", got)
+	}
+	if got := ft2.publishedTopics(); len(got) != 0 {
+		t.Fatalf("expected no publish to auto-routed transport ft2, got %v", got)
+	}
+}
+
+func TestBrokerStartFailureRecovery(t *testing.T) {
+	b := NewBroker(Options{})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := b.Subscribe(context.Background(), "orders", "h", func(ctx context.Context, msg *Message) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := b.Start(ctx); err == nil {
+		t.Fatal("expected Start error for un-routed subscription")
+	}
+
+	// Start 失败后状态可恢复：补充 Route 后重新 Start 成功。
+	ft := newFakeTransport("orders")
+	b.Route("orders", ft)
+	done := make(chan error, 1)
+	go func() { done <- b.Start(ctx) }()
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return b.CheckHealth() == nil }) {
+		t.Fatal("broker did not become healthy after re-Start")
+	}
+	if err := b.Publish(context.Background(), "orders", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got := ft.publishedTopics(); len(got) != 1 {
+		t.Fatalf("expected routed publish after recovery, got %v", got)
+	}
+	cancel()
+	b.Stop(context.Background())
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after Stop")
+	}
+}
+
+func TestBrokerAutoAckNoRetry(t *testing.T) {
+	var calls atomic.Int32
+	b, _ := startBroker(t, func(ctx context.Context, msg *Message) error {
+		calls.Add(1)
+		return errors.New("handler failed")
+	}, WithAutoAck())
+
+	if err := b.Publish(context.Background(), "test.event", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return calls.Load() >= 1 }) {
+		t.Fatal("first message was not processed")
+	}
+	// 给 Retry 中间件留出触发窗口：AutoAck 下失败 handler 不得被重试。
+	time.Sleep(500 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler called %d times, want 1 (AutoAck must not trigger Retry)", got)
+	}
+	// 消息已确认，不阻塞后续消息。
+	if err := b.Publish(context.Background(), "test.event", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish second: %v", err)
+	}
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return calls.Load() == 2 }) {
+		t.Fatalf("second message was not processed after AutoAck failure (calls=%d)", calls.Load())
+	}
+}
+
+func TestBrokerPublishDoesNotMutateMessage(t *testing.T) {
+	b := NewBroker(Options{DefaultTransport: NewMemoryTransport()})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	msg := MustJSONMessage(map[string]string{"a": "b"})
+	msg.Key = "original-key"
+	msg.Headers = map[string]string{"k": "v"}
+	if err := b.Publish(context.Background(), "orders", msg,
+		WithMessageKey("override"),
+		WithMetadata(map[string]string{"k2": "v2"}),
+	); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if msg.Key != "original-key" {
+		t.Errorf("msg.Key mutated by Publish: %q", msg.Key)
+	}
+	if _, ok := msg.Headers["k2"]; ok {
+		t.Error("msg.Headers mutated by Publish")
+	}
+	if msg.Headers["k"] != "v" {
+		t.Errorf("original header lost: %v", msg.Headers)
+	}
+}
