@@ -118,3 +118,22 @@ func (e *recordingSpanExporter) Shutdown(context.Context) error {
 	e.shutdownCount.Add(1)
 	return nil
 }
+
+// TestInitTwiceFails 回归：重复 Init 覆盖 otel 全局且首个 provider 永不
+// Shutdown（泄漏），必须返回错误。
+func TestInitTwiceFails(t *testing.T) {
+	beforeTP := otel.GetTracerProvider()
+	beforeMP := otel.GetMeterProvider()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(beforeTP)
+		otel.SetMeterProvider(beforeMP)
+	})
+
+	comp := New()
+	if err := comp.Init(nil); err != nil {
+		t.Fatalf("first Init failed: %v", err)
+	}
+	if err := comp.Init(nil); err == nil {
+		t.Fatal("expected error on second Init")
+	}
+}

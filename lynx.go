@@ -239,6 +239,9 @@ func (app *lynx) applyLogLevel() {
 		levelStr = app.c.GetString("log_level")
 	}
 	if levelStr == "" {
+		levelStr = app.c.GetString("logging.level")
+	}
+	if levelStr == "" {
 		return
 	}
 	level, err := parseLogLevel(levelStr)

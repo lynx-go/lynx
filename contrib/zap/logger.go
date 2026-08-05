@@ -31,17 +31,30 @@ func MustNewLogger(app lynx.App) *slog.Logger {
 
 // NewLogger 根据应用配置的日志级别创建基于 zap 的 slog 实例，并注入服务标识字段。
 func NewLogger(app lynx.App) (*slog.Logger, error) {
+	_, slogger, err := buildLogger(app)
+	if err != nil {
+		return nil, err
+	}
+	return slogger, nil
+}
+
+// buildLogger 创建 zap 实例与包装后的 slog 实例，并注入服务标识字段。
+// NewLogger 与 NewSyncableLogger 共用，避免重复。
+func buildLogger(app lynx.App) (*zap.Logger, *slog.Logger, error) {
 	logLevel := getLevel(app)
 	zapLogger, err := NewZapLogger(logLevel)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	slogger, err := NewSLogger(zapLogger, logLevel)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
-	return slogger.With("service_id", lynx.IDFromContext(app.Context()), "service_name", lynx.NameFromContext(app.Context()), "version", lynx.VersionFromContext(app.Context())), nil
+	return zapLogger, slogger.With(
+		"service_id", lynx.IDFromContext(app.Context()),
+		"service_name", lynx.NameFromContext(app.Context()),
+		"version", lynx.VersionFromContext(app.Context()),
+	), nil
 }
 
 // NewZapLoggerToFile 创建输出到指定文件的 zap 实例，日志格式为生产配置。
@@ -80,20 +93,13 @@ func NewZapLogger(logLevel string) (*zap.Logger, error) {
 // NewSLogger 将 zap 实例包装为 slog 实例，日志级别按 handler 设置。
 func NewSLogger(zlogger *zap.Logger, logLevel string) (*slog.Logger, error) {
 	level := slog.LevelDebug
-	atomicLevel := zap.NewAtomicLevel()
-
-	zapLevel := zap.DebugLevel
 	if err := level.UnmarshalText([]byte(logLevel)); err != nil {
 		return nil, err
 	}
 
-	if err := zapLevel.UnmarshalText([]byte(logLevel)); err != nil {
-		return nil, err
-	}
-	atomicLevel.SetLevel(zapLevel)
-
 	// The level is applied per-handler instead of slog.SetLogLoggerLevel to avoid
 	// mutating global slog state, which would affect unrelated loggers.
+	// zap 侧的级别由 NewZapLogger 的 AtomicLevel 单独控制。
 	logger := slog.New(slogzap.Option{Level: level, Logger: zlogger}.NewZapHandler())
 	return logger, nil
 }
@@ -123,17 +129,9 @@ func SyncOnStop(l *SyncableLogger) lynx.HookFunc {
 // NewSyncableLogger creates a SyncableLogger that wraps both slog and zap loggers.
 // This allows using slog for structured logging while retaining the ability to Sync.
 func NewSyncableLogger(app lynx.App) (*SyncableLogger, error) {
-	logLevel := getLevel(app)
-	zapLogger, err := NewZapLogger(logLevel)
+	zapLogger, slogger, err := buildLogger(app)
 	if err != nil {
 		return nil, err
 	}
-	slogger, err := NewSLogger(zapLogger, logLevel)
-	if err != nil {
-		return nil, err
-	}
-	return &SyncableLogger{
-		Logger:    slogger.With("service_id", lynx.IDFromContext(app.Context()), "service_name", lynx.NameFromContext(app.Context()), "version", lynx.VersionFromContext(app.Context())),
-		zapLogger: zapLogger,
-	}, nil
+	return &SyncableLogger{Logger: slogger, zapLogger: zapLogger}, nil
 }

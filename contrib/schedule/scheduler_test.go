@@ -350,3 +350,84 @@ func TestSchedulerHandlerErrorDoesNotStopScheduler(t *testing.T) {
 	s.Stop(context.Background())
 	<-done
 }
+
+// TestStopBeforeStartNoHang 回归 M2：Stop 先于 Start 调用时，cron.Stop()
+// 空转（robfig/cron 未 running 时不发停止信号），Stop 不得挂起，且随后
+// Start 不得启动无人能停的无限循环。
+func TestStopBeforeStartNoHang(t *testing.T) {
+	var count atomic.Int32
+	s, err := NewScheduler(
+		[]Task{newCountingTask("t1", "@every 100ms", &count)},
+		WithLogger(discardLogger()),
+	)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	if err := s.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		s.Stop(context.Background())
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop hung when called before Start")
+	}
+
+	// Start 随后调用必须立即返回（不启动 cron 无限循环）。
+	started := make(chan struct{})
+	go func() {
+		_ = s.Start(context.Background())
+		close(started)
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start hung when called after Stop")
+	}
+
+	// 给足一个调度周期：任务必须从未执行。
+	time.Sleep(300 * time.Millisecond)
+	if n := count.Load(); n != 0 {
+		t.Fatalf("task executed %d times after Stop-before-Start, want 0", n)
+	}
+}
+
+// TestErrorHandlerInvoked 验证 WithErrorHandler 回调接收任务错误。
+func TestErrorHandlerInvoked(t *testing.T) {
+	var got atomic.Int32
+	var gotName atomic.Value
+	s, err := NewScheduler(
+		[]Task{&testTask{name: "failing", cron: "@every 50ms", handler: func(ctx context.Context) error {
+			return errors.New("boom")
+		}}},
+		WithLogger(discardLogger()),
+		WithErrorHandler(func(ctx context.Context, task Task, err error) {
+			got.Add(1)
+			gotName.Store(task.Name())
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	if err := s.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = s.Start(ctx) }()
+	if !pollUntil(2*time.Second, 10*time.Millisecond, func() bool { return got.Load() > 0 }) {
+		cancel()
+		s.Stop(context.Background())
+		t.Fatal("error handler was not invoked")
+	}
+	cancel()
+	s.Stop(context.Background())
+	if name, _ := gotName.Load().(string); name != "failing" {
+		t.Fatalf("error handler task name = %q, want failing", name)
+	}
+}

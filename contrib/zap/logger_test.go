@@ -118,3 +118,16 @@ func TestSyncOnStop(t *testing.T) {
 		t.Errorf("SyncOnStop() error = %v", err)
 	}
 }
+
+// TestNewLoggerInvalidLevelError 回归：非法日志级别配置下 NewLogger
+// 必须返回错误而非静默回退。
+func TestNewLoggerInvalidLevelError(t *testing.T) {
+	app := newFakeApp(t)
+	app.set("logging.level", "not-a-level")
+	if _, err := NewLogger(app); err == nil {
+		t.Fatal("expected error for invalid log level")
+	}
+	if _, err := NewSyncableLogger(app); err == nil {
+		t.Fatal("expected error for invalid log level (SyncableLogger)")
+	}
+}
