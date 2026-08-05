@@ -44,48 +44,6 @@ type HandlerOptions interface {
 	Options() []SubscribeOption
 }
 
-// MessageIDFromContext 从上下文中获取消息 ID，未设置时返回空字符串。
-func MessageIDFromContext(ctx context.Context) string {
-	v, _ := ctx.Value(MessageIDKey).(string)
-	return v
-}
-
-// ContextWithMessageID 将消息 ID 写入上下文。
-func ContextWithMessageID(ctx context.Context, msgId string) context.Context {
-	return context.WithValue(ctx, MessageIDKey, msgId)
-}
-
-type msgKeyCtx struct {
-}
-
-func (ctx msgKeyCtx) String() string {
-	return "x-message-key"
-}
-
-// MessageKeyKey 是消息 key 在上下文与消息元数据中使用的键。
-var MessageKeyKey = msgKeyCtx{}
-
-// ContextWithMessageKey 将消息 key 写入上下文。
-func ContextWithMessageKey(ctx context.Context, msgKey string) context.Context {
-	return context.WithValue(ctx, MessageKeyKey, msgKey)
-}
-
-// MessageKeyFromContext 从上下文中获取消息 key，未设置时返回空字符串。
-func MessageKeyFromContext(ctx context.Context) string {
-	v, _ := ctx.Value(MessageKeyKey).(string)
-	return v
-}
-
-type msgIdCtx struct {
-}
-
-func (ctx msgIdCtx) String() string {
-	return "x-message-id"
-}
-
-// MessageIDKey 是消息 ID 在上下文与消息元数据中使用的键。
-var MessageIDKey = msgIdCtx{}
-
 // SubscribeOptions 是订阅行为的配置项。
 type SubscribeOptions struct {
 	AutoAck         bool `json:"auto_ack"`
