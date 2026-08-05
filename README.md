@@ -54,12 +54,11 @@ func main() {
         })
 
         // 注册 HTTP 服务器组件
-        return app.Hooks(lynx.Components(
-            http.NewServer(router,
-                http.WithAddr(":8080"),
-                http.WithHealthCheck(app.HealthCheckFunc()),
-            ),
+        app.Register(http.NewServer(router,
+            http.WithAddr(":8080"),
+            http.WithHealthCheck(app.HealthCheckFunc()),
         ))
+        return nil
     },
         lynx.WithName("my-app"),
         lynx.WithVersion("1.0.0"),
@@ -140,8 +139,8 @@ binder := kafka.NewBinder(kafka.BinderOptions{
     },
 })
 
-app.Hooks(lynx.ComponentBuilders(binder.ConsumerBuilders()...))
-app.Hooks(lynx.Components(binder))
+app.RegisterBuilders(binder.ConsumerBuilders()...)
+app.Register(binder)
 ```
 
 ### 使用定时任务
@@ -162,7 +161,7 @@ func (t *MyTask) HandlerFunc() schedule.HandlerFunc {
 }
 
 scheduler, _ := schedule.NewScheduler([]schedule.Task{&MyTask{}})
-app.Hooks(lynx.Components(scheduler))
+app.Register(scheduler)
 ```
 
 ## 核心概念
@@ -185,16 +184,14 @@ type Component interface {
 支持在应用启动和停止时执行自定义逻辑：
 
 ```go
-app.Hooks(
-    lynx.OnStart(func(ctx context.Context) error {
-        // 启动时执行
-        return nil
-    }),
-    lynx.OnStop(func(ctx context.Context) error {
-        // 停止时执行
-        return nil
-    }),
-)
+app.OnStart(func(ctx context.Context) error {
+    // 启动时执行
+    return nil
+})
+app.OnStop(func(ctx context.Context) error {
+    // 停止时执行
+    return nil
+})
 ```
 
 ### 依赖注入

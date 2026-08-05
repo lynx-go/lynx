@@ -33,26 +33,20 @@ func main() {
 
 		// OTel 组件须先注册：Init 同步创建 provider 并设为全局，
 		// 后续 initMetrics 创建的 instrument 才会挂到真实 MeterProvider 上。
-		if err := app.Hooks(lynx.Components(metrics.New())); err != nil {
-			return err
-		}
+		app.Register(metrics.New())
 		if err := initMetrics(); err != nil {
 			return err
 		}
 
-		if err := app.Hooks(lynx.OnStart(func(ctx context.Context) error {
+		app.OnStart(func(ctx context.Context) error {
 			app.Logger().Info("on start")
 			return nil
-		})); err != nil {
-			return err
-		}
+		})
 
-		if err := app.Hooks(lynx.OnStop(func(ctx context.Context) error {
+		app.OnStop(func(ctx context.Context) error {
 			app.Logger().Info("on stop")
 			return nil
-		})); err != nil {
-			return err
-		}
+		})
 		router := http.NewRouter()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			start := time.Now()
@@ -78,21 +72,17 @@ func main() {
 		// separate mux or listener to avoid self-referential spans/metrics.
 		router.Handle("/metrics", promhttp.Handler())
 
-		if err := app.Hooks(lynx.Components(http.NewServer(router,
+		app.Register(http.NewServer(router,
 			http.WithAddr(addr),
 			http.WithHealthCheck(app.HealthCheckFunc()),
 			http.WithLogger(app.Logger("logger", "http-requestlog")),
 			http.WithMiddleware(latencyMiddleware),
-		))); err != nil {
-			return err
-		}
+		))
 
-		if err := app.Hooks(lynx.OnStart(func(ctx context.Context) error {
+		app.OnStart(func(ctx context.Context) error {
 			time.Sleep(1 * time.Second)
 			return nil
-		})); err != nil {
-			return err
-		}
+		})
 
 		return nil
 	},

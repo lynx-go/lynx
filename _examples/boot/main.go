@@ -19,13 +19,12 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if err := app.Hooks(lynx.OnStop(func(ctx context.Context) error {
+		app.OnStop(func(ctx context.Context) error {
 			cleanup()
 			return nil
-		})); err != nil {
-			return err
-		}
-		return boot.Bind(app)
+		})
+		boot.Bind(app)
+		return nil
 	},
 		lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
 			f.String("addr", ":8080", "http listen address")

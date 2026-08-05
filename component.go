@@ -19,12 +19,6 @@ type Component interface {
 	LifecycleManaged
 }
 
-// ComponentBuilderSet 是一组组件构建器。
-type ComponentBuilderSet []ComponentBuilder
-
-// ComponentBuilderSetFunc 返回一组组件构建器，常用于按配置动态构建组件。
-type ComponentBuilderSetFunc func() ComponentBuilderSet
-
 // ComponentBuilder 按 BuildOptions 描述的方式构建组件实例。
 type ComponentBuilder interface {
 	Build() Component
@@ -41,9 +35,6 @@ func (o *BuildOptions) ensureDefaults() {
 		o.Instances = 1
 	}
 }
-
-// ComponentSet 是一组组件实例。
-type ComponentSet []Component
 
 // ServerLike 是同时具备健康检查能力的服务类组件。
 type ServerLike interface {

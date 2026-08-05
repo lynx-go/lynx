@@ -40,12 +40,11 @@ func main() {
 			_, _ = rw.Write(out)
 		})
 
-		return app.Hooks(lynx.Components(
-			http.NewServer(router,
-				http.WithAddr(":8080"),
-				http.WithHealthCheck(app.HealthCheckFunc()),
-			),
+		app.Register(http.NewServer(router,
+			http.WithAddr(":8080"),
+			http.WithHealthCheck(app.HealthCheckFunc()),
 		))
+		return nil
 	},
 		lynx.WithName("http-example"),
 		lynx.WithVersion("1.0.0"),
@@ -69,7 +68,7 @@ go run main.go
 代码要点：
 
 - `lynx.NewOptions` 通过 `WithName`、`WithVersion` 等选项配置应用元信息。
-- `lynx.NewBuilder(setup, opts...)` 创建应用实例，`setup` 回调中通过 `app.Hooks(lynx.Components(...))` 注册组件。
+- `lynx.NewBuilder(setup, opts...)` 创建应用实例，`setup` 回调中通过 `app.Register(...)` 注册组件。
 - `http.NewServer` 创建一个 HTTP 服务器组件，`WithAddr` 指定监听地址，`WithHealthCheck` 开启健康检查（见 2.5 节）。
 - `cli.Run()` 启动应用并阻塞，直到收到退出信号后优雅关闭。
 
@@ -198,9 +197,8 @@ func (c *myComponent) Stop(ctx context.Context) {}
 注册组件（注意初始化内嵌的 `HealthChecker`，否则为空指针）：
 
 ```go
-return app.Hooks(lynx.Components(
-	&myComponent{HealthChecker: &lynx.HealthChecker{}},
-))
+app.Register(&myComponent{HealthChecker: &lynx.HealthChecker{}})
+return nil
 ```
 
 由于内嵌，`myComponent` 自动满足 `health.Checker` 接口，注册后即成为 `/healthz/readiness` 的检查项；之后在业务逻辑中调用 `c.SetHealthy(false)` 即可让就绪检查返回 503。这对于需要"预热后再接流量"或"运维时临时摘流"的场景非常实用。

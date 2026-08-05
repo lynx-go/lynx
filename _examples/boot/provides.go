@@ -17,7 +17,6 @@ var ProviderSet = wire.NewSet(
 	NewConfig,
 	NewComponents,
 	NewComponentBuilders,
-	NewComponentBuilderSetFunc,
 	NewOnStarts,
 	NewOnStops,
 )
@@ -38,14 +37,8 @@ func NewComponentBuilders() []lynx.ComponentBuilder {
 	return []lynx.ComponentBuilder{}
 }
 
-func NewComponentBuilderSetFunc() lynx.ComponentBuilderSetFunc {
-	return func() lynx.ComponentBuilderSet {
-		return lynx.ComponentBuilderSet{}
-	}
-}
-
-func NewOnStarts(app lynx.App) lynx.OnStartHooks {
-	return lynx.OnStartHooks{
+func NewOnStarts(app lynx.App) boot.OnStartHooks {
+	return boot.OnStartHooks{
 		func(ctx context.Context) error {
 			app.Logger().Info("starting")
 			return nil
@@ -53,8 +46,8 @@ func NewOnStarts(app lynx.App) lynx.OnStartHooks {
 	}
 }
 
-func NewOnStops(app lynx.App) lynx.OnStopHooks {
-	return lynx.OnStopHooks{
+func NewOnStops(app lynx.App) boot.OnStopHooks {
+	return boot.OnStopHooks{
 		func(ctx context.Context) error {
 			app.Logger().Info("stopping")
 			return nil

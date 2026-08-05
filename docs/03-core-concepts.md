@@ -36,19 +36,18 @@ run group 的语义是：所有 actor 并发运行；一旦有任何一个 actor
 type HookFunc func(ctx context.Context) error
 ```
 
-通过 `app.Hooks` 配合 `lynx.OnStart` / `lynx.OnStop` 注册：
+通过 `app.OnStart` / `app.OnStop` 直接注册：
 
 ```go
-return app.Hooks(
-	lynx.OnStart(func(ctx context.Context) error {
-		// 启动时执行，例如预热缓存、释放 setup 阶段的临时资源
-		return nil
-	}),
-	lynx.OnStop(func(ctx context.Context) error {
-		// 关闭时执行，例如 flush 数据、注销服务发现
-		return nil
-	}),
-)
+app.OnStart(func(ctx context.Context) error {
+	// 启动时执行，例如预热缓存、释放 setup 阶段的临时资源
+	return nil
+})
+app.OnStop(func(ctx context.Context) error {
+	// 关闭时执行，例如 flush 数据、注销服务发现
+	return nil
+})
+return nil
 ```
 
 两类钩子的执行时机和语义不同：
@@ -226,21 +225,20 @@ import (
 
 func main() {
 	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
-		return app.Hooks(
-			lynx.OnStart(func(ctx context.Context) error {
-				app.Logger().Info("on-start hook",
-					"name", lynx.NameFromContext(app.Context()),
-					"id", lynx.IDFromContext(app.Context()),
-					"version", lynx.VersionFromContext(app.Context()),
-				)
-				return nil
-			}),
-			lynx.OnStop(func(ctx context.Context) error {
-				app.Logger().Info("on-stop hook")
-				return nil
-			}),
-			lynx.Components(&myComponent{}),
-		)
+		app.OnStart(func(ctx context.Context) error {
+			app.Logger().Info("on-start hook",
+				"name", lynx.NameFromContext(app.Context()),
+				"id", lynx.IDFromContext(app.Context()),
+				"version", lynx.VersionFromContext(app.Context()),
+			)
+			return nil
+		})
+		app.OnStop(func(ctx context.Context) error {
+			app.Logger().Info("on-stop hook")
+			return nil
+		})
+		app.Register(&myComponent{})
+		return nil
 	},
 		lynx.WithName("core-concepts"),
 		lynx.WithVersion("1.0.0"),

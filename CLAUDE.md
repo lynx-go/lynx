@@ -80,7 +80,7 @@ type LifecycleManaged interface {
 }
 ```
 
-Components are registered via `app.Hooks(lynx.Components(...))` and automatically managed through their lifecycle. Components implementing `health.Checker` are automatically added to health checks.
+Components are registered via `app.Register(...)` and automatically managed through their lifecycle. Components implementing `health.Checker` are automatically added to health checks.
 
 **ComponentBuilder**
 For dynamic component creation with configurable instance counts (component.go:24-27):
@@ -91,12 +91,12 @@ type ComponentBuilder interface {
 }
 ```
 
-**Hooks**
-Lifecycle hooks registered via `app.Hooks()` (hooks.go):
-- `OnStart` - Functions to execute on startup
-- `OnStop` - Functions to execute on shutdown
-- `Components` - Register components
-- `ComponentBuilders` - Register component builders
+**Hooks & Registration**
+Lifecycle hooks and components are registered via direct methods on the `App` interface (lynx.go):
+- `app.OnStart(fns ...HookFunc)` - Functions to execute on startup
+- `app.OnStop(fns ...HookFunc)` - Functions to execute on shutdown
+- `app.Register(components ...Component)` - Register components (Init runs synchronously at registration; the first error is recorded and returned by `Run()`)
+- `app.RegisterBuilders(builders ...ComponentBuilder)` - Register component builders
 
 **Application Lifecycle**
 The main run loop (lynx.go:239-279) uses `oklog/run` to manage concurrent goroutines:
@@ -201,14 +201,12 @@ The `lynx.NewBuilder()` function creates a `*Builder` instance with two run meth
 **Adding a New Component**
 1. Implement the Component interface
 2. Optionally implement health.Checker
-3. Register via `app.Hooks(lynx.Components(myComponent))`
+3. Register via `app.Register(myComponent)`
 
 **Adding a Hook**
 ```go
-app.Hooks(
-    lynx.OnStart(func(ctx context.Context) error { ... }),
-    lynx.OnStop(func(ctx context.Context) error { ... }),
-)
+app.OnStart(func(ctx context.Context) error { ... })
+app.OnStop(func(ctx context.Context) error { ... })
 ```
 
 **Using Wire for DI**

@@ -22,17 +22,17 @@ type Component interface {
 四个方法的契约如下：
 
 - `Name() string`：组件名称，用于启动/停止日志中的标识。框架不检查唯一性，多个实例可以重名。
-- `Init(app App) error`：注册组件时（即 `app.Hooks(lynx.Components(...))` 调用时）**同步**执行，用于初始化依赖——可以通过参数 `app` 访问 `app.Config()`、`app.Logger()`、`app.Context()` 等。返回 error 会让 `Hooks` 直接返回错误，启动失败。
+- `Init(app App) error`：注册组件时（即 `app.Register(...)` 调用时）**同步**执行，用于初始化依赖——可以通过参数 `app` 访问 `app.Config()`、`app.Logger()`、`app.Context()` 等。返回 error 不会在注册时立即返回，而是被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
 - `Start(ctx context.Context) error`：`cli.Run()` 启动后，每个组件在 run group 中作为独立 actor **并发**调用。通常是阻塞式的（监听端口、消费消息），收到 `ctx` 取消时应返回。任何一个组件的 `Start` 返回（无论是否出错）都会触发整个应用的优雅关闭（见 3.1 节并发模型）。
 - `Stop(ctx context.Context)`：关闭阶段由 run group 的中断函数调用，用于释放资源。注意框架是先调用 `Stop` 再取消组件 Context（见 3.1 节），因此 `Stop` 中不要等待 `ctx.Done()`。
 
-注册组件通过 Hooks 完成：
+注册组件通过 `app.Register` 完成：
 
 ```go
-return app.Hooks(lynx.Components(myComponent))
+app.Register(myComponent)
 ```
 
-每个通过 `lynx.Components` 注册的组件会获得一个独立的 Context（注册时创建），`Start` 和 `Stop` 收到的都是这个 Context。
+每个通过 `app.Register` 注册的组件会获得一个独立的 Context（注册时创建），`Start` 和 `Stop` 收到的都是这个 Context。
 
 ## 4.2 ComponentBuilder 与多实例
 
@@ -49,28 +49,21 @@ type BuildOptions struct {
 }
 ```
 
-注册方式与组件类似，使用 `lynx.ComponentBuilders`：
+注册方式与组件类似，使用 `app.RegisterBuilders`：
 
 ```go
-return app.Hooks(lynx.ComponentBuilders(myBuilder))
+app.RegisterBuilders(myBuilder)
 ```
 
 框架对 builder 的处理逻辑（`lynx.go` 的 `addComponentBuilders`）：
 
 1. 调用 `Options()` 获取构建选项，`Instances` 为 0 时按 1 处理；
 2. 循环调用 `Instances` 次 `Build()`，每次得到一个**全新**的组件实例；
-3. 把这些实例逐一走与 `lynx.Components` 相同的注册流程（各自独立 `Init`/独立 Context/独立 run group actor）。
+3. 把这些实例逐一走与 `app.Register` 相同的注册流程（各自独立 `Init`/独立 Context/独立 run group actor）。
 
 也就是说，`Instances: 3` 等价于注册三个互不影响的组件实例，`Build()` 必须每次返回新对象，各实例之间不应共享会互相干扰的状态。
 
-框架还预定义了两个辅助类型，供依赖注入场景批量提供 builder：
-
-```go
-type ComponentBuilderSet []ComponentBuilder
-type ComponentBuilderSetFunc func() ComponentBuilderSet
-```
-
-`boot` 包的 Wire 引导流程（`boot.Bind`）会消费 `ComponentBuilderSetFunc`，把返回的 builder 集合一次性注册进应用，用法见 `_examples/boot/provides.go`。
+`boot` 包的 Wire 引导流程（`boot.Bind`）会把聚合好的组件与 builder 一次性注册进应用，用法见 `_examples/boot/provides.go`。
 
 ## 4.3 ServerLike 与 CheckHealth 扩展接口
 
@@ -134,9 +127,8 @@ import (
 
 func main() {
 	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
-		return app.Hooks(
-			lynx.ComponentBuilders(NewWorkerBuilder("worker", 2)),
-		)
+		app.RegisterBuilders(NewWorkerBuilder("worker", 2))
+		return nil
 	},
 		lynx.WithName("custom-component"),
 	)
@@ -214,15 +206,11 @@ go get github.com/lynx-go/lynx/contrib/zap
 
 ```go
 broker := pubsub.NewBroker(pubsub.Options{}, []pubsub.Binder{binder})
-if err := app.Hooks(lynx.Components(broker)); err != nil {
-	return err
-}
+app.Register(broker)
 router := pubsub.NewRouter(broker, []pubsub.Handler{
 	&helloHandler{},
 })
-if err := app.Hooks(lynx.Components(router)); err != nil {
-	return err
-}
+app.Register(router)
 ```
 
 Handler 的实现：
@@ -279,16 +267,10 @@ binder := kafka.NewBinder(kafka.BinderOptions{
 注册顺序有一个硬性要求（`_examples/pubsub/main.go` 中的注释）：binder 的 consumer builders 在 `Init()` 中才完成初始化，因此 `binder.ConsumerBuilders()` 必须在 binder 注册**之后**单独注册：
 
 ```go
-if err := app.Hooks(lynx.Components(broker)); err != nil {
-	return err
-}
-if err := app.Hooks(lynx.Components(binder)); err != nil {
-	return err
-}
+app.Register(broker)
+app.Register(binder)
 // 因为 binder 中需要先在 Init() 中初始化 consumer builders，所以 binder.ConsumerBuilders() 不能和 binder 同时注入
-if err := app.Hooks(lynx.ComponentBuilders(binder.ConsumerBuilders()...)); err != nil {
-	return err
-}
+app.RegisterBuilders(binder.ConsumerBuilders()...)
 ```
 
 `ConsumerOptions.Instances` 字段会被透传到 builder 的 `BuildOptions.Instances`，上例即为 `hello` 事件启动 3 个并发 consumer。
@@ -302,7 +284,8 @@ scheduler, err := schedule.NewScheduler([]schedule.Task{task1}, schedule.WithLog
 if err != nil {
 	return err
 }
-return app.Hooks(lynx.Components(scheduler))
+app.Register(scheduler)
+return nil
 ```
 
 Task 的实现：

@@ -144,9 +144,8 @@ func main() {
     })
 
     cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
-        return app.Hooks(lynx.Components(
-            http.NewServer(router, http.WithAddr(":8080")),
-        ))
+        app.Register(http.NewServer(router, http.WithAddr(":8080")))
+        return nil
     },
         lynx.WithName("my-app"),
         lynx.WithVersion("1.0.0"),

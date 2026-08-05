@@ -41,15 +41,11 @@ func main() {
 		logger.Info("parsed config", "config", config)
 
 		broker := pubsub.NewBroker(pubsub.Options{}, nil)
-		if err := app.Hooks(lynx.Components(broker)); err != nil {
-			return err
-		}
+		app.Register(broker)
 		router := pubsub.NewRouter(broker, []pubsub.Handler{
 			&helloHandler{},
 		})
-		if err := app.Hooks(lynx.Components(router)); err != nil {
-			return err
-		}
+		app.Register(router)
 
 		fmt.Println("hello cli")
 

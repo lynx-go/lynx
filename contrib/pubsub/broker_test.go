@@ -26,15 +26,18 @@ func newFakeApp() *fakeApp {
 	}
 }
 
-func (f *fakeApp) Close()                                {}
-func (f *fakeApp) Config() lynx.Config                  { return nil }
-func (f *fakeApp) Context() context.Context              { return f.ctx }
-func (f *fakeApp) CLI(lynx.CommandFunc) error            { return nil }
-func (f *fakeApp) Hooks(...lynx.HookOption) error        { return nil }
-func (f *fakeApp) HealthCheckFunc() lynx.HealthCheckFunc { return nil }
-func (f *fakeApp) Run() error                            { return nil }
-func (f *fakeApp) SetLogger(logger *slog.Logger)         { f.logger = logger }
-func (f *fakeApp) Logger(kwargs ...any) *slog.Logger     { return f.logger.With(kwargs...) }
+func (f *fakeApp) Close()                                    {}
+func (f *fakeApp) Config() lynx.Config                      { return nil }
+func (f *fakeApp) Context() context.Context                  { return f.ctx }
+func (f *fakeApp) CLI(lynx.CommandFunc) error                { return nil }
+func (f *fakeApp) OnStart(...lynx.HookFunc)                  {}
+func (f *fakeApp) OnStop(...lynx.HookFunc)                   {}
+func (f *fakeApp) Register(...lynx.Component)                {}
+func (f *fakeApp) RegisterBuilders(...lynx.ComponentBuilder) {}
+func (f *fakeApp) HealthCheckFunc() lynx.HealthCheckFunc     { return nil }
+func (f *fakeApp) Run() error                                { return nil }
+func (f *fakeApp) SetLogger(logger *slog.Logger)             { f.logger = logger }
+func (f *fakeApp) Logger(kwargs ...any) *slog.Logger         { return f.logger.With(kwargs...) }
 
 var _ lynx.App = (*fakeApp)(nil)
 

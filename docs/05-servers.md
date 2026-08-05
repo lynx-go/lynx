@@ -59,13 +59,14 @@ func main() {
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			_, _ = rw.Write([]byte("hello lynx"))
 		})
-		return app.Hooks(lynx.Components(http.NewServer(router,
+		app.Register(http.NewServer(router,
 			http.WithAddr(":8080"),
 			http.WithHealthCheck(app.HealthCheckFunc()),
 			http.WithLogger(app.Logger("logger", "http-requestlog")),
 			http.WithRequestLog(true),
 			http.WithMiddleware(latencyMiddleware),
-		)))
+		))
+		return nil
 	},
 		lynx.WithName("http-demo"),
 		lynx.WithVersion("1.0.0"),
@@ -156,7 +157,8 @@ func main() {
 		// 业务服务通过 GetServer() 拿到原生 *grpc.Server 注册。
 		// 实际项目中服务描述由 protoc 生成，这里手写一个最小 Echo 服务作演示。
 		srv.GetServer().RegisterService(&echoServiceDesc, &echoService{})
-		return app.Hooks(lynx.Components(srv))
+		app.Register(srv)
+		return nil
 	},
 		lynx.WithName("grpc-demo"),
 		lynx.WithVersion("1.0.0"),
@@ -222,7 +224,7 @@ var echoServiceDesc = gogrpc.ServiceDesc{
 
 ```go
 // 在 setup 回调中：
-app.Hooks(lynx.Components(metrics.New()))
+app.Register(metrics.New())
 ```
 
 组件默认创建：
@@ -262,11 +264,9 @@ shutdown, tp, mp, propagator, err := setupOTel()
 if err != nil {
 	return err
 }
-if err := app.Hooks(lynx.OnStop(func(ctx context.Context) error {
+app.OnStop(func(ctx context.Context) error {
 	return shutdown(ctx)
-})); err != nil {
-	return err
-}
+})
 ```
 
 一个需要留意的副作用：HTTP 服务器底层 gocloud.dev 在 `Start` 时会把传入的非 nil TracerProvider/MeterProvider/Propagator **同时设置为 otel 全局 provider**（即替你调用了 `otel.SetTracerProvider` 等）。单服务进程里这通常正合预期（业务代码可以直接用全局 tracer）；但如果你已自行设置过全局 provider、或同一进程跑多个服务器，要意识到后启动的服务器会覆盖全局值。使用 5.3.1 节的托管路径时，全局值由框架在启动前设置，不存在该副作用。

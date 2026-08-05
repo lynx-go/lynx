@@ -31,8 +31,18 @@ type App interface {
 	Context() context.Context
 	// CLI 注册启动的命令，用于 CLI 模式
 	CLI(cmd CommandFunc) error
-	// Hooks 添加 OnStart/OnStop/Component/ComponentBuilder Hooks
-	Hooks(hooks ...HookOption) error
+
+	// OnStart 注册应用启动阶段执行的钩子函数
+	OnStart(fns ...HookFunc)
+	// OnStop 注册应用停止阶段执行的钩子函数
+	OnStop(fns ...HookFunc)
+	// Register 注册需要由应用托管生命周期的组件实例。
+	// 组件的 Init 在注册时同步执行；注册阶段产生的错误不会立即返回，
+	// 首个错误会被记录，并在 Run() 时统一返回。
+	Register(components ...Component)
+	// RegisterBuilders 注册需要由应用托管生命周期的组件构建器，
+	// 错误处理语义与 Register 相同。
+	RegisterBuilders(builders ...ComponentBuilder)
 
 	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
 	HealthCheckFunc() HealthCheckFunc
@@ -42,7 +52,6 @@ type App interface {
 	SetLogger(logger *slog.Logger)
 	// Logger 获取 logger
 	Logger(kwargs ...any) *slog.Logger
-	//Hooks
 }
 
 type nameCtx struct{}
@@ -91,7 +100,6 @@ func NameFromContext(ctx context.Context) string {
 }
 
 type lynx struct {
-	*hooks
 	mu             sync.Mutex
 	o              *Options
 	f              *pflag.FlagSet
@@ -101,27 +109,47 @@ type lynx struct {
 	runG           *run.Group
 	logger         *slog.Logger
 	healthCheckers []health.Checker
+
+	onStarts []HookFunc
+	onStops  []HookFunc
+	// initErr 记录注册阶段产生的首个错误，由 Run() 统一返回。
+	initErr error
 }
 
-func (app *lynx) Hooks(hooks ...HookOption) error {
+func (app *lynx) OnStart(fns ...HookFunc) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
+	app.onStarts = append(app.onStarts, fns...)
+}
 
-	options := &hookOptions{}
-	for _, hook := range hooks {
-		hook(options)
-	}
+func (app *lynx) OnStop(fns ...HookFunc) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	app.onStops = append(app.onStops, fns...)
+}
 
-	app.onStarts = append(app.onStarts, options.onStarts...)
-	app.onStops = append(app.onStops, options.onStops...)
-	if err := app.addComponents(options.components...); err != nil {
-		return err
+func (app *lynx) Register(components ...Component) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.initErr != nil {
+		return
 	}
+	if err := app.addComponents(components...); err != nil {
+		app.initErr = err
+		log.ErrorContext(app.ctx, "failed to register components", err)
+	}
+}
 
-	if err := app.addComponentBuilders(options.componentBuilders...); err != nil {
-		return err
+func (app *lynx) RegisterBuilders(builders ...ComponentBuilder) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.initErr != nil {
+		return
 	}
-	return nil
+	if err := app.addComponentBuilders(builders...); err != nil {
+		app.initErr = err
+		log.ErrorContext(app.ctx, "failed to register component builders", err)
+	}
 }
 
 func (app *lynx) SetLogger(logger *slog.Logger) {
@@ -277,6 +305,9 @@ func (app *lynx) addComponents(components ...Component) error {
 }
 
 func (app *lynx) Run() error {
+	if app.initErr != nil {
+		return app.initErr
+	}
 	app.Logger().Info("starting")
 	app.runG.Add(func() error {
 		app.Logger().Info("run on-start hooks")
@@ -330,15 +361,13 @@ func (app *lynx) Run() error {
 func newLynx(o *Options) (App, error) {
 	o.EnsureDefaults()
 	app := &lynx{
-		o:    o,
-		c:    viper.New(),
-		f:    pflag.CommandLine,
-		runG: &run.Group{},
-		hooks: &hooks{
-			onStarts: []HookFunc{},
-			onStops:  []HookFunc{},
-		},
-		logger: slog.Default(),
+		o:        o,
+		c:        viper.New(),
+		f:        pflag.CommandLine,
+		runG:     &run.Group{},
+		logger:   slog.Default(),
+		onStarts: []HookFunc{},
+		onStops:  []HookFunc{},
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
 	if err := app.init(); err != nil {

@@ -73,6 +73,23 @@ func (c *checkerComponent) Start(ctx context.Context) error {
 }
 func (c *checkerComponent) Stop(ctx context.Context) {}
 
+// initRecorder records whether Init was called.
+type initRecorder struct {
+	name        string
+	initialized atomic.Bool
+}
+
+func (c *initRecorder) Name() string { return c.name }
+func (c *initRecorder) Init(app App) error {
+	c.initialized.Store(true)
+	return nil
+}
+func (c *initRecorder) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+func (c *initRecorder) Stop(ctx context.Context) {}
+
 // recordingBuilder builds blockingComponents and counts Build calls.
 type recordingBuilder struct {
 	instances int
@@ -136,16 +153,41 @@ func TestNewLynx(t *testing.T) {
 	}
 }
 
-func TestHooksComponentInitError(t *testing.T) {
+func TestRegisterInitErrorSurfacesAtRun(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 
 	wantErr := errors.New("init failed")
-	err = app.Hooks(Components(&failInitComponent{name: "bad", err: wantErr}))
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("Hooks() error = %v, want %v", err, wantErr)
+	app.Register(&failInitComponent{name: "bad", err: wantErr})
+
+	if err := app.Run(); !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want %v", err, wantErr)
+	}
+}
+
+// TestRegisterSkippedAfterInitError verifies the poison-pill semantics:
+// once a registration fails, later registrations are skipped so that
+// dependent components are not initialized against a broken state.
+func TestRegisterSkippedAfterInitError(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+
+	app.Register(&failInitComponent{name: "bad", err: errors.New("init failed")})
+
+	second := &initRecorder{name: "second"}
+	app.Register(second)
+	if second.initialized.Load() {
+		t.Error("second component should not be initialized after a failed registration")
+	}
+
+	builder := &recordingBuilder{instances: 1}
+	app.RegisterBuilders(builder)
+	if got := builder.builds.Load(); got != 0 {
+		t.Errorf("Build() called %d times after a failed registration, want 0", got)
 	}
 }
 
@@ -166,9 +208,7 @@ func TestComponentBuildersInstances(t *testing.T) {
 				t.Fatalf("newLynx() error = %v", err)
 			}
 			builder := &recordingBuilder{instances: tt.instances}
-			if err := app.Hooks(ComponentBuilders(builder)); err != nil {
-				t.Fatalf("Hooks() error = %v", err)
-			}
+			app.RegisterBuilders(builder)
 			if got := builder.builds.Load(); got != tt.wantBuilds {
 				t.Errorf("Build() called %d times, want %d", got, tt.wantBuilds)
 			}
@@ -187,9 +227,7 @@ func TestHealthCheckersRegistered(t *testing.T) {
 	}
 
 	comp := &checkerComponent{name: "checker"}
-	if err := app.Hooks(Components(comp)); err != nil {
-		t.Fatalf("Hooks() error = %v", err)
-	}
+	app.Register(comp)
 
 	checkers := app.HealthCheckFunc()()
 	if len(checkers) != 1 {
@@ -200,9 +238,7 @@ func TestHealthCheckersRegistered(t *testing.T) {
 	}
 
 	// A component that is not a health.Checker must not be registered.
-	if err := app.Hooks(Components(&blockingComponent{name: "plain"})); err != nil {
-		t.Fatalf("Hooks() error = %v", err)
-	}
+	app.Register(&blockingComponent{name: "plain"})
 	if got := len(app.HealthCheckFunc()()); got != 1 {
 		t.Errorf("health checkers = %d, want 1 after adding non-checker component", got)
 	}
@@ -217,15 +253,11 @@ func TestRunLifecycleStartStopOrdering(t *testing.T) {
 	rec := &eventRecorder{}
 	c1 := &blockingComponent{name: "c1", record: rec.record}
 	c2 := &blockingComponent{name: "c2", record: rec.record}
-	if err := app.Hooks(Components(c1, c2)); err != nil {
-		t.Fatalf("Hooks() error = %v", err)
-	}
-	if err := app.Hooks(OnStop(func(ctx context.Context) error {
+	app.Register(c1, c2)
+	app.OnStop(func(ctx context.Context) error {
 		rec.record("onstop")
 		return nil
-	})); err != nil {
-		t.Fatalf("Hooks() error = %v", err)
-	}
+	})
 
 	runErr := make(chan error, 1)
 	go func() {
@@ -286,11 +318,9 @@ func TestRunOnStartHookError(t *testing.T) {
 	}
 
 	wantErr := errors.New("on-start failed")
-	if err := app.Hooks(OnStart(func(ctx context.Context) error {
+	app.OnStart(func(ctx context.Context) error {
 		return wantErr
-	})); err != nil {
-		t.Fatalf("Hooks() error = %v", err)
-	}
+	})
 
 	if err := app.Run(); !errors.Is(err, wantErr) {
 		t.Fatalf("Run() error = %v, want %v", err, wantErr)
@@ -304,9 +334,7 @@ func TestRunComponentStartError(t *testing.T) {
 	}
 
 	wantErr := errors.New("start failed")
-	if err := app.Hooks(Components(&failStartComponent{name: "bad", err: wantErr})); err != nil {
-		t.Fatalf("Hooks() error = %v", err)
-	}
+	app.Register(&failStartComponent{name: "bad", err: wantErr})
 
 	if err := app.Run(); !errors.Is(err, wantErr) {
 		t.Fatalf("Run() error = %v, want %v", err, wantErr)
@@ -332,9 +360,7 @@ func TestRunOnStopHooksAllExecutedDespiteErrors(t *testing.T) {
 			return nil
 		}
 	}
-	if err := app.Hooks(OnStop(record("hook1"), record("hook2"), record("hook3"))); err != nil {
-		t.Fatalf("Hooks() error = %v", err)
-	}
+	app.OnStop(record("hook1"), record("hook2"), record("hook3"))
 
 	runErr := make(chan error, 1)
 	go func() {

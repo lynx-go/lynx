@@ -206,13 +206,14 @@ func newFakeApp() *fakeApp {
 	return &fakeApp{ctx: context.Background()}
 }
 
-func (a *fakeApp) Close()                     {}
-func (a *fakeApp) Config() lynx.Config       { return lynx.NewViperConfig(viper.New()) }
-func (a *fakeApp) Context() context.Context   { return a.ctx }
-func (a *fakeApp) CLI(lynx.CommandFunc) error { return nil }
-func (a *fakeApp) Hooks(...lynx.HookOption) error {
-	return nil
-}
+func (a *fakeApp) Close()                                    {}
+func (a *fakeApp) Config() lynx.Config                      { return lynx.NewViperConfig(viper.New()) }
+func (a *fakeApp) Context() context.Context                  { return a.ctx }
+func (a *fakeApp) CLI(lynx.CommandFunc) error                { return nil }
+func (a *fakeApp) OnStart(...lynx.HookFunc)                  {}
+func (a *fakeApp) OnStop(...lynx.HookFunc)                   {}
+func (a *fakeApp) Register(...lynx.Component)                {}
+func (a *fakeApp) RegisterBuilders(...lynx.ComponentBuilder) {}
 func (a *fakeApp) HealthCheckFunc() lynx.HealthCheckFunc {
 	return func() []health.Checker { return nil }
 }

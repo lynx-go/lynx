@@ -4,51 +4,41 @@ import (
 	"github.com/lynx-go/lynx"
 )
 
+// OnStartHooks 是一组启动钩子函数。
+// 独立命名类型用于 Wire 依赖注入时区分启动钩子与停止钩子。
+type OnStartHooks []lynx.HookFunc
+
+// OnStopHooks 是一组停止钩子函数。
+type OnStopHooks []lynx.HookFunc
+
 // Bootstrap 聚合应用启动所需的钩子函数、组件与组件构建器。
 type Bootstrap struct {
-	StartHooks              []lynx.HookFunc
-	StopHooks               []lynx.HookFunc
-	Components              []lynx.Component
-	ComponentBuilders       []lynx.ComponentBuilder
-	ComponentBuilderSetFunc lynx.ComponentBuilderSetFunc
+	StartHooks        OnStartHooks
+	StopHooks         OnStopHooks
+	Components        []lynx.Component
+	ComponentBuilders []lynx.ComponentBuilder
 }
 
 // New 创建 Bootstrap 实例。
 func New(
-	onStarts lynx.OnStartHooks,
-	onStops lynx.OnStopHooks,
+	onStarts OnStartHooks,
+	onStops OnStopHooks,
 	components []lynx.Component,
 	componentBuilders []lynx.ComponentBuilder,
-	componentBuilderSetFunc lynx.ComponentBuilderSetFunc,
 ) *Bootstrap {
 	return &Bootstrap{
-		StartHooks:              onStarts,
-		StopHooks:               onStops,
-		Components:              components,
-		ComponentBuilders:       componentBuilders,
-		ComponentBuilderSetFunc: componentBuilderSetFunc,
+		StartHooks:        onStarts,
+		StopHooks:         onStops,
+		Components:        components,
+		ComponentBuilders: componentBuilders,
 	}
 }
 
-// Bind 将 Bootstrap 中的钩子函数、组件与组件构建器绑定到 Lynx 应用。
-func (b *Bootstrap) Bind(app lynx.App) error {
-	if err := app.Hooks(lynx.OnStart(b.StartHooks...)); err != nil {
-		return err
-	}
-	if err := app.Hooks(lynx.OnStop(b.StopHooks...)); err != nil {
-		return err
-	}
-	if err := app.Hooks(lynx.Components(b.Components...)); err != nil {
-		return err
-	}
-
-	if err := app.Hooks(lynx.ComponentBuilders(b.ComponentBuilders...)); err != nil {
-		return err
-	}
-	if b.ComponentBuilderSetFunc != nil {
-		if err := app.Hooks(lynx.ComponentBuilders(b.ComponentBuilderSetFunc()...)); err != nil {
-			return err
-		}
-	}
-	return nil
+// Bind 将 Bootstrap 中的钩子函数、组件与组件构建器注册到 Lynx 应用。
+// 注册阶段产生的错误（如组件 Init 失败）由 app.Run() 统一返回。
+func (b *Bootstrap) Bind(app lynx.App) {
+	app.OnStart(b.StartHooks...)
+	app.OnStop(b.StopHooks...)
+	app.Register(b.Components...)
+	app.RegisterBuilders(b.ComponentBuilders...)
 }

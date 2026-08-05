@@ -43,31 +43,21 @@ func main() {
 			},
 		})
 		broker := pubsub.NewBroker(pubsub.Options{}, []pubsub.Binder{binder})
-		if err := app.Hooks(lynx.Components(broker)); err != nil {
-			return err
-		}
-		if err := app.Hooks(lynx.Components(binder)); err != nil {
-			return err
-		}
+		app.Register(broker)
+		app.Register(binder)
 		// 因为 binder 中需要先在 Init() 中初始化 consumer builders，所以 binder.ConsumerBuilders() 不能和 binder 同时注入
-		if err := app.Hooks(lynx.ComponentBuilders(binder.ConsumerBuilders()...)); err != nil {
-			return err
-		}
+		app.RegisterBuilders(binder.ConsumerBuilders()...)
 		router := pubsub.NewRouter(broker, []pubsub.Handler{
 			&helloHandler{},
 		})
-		if err := app.Hooks(lynx.Components(router)); err != nil {
-			return err
-		}
+		app.Register(router)
 		mux := gohttp.NewServeMux()
 		mux.HandleFunc("/hello", func(writer gohttp.ResponseWriter, request *gohttp.Request) {
 			_ = broker.Publish(ctx, "hello", pubsub.NewJSONMessage(map[string]any{"message": "hello"}), pubsub.WithMessageKey(uuid.NewString()))
 			_, _ = writer.Write([]byte("ok"))
 		})
 		hs := http.NewServer(mux, http.WithAddr(":7071"))
-		if err := app.Hooks(lynx.Components(hs)); err != nil {
-			return err
-		}
+		app.Register(hs)
 
 		return nil
 	},
