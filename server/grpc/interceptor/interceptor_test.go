@@ -76,3 +76,54 @@ func TestRecoveryRecoversPanic(t *testing.T) {
 		t.Errorf("status code = %v, want %v", code, codes.Internal)
 	}
 }
+
+// fakeServerStream is a minimal grpc.ServerStream for testing stream interceptors.
+type fakeServerStream struct {
+	ctx context.Context
+	grpc.ServerStream
+}
+
+func (f *fakeServerStream) Context() context.Context { return f.ctx }
+
+func TestLoggingStreamPassthrough(t *testing.T) {
+	interceptor := LoggingStream(testLogger())
+	info := &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"}
+	ss := &fakeServerStream{ctx: context.Background()}
+
+	if err := interceptor(nil, ss, info, func(srv interface{}, stream grpc.ServerStream) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("interceptor error = %v, want nil", err)
+	}
+}
+
+func TestLoggingStreamHandlerError(t *testing.T) {
+	interceptor := LoggingStream(testLogger())
+	info := &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"}
+	ss := &fakeServerStream{ctx: context.Background()}
+
+	wantErr := errors.New("stream failed")
+	if err := interceptor(nil, ss, info, func(srv interface{}, stream grpc.ServerStream) error {
+		return wantErr
+	}); !errors.Is(err, wantErr) {
+		t.Errorf("interceptor error = %v, want %v", err, wantErr)
+	}
+}
+
+// TestRecoveryStreamRecoversPanic verifies that a panicking streaming handler
+// is recovered instead of crashing the process.
+func TestRecoveryStreamRecoversPanic(t *testing.T) {
+	interceptor := RecoveryStream()
+	info := &grpc.StreamServerInfo{FullMethod: "/test.Service/Stream"}
+	ss := &fakeServerStream{ctx: context.Background()}
+
+	err := interceptor(nil, ss, info, func(srv interface{}, stream grpc.ServerStream) error {
+		panic("boom")
+	})
+	if err == nil {
+		t.Fatal("interceptor error = nil, want recovered panic error")
+	}
+	if code := status.Code(err); code != codes.Internal {
+		t.Errorf("status code = %v, want %v", code, codes.Internal)
+	}
+}

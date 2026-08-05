@@ -29,6 +29,9 @@ func TestNewServerDefaults(t *testing.T) {
 	if s.o.Timeout != DefaultTimeout {
 		t.Errorf("Timeout = %v, want %v", s.o.Timeout, DefaultTimeout)
 	}
+	if s.o.ShutdownTimeout != DefaultShutdownTimeout {
+		t.Errorf("ShutdownTimeout = %v, want %v", s.o.ShutdownTimeout, DefaultShutdownTimeout)
+	}
 	if s.o.Logger == nil {
 		t.Error("Logger should not be nil")
 	}
@@ -359,4 +362,58 @@ var _ lynx.Component = (*Server)(nil)
 func TestStopBeforeStartIsNoop(t *testing.T) {
 	srv := NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv.Stop(context.Background())
+}
+
+// TestStopForcesCloseAfterTimeout is a regression test for the unbounded HTTP
+// shutdown bug: a handler that never returns (long-poll/streaming) must not
+// hang Stop indefinitely. After ShutdownTimeout, Stop force-closes the server.
+func TestStopForcesCloseAfterTimeout(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	entered := make(chan struct{})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-entered: // already entered (second request)
+		default:
+			close(entered)
+		}
+		<-r.Context().Done() // block until the connection is closed
+	})
+	srv := NewServer(handler, WithAddr(addr), WithShutdownTimeout(300*time.Millisecond))
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start(context.Background()) }()
+	waitForDial(t, addr)
+
+	go func() {
+		_, _ = http.Get("http://" + addr + "/")
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler was not entered")
+	}
+
+	start := time.Now()
+	srv.Stop(context.Background())
+	elapsed := time.Since(start)
+
+	if elapsed > 3*time.Second {
+		t.Errorf("Stop() took %v, want roughly ShutdownTimeout (force close)", elapsed)
+	}
+
+	select {
+	case err := <-startErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Start() error = %v, want nil or http.ErrServerClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("Start() did not return after Stop()")
+	}
 }

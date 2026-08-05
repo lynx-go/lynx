@@ -1,3 +1,5 @@
+// Package interceptor 提供 gRPC 服务端拦截器：日志与 panic 恢复
+// （一元与流式各一套）。
 package interceptor
 
 import (
@@ -36,5 +38,34 @@ func Recovery() grpc.UnaryServerInterceptor {
 			}
 		}()
 		return handler(ctx, req)
+	}
+}
+
+// LoggingStream returns a stream server interceptor that logs each RPC.
+func LoggingStream(logger *slog.Logger) grpc.StreamServerInterceptor {
+	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		start := time.Now()
+		ctx := ss.Context()
+		logger.InfoContext(ctx, "gRPC stream request", "method", info.FullMethod)
+
+		err := handler(srv, ss)
+		if err != nil {
+			logger.ErrorContext(ctx, "gRPC stream request failed", "method", info.FullMethod, "duration", time.Since(start), "error", err)
+		} else {
+			logger.InfoContext(ctx, "gRPC stream request completed", "method", info.FullMethod, "duration", time.Since(start))
+		}
+		return err
+	}
+}
+
+// RecoveryStream returns a stream server interceptor that recovers from panics.
+func RecoveryStream() grpc.StreamServerInterceptor {
+	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = status.Errorf(codes.Internal, "panic recovered: %v", r)
+			}
+		}()
+		return handler(srv, ss)
 	}
 }

@@ -1,9 +1,12 @@
+// Package grpc 提供 gRPC 服务器组件，内置日志/恢复拦截器、
+// 健康检查与反射服务，支持 OpenTelemetry 插装。
 package grpc
 
 import (
 	"context"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,6 +34,7 @@ type Options struct {
 	Timeout        time.Duration
 	Logger         *slog.Logger
 	Interceptors   []grpc.UnaryServerInterceptor
+	ServerOptions  []grpc.ServerOption
 	TracerProvider trace.TracerProvider
 	MeterProvider  metric.MeterProvider
 }
@@ -66,6 +70,14 @@ func WithInterceptors(interceptors ...grpc.UnaryServerInterceptor) Option {
 	}
 }
 
+// WithServerOptions 透传额外的 grpc.ServerOption（如 TLS 凭据、消息大小限制、
+// keepalive、最大并发流等），在内部选项之后应用到 grpc.NewServer。
+func WithServerOptions(options ...grpc.ServerOption) Option {
+	return func(o *Options) {
+		o.ServerOptions = append(o.ServerOptions, options...)
+	}
+}
+
 // WithTracerProvider sets the OpenTelemetry TracerProvider used by the
 // server's stats handler. When nil, the global (noop by default) provider is
 // used. The provider's lifecycle is the caller's responsibility.
@@ -94,16 +106,25 @@ func NewServer(opts ...Option) *Server {
 	for _, opt := range opts {
 		opt(&options)
 	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
 
 	s := &Server{
 		logger: options.Logger,
 		o:      options,
 	}
-	interceptors := []grpc.UnaryServerInterceptor{
+	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		interceptor.Logging(s.logger),
 		interceptor.Recovery(),
 	}
-	interceptors = append(interceptors, options.Interceptors...)
+	unaryInterceptors = append(unaryInterceptors, options.Interceptors...)
+	// 流式 RPC 同样需要日志与 panic 恢复：gRPC 对流式 handler 的 panic
+	// 没有内置保护，不加拦截器会直接崩溃整个进程。
+	streamInterceptors := []grpc.StreamServerInterceptor{
+		interceptor.LoggingStream(s.logger),
+		interceptor.RecoveryStream(),
+	}
 	statsOpts := []otelgrpc.Option{}
 	if options.TracerProvider != nil {
 		statsOpts = append(statsOpts, otelgrpc.WithTracerProvider(options.TracerProvider))
@@ -113,10 +134,10 @@ func NewServer(opts ...Option) *Server {
 	}
 	grpcOpts := []grpc.ServerOption{
 		grpc.StatsHandler(otelgrpc.NewServerHandler(statsOpts...)),
-		grpc.ChainUnaryInterceptor(
-			interceptors...,
-		),
+		grpc.ChainUnaryInterceptor(unaryInterceptors...),
+		grpc.ChainStreamInterceptor(streamInterceptors...),
 	}
+	grpcOpts = append(grpcOpts, options.ServerOptions...)
 
 	s.server = grpc.NewServer(grpcOpts...)
 
@@ -128,6 +149,9 @@ func NewServer(opts ...Option) *Server {
 
 // Server 是 gRPC 服务组件，实现 lynx.ServerLike 接口。
 type Server struct {
+	// mu guards listener, which is written by Start and read by Stop on a
+	// different goroutine during shutdown.
+	mu       sync.Mutex
 	server   *grpc.Server
 	listener net.Listener
 	logger   *slog.Logger
@@ -163,10 +187,14 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
 	s.listener = lis
+	s.mu.Unlock()
 
-	// Set the server to healthy
+	// Set the server to healthy, for both the named and the standard empty
+	// service name used by most gRPC health probes.
 	s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_SERVING)
+	s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	// Register reflection service
 	reflection.Register(s.server)
@@ -180,22 +208,37 @@ func (s *Server) Stop(ctx context.Context) {
 	log.InfoContext(ctx, "stopping gRPC server")
 	if s.health != nil {
 		s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+		s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	}
 	s.running.Store(false)
 
 	// Close the listener first to stop accepting new connections
-	if s.listener != nil {
-		_ = s.listener.Close()
+	s.mu.Lock()
+	lis := s.listener
+	s.listener = nil
+	s.mu.Unlock()
+	if lis != nil {
+		_ = lis.Close()
 	}
 
 	if s.server == nil {
 		return
 	}
 
-	// Fall back to the configured timeout when the caller's context has no deadline.
-	if _, ok := ctx.Deadline(); !ok && s.o.Timeout > 0 {
+	// The configured Timeout is an upper bound on graceful stop: use it even
+	// when the caller's context already has a deadline, taking the smaller of
+	// the two.
+	if s.o.Timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.o.Timeout)
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining < s.o.Timeout {
+				ctx, cancel = context.WithTimeout(ctx, remaining)
+			} else {
+				ctx, cancel = context.WithTimeout(ctx, s.o.Timeout)
+			}
+		} else {
+			ctx, cancel = context.WithTimeout(ctx, s.o.Timeout)
+		}
 		defer cancel()
 	}
 

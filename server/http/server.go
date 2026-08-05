@@ -1,7 +1,10 @@
+// Package http 提供基于 gocloud.dev 的 HTTP 服务器组件，
+// 内置健康检查端点、请求日志、中间件与 OpenTelemetry 插装。
 package http
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -18,8 +21,9 @@ import (
 
 // Default values for HTTP server configuration.
 const (
-	DefaultHTTPAddr = ":8080"
-	DefaultTimeout  = 60 * time.Second
+	DefaultHTTPAddr        = ":8080"
+	DefaultTimeout         = 60 * time.Second
+	DefaultShutdownTimeout = 10 * time.Second
 )
 
 // NewRouter 创建新的 HTTP 路由复用器。
@@ -29,15 +33,16 @@ func NewRouter() *http.ServeMux {
 
 // Options 是 HTTP 服务组件的配置项。
 type Options struct {
-	Addr           string
-	Timeout        time.Duration
-	HealthCheck    lynx.HealthCheckFunc
-	Logger         *slog.Logger
-	RequestLog     bool
-	TracerProvider trace.TracerProvider
-	MeterProvider  metric.MeterProvider
-	Propagator     propagation.TextMapPropagator
-	Middlewares    []Middleware
+	Addr            string
+	Timeout         time.Duration
+	ShutdownTimeout time.Duration
+	HealthCheck     lynx.HealthCheckFunc
+	Logger          *slog.Logger
+	RequestLog      bool
+	TracerProvider  trace.TracerProvider
+	MeterProvider   metric.MeterProvider
+	Propagator      propagation.TextMapPropagator
+	Middlewares     []Middleware
 }
 
 // Option 用于配置 HTTP 服务 Options 的选项函数。
@@ -54,6 +59,13 @@ func WithAddr(addr string) Option {
 func WithTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.Timeout = timeout
+	}
+}
+
+// WithShutdownTimeout 设置 HTTP 服务优雅关停的超时时间，超过后强制关闭活动连接。
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return func(o *Options) {
+		o.ShutdownTimeout = timeout
 	}
 }
 
@@ -107,12 +119,16 @@ func WithPropagator(p propagation.TextMapPropagator) Option {
 // NewServer 创建 HTTP 服务组件，使用给定的 handler 与配置项。
 func NewServer(handler http.Handler, opts ...Option) *Server {
 	options := Options{
-		Addr:    DefaultHTTPAddr,
-		Timeout: DefaultTimeout,
-		Logger:  slog.Default(),
+		Addr:            DefaultHTTPAddr,
+		Timeout:         DefaultTimeout,
+		ShutdownTimeout: DefaultShutdownTimeout,
+		Logger:          slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(&options)
+	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
 	}
 
 	return &Server{
@@ -125,12 +141,14 @@ func NewServer(handler http.Handler, opts ...Option) *Server {
 // Server 是 HTTP 服务组件，实现 lynx.Component 接口。
 type Server struct {
 	*server.Server
-	// mu guards the embedded *server.Server, which is assigned in Start and
-	// read in Stop; the two may run on different goroutines during shutdown.
-	mu      sync.RWMutex
-	logger  *slog.Logger
-	o       Options
-	handler http.Handler
+	// mu guards the embedded *server.Server and httpServer, which are assigned
+	// in Start and read in Stop; the two may run on different goroutines during
+	// shutdown.
+	mu         sync.RWMutex
+	httpServer *http.Server
+	logger     *slog.Logger
+	o          Options
+	handler    http.Handler
 }
 
 // Name 返回组件名称 "http"。
@@ -157,6 +175,9 @@ func (s *Server) Start(ctx context.Context) error {
 		driver.Server.ReadTimeout = s.o.Timeout
 		driver.Server.WriteTimeout = s.o.Timeout
 	}
+	s.mu.Lock()
+	s.httpServer = &driver.Server
+	s.mu.Unlock()
 	opts := &server.Options{
 		HealthChecks:           healthChecks,
 		TraceProvider:          s.o.TracerProvider,
@@ -178,16 +199,40 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // Stop 优雅关停 HTTP 服务；服务尚未启动时直接返回。
+// 为保证不无限挂起：调用方 context 无 deadline 时使用配置的 ShutdownTimeout，
+// 超时后强制关闭活动连接（长轮询/流式 handler）。
 func (s *Server) Stop(ctx context.Context) {
 	log.InfoContext(ctx, "stopping HTTP server")
 	s.mu.RLock()
 	srv := s.Server
+	hs := s.httpServer
 	s.mu.RUnlock()
-	if srv == nil {
+	if srv == nil || hs == nil {
 		return
 	}
-	if err := srv.Shutdown(ctx); err != nil {
-		log.ErrorContext(ctx, "failed to shutting down http server", err)
+	if _, ok := ctx.Deadline(); !ok && s.o.ShutdownTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.o.ShutdownTimeout)
+		defer cancel()
+	}
+	done := make(chan struct{})
+	var shutdownErr error
+	go func() {
+		defer close(done)
+		shutdownErr = hs.Shutdown(ctx)
+	}()
+	select {
+	case <-done:
+		if shutdownErr != nil &&
+			!errors.Is(shutdownErr, http.ErrServerClosed) &&
+			!errors.Is(shutdownErr, context.Canceled) &&
+			!errors.Is(shutdownErr, context.DeadlineExceeded) {
+			log.ErrorContext(ctx, "failed to shutdown http server", shutdownErr)
+		}
+	case <-ctx.Done():
+		log.ErrorContext(ctx, "graceful HTTP shutdown timed out, forcing close", context.DeadlineExceeded)
+		_ = hs.Close()
+		<-done
 	}
 }
 
