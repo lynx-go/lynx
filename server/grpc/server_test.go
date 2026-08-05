@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"gocloud.dev/server/health"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -17,6 +19,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 func TestNewServerDefaults(t *testing.T) {
@@ -315,5 +318,98 @@ func TestServerMetricsProduced(t *testing.T) {
 	}
 	if len(md.ScopeMetrics) == 0 {
 		t.Error("expected metrics from the RPC, got none")
+	}
+}
+
+// flipChecker 是可切换健康状态的 checker，用于验证 health 轮询同步。
+type flipChecker struct {
+	healthy atomic.Bool
+}
+
+func (c *flipChecker) CheckHealth() error {
+	if !c.healthy.Load() {
+		return errors.New("dependency down")
+	}
+	return nil
+}
+
+// TestHealthStatusFollowsCheckers 回归 M7：app 级健康检查器轮询结果同步到
+// grpc health 服务，依赖不健康时探测返回 NOT_SERVING。
+func TestHealthStatusFollowsCheckers(t *testing.T) {
+	checker := &flipChecker{}
+	checker.healthy.Store(true)
+	s := NewServer(
+		WithAddr("127.0.0.1:0"),
+		WithHealthCheck(func() []health.Checker { return []health.Checker{checker} }),
+		WithHealthCheckPeriod(20*time.Millisecond),
+	)
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start(context.Background()) }()
+	defer func() {
+		s.Stop(context.Background())
+		select {
+		case <-startErr:
+		case <-time.After(5 * time.Second):
+			t.Error("Start did not return after Stop")
+		}
+	}()
+
+	var addr string
+	for i := 0; i < 200 && addr == ""; i++ {
+		s.mu.Lock()
+		if s.listener != nil {
+			addr = s.listener.Addr().String()
+		}
+		s.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("server did not start listening")
+	}
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer conn.Close()
+	client := grpc_health_v1.NewHealthClient(conn)
+
+	resp, err := client.Check(context.Background(), &grpc_health_v1.HealthCheckRequest{})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if resp.Status != grpc_health_v1.HealthCheckResponse_SERVING {
+		t.Fatalf("initial status = %v, want SERVING", resp.Status)
+	}
+
+	// 依赖变不健康：轮询周期内应翻转为 NOT_SERVING。
+	checker.healthy.Store(false)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err = client.Check(context.Background(), &grpc_health_v1.HealthCheckRequest{})
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		if resp.Status == grpc_health_v1.HealthCheckResponse_NOT_SERVING {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("health status did not flip to NOT_SERVING after checker failed")
+}
+
+// TestWithStreamInterceptors 验证流式拦截器选项追加生效。
+func TestWithStreamInterceptors(t *testing.T) {
+	var called atomic.Int32
+	streamInt := func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		called.Add(1)
+		return handler(srv, ss)
+	}
+	s := NewServer(WithStreamInterceptors(streamInt))
+	if len(s.o.StreamInterceptors) != 1 {
+		t.Fatalf("len(StreamInterceptors) = %d, want 1", len(s.o.StreamInterceptors))
+	}
+	if called.Load() != 0 {
+		t.Fatal("interceptor should not run before serving")
 	}
 }

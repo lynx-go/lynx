@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -415,5 +416,88 @@ func TestStopForcesCloseAfterTimeout(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("Start() did not return after Stop()")
+	}
+}
+
+// TestServerOptionsEscapeHatch 验证 WithServerOptions 透传底层 *http.Server。
+func TestServerOptionsEscapeHatch(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	var got *http.Server
+	srv := NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), WithAddr(addr), WithServerOptions(func(s *http.Server) {
+		s.MaxHeaderBytes = 4096
+		got = s
+	}))
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start(context.Background()) }()
+	waitForDial(t, addr)
+
+	srv.Stop(context.Background())
+	select {
+	case err := <-startErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Start() error = %v, want nil or http.ErrServerClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start() did not return after Stop()")
+	}
+	if got == nil || got.MaxHeaderBytes != 4096 {
+		t.Fatalf("ServerOptions not applied: got = %+v", got)
+	}
+}
+
+// TestProvidersDoNotMutateGlobals 回归 M9：显式注入的 otel provider 不得
+// 改写进程全局 provider（旧 gocloud 实现通过 init 静默改写全局）。
+func TestProvidersDoNotMutateGlobals(t *testing.T) {
+	before := otel.GetTracerProvider()
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	srv := NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), WithAddr(addr), WithTracerProvider(tp))
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start(context.Background()) }()
+	waitForDial(t, addr)
+	defer srv.Stop(context.Background())
+
+	// 请求一次，确认插装确实使用了显式 provider。
+	resp, err := http.Get("http://" + addr + "/")
+	if err != nil {
+		t.Fatalf("GET error = %v", err)
+	}
+	_ = resp.Body.Close()
+	srv.Stop(context.Background())
+	select {
+	case err := <-startErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Start() error = %v, want nil or http.ErrServerClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start() did not return after Stop()")
+	}
+
+	if got := otel.GetTracerProvider(); got != before {
+		t.Fatal("global tracer provider was mutated by server start")
+	}
+	if len(recorder.Ended()) == 0 {
+		t.Fatal("explicit tracer provider was not used (no spans recorded)")
 	}
 }

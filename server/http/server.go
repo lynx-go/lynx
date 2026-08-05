@@ -1,22 +1,25 @@
-// Package http 提供基于 gocloud.dev 的 HTTP 服务器组件，
-// 内置健康检查端点、请求日志、中间件与 OpenTelemetry 插装。
+// Package http 提供 HTTP 服务器组件，内置健康检查端点、请求日志、
+// 中间件与 OpenTelemetry 插装（显式注入 provider，无进程全局副作用）。
 package http
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/x/log"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
-	"gocloud.dev/server"
 	"gocloud.dev/server/health"
+	"gocloud.dev/server/requestlog"
 )
 
 // Default values for HTTP server configuration.
@@ -35,6 +38,7 @@ func NewRouter() *http.ServeMux {
 type Options struct {
 	Addr            string
 	Timeout         time.Duration
+	IdleTimeout     time.Duration
 	ShutdownTimeout time.Duration
 	HealthCheck     lynx.HealthCheckFunc
 	Logger          *slog.Logger
@@ -43,6 +47,12 @@ type Options struct {
 	MeterProvider   metric.MeterProvider
 	Propagator      propagation.TextMapPropagator
 	Middlewares     []Middleware
+	// TLSConfig 非 nil 时以 TLS 提供服务（需包含 Certificates 或由
+	// ServerOptions 填充）。
+	TLSConfig *tls.Config
+	// ServerOptions 透传配置底层 *http.Server（如 MaxHeaderBytes、
+	// BaseContext），在内部超时配置之后应用。
+	ServerOptions func(*http.Server)
 }
 
 // Option 用于配置 HTTP 服务 Options 的选项函数。
@@ -55,10 +65,18 @@ func WithAddr(addr string) Option {
 	}
 }
 
-// WithTimeout 设置 HTTP 服务的读写超时时间。
+// WithTimeout 设置 HTTP 服务的读写超时时间（同时作用于
+// ReadHeaderTimeout/ReadTimeout/WriteTimeout）。
 func WithTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.Timeout = timeout
+	}
+}
+
+// WithIdleTimeout 设置 HTTP 连接的空闲超时时间。
+func WithIdleTimeout(timeout time.Duration) Option {
+	return func(o *Options) {
+		o.IdleTimeout = timeout
 	}
 }
 
@@ -90,10 +108,25 @@ func WithRequestLog(requestLog bool) Option {
 	}
 }
 
+// WithTLSConfig 以 TLS 提供服务，cfg 需包含 Certificates 或由
+// WithServerOptions 填充。
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(o *Options) {
+		o.TLSConfig = cfg
+	}
+}
+
+// WithServerOptions 透传配置底层 *http.Server，在内部超时之后应用。
+func WithServerOptions(fn func(*http.Server)) Option {
+	return func(o *Options) {
+		o.ServerOptions = fn
+	}
+}
+
 // WithTracerProvider sets the OpenTelemetry TracerProvider used by the
 // server's instrumentation. When nil, the global (noop by default) provider
 // is used. The provider's lifecycle (init, shutdown) is the caller's
-// responsibility.
+// responsibility. 显式注入，不修改进程全局 provider。
 func WithTracerProvider(tp trace.TracerProvider) Option {
 	return func(o *Options) {
 		o.TracerProvider = tp
@@ -140,10 +173,8 @@ func NewServer(handler http.Handler, opts ...Option) *Server {
 
 // Server 是 HTTP 服务组件，实现 lynx.Component 接口。
 type Server struct {
-	*server.Server
-	// mu guards the embedded *server.Server and httpServer, which are assigned
-	// in Start and read in Stop; the two may run on different goroutines during
-	// shutdown.
+	// mu guards httpServer, which is assigned in Start and read in Stop;
+	// the two may run on different goroutines during shutdown.
 	mu         sync.RWMutex
 	httpServer *http.Server
 	logger     *slog.Logger
@@ -162,40 +193,68 @@ func (s *Server) Init(app lynx.App) error {
 }
 
 // Start 启动 HTTP 服务并开始监听，阻塞至服务退出。
+// 显式注入 otel provider（WithPublicEndpoint 保持与旧实现一致的
+// traceparent-as-link 语义），不修改进程全局 otel provider。
 func (s *Server) Start(ctx context.Context) error {
 	log.InfoContext(ctx, "starting HTTP server, listening on "+s.o.Addr)
-	var healthChecks []health.Checker
+	// 健康检查路由独立挂载，不经过 otel/requestlog（对齐 gocloud 语义）；
+	// provider 显式注入，不修改进程全局 otel provider。
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz/liveness", health.HandleLive)
+	h := &health.Handler{}
 	if s.o.HealthCheck != nil {
-		healthChecks = s.o.HealthCheck()
+		for _, c := range s.o.HealthCheck() {
+			h.Add(c)
+		}
 	}
-	driver := server.NewDefaultDriver()
-	if s.o.Timeout > 0 {
-		// Apply the configured timeout to the underlying http.Server read/write timeouts.
-		driver.Server.ReadHeaderTimeout = s.o.Timeout
-		driver.Server.ReadTimeout = s.o.Timeout
-		driver.Server.WriteTimeout = s.o.Timeout
-	}
-	s.mu.Lock()
-	s.httpServer = &driver.Server
-	s.mu.Unlock()
-	opts := &server.Options{
-		HealthChecks:           healthChecks,
-		TraceProvider:          s.o.TracerProvider,
-		MetricsProvider:        s.o.MeterProvider,
-		TraceTextMapPropagator: s.o.Propagator,
-		Driver:                 driver,
-	}
-	if s.o.RequestLog {
-		opts.RequestLogger = NewRequestLogger(s.logger, func(err error) {
-			log.ErrorContext(ctx, "failed to log HTTP request", err)
-		})
-	}
+	mux.Handle("/healthz/readiness", h)
 
-	hs := server.New(chain(s.handler, s.o.Middlewares), opts)
+	user := chain(s.handler, s.o.Middlewares)
+	if s.o.RequestLog {
+		user = requestlog.NewHandler(NewRequestLogger(s.logger, func(err error) {
+			log.ErrorContext(ctx, "failed to log HTTP request", err)
+		}), user)
+	}
+	otelOpts := []otelhttp.Option{
+		// 与 gocloud 旧实现一致：入站 traceparent 提取为 span link 而非父 span。
+		otelhttp.WithPublicEndpointFn(func(*http.Request) bool { return true }),
+	}
+	if s.o.TracerProvider != nil {
+		otelOpts = append(otelOpts, otelhttp.WithTracerProvider(s.o.TracerProvider))
+	}
+	if s.o.MeterProvider != nil {
+		otelOpts = append(otelOpts, otelhttp.WithMeterProvider(s.o.MeterProvider))
+	}
+	if s.o.Propagator != nil {
+		otelOpts = append(otelOpts, otelhttp.WithPropagators(s.o.Propagator))
+	}
+	user = otelhttp.NewHandler(user, "", otelOpts...)
+	mux.Handle("/", user)
+
+	srv := &http.Server{
+		Addr:              s.o.Addr,
+		Handler:           mux,
+		ReadHeaderTimeout: s.o.Timeout,
+		ReadTimeout:       s.o.Timeout,
+		WriteTimeout:      s.o.Timeout,
+		IdleTimeout:       s.o.IdleTimeout,
+	}
+	if s.o.ServerOptions != nil {
+		s.o.ServerOptions(srv)
+	}
 	s.mu.Lock()
-	s.Server = hs
+	s.httpServer = srv
 	s.mu.Unlock()
-	return s.ListenAndServe(s.o.Addr)
+
+	ln, err := net.Listen("tcp", s.o.Addr)
+	if err != nil {
+		return err
+	}
+	if s.o.TLSConfig != nil {
+		srv.TLSConfig = s.o.TLSConfig
+		return srv.ServeTLS(ln, "", "")
+	}
+	return srv.Serve(ln)
 }
 
 // Stop 优雅关停 HTTP 服务；服务尚未启动时直接返回。
@@ -204,10 +263,9 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) Stop(ctx context.Context) {
 	log.InfoContext(ctx, "stopping HTTP server")
 	s.mu.RLock()
-	srv := s.Server
 	hs := s.httpServer
 	s.mu.RUnlock()
-	if srv == nil || hs == nil {
+	if hs == nil {
 		return
 	}
 	if _, ok := ctx.Deadline(); !ok && s.o.ShutdownTimeout > 0 {

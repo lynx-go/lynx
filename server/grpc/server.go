@@ -24,8 +24,9 @@ import (
 
 // Default values for gRPC server configuration.
 const (
-	DefaultGRPCAddr = ":9090"
-	DefaultTimeout  = 60 * time.Second
+	DefaultGRPCAddr          = ":9090"
+	DefaultTimeout           = 60 * time.Second
+	DefaultHealthCheckPeriod = 10 * time.Second
 )
 
 // Options 是 gRPC 服务组件的配置项。
@@ -34,9 +35,14 @@ type Options struct {
 	Timeout        time.Duration
 	Logger         *slog.Logger
 	Interceptors   []grpc.UnaryServerInterceptor
+	StreamInterceptors []grpc.StreamServerInterceptor
 	ServerOptions  []grpc.ServerOption
 	TracerProvider trace.TracerProvider
 	MeterProvider  metric.MeterProvider
+	// HealthCheck 提供 app 级健康检查器；非 nil 时按 HealthCheckPeriod
+	// 轮询并同步到 grpc health 服务（依赖组件不健康时探测返回 NOT_SERVING）。
+	HealthCheck         lynx.HealthCheckFunc
+	HealthCheckPeriod time.Duration
 }
 
 // Option 用于配置 gRPC 服务 Options 的选项函数。
@@ -63,10 +69,31 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithInterceptors 追加一元 RPC 服务端拦截器，在内置日志与恢复拦截器之后执行。
+// WithInterceptors 追加一元 RPC 服务端拦截器，在内置恢复与日志拦截器之后执行。
 func WithInterceptors(interceptors ...grpc.UnaryServerInterceptor) Option {
 	return func(o *Options) {
 		o.Interceptors = append(o.Interceptors, interceptors...)
+	}
+}
+
+// WithStreamInterceptors 追加流式 RPC 服务端拦截器，在内置恢复与日志拦截器之后执行。
+func WithStreamInterceptors(interceptors ...grpc.StreamServerInterceptor) Option {
+	return func(o *Options) {
+		o.StreamInterceptors = append(o.StreamInterceptors, interceptors...)
+	}
+}
+
+// WithHealthCheck 设置 app 级健康检查函数，轮询结果同步到 grpc health 服务。
+func WithHealthCheck(hc lynx.HealthCheckFunc) Option {
+	return func(o *Options) {
+		o.HealthCheck = hc
+	}
+}
+
+// WithHealthCheckPeriod 设置 app 级健康检查的轮询间隔。
+func WithHealthCheckPeriod(period time.Duration) Option {
+	return func(o *Options) {
+		o.HealthCheckPeriod = period
 	}
 }
 
@@ -114,17 +141,19 @@ func NewServer(opts ...Option) *Server {
 		logger: options.Logger,
 		o:      options,
 	}
+	// Recovery 在最外层：链内任意一环（含用户拦截器）panic 都能被恢复。
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
-		interceptor.Logging(s.logger),
 		interceptor.Recovery(),
+		interceptor.Logging(s.logger),
 	}
 	unaryInterceptors = append(unaryInterceptors, options.Interceptors...)
 	// 流式 RPC 同样需要日志与 panic 恢复：gRPC 对流式 handler 的 panic
 	// 没有内置保护，不加拦截器会直接崩溃整个进程。
 	streamInterceptors := []grpc.StreamServerInterceptor{
-		interceptor.LoggingStream(s.logger),
 		interceptor.RecoveryStream(),
+		interceptor.LoggingStream(s.logger),
 	}
+	streamInterceptors = append(streamInterceptors, options.StreamInterceptors...)
 	statsOpts := []otelgrpc.Option{}
 	if options.TracerProvider != nil {
 		statsOpts = append(statsOpts, otelgrpc.WithTracerProvider(options.TracerProvider))
@@ -151,13 +180,14 @@ func NewServer(opts ...Option) *Server {
 type Server struct {
 	// mu guards listener, which is written by Start and read by Stop on a
 	// different goroutine during shutdown.
-	mu       sync.Mutex
-	server   *grpc.Server
-	listener net.Listener
-	logger   *slog.Logger
-	o        Options
-	health   *health.Server
-	running  atomic.Bool
+	mu           sync.Mutex
+	server       *grpc.Server
+	listener     net.Listener
+	logger       *slog.Logger
+	o            Options
+	health       *health.Server
+	healthCancel context.CancelFunc
+	running      atomic.Bool
 }
 
 // CheckHealth 实现健康检查，服务未处于运行状态时返回错误。
@@ -200,7 +230,47 @@ func (s *Server) Start(ctx context.Context) error {
 	reflection.Register(s.server)
 
 	s.running.Store(true)
+	// Serve 返回（监听失败/优雅停止）后复位运行标志，CheckHealth 不再报健康。
+	defer s.running.Store(false)
+
+	if s.o.HealthCheck != nil {
+		s.startHealthPoller()
+	}
 	return s.server.Serve(lis)
+}
+
+// startHealthPoller 按 HealthCheckPeriod 轮询 app 级健康检查器并同步到
+// grpc health 服务：任一依赖组件不健康时探测返回 NOT_SERVING。
+func (s *Server) startHealthPoller() {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.healthCancel = cancel
+	s.mu.Unlock()
+	go func() {
+		s.updateHealthStatus()
+		t := time.NewTicker(s.o.HealthCheckPeriod)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				s.updateHealthStatus()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (s *Server) updateHealthStatus() {
+	status := grpc_health_v1.HealthCheckResponse_SERVING
+	for _, c := range s.o.HealthCheck() {
+		if err := c.CheckHealth(); err != nil {
+			status = grpc_health_v1.HealthCheckResponse_NOT_SERVING
+			break
+		}
+	}
+	s.health.SetServingStatus("", status)
+	s.health.SetServingStatus("grpc", status)
 }
 
 // Stop 优雅关停 gRPC 服务：先关闭监听器，再等待在途请求完成，超时后强制停止。
@@ -211,6 +281,12 @@ func (s *Server) Stop(ctx context.Context) {
 		s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	}
 	s.running.Store(false)
+	s.mu.Lock()
+	if s.healthCancel != nil {
+		s.healthCancel()
+		s.healthCancel = nil
+	}
+	s.mu.Unlock()
 
 	// Close the listener first to stop accepting new connections
 	s.mu.Lock()
