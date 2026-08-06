@@ -10,3 +10,17 @@ kafka:
     producer:
       log_message: true
       required_acks: -1
+
+# 显式 pubsub 路由：逻辑 topic（业务事件名）→ {transport, key}。
+# transport：后端标识（示例中 kafka=Kafka Transport、memory=内存 Transport）。
+# key：调用 transport 时使用的主题名——对 kafka 而言必须是 kafka 段配置的
+# 逻辑 key（本例 hello→hello）；key 可与逻辑名不同（如 notify→user_notify），
+# 用于业务名与后端主题名的解耦。未在此列出的 topic 按自动路由/默认回退处理。
+pubsub:
+  routes:
+    hello:
+      transport: kafka
+      key: hello
+    notify:
+      transport: memory
+      key: user_notify

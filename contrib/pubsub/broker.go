@@ -28,7 +28,12 @@ type Broker interface {
 	// Start 后调用返回错误。
 	Subscribe(ctx context.Context, topic, handlerName string, h HandlerFunc, opts ...SubscribeOption) error
 	// Route 显式将 topic 路由到指定 Transport，覆盖自动路由；须在 Start 前调用。
+	// transport 侧主题名与逻辑 topic 同名；需要别名时用 RouteKey。
 	Route(topic string, t Transport)
+	// RouteKey 显式将逻辑 topic 路由到指定 Transport，并以 key 作为调用
+	// transport 时的主题名（如 kafka Transport 的 kafka 段配置 key）；
+	// 覆盖自动路由，须在 Start 前调用。
+	RouteKey(topic string, t Transport, key string)
 	// MarshalerFor 返回 topic 的业务对象序列化器：TopicMarshalers 命中则
 	// 用之，否则回退 Options.Marshaler 或 JSON 默认。
 	MarshalerFor(topic string) Marshaler
@@ -67,8 +72,8 @@ type Options struct {
 func NewBroker(opts Options) Broker {
 	return &broker{
 		options:  opts,
-		routes:   map[string]Transport{},
-		explicit: map[string]Transport{},
+		routes:   map[string]routeEntry{},
+		explicit: map[string]routeEntry{},
 	}
 }
 
@@ -176,26 +181,41 @@ type broker struct {
 	app     lynx.App
 	router  *message.Router
 
-	// routes 与 explicit 由 routeMu 保护：Route 与 Init 自动路由写，
+	// routes 与 explicit 由 routeMu 保护：Route/RouteKey 与 Init 自动路由写，
 	// resolve（Publish/Start）读。
 	routeMu  sync.RWMutex
-	routes   map[string]Transport
-	explicit map[string]Transport
+	routes   map[string]routeEntry
+	explicit map[string]routeEntry
 
 	mu      sync.Mutex
 	pending []pendingSubscription
 	started bool
 }
 
+// routeEntry 是路由表的一项：逻辑 topic → (Transport, transport 侧主题名)。
+// key 为空时表示与逻辑 topic 同名（Route 与自动路由的缺省语义）。
+type routeEntry struct {
+	t   Transport
+	key string
+}
+
 // Name 返回组件名称 "pubsub-broker"。
 func (b *broker) Name() string { return "pubsub-broker" }
 
 // Route 显式将 topic 路由到指定 Transport，覆盖自动路由；须在 Start 前调用。
+// transport 侧主题名与逻辑 topic 同名；需要别名时用 RouteKey。
 func (b *broker) Route(topic string, t Transport) {
+	b.RouteKey(topic, t, topic)
+}
+
+// RouteKey 显式将逻辑 topic 路由到指定 Transport，并以 key 作为调用
+// transport 时的主题名（如 kafka Transport 的 kafka 段配置 key）；
+// 覆盖自动路由，须在 Start 前调用。
+func (b *broker) RouteKey(topic string, t Transport, key string) {
 	b.routeMu.Lock()
 	defer b.routeMu.Unlock()
-	b.routes[topic] = t
-	b.explicit[topic] = t
+	b.routes[topic] = routeEntry{t: t, key: key}
+	b.explicit[topic] = routeEntry{t: t, key: key}
 }
 
 // CheckHealth 报告 Broker 是否在运行。
@@ -242,26 +262,33 @@ func (b *broker) Init(app lynx.App) error {
 			if _, ok := b.explicit[topic]; ok {
 				continue // 显式 Route 覆盖自动路由，不检查不报错
 			}
-			if prev, ok := b.routes[topic]; ok && prev != t {
+			if prev, ok := b.routes[topic]; ok && prev.t != t {
 				return fmt.Errorf("topic %q is routed to multiple transports", topic)
 			}
-			b.routes[topic] = t
+			b.routes[topic] = routeEntry{t: t, key: topic}
 		}
 	}
 	return nil
 }
 
-func (b *broker) resolve(topic string) (Transport, error) {
+// resolve 返回 topic 的 (Transport, transport 侧主题名)。
+// 显式/自动路由命中时使用路由登记的 key（RouteKey 别名）；
+// 未命中回退 DefaultTransport，主题名与逻辑 topic 同名。
+func (b *broker) resolve(topic string) (Transport, string, error) {
 	b.routeMu.RLock()
-	t, ok := b.routes[topic]
+	r, ok := b.routes[topic]
 	b.routeMu.RUnlock()
 	if ok {
-		return t, nil
+		key := r.key
+		if key == "" {
+			key = topic
+		}
+		return r.t, key, nil
 	}
 	if b.options.DefaultTransport != nil {
-		return b.options.DefaultTransport, nil
+		return b.options.DefaultTransport, topic, nil
 	}
-	return nil, fmt.Errorf("no transport routed for topic %q", topic)
+	return nil, "", fmt.Errorf("no transport routed for topic %q", topic)
 }
 
 // Start 将缓冲订阅统一注册进 watermill router 并运行。
@@ -292,13 +319,15 @@ func (b *broker) Start(ctx context.Context) error {
 			return fmt.Errorf("duplicate handler name %q", p.handlerName)
 		}
 		names[p.handlerName] = struct{}{}
-		t, err := b.resolve(p.topic)
+		t, key, err := b.resolve(p.topic)
 		if err != nil {
 			b.mu.Unlock()
 			return err
 		}
 		registrations = append(registrations, registration{
-			topic:       p.topic,
+			// watermill 订阅 topic 必须是 transport 侧主题名（RouteKey 别名），
+			// 与 Publish 侧的 key 翻译保持一致。
+			topic:       key,
 			handlerName: p.handlerName,
 			adapter: subscriberAdapter{
 				t:    t,
@@ -431,11 +460,12 @@ func (b *broker) Publish(ctx context.Context, topic string, payload any, opts ..
 		}
 		m.Headers[k] = v
 	}
-	t, err := b.resolve(topic)
+	t, key, err := b.resolve(topic)
 	if err != nil {
 		return err
 	}
-	return t.Publish(ctx, topic, toWatermill(m))
+	// 以 transport 侧主题名调用 transport（RouteKey 别名）；缺省与逻辑 topic 同名。
+	return t.Publish(ctx, key, toWatermill(m))
 }
 
 // MarshalerFor 返回 topic 的业务对象序列化器：TopicMarshalers 命中则用之，

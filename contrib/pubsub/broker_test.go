@@ -266,6 +266,84 @@ func TestBrokerPublishTypedNilMessage(t *testing.T) {
 	}
 }
 
+// TestBrokerRouteKeyTranslatesTopic 验证 RouteKey：逻辑 topic 经 key 别名
+// 转发到 transport 侧主题名——Publish/Subscribe 两侧都必须用 key 调用
+// transport，否则发布与订阅落在不同的后端主题上（对 gochannel 即
+// 精确匹配不同 channel，消息必然丢失）。
+func TestBrokerRouteKeyTranslatesTopic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	memT := NewMemoryTransport()
+	b := NewBroker(Options{DefaultTransport: memT})
+	// 逻辑 topic "orders" → 内存 transport，后端主题名 "orders_v1"。
+	b.RouteKey("orders", memT, "orders_v1")
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	received := make(chan *Message, 1)
+	if err := b.Subscribe(ctx, "orders", "h1", func(ctx context.Context, msg *Message) error {
+		received <- msg
+		return nil
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- b.Start(ctx) }()
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return b.CheckHealth() == nil }) {
+		t.Fatal("broker did not start")
+	}
+
+	// 直接向内存 transport 订阅后端主题名：若 broker 未翻译 key，这里收不到。
+	backendCh, err := memT.Subscribe(ctx, "orders_v1", SubscriptionOptions{})
+	if err != nil {
+		t.Fatalf("backend Subscribe: %v", err)
+	}
+
+	if err := b.Publish(ctx, "orders", MustJSONMessage(map[string]string{"id": "1"})); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	select {
+	case <-received:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not receive message via translated key")
+	}
+	select {
+	case <-backendCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("backend topic did not receive message: broker did not translate key")
+	}
+
+	cancel()
+	b.Stop(context.Background())
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after Stop")
+	}
+}
+
+// TestBrokerRouteKeyOverridesAutoRoute 验证 RouteKey 同样覆盖自动路由
+//（显式路由语义与 Route 一致）。
+func TestBrokerRouteKeyOverridesAutoRoute(t *testing.T) {
+	memT := NewMemoryTransport()
+	conflictT := newFakeTransport("auto")
+	b := NewBroker(Options{Transports: []Transport{conflictT}})
+	b.RouteKey("auto", memT, "auto_v1")
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	// 显式路由覆盖后，自动路由不得因"多 transport 路由同一 topic"报错。
+	gotT, gotKey, err := b.(*broker).resolve("auto")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if gotT != memT || gotKey != "auto_v1" {
+		t.Fatalf("resolve = (%v, %q), want (memT, auto_v1)", gotT, gotKey)
+	}
+}
+
 func TestBrokerRetriesFailedHandler(t *testing.T) {
 	var calls atomic.Int32
 	done := make(chan struct{}, 1)

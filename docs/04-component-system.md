@@ -198,7 +198,7 @@ go get github.com/lynx-go/lynx/contrib/zap
 
 `contrib/pubsub` 基于 Watermill 提供进程内/跨进程的事件发布订阅。核心概念：
 
-- `Broker`：事件总线门面，本身是 `ServerLike` 组件，提供 `Publish`/`Subscribe`/`Route`。内部维护一张 topic → Transport 路由表：`Options.Transports` 中每个 Transport 通过 `Topics()` 声明自己承接的逻辑 topic，`Init` 时自动建表；`Route(topic, t)` 可显式覆盖自动路由；未命中的 topic 回退到 `DefaultTransport`（两者皆无则返回错误）。
+- `Broker`：事件总线门面，本身是 `ServerLike` 组件，提供 `Publish`/`Subscribe`/`Route`。内部维护一张 topic → Transport 路由表：`Options.Transports` 中每个 Transport 通过 `Topics()` 声明自己承接的逻辑 topic，`Init` 时自动建表；`Route(topic, t)` 可显式覆盖自动路由；`RouteKey(topic, t, key)` 在覆盖的同时把 transport 侧主题名改为 `key`（业务逻辑名与后端主题名解耦，如 kafka 时 `key` 对应 kafka 段配置的逻辑 key，发布与订阅两侧都会按 `key` 调用 transport）；未命中的 topic 回退到 `DefaultTransport`（两者皆无则返回错误）。
 - `Transport`：消息后端组件（kafka/内存），topic 参数一律是逻辑名，物理名解析在实现内部，见下文的 kafka 模块。
 - `Router`：把一组 `Handler` 在 `Init` 期缓冲订阅到 Broker 的组件，无时序依赖。`Handler` 接口由 `EventName()`、`HandlerName()`、`HandlerFunc()` 三个方法组成，公共 API 使用自有 `pubsub.Message` 类型（`ID`/`Key`/`Headers`/`Payload`），与底层 Watermill 解耦。
 
