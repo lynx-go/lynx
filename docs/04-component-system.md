@@ -201,19 +201,25 @@ go get github.com/lynx-go/lynx/contrib/zap
 - `Broker`：事件总线门面，本身是 `ServerLike` 组件，提供 `Publish`/`Subscribe`/`Route`。内部维护一张 topic → Transport 路由表：`Options.Transports` 中每个 Transport 通过 `Topics()` 声明自己承接的逻辑 topic，`Init` 时自动建表；`Route(topic, t)` 可显式覆盖自动路由；`RouteKey(topic, t, key)` 在覆盖的同时把 transport 侧主题名改为 `key`（业务逻辑名与后端主题名解耦，如 kafka 时 `key` 对应 kafka 段配置的逻辑 key，发布与订阅两侧都会按 `key` 调用 transport）；未命中的 topic 回退到 `DefaultTransport`（两者皆无则返回错误）。
 - `Transport`：消息后端组件（kafka/内存），topic 参数一律是逻辑名，物理名解析在实现内部，见下文的 kafka 模块。
 - `Router`：把一组 `Handler` 在 `Init` 期缓冲订阅到 Broker 的组件，无时序依赖。`Handler` 接口由 `EventName()`、`HandlerName()`、`HandlerFunc()` 三个方法组成，公共 API 使用自有 `pubsub.Message` 类型（`ID`/`Key`/`Headers`/`Payload`），与底层 Watermill 解耦。
+- `Bundle`/`NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载显式路由并逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），非 nil 的传入 transports 参与自动路由；未提供 `memory` 标识时内置创建一个内存 Transport 作为默认回退。返回 `*Bundle`（`Broker` + 待注册 `Transports`），`bundle.Components()` 一次性返回应注册的全部组件。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用），调用方过滤后再放入 transports 表。
 
 用法（取自 `_examples/pubsub/main.go`）：
 
 ```go
-memT := pubsub.NewMemoryTransport()
-broker := pubsub.NewBroker(pubsub.Options{
-	Transports:       []pubsub.Transport{kafkaT},
-	DefaultTransport: memT,
-})
-app.Register(memT)
-app.Register(kafkaT)
-app.Register(broker)
-app.Register(pubsub.NewRouter(broker, []pubsub.Handler{&helloHandler{}}))
+kafkaT, err := kafka.NewFromConfig(app.Config()) // nil = kafka 段缺失，未启用
+if err != nil {
+	return err
+}
+transports := map[string]pubsub.Transport{}
+if kafkaT != nil {
+	transports["kafka"] = kafkaT
+}
+b, err := pubsub.NewFromConfig(app.Config(), transports)
+if err != nil {
+	return err
+}
+app.Register(b.Components()...)
+app.Register(pubsub.NewRouter(b.Broker, []pubsub.Handler{&helloHandler{}}))
 ```
 
 Handler 的实现：
@@ -244,7 +250,7 @@ _ = broker.Publish(ctx, "hello",
 
 ### kafka：Kafka 传输（Transport）
 
-`contrib/kafka` 提供 `pubsub.Transport` 的 Kafka 实现，配置驱动：`app.Config().UnmarshalKey("kafka", &opts)` 把配置文件 `kafka` 段整表加载为 `kafka.Options`（`map[逻辑topic]TopicOptions`），再交给 `kafka.NewTransport` 构造。`TopicOptions` 声明 brokers、订阅的物理 topics、consumer/producer 参数：`Consumer == nil` 表示该 topic 只发布，`Producer == nil` 表示只订阅。内部按 brokers 集合分组复用客户端；订阅按（消费组 × 物理 topic × 实例数）展开后 fan-in 到单一 channel（取自 `_examples/pubsub/main.go` 与 `config.yaml`）：
+`contrib/kafka` 提供 `pubsub.Transport` 的 Kafka 实现，配置驱动：`kafka.NewFromConfig(cfg)` 把配置文件 `kafka` 段整表加载为 `kafka.Options`（`map[逻辑topic]TopicOptions`）并构造 Transport（`NewTransport` 仍可用代码直接构造）。`TopicOptions` 声明 brokers、订阅的物理 topics、consumer/producer 参数：`Consumer == nil` 表示该 topic 只发布，`Producer == nil` 表示只订阅。内部按 brokers 集合分组复用客户端；订阅按（消费组 × 物理 topic × 实例数）展开后 fan-in 到单一 channel（取自 `_examples/pubsub/main.go` 与 `config.yaml`）：
 
 `config.yaml`：
 
@@ -268,15 +274,13 @@ kafka:
 加载与注册：
 
 ```go
-var kafkaOpts kafka.Options
-if err := app.Config().UnmarshalKey("kafka", &kafkaOpts); err != nil {
-	return err
-}
-kafkaT, err := kafka.NewTransport(kafkaOpts)
+kafkaT, err := kafka.NewFromConfig(app.Config()) // 段缺失/为空返回 nil，未启用
 if err != nil {
 	return err
 }
-app.Register(kafkaT)
+if kafkaT != nil {
+	app.Register(kafkaT)
+}
 ```
 
 也可以代码直接构造（不依赖配置文件）：
