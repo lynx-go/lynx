@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/lynx-go/lynx"
@@ -20,6 +21,8 @@ type Router struct {
 func (r *Router) Name() string { return "pubsub-router" }
 
 // Init 将全部 Handler 缓冲订阅到 Broker（纯缓冲，无时序依赖）。
+// 类型化 handler 的解码目标由其 NewEvent 声明，解码所用 Marshaler 在此
+// 按 topic 解析一次（MarshalerFor），处理消息时零额外开销。
 func (r *Router) Init(ctx lynx.AppContext) error {
 	if ctx != nil {
 		r.logger = ctx.Logger("service", "pubsub-router")
@@ -30,7 +33,18 @@ func (r *Router) Init(ctx lynx.AppContext) error {
 		if o, ok := h.(HandlerOptions); ok {
 			opts = append(opts, o.Options()...)
 		}
-		if err := r.broker.Subscribe(ctx.Context(), h.EventName(), h.HandlerName(), h.HandlerFunc(), opts...); err != nil {
+		m := r.broker.MarshalerFor(h.EventName())
+		if err := r.broker.Subscribe(ctx.Context(), h.EventName(), h.HandlerName(), func(ctx context.Context, event *Message) error {
+			ev := h.NewEvent()
+			if d, ok := ev.(MessageDecoder); ok {
+				if err := d.Decode(m, event); err != nil {
+					return fmt.Errorf("pubsub: unmarshal payload: %w", err)
+				}
+			} else if ev == nil {
+				ev = event
+			}
+			return h.Handle(ctx, ev)
+		}, opts...); err != nil {
 			return err
 		}
 	}

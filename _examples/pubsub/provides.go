@@ -60,7 +60,7 @@ func NewBroker(cfg lynx.Config, kafkaT *kafka.Transport, memT *pubsub.MemoryTran
 
 // NewHandlers 提供事件处理器集合。
 func NewHandlers() []pubsub.Handler {
-	return []pubsub.Handler{&helloHandler{}, &notifyHandler{}}
+	return []pubsub.Handler{helloHandler(), notifyHandler()}
 }
 
 // NewRouter 将处理器缓冲订阅到 Broker。
@@ -73,7 +73,7 @@ func NewHttpServer(broker pubsub.Broker) *http.Server {
 	mux := gohttp.NewServeMux()
 	mux.HandleFunc("/hello", func(writer gohttp.ResponseWriter, request *gohttp.Request) {
 		if err := broker.Publish(request.Context(), "hello",
-			pubsub.MustJSONMessage(map[string]any{"message": "hello"}),
+			HelloEvent{Message: "hello"},
 			pubsub.WithMessageKey(uuid.NewString()),
 		); err != nil {
 			slog.ErrorContext(request.Context(), "failed to publish", "error", err)

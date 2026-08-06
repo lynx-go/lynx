@@ -29,13 +29,35 @@ func (JSONMarshaler) Unmarshal(data []byte, out any) error {
 	return json.Unmarshal(data, out)
 }
 
-// TypedMessage 是类型化消息：Payload 为业务对象，而非原始字节。
-// 由 Subscribe[T] 反序列化生成，字段与 Message 对应。
+// TypedMessage 是类型化消息信封：元数据（ID/Key/Headers）与原始 Message
+// 一致，Payload 为业务对象。类型化 handler（NewHandler[T]）与直接订阅
+// （Subscribe[T]）都以它为处理入参。
 type TypedMessage[T any] struct {
 	ID      string
 	Key     string
 	Headers map[string]string
 	Payload T
+}
+
+// MessageDecoder 是可解码信封：声明自身如何从原始消息填充元数据与
+// 业务 Payload。框架处理消息时按 topic 的 Marshaler 调用 Decode，
+// handler 无需感知序列化细节。
+type MessageDecoder interface {
+	Decode(m Marshaler, msg *Message) error
+}
+
+// Decode 从原始消息填充信封：拷贝元数据（ID/Key/Headers），Payload 经
+// Marshaler 反序列化。T 为 []byte 时表示原始字节语义：直接透传，不经过
+// Marshaler。
+func (tm *TypedMessage[T]) Decode(m Marshaler, msg *Message) error {
+	tm.ID = msg.ID
+	tm.Key = msg.Key
+	tm.Headers = msg.Headers
+	if raw, ok := any(&tm.Payload).(*[]byte); ok {
+		*raw = msg.Payload
+		return nil
+	}
+	return m.Unmarshal(msg.Payload, &tm.Payload)
 }
 
 // Subscribe 注册类型化订阅：消息 Payload 经 Broker 的 Marshaler 自动
@@ -44,15 +66,10 @@ type TypedMessage[T any] struct {
 func Subscribe[T any](b Broker, ctx context.Context, topic, handlerName string, h func(ctx context.Context, event *TypedMessage[T]) error, opts ...SubscribeOption) error {
 	m := b.MarshalerFor(topic)
 	return b.Subscribe(ctx, topic, handlerName, func(ctx context.Context, event *Message) error {
-		var payload T
-		if err := m.Unmarshal(event.Payload, &payload); err != nil {
+		ev := &TypedMessage[T]{}
+		if err := ev.Decode(m, event); err != nil {
 			return fmt.Errorf("pubsub: unmarshal payload: %w", err)
 		}
-		return h(ctx, &TypedMessage[T]{
-			ID:      event.ID,
-			Key:     event.Key,
-			Headers: event.Headers,
-			Payload: payload,
-		})
+		return h(ctx, ev)
 	}, opts...)
 }
