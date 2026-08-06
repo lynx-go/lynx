@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -217,6 +218,51 @@ func TestBrokerStop(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Start did not return after Stop")
+	}
+}
+
+// TestBrokerStopBeforeStart 回归 P1-5：Stop 必须先于 Start 调用被容忍
+//（Init 成功但 Start 未执行的失败清理路径）——不 panic，且随后正常
+// Start/Stop 流程不受影响。
+func TestBrokerStopBeforeStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b := NewBroker(Options{DefaultTransport: NewMemoryTransport()})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	b.Stop(context.Background())
+	// Stop 后再走正常生命周期：不得因提前 Stop 破坏 Start。
+	if err := b.Subscribe(ctx, "noop.event", "noop-handler", func(ctx context.Context, msg *Message) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- b.Start(ctx) }()
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return b.CheckHealth() == nil }) {
+		t.Fatal("broker did not start after Stop-before-Start")
+	}
+	cancel()
+	b.Stop(context.Background())
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after Stop")
+	}
+}
+
+// TestBrokerPublishTypedNilMessage 回归 P2-5：类型断言的 typed nil *Message
+// payload 必须返回明确错误，不得在 cloneMessage 中解引用 panic。
+func TestBrokerPublishTypedNilMessage(t *testing.T) {
+	b := NewBroker(Options{DefaultTransport: NewMemoryTransport()})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	var nilMsg *Message
+	err := b.Publish(context.Background(), "test.event", nilMsg)
+	if err == nil || !strings.Contains(err.Error(), "nil") {
+		t.Fatalf("Publish(typed nil *Message) error = %v, want explicit nil error", err)
 	}
 }
 

@@ -22,7 +22,9 @@ Lynx 首个稳定版本。核心生命周期、组件系统、配置系统 API �
   （Init 内调用 App 方法不再死锁）；Init/OnStart 失败逆序清理已初始化组件；
   OnStop 错误随 `Run()` 上抛；退出信号提前注册
 - **Schedule**：Stop/Start 竞态导致的关闭永久挂起修复；新增时区与任务错误回调
-- **HTTP**：脱钩 gocloud.dev/server（显式注入 otel provider，消除进程全局副作用）；
+- **HTTP**：脱钩 gocloud.dev/server 的 HTTP server 实现（显式注入 otel provider，
+  消除进程全局副作用）；**保留** gocloud.dev/server 的 `health.Checker` 抽象与
+  `requestlog` 包（v1.0 决策：依赖保留，仅实现脱钩）；
   新增 TLS、IdleTimeout 与 `*http.Server` 逃生口
 - **gRPC**：app 级健康检查轮询同步到 `grpc.health.v1`；Recovery 移至拦截器链
   最外层；新增流式拦截器入口
@@ -39,6 +41,14 @@ Lynx 首个稳定版本。核心生命周期、组件系统、配置系统 API �
 
 - 各 contrib 模块独立 LICENSE
 - 发布流程：`task release-all --Version=v1.0.0`（见 RELEASE.md）
+- 发布卫生：全部 7 模块 `go mod tidy`（根模块 otelhttp 转为直接依赖、
+  `google/wire` 移除、schedule/zap 及 `_examples` 的 go.sum 补齐缺失的
+  `.go.mod` 校验行）；`_examples` 对 lynx 及 5 个 contrib 的 require 统一为
+  `v1.0.0`；CI 覆盖率门槛由仅核心模块扩展为根与全部 contrib 统一 70%
+  （`_examples` 除外）；`Taskfile.yml` 默认发布版本更新为 `v1.0.0`
+- 行为说明：gRPC 服务器 Start/Stop 路径日志经 `log.InfoContext` 输出，ctx
+  无注入 logger 时回退 `slog.Default()`，与 `WithLogger` 配置的请求日志
+  实例可能不同（见 `WithLogger` GoDoc）
 
 ## v0.7.2 及之前
 

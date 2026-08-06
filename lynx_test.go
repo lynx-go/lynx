@@ -174,6 +174,32 @@ func (c *hangStopComponent) Init(app App) error              { return nil }
 func (c *hangStopComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
 func (c *hangStopComponent) Stop(ctx context.Context)        { select {} }
 
+// slowInitComponent 的 Init 阻塞直到 release 放行，用于在 Register 与 Run
+// 之间制造确定性交错（P1-1 二轮修复的回归测试）。
+type slowInitComponent struct {
+	name        string
+	release     chan struct{}
+	enteredInit chan struct{}
+	started     atomic.Bool
+	stopped     atomic.Bool
+}
+
+func (c *slowInitComponent) Name() string { return c.name }
+
+func (c *slowInitComponent) Init(app App) error {
+	close(c.enteredInit)
+	<-c.release
+	return nil
+}
+
+func (c *slowInitComponent) Start(ctx context.Context) error {
+	c.started.Store(true)
+	<-ctx.Done()
+	return nil
+}
+
+func (c *slowInitComponent) Stop(ctx context.Context) { c.stopped.Store(true) }
+
 func TestInitCanCallAppMethods(t *testing.T) {
 	cli := NewBuilder(func(ctx context.Context, app App) error {
 		app.Register(&initAppAccessorComponent{})
@@ -595,6 +621,161 @@ func TestCLICommandRunsAndClosesApp(t *testing.T) {
 	case <-app.Context().Done():
 	default:
 		t.Error("app context should be cancelled after command completes")
+	}
+}
+
+// TestRegisterAfterRunRejected 回归 P1-1：Run 开始后注册为禁止操作——
+// Register/RegisterBuilders panic 报明确错误，CLI 返回错误；
+// 晚到的注册不得触碰 run.Group 的 actors（此前为 data race 且组件
+// 永不 Start 却被 Stop）。
+func TestRegisterAfterRunRejected(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	c := &blockingComponent{name: "c"}
+	app.Register(c)
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- app.Run() }()
+	waitFor(t, 2*time.Second, func() bool { return c.started.Load() }, "component to start")
+
+	assertPanics := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatalf("%s did not panic after Run() started", name)
+			}
+		}()
+		fn()
+	}
+	assertPanics("Register", func() { app.Register(&blockingComponent{name: "late"}) })
+	assertPanics("RegisterBuilders", func() { app.RegisterBuilders(&recordingBuilder{instances: 1}) })
+	if err := app.CLI(func(ctx context.Context) error { return nil }); err == nil ||
+		!strings.Contains(err.Error(), "must not be called after Run") {
+		t.Fatalf("CLI() error = %v, want explicit after-Run error", err)
+	}
+
+	app.Close()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after Close()")
+	}
+}
+
+// TestRunJoinsOnStopErrorsWithStartFailure 回归 P1-2：组件 Start 先失败时，
+// oklog/run 只返回首个 actor 错误，OnStop 钩子错误必须与之一并上抛，
+// 不得只落日志。
+func TestRunJoinsOnStopErrorsWithStartFailure(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+
+	app.Register(&failStartComponent{name: "bad", err: errors.New("start boom")})
+	app.OnStop(func(ctx context.Context) error { return errors.New("onstop boom") })
+
+	err = app.Run()
+	if err == nil {
+		t.Fatal("Run() error = nil, want both start and on-stop errors")
+	}
+	if !strings.Contains(err.Error(), "start boom") || !strings.Contains(err.Error(), "onstop boom") {
+		t.Fatalf("Run() error = %v, want both start boom and onstop boom", err)
+	}
+}
+
+// TestRunRejectedTwice 回归 P2-1：Run 不可重复调用——二次调用返回明确
+// 错误，组件不会被二次 Start/Stop。
+func TestRunRejectedTwice(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	c := &blockingComponent{name: "c"}
+	app.Register(c)
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- app.Run() }()
+	waitFor(t, 2*time.Second, func() bool { return c.started.Load() }, "component to start")
+
+	if err := app.Run(); err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("second Run() error = %v, want explicit once-only error", err)
+	}
+
+	app.Close()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after Close()")
+	}
+}
+
+// TestRegisterRacingRunLeavesNoOrphan 回归 P1-1 二轮修复：Register 与 Run
+// 并发时，迟到的注册必须在持锁登记事务内被裁决为 panic——不得留下
+// "Init 成功、计入 healthCheckers、永不 Start/Stop" 的孤儿组件，也不得与
+// run.Group 的 actors 产生 data race（-race 下运行）。
+// 交错是确定性的：slow 的 Init 阻塞期间 Run 先置位 running，随后才放行。
+func TestRegisterRacingRunLeavesNoOrphan(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	c1 := &blockingComponent{name: "c1"}
+	slow := &slowInitComponent{
+		name:        "slow",
+		release:     make(chan struct{}),
+		enteredInit: make(chan struct{}),
+	}
+	app.Register(c1)
+
+	// 先发起 Register(slow)：fast-path running 检查在 Init 之前完成，
+	// 随后进入阻塞的 Init。
+	var recovered any
+	regDone := make(chan struct{})
+	go func() {
+		defer close(regDone)
+		defer func() { recovered = recover() }()
+		app.Register(slow)
+	}()
+	<-slow.enteredInit
+
+	// 再启动 Run：running 置位且 c1 已 Start 后，slow 的 Init 才被放行，
+	// 其持锁登记事务必然命中 running 检查。
+	runErr := make(chan error, 1)
+	go func() { runErr <- app.Run() }()
+	waitFor(t, 2*time.Second, func() bool { return c1.started.Load() }, "c1 to start")
+	close(slow.release)
+
+	select {
+	case <-regDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Register did not return after Init released")
+	}
+	if recovered == nil {
+		t.Fatal("late Register racing Run did not panic")
+	}
+	if slow.started.Load() {
+		t.Error("orphan component was started")
+	}
+	if slow.stopped.Load() {
+		t.Error("orphan component was stopped")
+	}
+
+	app.Close()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after Close()")
 	}
 }
 

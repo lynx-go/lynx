@@ -30,7 +30,7 @@ func NewServer(handler http.Handler, opts ...Option) *Server
 - `WithAddr(addr string)`：监听地址，默认 `:8080`。
 - `WithTimeout(timeout time.Duration)`：请求读写超时，默认 60 秒。该值会同时设置为底层 `http.Server` 的 `ReadHeaderTimeout`、`ReadTimeout` 和 `WriteTimeout`；传入 0 或负数则不设置（保持底层默认值）。
 - `WithShutdownTimeout(timeout time.Duration)`：优雅关闭超时，默认 10 秒。调用方 Context 无 deadline 时生效：`Stop` 以它为上限等待 `Shutdown` 排空连接，超时后强制 `Close()` 活动连接，避免长轮询/流式 handler 让关闭无限挂起。
-- `WithHealthCheck(hc lynx.HealthCheckFunc)`：健康检查函数。传入后服务器自动暴露两个端点（由底层 gocloud.dev 服务器提供）：`/healthz/liveness` 恒返回 200，`/healthz/readiness` 依次调用所有收集到的检查器。通常直接传 `app.HealthCheckFunc()`，收集规则见 2.5 节与 4.3 节。两个端点始终注册；不传该 Option 只是就绪检查列表为空，此时 `/healthz/readiness` 恒返回 200。
+- `WithHealthCheck(hc lynx.HealthCheckFunc)`：健康检查函数。传入后服务器自动暴露两个端点：`/healthz/liveness` 恒返回 200，`/healthz/readiness` 依次调用所有收集到的检查器。通常直接传 `app.HealthCheckFunc()`，收集规则见 2.5 节与 4.3 节。两个端点始终注册；不传该 Option 只是就绪检查列表为空，此时 `/healthz/readiness` 恒返回 200。
 - `WithLogger(l *slog.Logger)`：请求日志使用的日志器，默认 `slog.Default()`。
 - `WithRequestLog(requestLog bool)`：是否记录访问日志，默认 `false`。开启后每个请求以 Stackdriver 兼容的 JSON 格式输出一条 `Debug` 级别日志（`server/http/requestlog.go`），字段包含方法、URL、状态码、耗时、remote IP 以及 `trace`/`spanId`——注意需要日志器级别为 debug 才能看到。
 - `WithMiddleware(middlewares ...Middleware)`：注册自定义中间件，可多次调用叠加。链序见 5.3.5 节。
@@ -115,6 +115,10 @@ func NewServer(opts ...Option) *Server
 
 - gRPC 服务器没有 `WithPropagator`——otelgrpc 固定使用全局 propagator，需要时通过 `otel.SetTextMapPropagator(...)` 设置；
 - gRPC 服务器没有 `WithHealthCheck`——标准健康检查服务是内置的（见下文）。
+
+此外，gRPC 服务器**没有**针对 TLS、keepalive、消息压缩等的一等选项——这些均由
+`WithServerOptions` 透传原生 `grpc.ServerOption` 配置（`grpc.Creds`、
+`grpc.KeepaliveParams`、`grpc.RPCCompressor` 等），详见上面的选项说明。
 
 ### 拦截器
 
@@ -274,7 +278,7 @@ app.OnStop(func(ctx context.Context) error {
 })
 ```
 
-一个需要留意的副作用：HTTP 服务器底层 gocloud.dev 在 `Start` 时会把传入的非 nil TracerProvider/MeterProvider/Propagator **同时设置为 otel 全局 provider**（即替你调用了 `otel.SetTracerProvider` 等）。单服务进程里这通常正合预期（业务代码可以直接用全局 tracer）；但如果你已自行设置过全局 provider、或同一进程跑多个服务器，要意识到后启动的服务器会覆盖全局值。使用 5.3.1 节的托管路径时，全局值由框架在启动前设置，不存在该副作用。
+一个需要留意的副作用（v1.0 已消除）：HTTP 服务器底层不再使用 gocloud.dev/server 的实现，改为标准库 `http.Server` + otelhttp，传入的 provider 仅用于当前服务器，**不会**被设置为 otel 全局 provider——全局 provider 只能通过 `otel.SetTracerProvider` 等显式设置（或使用 5.3.1 节的托管路径）。
 
 开发调试最方便的是把 span 打到 stdout。下面是一个完整的 `setupOTel` 模板，同时初始化 stdout trace exporter、Prometheus metrics exporter 与 W3C propagator（需要的依赖：`go.opentelemetry.io/otel/exporters/stdout/stdouttrace`、`go.opentelemetry.io/otel/exporters/prometheus`、`go.opentelemetry.io/otel/sdk` 与 `go.opentelemetry.io/otel/sdk/metric`；使用 5.3.1 托管路径时这些依赖框架已内置，无需单独引入）：
 
@@ -403,7 +407,7 @@ func chain(h http.Handler, middlewares []Middleware) http.Handler {
 }
 ```
 
-完整的请求处理链由 gocloud.dev 服务器在最外层注入 otel instrumentation 与请求日志，最终链序为：
+完整的请求处理链由 otelhttp 在最外层注入 otel instrumentation，随后是请求日志中间件，最终链序为：
 
 ```
 otel instrumentation → request log → WithMiddleware 中间件（声明序） → 业务 handler

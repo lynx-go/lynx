@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lynx-go/x/log"
@@ -44,14 +45,16 @@ type App interface {
 	// Register 注册需要由应用托管生命周期的组件实例。
 	// 组件的 Init 在注册时同步执行；注册阶段产生的错误不会立即返回，
 	// 首个错误会被记录，并在 Run() 时统一返回。
+	// 所有注册必须先于 Run：Run 开始后调用将 panic（见 Run）。
 	Register(components ...Component)
 	// RegisterBuilders 注册需要由应用托管生命周期的组件构建器，
-	// 错误处理语义与 Register 相同。
+	// 错误处理语义与 Register 相同；同样必须先于 Run。
 	RegisterBuilders(builders ...ComponentBuilder)
 
 	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
 	HealthCheckFunc() HealthCheckFunc
-	// Run 运行应用主流程：执行 on-start 钩子、启动所有组件并等待退出信号
+	// Run 运行应用主流程：执行 on-start 钩子、启动所有组件并等待退出信号。
+	// Run 开始后，Register/RegisterBuilders 为禁止操作（panic），CLI 返回错误。
 	Run() error
 	// SetLogger 设置 logger
 	SetLogger(logger *slog.Logger)
@@ -116,6 +119,9 @@ type lynx struct {
 	healthCheckers []health.Checker
 	// components 按注册顺序记录已 Init 成功的组件，用于失败路径的逆序清理。
 	components []Component
+	// running 标记 Run 已开始：此后 Register/RegisterBuilders 为禁止操作
+	//（P1-1 定语义），Run 侧无需再与注册侧并发争用 run.G 的 actors。
+	running atomic.Bool
 
 	onStarts []HookFunc
 	onStops  []HookFunc
@@ -136,6 +142,11 @@ func (app *lynx) OnStop(fns ...HookFunc) {
 }
 
 func (app *lynx) Register(components ...Component) {
+	if app.running.Load() {
+		// P1-1 定语义：所有注册必须先于 Run。Run 已开始的注册是编程错误，
+		// panic 明确报错（Register 无返回值，无法以错误返回）。
+		panic("lynx: Register must not be called after Run() has started")
+	}
 	app.mu.Lock()
 	initErr := app.initErr
 	app.mu.Unlock()
@@ -145,12 +156,19 @@ func (app *lynx) Register(components ...Component) {
 	// addComponents 在锁外执行 Init：组件 Init 内调用 app.HealthCheckFunc()、
 	// OnStart 等需要 app.mu 的方法时不会死锁。
 	if err := app.addComponents(components...); err != nil {
+		if errors.Is(err, errRunStarted) {
+			// 与 Run 并发的迟到注册：持锁登记事务内的权威裁决点。
+			panic("lynx: Register must not be called after Run() has started")
+		}
 		app.recordInitError(err)
 		log.ErrorContext(app.ctx, "failed to register components", err)
 	}
 }
 
 func (app *lynx) RegisterBuilders(builders ...ComponentBuilder) {
+	if app.running.Load() {
+		panic("lynx: RegisterBuilders must not be called after Run() has started")
+	}
 	app.mu.Lock()
 	initErr := app.initErr
 	app.mu.Unlock()
@@ -158,6 +176,9 @@ func (app *lynx) RegisterBuilders(builders ...ComponentBuilder) {
 		return
 	}
 	if err := app.addComponentBuilders(builders...); err != nil {
+		if errors.Is(err, errRunStarted) {
+			panic("lynx: RegisterBuilders must not be called after Run() has started")
+		}
 		app.recordInitError(err)
 		log.ErrorContext(app.ctx, "failed to register component builders", err)
 	}
@@ -171,6 +192,11 @@ func (app *lynx) recordInitError(err error) {
 		app.initErr = err
 	}
 }
+
+// errRunStarted 由 addComponents 在持锁登记事务中发现 Run 已开始时返回，
+// 调用方（Register/RegisterBuilders/CLI）翻译为各自的明确错误/panic
+//（P1-1 语义：所有注册必须先于 Run）。
+var errRunStarted = errors.New("lynx: registration after Run() has started")
 
 func (app *lynx) SetLogger(logger *slog.Logger) {
 	slog.SetDefault(logger)
@@ -188,6 +214,9 @@ func (app *lynx) HealthCheckFunc() HealthCheckFunc {
 }
 
 func (app *lynx) CLI(cmd CommandFunc) error {
+	if app.running.Load() {
+		return errors.New("lynx: CLI must not be called after Run() has started")
+	}
 	app.mu.Lock()
 	initErr := app.initErr
 	app.mu.Unlock()
@@ -195,6 +224,9 @@ func (app *lynx) CLI(cmd CommandFunc) error {
 		return initErr
 	}
 	if err := app.addComponents(NewCommand(cmd)); err != nil {
+		if errors.Is(err, errRunStarted) {
+			return errors.New("lynx: CLI must not be called after Run() has started")
+		}
 		app.recordInitError(err)
 		return err
 	}
@@ -373,7 +405,16 @@ func (app *lynx) addComponents(components ...Component) error {
 			return err
 		}
 		log.InfoContext(ctx, "initialized component", "component", component.Name())
+		// 登记事务：running 检查与 runG.Add 同持 app.mu（P1-1 二轮修复）。
+		// 这是与 Run 并发时的权威裁决点——Run 在持 mu 时置位 running，
+		// 此处同样持 mu 判定+登记，任何迟到的 Add 都不可能越过该检查；
+		// 检查失败时组件不进入 components/healthCheckers/runG（无孤儿）。
 		app.mu.Lock()
+		if app.running.Load() {
+			app.mu.Unlock()
+			cancel()
+			return errRunStarted
+		}
 		app.components = append(app.components, component)
 		app.runG.Add(func() error {
 			log.InfoContext(ctx, "starting component", "component", component.Name())
@@ -396,6 +437,8 @@ func (app *lynx) addComponents(components ...Component) error {
 
 // stopComponentBounded 有界停止单个组件：超过 StopTimeout 后记录错误并继续，
 // 防止挂死的组件 Stop 阻塞整个关停流程。
+// 注意：超时后组件 Stop 仍在后台 goroutine 运行，若其永久阻塞则该 goroutine
+// 随之泄漏（可接受的取舍——保证关停流程不被挂死优先，P2-2 已知语义）。
 func (app *lynx) stopComponentBounded(ctx context.Context, component Component) {
 	done := make(chan struct{})
 	go func() {
@@ -423,9 +466,17 @@ func (app *lynx) stopComponents(ctx context.Context) {
 func (app *lynx) Run() error {
 	app.mu.Lock()
 	initErr := app.initErr
+	// P1-1：running 在持 app.mu 时置位——与 Register 侧持锁登记事务的
+	// running 检查互斥，形成"检查与 runG.Add 同事务"的闭合判定。
+	// P2-1：同时作为 Run 的单次守卫——二次调用直接返回错误，
+	// 组件不会被二次 Start/Stop。
+	alreadyRunning := app.running.Swap(true)
 	app.mu.Unlock()
 	if initErr != nil {
 		return initErr
+	}
+	if alreadyRunning {
+		return errors.New("lynx: Run must not be called more than once")
 	}
 	app.Logger().Info("starting")
 
@@ -458,22 +509,31 @@ func (app *lynx) Run() error {
 		// Step 2: 在 ShutdownTimeout 内执行 OnStop hooks。
 		shutdownErr = app.runOnStopHooks()
 	}
+	// 关闭 actor 的登记同样持 app.mu：保证所有 runG.Add 都在锁内完成，
+	// runG.Run() 迭代 actors 前不存在并发 Add（P1-1 二轮修复）。
+	// oklog/run 的 Add 仅是切片 append，持锁调用不会死锁。
+	app.mu.Lock()
 	app.runG.Add(func() error {
 		select {
 		case <-app.ctx.Done():
 			shutdownOnce.Do(shutdown)
-			return shutdownErr
+			// 返回 nil：Run 的返回统一在下方用 errors.Join 聚合 shutdownErr，
+			// 避免信号路径与组件失败路径出现重复/丢失。
+			return nil
 		case <-exitCh:
 			shutdownOnce.Do(shutdown)
-			return shutdownErr
+			return nil
 		}
 	}, func(err error) {
 		app.Close()
 		shutdownOnce.Do(shutdown)
 	})
+	app.mu.Unlock()
 
 	// Step 3: run.Group 在第一个 actor 返回后停止所有组件。
-	return app.runG.Run()
+	// P1-2：组件 Start 先失败时 oklog/run 只返回首个 actor 错误，OnStop
+	// 钩子错误仅落日志；此处用 errors.Join 聚合两者一起上抛（nil 安全）。
+	return errors.Join(app.runG.Run(), shutdownErr)
 }
 
 func (app *lynx) runOnStartHooks() error {

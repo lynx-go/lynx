@@ -631,6 +631,69 @@ func TestTransportLifecycle(t *testing.T) {
 	}
 }
 
+// TestTransportStopBeforeStart 回归 P1-5：Stop 必须先于 Start 调用被容忍
+//（Init 成功但 Start 未执行的失败清理路径）——不 panic、不挂死，
+// 且 Stop 后健康检查保持失败。
+func TestTransportStopBeforeStart(t *testing.T) {
+	tests := []struct {
+		name string
+		init bool // 是否先调用 Init
+	}{
+		{name: "before Init", init: false},
+		{name: "after Init before Start", init: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := newTestTransport(Options{
+				Topics: map[string]TopicOptions{
+					"orders": {Brokers: []string{"b"}, Topics: []string{"t"}, Consumer: &ConsumerOptions{GroupID: "g"}},
+				},
+			}, newFakePubSub())
+			if tt.init {
+				if err := tr.Init(newFakeApp()); err != nil {
+					t.Fatalf("Init: %v", err)
+				}
+			}
+			tr.Stop(context.Background())
+			if err := tr.CheckHealth(); err == nil {
+				t.Fatal("expected CheckHealth error after Stop-before-Start")
+			}
+		})
+	}
+}
+
+// TestTransportPublishAfterStop 回归 P2-4：Stop 后 Publish 必须返回框架级
+// 错误，不得命中缓存的已关闭 publisher（此前报 sarama "client is closed"）。
+func TestTransportPublishAfterStop(t *testing.T) {
+	tr := newTestTransport(Options{Topics: map[string]TopicOptions{
+		"orders": {Brokers: []string{"b1"}, Topics: []string{"orders_v1"}, Producer: &ProducerOptions{}},
+	}}, newFakePubSub())
+	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err != nil {
+		t.Fatalf("Publish before Stop: %v", err)
+	}
+	tr.Stop(context.Background())
+	err := tr.Publish(context.Background(), "orders", message.NewMessage("id2", nil))
+	if err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("Publish after Stop error = %v, want explicit stopped error", err)
+	}
+}
+
+// TestTransportSubscribeAfterStop 回归二轮复审项 2：Stop 后 Subscribe 必须
+// 返回与 Publish 同款框架级错误，不得命中缓存的已关闭 subscriber。
+func TestTransportSubscribeAfterStop(t *testing.T) {
+	tr := newTestTransport(Options{Topics: map[string]TopicOptions{
+		"orders": {Brokers: []string{"b1"}, Topics: []string{"t1"}, Consumer: &ConsumerOptions{GroupID: "g1"}},
+	}}, newFakePubSub())
+	if _, err := tr.Subscribe(context.Background(), "orders", pubsub.SubscriptionOptions{}); err != nil {
+		t.Fatalf("Subscribe before Stop: %v", err)
+	}
+	tr.Stop(context.Background())
+	_, err := tr.Subscribe(context.Background(), "orders", pubsub.SubscriptionOptions{})
+	if err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("Subscribe after Stop error = %v, want explicit stopped error", err)
+	}
+}
+
 func TestTransportPublishLogMessageWithoutInit(t *testing.T) {
 	// 未 Init（t.app == nil）即 Publish 且 log_message=true 不得 panic。
 	pub := newFakePubSub()

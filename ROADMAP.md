@@ -8,7 +8,7 @@ Lynx 目前为团队内部使用的 Go 微服务框架，计划对外推广开�
 
 **v1.0 完成标准：**
 
-- 测试齐全：核心包与主要 contrib 模块具备单元测试，CI 强制 `-race` 与覆盖率门槛
+- 测试齐全：核心包与主要 contrib 模块具备单元测试，CI 强制 `-race`（全部 7 模块）与覆盖率门槛（根与 5 个 contrib 均 70%，`_examples` 除外）
 - 文档完整：GoDoc 全覆盖、`docs/` 教程补齐、示例自带 README
 - API 冻结：导出符号经过全量审查，v1.0 后保持向后兼容
 
@@ -69,7 +69,10 @@ v1.0 发布前全量审查（功能缺失/设计缺陷/实现缺陷）的修复�
 - [x] **核心**：组件 Stop 有界超时；Init 锁外执行；失败路径资源清理；
       OnStop 错误上抛；退出信号提前注册
 - [x] **Schedule**：Stop/Start 竞态挂死修复；时区；任务错误回调
-- [x] **HTTP**：脱钩 gocloud.dev/server（消除全局 provider 副作用）；TLS/逃生口
+- [x] **HTTP**：脱钩 gocloud.dev/server 的 HTTP server 实现（消除全局 provider
+      副作用）；**保留** gocloud.dev/server/health 与 requestlog 包作为
+      health.Checker 抽象与请求日志的基础（v1.0 决策，见 CHANGELOG）；
+      TLS/逃生口
 - [x] **gRPC**：app 级健康检查同步；Recovery 最外层；流式拦截器入口
 - [x] **发布卫生**：contrib go.mod bump、各模块 LICENSE、CHANGELOG、
       内部文档清理

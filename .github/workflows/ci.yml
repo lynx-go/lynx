@@ -44,13 +44,14 @@ jobs:
         working-directory: ${{ matrix.module }}
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
-      # ROADMAP v1.0 标准：CI 强制覆盖率门槛。核心模块门槛 70%，低于则失败。
-      - name: Coverage threshold (core)
-        if: matrix.flag == 'core'
-        working-directory: .
+      # ROADMAP v1.0 标准：CI 强制覆盖率门槛。根与 5 个 contrib 模块统一
+      # 70% 门槛（实测各模块现状 77%-85%，留有余量），低于则失败。
+      - name: Coverage threshold
+        working-directory: ${{ matrix.module }}
+        if: matrix.flag != 'examples'
         run: |
           cov=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}' | tr -d '%')
-          echo "core coverage: ${cov}%"
+          echo "${{ matrix.flag }} coverage: ${cov}%"
           if awk -v c="$cov" 'BEGIN{exit !(c < 70)}'; then
             echo "coverage ${cov}% is below the 70% threshold"; exit 1
           fi

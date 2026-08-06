@@ -91,7 +91,7 @@ Lynx 适用于以下场景：
 Lynx 构建于以下优秀的开源项目之上：
 
 - **Go 1.25+**：编程语言
-- **gocloud.dev**：云原生 API 支持
+- **gocloud.dev**：健康检查（`health.Checker`）与请求日志（`requestlog`）抽象（HTTP server 实现已脱钩，仅取用这两个包）
 - **Viper**：配置管理
 - **pflag**：命令行参数解析
 - **Wire**：依赖注入

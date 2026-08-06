@@ -15,12 +15,12 @@ require (
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/google/uuid v1.6.0
 	github.com/google/wire v0.7.0
-	github.com/lynx-go/lynx v0.4.0
-	github.com/lynx-go/lynx/contrib/kafka v0.0.0-00010101000000-000000000000
-	github.com/lynx-go/lynx/contrib/metrics v0.0.0-00010101000000-000000000000
-	github.com/lynx-go/lynx/contrib/pubsub v0.7.2
-	github.com/lynx-go/lynx/contrib/schedule v0.0.0-20251205120803-d841a9e8d821
-	github.com/lynx-go/lynx/contrib/zap v0.1.0
+	github.com/lynx-go/lynx v1.0.0
+	github.com/lynx-go/lynx/contrib/kafka v1.0.0
+	github.com/lynx-go/lynx/contrib/metrics v1.0.0
+	github.com/lynx-go/lynx/contrib/pubsub v1.0.0
+	github.com/lynx-go/lynx/contrib/schedule v1.0.0
+	github.com/lynx-go/lynx/contrib/zap v1.0.0
 	github.com/lynx-go/x v0.1.0
 	github.com/samber/lo v1.53.0
 	github.com/spf13/pflag v1.0.10
@@ -53,6 +53,9 @@ require (
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	github.com/spf13/viper v1.21.0 // indirect
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/scram v1.2.0 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -396,6 +397,68 @@ func TestHealthStatusFollowsCheckers(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("health status did not flip to NOT_SERVING after checker failed")
+}
+
+// TestHealthCheckDefaultPeriodNotPanic 回归 P0-1：WithHealthCheck 未设置
+// Period 时，NewServer 必须回退 DefaultHealthCheckPeriod，轮询 goroutine
+// 不得用零值 Ticker 触发 time.NewTicker(0) panic。
+func TestHealthCheckDefaultPeriodNotPanic(t *testing.T) {
+	checker := &flipChecker{}
+	checker.healthy.Store(true)
+	s := NewServer(
+		WithAddr(freeAddr(t)),
+		WithHealthCheck(func() []health.Checker { return []health.Checker{checker} }),
+	)
+	if s.o.HealthCheckPeriod != DefaultHealthCheckPeriod {
+		t.Fatalf("HealthCheckPeriod = %v, want default %v", s.o.HealthCheckPeriod, DefaultHealthCheckPeriod)
+	}
+	// 负值同样回退缺省值。
+	neg := NewServer(WithHealthCheckPeriod(-1 * time.Second))
+	if neg.o.HealthCheckPeriod != DefaultHealthCheckPeriod {
+		t.Fatalf("negative HealthCheckPeriod = %v, want default %v", neg.o.HealthCheckPeriod, DefaultHealthCheckPeriod)
+	}
+
+	// 走一遍真实 Start/Stop：健康轮询 goroutine 启动且不 panic。
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start(context.Background()) }()
+	waitRunning(t, s)
+	s.Stop(context.Background())
+	select {
+	case <-startErr:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after Stop")
+	}
+}
+
+// TestHealthPollerNotLeakedWhenStoppedBeforeStart 回归二轮复审项 6：
+// Stop 早于 Start 执行到 startHealthPoller 时（healthCancel 为 nil），
+// poller 启动必须在同锁段内发现 stopped 并取消自身——不得留下永不
+// 取消的轮询 goroutine。直接调用 startHealthPoller 是确定性的：
+// 修复前 healthCancel 非 nil（goroutine 已启动），修复后保持 nil。
+func TestHealthPollerNotLeakedWhenStoppedBeforeStart(t *testing.T) {
+	checker := &flipChecker{}
+	checker.healthy.Store(true)
+	s := NewServer(
+		WithHealthCheck(func() []health.Checker { return []health.Checker{checker} }),
+		WithHealthCheckPeriod(20*time.Millisecond),
+	)
+	// Stop 先于 Start 执行到 poller 启动点：healthCancel 尚无值。
+	s.Stop(context.Background())
+
+	before := runtime.NumGoroutine()
+	s.startHealthPoller()
+	time.Sleep(60 * time.Millisecond) // 给足 goroutine 启动与首个 tick
+
+	s.mu.Lock()
+	cancel := s.healthCancel
+	s.mu.Unlock()
+	if cancel != nil {
+		t.Fatal("health poller started after Stop-before-Start (leaked goroutine)")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if after := runtime.NumGoroutine(); after > before+1 {
+		t.Fatalf("goroutine count %d -> %d, health poller leaked", before, after)
+	}
 }
 
 // TestWithStreamInterceptors 验证流式拦截器选项追加生效。

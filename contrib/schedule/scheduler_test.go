@@ -397,6 +397,30 @@ func TestStopBeforeStartNoHang(t *testing.T) {
 	}
 }
 
+// TestStopRacingStartNoHang 回归 P0-3：Stop 与 Start 并发交错时不得挂死。
+// 复现窗口：Start 通过 stopping 检查 → Stop 读到 cancel==nil 且 started==false
+// 提前返回 → Start 创建 Background 衍生 ctx 后阻塞在 <-s.ctx.Done()，
+// 该 ctx 永无人取消。10 万次交错中任一次挂死即失败。
+func TestStopRacingStartNoHang(t *testing.T) {
+	for i := 0; i < 100_000; i++ {
+		s, err := NewScheduler(nil, WithLogger(discardLogger()))
+		if err != nil {
+			t.Fatalf("iteration %d: NewScheduler: %v", i, err)
+		}
+		started := make(chan struct{})
+		go func() {
+			defer close(started)
+			_ = s.Start(context.Background())
+		}()
+		s.Stop(context.Background())
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: Start hung after racing Stop", i)
+		}
+	}
+}
+
 // TestErrorHandlerInvoked 验证 WithErrorHandler 回调接收任务错误。
 func TestErrorHandlerInvoked(t *testing.T) {
 	var got atomic.Int32

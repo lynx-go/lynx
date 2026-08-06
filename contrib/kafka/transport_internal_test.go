@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/IBM/sarama"
@@ -9,6 +10,7 @@ import (
 	watermillkafka "github.com/ThreeDotsLabs/watermill-kafka/v3/pkg/kafka"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx/contrib/pubsub"
+	"github.com/xdg-go/scram"
 )
 
 // TestPublisherConfigReturnSuccesses 回归 C1：SyncProducer 必需配置。
@@ -96,6 +98,104 @@ func TestSASLInvalidMechanism(t *testing.T) {
 	}}, cap)
 	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err == nil {
 		t.Fatal("expected error for unsupported sasl mechanism")
+	}
+}
+
+// TestSCRAMConfigPassesSaramaValidate 回归 P0-2：SCRAM 配置必须能通过
+// sarama.Config.Validate() 的真实校验路径（此前只设置 Mechanism 而不设置
+// SCRAMClientGeneratorFunc，Validate() 报 "A SCRAMClientGeneratorFunc
+// function must be provided"，Publish 先于网络连接即失败）。
+// 本测试直接调用真实配置构建与 sarama 校验，不经 fake seam。
+func TestSCRAMConfigPassesSaramaValidate(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		mechanism string
+		want      sarama.SASLMechanism
+	}{
+		{"SHA-256", "SCRAM-SHA-256", sarama.SASLTypeSCRAMSHA256},
+		{"SHA-512", "SCRAM-SHA-512", sarama.SASLTypeSCRAMSHA512},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := NewTransport(Options{})
+			if err != nil {
+				t.Fatalf("NewTransport: %v", err)
+			}
+			cfg, err := tr.buildPublisherConfig(
+				[]string{"b1:9092"},
+				&ProducerOptions{},
+				&SASLOptions{Enabled: true, User: "u", Password: "p", Mechanism: tc.mechanism},
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("buildPublisherConfig: %v", err)
+			}
+			if cfg.Net.SASL.Mechanism != tc.want {
+				t.Fatalf("mechanism = %v, want %v", cfg.Net.SASL.Mechanism, tc.want)
+			}
+			if cfg.Net.SASL.SCRAMClientGeneratorFunc == nil {
+				t.Fatal("SCRAMClientGeneratorFunc not set")
+			}
+			// 真实 sarama 校验：修复前此处必然失败。
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("sarama config Validate() failed: %v", err)
+			}
+		})
+	}
+}
+
+// TestXDGSCRAMClientHandshake 用 xdg-go/scram 的服务端实现跑完整
+// SCRAM 挑战-应答，验证注入的客户端生成器产出可用的认证客户端。
+func TestXDGSCRAMClientHandshake(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hash scram.HashGeneratorFcn
+	}{
+		{"SHA-256", scram.SHA256},
+		{"SHA-512", scram.SHA512},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newSCRAMClientGenerator(tc.hash)()
+			if err := client.Begin("user", "pass", ""); err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			server, err := tc.hash.NewServer(scram.CredentialLookup(func(u string) (scram.StoredCredentials, error) {
+				if u != "user" {
+					return scram.StoredCredentials{}, fmt.Errorf("unknown user %q", u)
+				}
+				client, err := tc.hash.NewClient("user", "pass", "")
+				if err != nil {
+					return scram.StoredCredentials{}, err
+				}
+				return client.GetStoredCredentials(scram.KeyFactors{Salt: "salt", Iters: 4096}), nil
+			}))
+			if err != nil {
+				t.Fatalf("NewServer: %v", err)
+			}
+			serverConv := server.NewConversation()
+
+			clientFirst, err := client.Step("")
+			if err != nil {
+				t.Fatalf("client-first: %v", err)
+			}
+			serverFirst, err := serverConv.Step(clientFirst)
+			if err != nil {
+				t.Fatalf("server-first: %v", err)
+			}
+			clientFinal, err := client.Step(serverFirst)
+			if err != nil {
+				t.Fatalf("client-final: %v", err)
+			}
+			serverFinal, err := serverConv.Step(clientFinal)
+			if err != nil {
+				t.Fatalf("server-final: %v", err)
+			}
+			if _, err := client.Step(serverFinal); err != nil {
+				t.Fatalf("client validation: %v", err)
+			}
+			if !client.Done() {
+				t.Fatal("client conversation not done after successful handshake")
+			}
+		})
 	}
 }
 

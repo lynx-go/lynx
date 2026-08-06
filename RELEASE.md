@@ -36,6 +36,31 @@ task release-tag Version=vX.Y.Z Comment="release vX.Y.Z"                       #
 task release-tag Version=contrib/kafka/vX.Y.Z Comment="release vX.Y.Z"         # 单个 contrib
 ```
 
+## 打 tag 顺序（依赖约束）
+
+`task release-all` 内部按固定顺序执行，但由于 Git 只记录 tag 而模块代理在
+解析 `require` 时按版本号取 tag，**contrib 模块之间的 require 交叉引用要求
+被依赖方先发布**，否则代理在无 replace 时解析不到（unknown revision）。
+当前依赖关系：
+
+```
+lynx（根） ──────────┬──> contrib/zap
+                      ├──> contrib/metrics
+                      ├──> contrib/schedule
+                      ├──> contrib/pubsub ──> contrib/kafka
+```
+
+推荐的显式发布顺序（贡献者单模块发版时务必遵守）：
+
+1. **根模块**：`v1.0.0`（所有 contrib 都 require 它，必须先发）；
+2. **contrib/pubsub**：`contrib/pubsub/v1.0.0`（kafka 依赖它）；
+3. **contrib/kafka**：`contrib/kafka/v1.0.0`；
+4. **contrib/metrics / contrib/schedule / contrib/zap**：无交叉依赖，可并行
+   （`contrib/{metrics,schedule,zap}/v1.0.0`）。
+
+> 依赖关系以各 `contrib/*/go.mod` 的 require 为准；后续若新增 contrib 间
+> 依赖，须在发布前更新本清单。
+
 ## 发版前检查清单
 
 - [ ] **CI 全绿**：`.github/workflows/ci.yml` 中 7 个模块（根、`_examples`、5 个 contrib）的 vet、`go test -race` 与 golangci-lint 矩阵全部通过

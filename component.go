@@ -7,6 +7,9 @@ import (
 )
 
 // LifecycleManaged 定义组件的生命周期管理接口：初始化、启动与停止。
+// Stop 的调用契约（P1-5）：必须容忍在 Start 之前被调用——Init 成功但
+// Start 未执行（或 Start 已失败）时，框架会逆序调用 Stop 做资源清理。
+// 实现不得假设 Start 必然先于 Stop。
 type LifecycleManaged interface {
 	Init(app App) error
 	Start(ctx context.Context) error

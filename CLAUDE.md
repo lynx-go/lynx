@@ -56,7 +56,7 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./contrib/schedule` - Cron scheduler
 
 Server implementations (within main module):
-- `./server/http` - HTTP server using gocloud.dev/server
+- `./server/http` - HTTP server using stdlib `net/http` with otelhttp instrumentation
 - `./server/grpc` - gRPC server with interceptors
 
 Each contrib module has its own `go.mod` with local replace directives pointing to `../../` for the main lynx module.
@@ -66,7 +66,7 @@ Each contrib module has its own `go.mod` with local replace directives pointing 
 ### Core Abstractions
 
 **Component System**
-All managed units implement the `Component` interface (component.go:15-18):
+All managed units implement the `Component` interface (component.go:20-23):
 ```go
 type Component interface {
     Name() string
@@ -83,7 +83,7 @@ type LifecycleManaged interface {
 Components are registered via `app.Register(...)` and automatically managed through their lifecycle. Components implementing `health.Checker` are automatically added to health checks.
 
 **ComponentBuilder**
-For dynamic component creation with configurable instance counts (component.go:24-27):
+For dynamic component creation with configurable instance counts (component.go:26-29):
 ```go
 type ComponentBuilder interface {
     Build() Component
@@ -95,18 +95,18 @@ type ComponentBuilder interface {
 Lifecycle hooks and components are registered via direct methods on the `App` interface (lynx.go):
 - `app.OnStart(fns ...HookFunc)` - Functions to execute on startup
 - `app.OnStop(fns ...HookFunc)` - Functions to execute on shutdown
-- `app.Register(components ...Component)` - Register components (Init runs synchronously at registration; the first error is recorded and returned by `Run()`)
+- `app.Register(components ...Component)` - Register components (Init runs synchronously at registration; the first error is recorded and returned by `Run()`). All registration must happen before `Run()`: after `Run()` starts, `Register`/`RegisterBuilders` panic and `CLI` returns an error (P1-1)
 - `app.RegisterBuilders(builders ...ComponentBuilder)` - Register component builders
 
 **Application Lifecycle**
-The main run loop (lynx.go:239-279) uses `oklog/run` to manage concurrent goroutines:
+The main run loop (lynx.go:466-533) uses `oklog/run` to manage concurrent goroutines:
 1. Executes OnStart hooks
 2. Runs all components (each component gets its own goroutine)
-3. Listens for shutdown signals (SIGTERM, SIGQUIT, SIGINT, SIGKILL)
+3. Listens for shutdown signals (SIGTERM, SIGQUIT, SIGINT)
 4. On shutdown: runs OnStop hooks with timeout, stops all components
 
 **Context Values**
-The application context carries standard values (lynx.go:43-65):
+The application context carries standard values (lynx.go:65-105):
 - `NameFromContext(ctx)` - Application name
 - `IDFromContext(ctx)` - Instance ID (hostname by default)
 - `VersionFromContext(ctx)` - Application version
@@ -146,7 +146,7 @@ This pattern is particularly useful for complex applications with many component
 ### Key Components
 
 **HTTP Server** (server/http/server.go)
-- Wraps `gocloud.dev/server` with health check integration
+- Wraps stdlib `net/http.Server` with otelhttp instrumentation (gocloud.dev/server only supplies the `health.Checker`/`requestlog` abstractions)
 - Support for request logging and custom timeouts
 - Automatically registers health check endpoints at `/healthz/liveness` and `/healthz/readiness`
 

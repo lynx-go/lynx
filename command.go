@@ -88,7 +88,9 @@ func (cmd *command) Start(ctx context.Context) error {
 	expBackoff.InitialInterval = cmd.options.InitialBackoff
 	expBackoff.MaxInterval = cmd.options.MaxBackoff
 	if _, err := backoff.Retry(ctx, func() (any, error) {
-		// 每轮重试重新获取健康检查快照：Start 之后注册的组件也纳入等待范围。
+		// 每轮重试重新获取健康检查快照：注册先于 Run 的组件在启动过程中
+		// 陆续变健康，快照按轮刷新可纳入等待范围（组件必须全部注册在
+		// Run 之前，见 App 接口注释）。
 		for _, checker := range cmd.lynx.HealthCheckFunc()() {
 			if err := checker.CheckHealth(); err != nil {
 				log.WarnContext(ctx, "waiting for dependent component ready", "error", err)

@@ -164,7 +164,7 @@ go run main.go
 
 ## 2.5 健康检查端点
 
-为 HTTP 服务器传入 `http.WithHealthCheck(app.HealthCheckFunc())` 后，服务器会自动暴露两个健康检查端点（由底层 gocloud.dev 服务器提供）：
+为 HTTP 服务器传入 `http.WithHealthCheck(app.HealthCheckFunc())` 后，服务器会自动暴露两个健康检查端点：
 
 - `/healthz/liveness`：存活检查，进程存活即返回 200，用于探活。
 - `/healthz/readiness`：就绪检查，依次调用所有注册的健康检查器，全部通过才返回 200，否则返回 500。

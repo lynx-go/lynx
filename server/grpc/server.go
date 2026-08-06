@@ -63,6 +63,10 @@ func WithTimeout(timeout time.Duration) Option {
 }
 
 // WithLogger 设置 gRPC 服务的日志实例。
+// 注意：请求拦截器路径的日志走本 logger；Start/Stop 路径的日志经
+// log.InfoContext 输出，ctx 无注入 logger 时回退 slog.Default()（若应用
+// 已通过 app.SetLogger 设置过默认 logger 则一致，未设置则与 WithLogger
+// 的实例可能不同——P2-8 已知行为）。
 func WithLogger(l *slog.Logger) Option {
 	return func(o *Options) {
 		o.Logger = l
@@ -136,6 +140,11 @@ func NewServer(opts ...Option) *Server {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
+	// 零值/负值 Period 回退缺省值：time.NewTicker(0) 会 panic，
+	// 轮询 goroutine 不得使用未经装配的零值。
+	if options.HealthCheckPeriod <= 0 {
+		options.HealthCheckPeriod = DefaultHealthCheckPeriod
+	}
 
 	s := &Server{
 		logger: options.Logger,
@@ -187,7 +196,11 @@ type Server struct {
 	o            Options
 	health       *health.Server
 	healthCancel context.CancelFunc
-	running      atomic.Bool
+	// stopped 标记 Stop 已被调用（mu 保护）：Stop 早于 Start 执行到
+	// startHealthPoller 时，poller 启动即在同锁段内发现并取消自身，
+	// 不会泄漏无人取消的轮询 goroutine（二轮复审项 6）。
+	stopped bool
+	running atomic.Bool
 }
 
 // CheckHealth 实现健康检查，服务未处于运行状态时返回错误。
@@ -241,9 +254,16 @@ func (s *Server) Start(ctx context.Context) error {
 
 // startHealthPoller 按 HealthCheckPeriod 轮询 app 级健康检查器并同步到
 // grpc health 服务：任一依赖组件不健康时探测返回 NOT_SERVING。
+// Stop 若已先于 Start 执行（healthCancel 为 nil 未被取走），此处在同一
+// 持锁段内发现 stopped 即取消并返回，不启动轮询 goroutine（无泄漏）。
 func (s *Server) startHealthPoller() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		cancel()
+		return
+	}
 	s.healthCancel = cancel
 	s.mu.Unlock()
 	go func() {
@@ -282,6 +302,7 @@ func (s *Server) Stop(ctx context.Context) {
 	}
 	s.running.Store(false)
 	s.mu.Lock()
+	s.stopped = true
 	if s.healthCancel != nil {
 		s.healthCancel()
 		s.healthCancel = nil
@@ -326,9 +347,9 @@ func (s *Server) Stop(ctx context.Context) {
 
 	select {
 	case <-done:
-		s.logger.Info("gRPC server stopped gracefully")
+		log.InfoContext(ctx, "gRPC server stopped gracefully")
 	case <-ctx.Done():
-		s.logger.Warn("graceful stop timeout, forcing stop")
+		log.WarnContext(ctx, "graceful stop timeout, forcing stop")
 		s.server.Stop()
 		<-done
 	}

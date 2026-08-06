@@ -4,6 +4,8 @@ package kafka
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -128,6 +130,9 @@ type Transport struct {
 	// pubSaramaConfigs/subSaramaConfigs 按侧缓存 sarama.Config：consumer 与
 	// producer 参数正交（Config 的 Consumer/Producer 段），各侧独立构建，
 	// 避免同集群两侧参数互斥、静默丢配置。
+	// 缓存 key 仅按 brokers 分组：同 brokers 的多 topic 若配置了不同的
+	// producer/consumer 参数，先构建者生效，后配置被静默忽略（P2-3 已知语义，
+	// 与 SASL/TLS 的集群级约束一致）。
 	pubSaramaConfigs map[string]*sarama.Config // key: brokers 列表
 	subSaramaConfigs map[string]*sarama.Config // key: brokers 列表
 
@@ -136,6 +141,9 @@ type Transport struct {
 	newSubscriber func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error)
 
 	running atomic.Bool
+	// stopped 标记 Stop 已执行：Stop 后 Publish 返回框架级错误，
+	// 而非命中缓存的已关闭客户端报 sarama "client is closed"（P2-4）。
+	stopped atomic.Bool
 	ctx     context.Context
 	cancel  context.CancelFunc
 }
@@ -208,6 +216,7 @@ func (t *Transport) Start(ctx context.Context) error {
 
 // Stop 关闭全部客户端并取消组件上下文。
 func (t *Transport) Stop(ctx context.Context) {
+	t.stopped.Store(true)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, p := range t.publishers {
@@ -250,6 +259,9 @@ func (t *Transport) logger() watermill.LoggerAdapter {
 
 // Publish 将消息发布到逻辑 topic 对应的物理 topic；ctx 用于传播 trace/元数据。
 func (t *Transport) Publish(ctx context.Context, topic string, msgs ...*message.Message) error {
+	if t.stopped.Load() {
+		return errors.New("kafka transport is stopped")
+	}
 	to, ok := t.opts.Topics[topic]
 	if !ok {
 		return fmt.Errorf("kafka: topic %q not configured", topic)
@@ -279,6 +291,9 @@ func (t *Transport) Publish(ctx context.Context, topic string, msgs ...*message.
 // Subscribe 订阅逻辑 topic：按（消费组 × 物理 topic × 实例数）展开，
 // 全部消息 fan-in 到单一返回 channel。
 func (t *Transport) Subscribe(ctx context.Context, topic string, opts pubsub.SubscriptionOptions) (<-chan *message.Message, error) {
+	if t.stopped.Load() {
+		return nil, errors.New("kafka transport is stopped")
+	}
 	to, ok := t.opts.Topics[topic]
 	if !ok {
 		return nil, fmt.Errorf("kafka: topic %q not configured", topic)
@@ -346,8 +361,10 @@ func applyAuth(cfg *sarama.Config, sasl *SASLOptions, tlsOpts *TLSOptions) error
 			cfg.Net.SASL.Mechanism = sarama.SASLTypePlaintext
 		case "SCRAM-SHA-256":
 			cfg.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
+			cfg.Net.SASL.SCRAMClientGeneratorFunc = newSCRAMClientGenerator(sha256.New)
 		case "SCRAM-SHA-512":
 			cfg.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
+			cfg.Net.SASL.SCRAMClientGeneratorFunc = newSCRAMClientGenerator(sha512.New)
 		default:
 			return fmt.Errorf("kafka: unsupported sasl mechanism %q (PLAIN/SCRAM-SHA-256/SCRAM-SHA-512)", sasl.Mechanism)
 		}

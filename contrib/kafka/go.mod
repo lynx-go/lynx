@@ -15,6 +15,7 @@ require (
 	github.com/lynx-go/lynx/contrib/pubsub v1.0.0
 	github.com/lynx-go/x v0.1.0
 	github.com/spf13/viper v1.21.0
+	github.com/xdg-go/scram v1.2.0
 )
 
 require (
@@ -53,6 +54,8 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.45.0 // indirect
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect

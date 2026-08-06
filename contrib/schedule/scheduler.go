@@ -111,9 +111,15 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	// stop channel 使内部循环退出。
 	s.cron.Start()
 	// 复查：Stop 可能刚好在上一行之前执行（其 cron.Stop 因 running 未置位
-	// 而空转），此处补发停止信号自清。
+	// 而空转，且读到的 cancel 为 nil 已提前返回），此处补发停止信号并取消
+	// 刚创建的 ctx，然后直接返回错误——不得进入下方的阻塞等待，否则
+	// s.ctx 永无人取消，Start 挂死（P0-3 交错窗口）。
 	if s.stopping.Load() {
 		s.cron.Stop()
+		s.cancel()
+		s.started.Store(false)
+		s.closeRunDone()
+		return errors.New("scheduler stopped before start")
 	}
 	<-s.ctx.Done()
 	s.started.Store(false)
@@ -132,6 +138,8 @@ func (s *Scheduler) closeRunDone() {
 
 // Stop 停止 cron 调度器并等待 cron 循环退出（受调用方截止时间约束）。
 // 任务上下文会被取消，让任务及时感知关闭。
+// 停止后调度器不可重启（stopping 永久置位，P2-6 已知语义）：
+// 需要再次运行时请重新构造 Scheduler。
 func (s *Scheduler) Stop(ctx context.Context) {
 	s.stopping.Store(true)
 	s.mu.Lock()
@@ -189,6 +197,8 @@ func WithDebugEnabled() Option {
 }
 
 // WithLocation 设置任务调度的时区；未设置时使用 time.Local。
+// 仅对内置默认 cron 实例生效：使用 WithCron 传入自定义实例时，
+// 请在其构造中自行设置 Location（P2-6 已知语义）。
 func WithLocation(loc *time.Location) Option {
 	return func(o *Options) {
 		o.Location = loc
@@ -197,6 +207,8 @@ func WithLocation(loc *time.Location) Option {
 
 // WithErrorHandler 设置任务执行错误回调（context 携带任务名与调度器元数据）；
 // 未设置时保持默认日志输出。
+// 注意：仅接收任务 HandlerFunc 返回的错误；任务 panic 由调度器恢复并记
+// 日志，不触发该回调（P2-6 已知语义）。
 func WithErrorHandler(fn func(ctx context.Context, task Task, err error)) Option {
 	return func(o *Options) {
 		o.OnTaskError = fn

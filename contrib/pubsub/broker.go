@@ -409,6 +409,10 @@ func (b *broker) Publish(ctx context.Context, topic string, payload any, opts ..
 	}
 	var m *Message
 	if msg, ok := payload.(*Message); ok {
+		// 类型断言命中的 typed nil 会在 cloneMessage 中解引用 panic（P2-5）。
+		if msg == nil {
+			return errors.New("pubsub: payload is a typed nil *Message")
+		}
 		m = msg
 	} else {
 		data, err := b.MarshalerFor(topic).Marshal(payload)
