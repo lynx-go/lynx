@@ -183,3 +183,33 @@ func TestNewFromConfigComponentsOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestNewFromConfigComponentsOrderMulti 验证多传输时 Components() 顺序：
+// transports 按名字排序（kafka < redis，与 Transports 列表一致）、内置
+// memory 最后追加、Broker 殿后。单传输用例无法区分排序与否，此用例钉住
+// 确定性顺序。
+func TestNewFromConfigComponentsOrderMulti(t *testing.T) {
+	kafkaT := newFakeTransport("hello")
+	redisT := newFakeTransport("hello")
+	b, err := NewFromConfig(builderTestConfig(t, "addr: \":9090\"\n"),
+		map[string]Transport{"kafka": kafkaT, "redis": redisT})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if b.Transports[0] != kafkaT || b.Transports[1] != redisT {
+		t.Fatalf("Transports[0:2] = %v, %v, want kafkaT, redisT", b.Transports[0], b.Transports[1])
+	}
+	if _, ok := b.Transports[2].(*MemoryTransport); !ok {
+		t.Fatalf("Transports[2] = %T, want built-in *MemoryTransport", b.Transports[2])
+	}
+	want := []lynx.Component{kafkaT, redisT, b.Transports[2], b.Broker}
+	comps := b.Components()
+	if len(comps) != 4 {
+		t.Fatalf("Components len %d, want 4", len(comps))
+	}
+	for i, w := range want {
+		if comps[i] != w {
+			t.Fatalf("Components[%d] = %v, want %v", i, comps[i], w)
+		}
+	}
+}
