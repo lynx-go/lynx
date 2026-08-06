@@ -10,7 +10,7 @@ Kafka 配置驱动：`config.yaml` 的 `kafka` 段定义逻辑 topic（brokers�
 ## 运行
 
 ```bash
-go generate .   # Wire 生成依赖图（wire_gen.go）
+go generate .   # Wire 生成依赖图（wire_gen.go；wire 未安装时可跳过，wire_gen.go 已提交）
 go run . --config=config.yaml
 # 另开终端触发发布（hello 走 Kafka；notify 走内存 transport）
 curl http://127.0.0.1:7071/hello

@@ -128,7 +128,7 @@ func TestNewFromConfigNilEntrySkipped(t *testing.T) {
 
 // TestNewFromConfigRouteKeyDefaultsToTopic 验证路由未指定 key 时缺省为逻辑 topic 名。
 func TestNewFromConfigRouteKeyDefaultsToTopic(t *testing.T) {
-	kafkaT := newFakeTransport("hello")
+	kafkaT := newFakeTransport() // 不声明 Topics()：显式路由是唯一可达路径，缺省 key 被真正验证
 	b, err := NewFromConfig(builderTestConfig(t, `
 pubsub:
   routes:
