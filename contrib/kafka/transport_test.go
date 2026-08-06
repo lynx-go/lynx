@@ -76,6 +76,7 @@ func (f *fakePubSub) subscribeCount(topic string) int {
 func newTestTransport(opts Options, pub pubSubClient) *Transport {
 	t := &Transport{
 		opts:             opts,
+		logger:           slog.Default(),
 		publishers:       map[string]message.Publisher{},
 		subscribers:      map[string]message.Subscriber{},
 		pubSaramaConfigs: map[string]*sarama.Config{},
@@ -103,6 +104,7 @@ type captureFactory struct {
 func newCapturingTransport(opts Options, cap *captureFactory) *Transport {
 	t := &Transport{
 		opts:             opts,
+		logger:           slog.Default(),
 		publishers:       map[string]message.Publisher{},
 		subscribers:      map[string]message.Subscriber{},
 		pubSaramaConfigs: map[string]*sarama.Config{},
@@ -616,7 +618,7 @@ func TestTransportLifecycle(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
-	tr.Stop(context.Background())
+	_ = tr.Stop(context.Background())
 	startCancel()
 	select {
 	case <-done:
@@ -654,7 +656,7 @@ func TestTransportStopBeforeStart(t *testing.T) {
 					t.Fatalf("Init: %v", err)
 				}
 			}
-			tr.Stop(context.Background())
+			_ = tr.Stop(context.Background())
 			if err := tr.CheckHealth(); err == nil {
 				t.Fatal("expected CheckHealth error after Stop-before-Start")
 			}
@@ -671,7 +673,7 @@ func TestTransportPublishAfterStop(t *testing.T) {
 	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err != nil {
 		t.Fatalf("Publish before Stop: %v", err)
 	}
-	tr.Stop(context.Background())
+	_ = tr.Stop(context.Background())
 	err := tr.Publish(context.Background(), "orders", message.NewMessage("id2", nil))
 	if err == nil || !strings.Contains(err.Error(), "stopped") {
 		t.Fatalf("Publish after Stop error = %v, want explicit stopped error", err)
@@ -687,7 +689,7 @@ func TestTransportSubscribeAfterStop(t *testing.T) {
 	if _, err := tr.Subscribe(context.Background(), "orders", pubsub.SubscriptionOptions{}); err != nil {
 		t.Fatalf("Subscribe before Stop: %v", err)
 	}
-	tr.Stop(context.Background())
+	_ = tr.Stop(context.Background())
 	_, err := tr.Subscribe(context.Background(), "orders", pubsub.SubscriptionOptions{})
 	if err == nil || !strings.Contains(err.Error(), "stopped") {
 		t.Fatalf("Subscribe after Stop error = %v, want explicit stopped error", err)
@@ -850,23 +852,18 @@ func TestTransportEndToEndWithRouter(t *testing.T) {
 	}
 }
 
-// --- fakeApp：最小 lynx.App（局部定义，避免依赖旧 fakes_test.go） ---
+// --- fakeApp：最小 lynx.Env（组件 Init 只依赖 Env，无需实现完整 App） ---
 
 type fakeApp struct{}
 
 func newFakeApp() *fakeApp { return &fakeApp{} }
 
-func (a *fakeApp) Close()                                    {}
-func (a *fakeApp) Config() lynx.Config                       { return lynx.NewViperConfig(viper.New()) }
 func (a *fakeApp) Context() context.Context                  { return context.Background() }
-func (a *fakeApp) CLI(lynx.CommandFunc) error                { return nil }
-func (a *fakeApp) OnStart(...lynx.HookFunc)                  {}
-func (a *fakeApp) OnStop(...lynx.HookFunc)                   {}
-func (a *fakeApp) Register(...lynx.Component)                {}
-func (a *fakeApp) RegisterBuilders(...lynx.ComponentBuilder) {}
-func (a *fakeApp) HealthCheckFunc() lynx.HealthCheckFunc     { return nil }
-func (a *fakeApp) Run() error                                { return nil }
-func (a *fakeApp) SetLogger(_ *slog.Logger)                  {}
+func (a *fakeApp) Config() lynx.Config                       { return lynx.NewViperConfig(viper.New()) }
+func (a *fakeApp) HealthCheckers() []lynx.Checker            { return nil }
+func (a *fakeApp) Close()                                    {}
 func (a *fakeApp) Logger(_ ...any) *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
+
+var _ lynx.Env = (*fakeApp)(nil)

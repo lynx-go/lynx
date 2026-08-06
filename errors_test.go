@@ -76,8 +76,11 @@ func TestShutdownErrorsConcurrentAdd(t *testing.T) {
 	}
 }
 
-func TestWrappedError(t *testing.T) {
+func TestCommonErrors(t *testing.T) {
 	if got := ErrNotInitialized.Error(); got != "component not initialized" {
 		t.Errorf("ErrNotInitialized = %q", got)
+	}
+	if got := ErrBuildFuncNil.Error(); got != "build func is nil" {
+		t.Errorf("ErrBuildFuncNil = %q", got)
 	}
 }

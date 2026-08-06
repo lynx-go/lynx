@@ -12,10 +12,6 @@ import (
 	"log/slog"
 )
 
-import (
-	_ "github.com/go-sql-driver/mysql"
-)
-
 // Injectors from wire.go:
 
 func wireBootstrap(app lynx.App, slogger *slog.Logger) (*boot.Bootstrap, func(), error) {

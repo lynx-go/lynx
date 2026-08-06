@@ -41,7 +41,7 @@ The project uses a multi-module release strategy. When releasing, you must tag:
 - contrib/zap: `contrib/zap/{version}`
 - contrib/pubsub: `contrib/pubsub/{version}`
 - contrib/kafka: `contrib/kafka/{version}`
-- contrib/metrics: `contrib/metrics/{version}`
+- contrib/telemetry: `contrib/telemetry/{version}`
 - contrib/schedule: `contrib/schedule/{version}`
 
 ### Module Structure
@@ -52,7 +52,7 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./contrib/zap` - Zap logger integration
 - `./contrib/pubsub` - PubSub abstraction layer (uses Watermill)
 - `./contrib/kafka` - Kafka Transport component (watermill-kafka/v3)
-- `./contrib/metrics` - OpenTelemetry lifecycle management (trace/metrics providers)
+- `./contrib/telemetry` - OpenTelemetry lifecycle management (trace/metrics providers)
 - `./contrib/schedule` - Cron scheduler
 
 Server implementations (within main module):
@@ -66,21 +66,29 @@ Each contrib module has its own `go.mod` with local replace directives pointing 
 ### Core Abstractions
 
 **Component System**
-All managed units implement the `Component` interface (component.go:20-23):
+All managed units implement the `Component` interface (component.go):
 ```go
 type Component interface {
     Name() string
-    LifecycleManaged
+    Lifecycle
 }
 
-type LifecycleManaged interface {
-    Init(app Lynx) error
+type Env interface {
+    Context() context.Context
+    Config() Config
+    Logger(kwargs ...any) *slog.Logger
+    HealthCheckers() []Checker
+    Close()
+}
+
+type Lifecycle interface {
+    Init(env Env) error
     Start(ctx context.Context) error
-    Stop(ctx context.Context)
+    Stop(ctx context.Context) error
 }
 ```
 
-Components are registered via `app.Register(...)` and automatically managed through their lifecycle. Components implementing `health.Checker` are automatically added to health checks.
+Components are registered via `app.Register(...)` and automatically managed through their lifecycle. Components implementing `lynx.Checker` (`CheckHealth() error`, defined locally in health.go — no gocloud.dev dependency) are automatically added to health checks; `app.HealthCheckers()` returns the snapshot slice. `Stop` errors are collected (bounded by `Options.StopTimeout`) and surfaced by `Run()` together with OnStop hook errors.
 
 **ComponentBuilder**
 For dynamic component creation with configurable instance counts (component.go:26-29):
@@ -95,7 +103,7 @@ type ComponentBuilder interface {
 Lifecycle hooks and components are registered via direct methods on the `App` interface (lynx.go):
 - `app.OnStart(fns ...HookFunc)` - Functions to execute on startup
 - `app.OnStop(fns ...HookFunc)` - Functions to execute on shutdown
-- `app.Register(components ...Component)` - Register components (Init runs synchronously at registration; the first error is recorded and returned by `Run()`). All registration must happen before `Run()`: after `Run()` starts, `Register`/`RegisterBuilders` panic and `CLI` returns an error (P1-1)
+- `app.Register(components ...Component)` - Register components (Init runs synchronously at registration; the first error is recorded and returned by `Run()`). All registration must happen before `Run()`: after `Run()` starts, `Register`/`RegisterBuilders` panic and `CLI` returns an error
 - `app.RegisterBuilders(builders ...ComponentBuilder)` - Register component builders
 
 **Application Lifecycle**
@@ -125,11 +133,15 @@ Configuration flow:
 2. `BindConfigFunc` - Bind flags to the app ConfigSource, set config file paths
 3. Flags are parsed, config file is read, env vars are bound
 
+Default flags are enabled by default (`Options.EnsureDefaults` sets `DefaultSetFlagsFunc`/`DefaultBindConfigFunc`); opt out with `WithDisableConfigFlags()`. Unknown flags are ignored (test binaries' `-test.*` args). `--help` returns an init error handled by `Builder.Run` exit code.
+
 Default flags (see `DefaultSetFlagsFunc` in lynx.go):
 - `--config/-c` - Config file path
 - `--config-type` - File type (yaml, json, etc.)
 - `--config-dir` - Config directory
 - `--log-level` - Log level
+
+App metadata keys: `service.name`/`service.id`/`service.version` take priority, legacy top-level `name`/`id`/`version` keys fall back (deprecated transition). Log level keys: `logging.level` → `log-level` → `log_level` (`lynx.LogLevelFromConfig`).
 
 ### Boot/Bootstrap Pattern
 
@@ -146,7 +158,7 @@ This pattern is particularly useful for complex applications with many component
 ### Key Components
 
 **HTTP Server** (server/http/server.go)
-- Wraps stdlib `net/http.Server` with otelhttp instrumentation (gocloud.dev/server only supplies the `health.Checker`/`requestlog` abstractions)
+- Wraps stdlib `net/http.Server` with otelhttp instrumentation (health check handlers and request log are implemented locally — no gocloud.dev dependency)
 - Support for request logging and custom timeouts
 - Automatically registers health check endpoints at `/healthz/liveness` and `/healthz/readiness`
 
@@ -169,7 +181,7 @@ This pattern is particularly useful for complex applications with many component
 **Scheduler** (contrib/schedule/scheduler.go)
 - Cron-based task scheduling using robfig/cron
 - Tasks implement `Task` interface with Name(), Cron(), HandlerFunc()
-- Runs tasks in goroutines with context
+- `Start` respects the passed ctx (waits `<-ctx.Done()`); `Stop` is safe before Start (atomic `stopping` flag)
 
 **Command** (command.go)
 - CLI command execution with health check dependency
@@ -178,7 +190,7 @@ This pattern is particularly useful for complex applications with many component
 
 ### Health Checks
 
-Components implementing `health.Checker` interface are automatically registered in the health check endpoint. HTTP server exposes these at `/healthz/liveness` and `/healthz/readiness`, gRPC server uses `grpc.health.v1.Health`.
+Components implementing `lynx.Checker` interface are automatically registered in the health check endpoint. HTTP server exposes these at `/healthz/liveness` and `/healthz/readiness`, gRPC server uses `grpc.health.v1.Health`.
 
 ### Application Entry Point
 
@@ -192,13 +204,13 @@ The `lynx.NewBuilder()` function creates a `*Builder` instance with two run meth
 - Unit tests exist for core packages and most contrib modules; run `go test -race ./...` per module
 - Uses slog for structured logging (Go 1.24+)
 - Uses local `pkg/errors` package with panic-based `Fatal()` helper
-- External logging utilities from `github.com/lynx-go/x/log`
+- Components obtain loggers via `env.Logger(...)` in `Init`; no external logging package
 
 ## Common Patterns
 
 **Adding a New Component**
 1. Implement the Component interface
-2. Optionally implement health.Checker
+2. Optionally implement lynx.Checker
 3. Register via `app.Register(myComponent)`
 
 **Adding a Hook**

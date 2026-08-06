@@ -15,7 +15,7 @@ import (
 	"github.com/lynx-go/lynx"
 )
 
-// fakeApp is a minimal lynx.App implementation for tests.
+// fakeApp is a minimal lynx.Env implementation for tests.
 type fakeApp struct {
 	ctx    context.Context
 	logger *slog.Logger
@@ -28,20 +28,13 @@ func newFakeApp() *fakeApp {
 	}
 }
 
-func (f *fakeApp) Close()                                    {}
-func (f *fakeApp) Config() lynx.Config                       { return nil }
-func (f *fakeApp) Context() context.Context                  { return f.ctx }
-func (f *fakeApp) CLI(lynx.CommandFunc) error                { return nil }
-func (f *fakeApp) OnStart(...lynx.HookFunc)                  {}
-func (f *fakeApp) OnStop(...lynx.HookFunc)                   {}
-func (f *fakeApp) Register(...lynx.Component)                {}
-func (f *fakeApp) RegisterBuilders(...lynx.ComponentBuilder) {}
-func (f *fakeApp) HealthCheckFunc() lynx.HealthCheckFunc     { return nil }
-func (f *fakeApp) Run() error                                { return nil }
-func (f *fakeApp) SetLogger(logger *slog.Logger)             { f.logger = logger }
-func (f *fakeApp) Logger(kwargs ...any) *slog.Logger         { return f.logger.With(kwargs...) }
+func (f *fakeApp) Context() context.Context          { return f.ctx }
+func (f *fakeApp) Config() lynx.Config               { return nil }
+func (f *fakeApp) Logger(kwargs ...any) *slog.Logger { return f.logger.With(kwargs...) }
+func (f *fakeApp) HealthCheckers() []lynx.Checker    { return nil }
+func (f *fakeApp) Close()                            {}
 
-var _ lynx.App = (*fakeApp)(nil)
+var _ lynx.Env = (*fakeApp)(nil)
 
 func pollUntil(deadline time.Duration, interval time.Duration, cond func() bool) bool {
 	end := time.Now().Add(deadline)
@@ -68,9 +61,9 @@ func newFakeTransport(topics ...string) *fakeTransport {
 }
 
 func (f *fakeTransport) Name() string                { return "fake-transport" }
-func (f *fakeTransport) Init(lynx.App) error         { return nil }
+func (f *fakeTransport) Init(lynx.Env) error         { return nil }
 func (f *fakeTransport) Start(context.Context) error { return nil }
-func (f *fakeTransport) Stop(context.Context)        {}
+func (f *fakeTransport) Stop(context.Context) error  { return nil }
 func (f *fakeTransport) CheckHealth() error          { return nil }
 func (f *fakeTransport) Topics() []string            { return f.topics }
 
@@ -140,7 +133,7 @@ func startBroker(t *testing.T, h HandlerFunc, subOpts ...SubscribeOption) (Broke
 
 	t.Cleanup(func() {
 		cancel()
-		b.Stop(context.Background())
+		_ = b.Stop(context.Background())
 		select {
 		case <-done:
 		case <-time.After(3 * time.Second):
@@ -213,7 +206,7 @@ func TestBrokerStop(t *testing.T) {
 		t.Fatal("broker did not start")
 	}
 	cancel()
-	b.Stop(context.Background())
+	_ = b.Stop(context.Background())
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -231,7 +224,7 @@ func TestBrokerStopBeforeStart(t *testing.T) {
 	if err := b.Init(newFakeApp()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	b.Stop(context.Background())
+	_ = b.Stop(context.Background())
 	// Stop 后再走正常生命周期：不得因提前 Stop 破坏 Start。
 	if err := b.Subscribe(ctx, "noop.event", "noop-handler", func(ctx context.Context, msg *Message) error {
 		return nil
@@ -244,7 +237,7 @@ func TestBrokerStopBeforeStart(t *testing.T) {
 		t.Fatal("broker did not start after Stop-before-Start")
 	}
 	cancel()
-	b.Stop(context.Background())
+	_ = b.Stop(context.Background())
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -316,7 +309,7 @@ func TestBrokerRouteKeyTranslatesTopic(t *testing.T) {
 	}
 
 	cancel()
-	b.Stop(context.Background())
+	_ = b.Stop(context.Background())
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -557,7 +550,7 @@ func TestBrokerStartSecondSubscriptionFailureRetry(t *testing.T) {
 		t.Fatalf("expected routed publish after recovery, got %v", got)
 	}
 	cancel()
-	b.Stop(context.Background())
+	_ = b.Stop(context.Background())
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -603,7 +596,7 @@ func TestBrokerStartFailureRecovery(t *testing.T) {
 		t.Fatalf("expected routed publish after recovery, got %v", got)
 	}
 	cancel()
-	b.Stop(context.Background())
+	_ = b.Stop(context.Background())
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):

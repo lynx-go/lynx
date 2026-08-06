@@ -19,11 +19,11 @@ const (
 
 // Validation errors for Options.
 var (
-	ErrNameTooLong          = errors.New("name must be at most 63 characters")
-	ErrCloseTimeoutTooSmall = errors.New("close timeout must be at least 1 second")
-	ErrCloseTimeoutTooLarge = errors.New("close timeout must be at most 5 minutes")
-	ErrStopTimeoutTooSmall  = errors.New("stop timeout must be at least 1 second")
-	ErrStopTimeoutTooLarge  = errors.New("stop timeout must be at most 5 minutes")
+	ErrNameTooLong            = errors.New("name must be at most 63 characters")
+	ErrShutdownTimeoutTooSmall = errors.New("shutdown timeout must be at least 1 second")
+	ErrShutdownTimeoutTooLarge = errors.New("shutdown timeout must be at most 5 minutes")
+	ErrStopTimeoutTooSmall     = errors.New("stop timeout must be at least 1 second")
+	ErrStopTimeoutTooLarge     = errors.New("stop timeout must be at most 5 minutes")
 )
 
 // Options 是 App 应用的核心配置项。
@@ -38,6 +38,10 @@ type Options struct {
 	// StopTimeout 是单个组件 Stop 的最长等待时长，超过后跳过并记录错误，
 	// 防止挂死的组件阻塞整个关停流程。
 	StopTimeout time.Duration `json:"stop_timeout"`
+	// disableConfigFlags 标记用户显式关闭默认 flags（WithDisableConfigFlags）。
+	// EnsureDefaults 在 NewOptions 与 newLynx 间可能被多次调用，需要该
+	// 标记保持关闭语义不被默认值覆盖。
+	disableConfigFlags bool
 }
 
 func (o *Options) String() string {
@@ -53,10 +57,10 @@ func (o *Options) Validate() error {
 	}
 	if o.ShutdownTimeout > 0 {
 		if o.ShutdownTimeout < MinShutdownTimeout {
-			return ErrCloseTimeoutTooSmall
+			return ErrShutdownTimeoutTooSmall
 		}
 		if o.ShutdownTimeout > MaxShutdownTimeout {
-			return ErrCloseTimeoutTooLarge
+			return ErrShutdownTimeoutTooLarge
 		}
 	}
 	if o.StopTimeout > 0 {
@@ -95,6 +99,18 @@ func (o *Options) EnsureDefaults() {
 			syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT,
 		}
 	}
+
+	// 默认启用框架内置的命令行 flags：不传任何 flags 相关 Option 时
+	// 也能解析 -c/--log-level 等（修复"静默失效"陷阱）。显式传入自定义
+	// 函数时保留自定义实现；WithDisableConfigFlags 显式关闭。
+	if !o.disableConfigFlags {
+		if o.SetFlagsFunc == nil {
+			o.SetFlagsFunc = DefaultSetFlagsFunc
+		}
+		if o.BindConfigFunc == nil {
+			o.BindConfigFunc = DefaultBindConfigFunc
+		}
+	}
 }
 
 // Option 用于配置 Options 的选项函数。
@@ -128,11 +144,14 @@ func WithSetFlagsFunc(f SetFlagsFunc) Option {
 	}
 }
 
-// WithUseDefaultConfigFlagsFunc 使用默认的命令行 flags 注册函数与配置绑定函数。
-func WithUseDefaultConfigFlagsFunc() Option {
+// WithDisableConfigFlags 关闭默认的命令行 flags 与配置绑定。
+// 默认行为：未显式设置 SetFlagsFunc/BindConfigFunc 时，框架自动启用内置的
+// 参数声明与绑定（见 DefaultSetFlagsFunc/DefaultBindConfigFunc）。
+func WithDisableConfigFlags() Option {
 	return func(o *Options) {
-		o.BindConfigFunc = DefaultBindConfigFunc
-		o.SetFlagsFunc = DefaultSetFlagsFunc
+		o.disableConfigFlags = true
+		o.SetFlagsFunc = nil
+		o.BindConfigFunc = nil
 	}
 }
 
@@ -166,14 +185,10 @@ func WithStopTimeout(timeout time.Duration) Option {
 
 // NewOptions 创建带默认值的 Options，并按顺序应用给定的选项。
 func NewOptions(opts ...Option) *Options {
-	id, _ := os.Hostname()
-	op := &Options{
-		ID:              id,
-		ExitSignals:     []os.Signal{syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT},
-		ShutdownTimeout: DefaultShutdownTimeout,
+	o := &Options{}
+	o.EnsureDefaults()
+	for _, opt := range opts {
+		opt(o)
 	}
-	for _, o := range opts {
-		o(op)
-	}
-	return op
+	return o
 }

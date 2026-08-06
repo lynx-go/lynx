@@ -2,15 +2,16 @@ package pubsub
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/x/log"
 )
 
 // Router 是事件路由组件：Init 期把全部 Handler 缓冲订阅到 Broker。
 type Router struct {
 	broker   Broker
 	handlers []Handler
+	logger   *slog.Logger
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
@@ -19,14 +20,17 @@ type Router struct {
 func (r *Router) Name() string { return "pubsub-router" }
 
 // Init 将全部 Handler 缓冲订阅到 Broker（纯缓冲，无时序依赖）。
-func (r *Router) Init(app lynx.App) error {
+func (r *Router) Init(env lynx.Env) error {
+	if env != nil {
+		r.logger = env.Logger("component", "pubsub-router")
+	}
 	for _, h := range r.handlers {
-		log.InfoContext(app.Context(), "add event handler", "event_name", h.EventName(), "handler_name", h.HandlerName())
+		r.logger.InfoContext(env.Context(), "add event handler", "event_name", h.EventName(), "handler_name", h.HandlerName())
 		var opts []SubscribeOption
 		if o, ok := h.(HandlerOptions); ok {
 			opts = append(opts, o.Options()...)
 		}
-		if err := r.broker.Subscribe(app.Context(), h.EventName(), h.HandlerName(), h.HandlerFunc(), opts...); err != nil {
+		if err := r.broker.Subscribe(env.Context(), h.EventName(), h.HandlerName(), h.HandlerFunc(), opts...); err != nil {
 			return err
 		}
 	}
@@ -40,8 +44,9 @@ func (r *Router) Start(ctx context.Context) error {
 }
 
 // Stop 取消路由上下文，使 Start 返回。
-func (r *Router) Stop(ctx context.Context) {
+func (r *Router) Stop(ctx context.Context) error {
 	r.cancel()
+	return nil
 }
 
 var _ lynx.Component = (*Router)(nil)
@@ -49,5 +54,5 @@ var _ lynx.Component = (*Router)(nil)
 // NewRouter 创建事件路由组件。
 func NewRouter(broker Broker, handlers []Handler) *Router {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Router{broker: broker, handlers: handlers, ctx: ctx, cancel: cancel}
+	return &Router{broker: broker, handlers: handlers, ctx: ctx, cancel: cancel, logger: slog.Default()}
 }

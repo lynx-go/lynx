@@ -102,7 +102,7 @@ func TestTypedSubscribe(t *testing.T) {
 	}
 
 	cancel()
-	b.Stop(context.Background())
+	_ = b.Stop(context.Background())
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -141,7 +141,7 @@ func TestTypedSubscribeUnmarshalError(t *testing.T) {
 	}
 
 	cancel()
-	b.Stop(context.Background())
+	_ = b.Stop(context.Background())
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):

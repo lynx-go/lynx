@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/metrics"
+	"github.com/lynx-go/lynx/contrib/telemetry"
 	"github.com/lynx-go/lynx/contrib/zap"
 	"github.com/lynx-go/lynx/server/http"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -33,7 +33,7 @@ func main() {
 
 		// OTel 组件须先注册：Init 同步创建 provider 并设为全局，
 		// 后续 initMetrics 创建的 instrument 才会挂到真实 MeterProvider 上。
-		app.Register(metrics.New())
+		app.Register(telemetry.New())
 		if err := initMetrics(); err != nil {
 			return err
 		}
@@ -47,7 +47,7 @@ func main() {
 			app.Logger().Info("on stop")
 			return nil
 		})
-		router := http.NewRouter()
+		router := gohttp.NewServeMux()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			start := time.Now()
 			helloRequestsCounter.Add(r.Context(), 1)
@@ -74,7 +74,7 @@ func main() {
 
 		app.Register(http.NewServer(router,
 			http.WithAddr(addr),
-			http.WithHealthCheck(app.HealthCheckFunc()),
+			http.WithHealthCheckers(app.HealthCheckers),
 			http.WithLogger(app.Logger("logger", "http-requestlog")),
 			http.WithMiddleware(latencyMiddleware),
 		))

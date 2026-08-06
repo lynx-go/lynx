@@ -40,7 +40,7 @@ func TestOptionsValidate(t *testing.T) {
 		{
 			name:    "shutdown timeout below minimum",
 			options: Options{ShutdownTimeout: MinShutdownTimeout - time.Millisecond},
-			wantErr: ErrCloseTimeoutTooSmall,
+			wantErr: ErrShutdownTimeoutTooSmall,
 		},
 		{
 			name:    "shutdown timeout at minimum",
@@ -55,7 +55,7 @@ func TestOptionsValidate(t *testing.T) {
 		{
 			name:    "shutdown timeout above maximum",
 			options: Options{ShutdownTimeout: MaxShutdownTimeout + time.Millisecond},
-			wantErr: ErrCloseTimeoutTooLarge,
+			wantErr: ErrShutdownTimeoutTooLarge,
 		},
 	}
 	for _, tt := range tests {
@@ -173,13 +173,42 @@ func TestWithSetFlagsAndBindConfig(t *testing.T) {
 	}
 }
 
-func TestWithUseDefaultConfigFlagsFunc(t *testing.T) {
-	o := NewOptions(WithUseDefaultConfigFlagsFunc())
+// TestDefaultConfigFlagsEnabled 验证默认 flags 默认开启：未显式设置
+// SetFlagsFunc/BindConfigFunc 时自动使用框架内置实现。
+func TestDefaultConfigFlagsEnabled(t *testing.T) {
+	o := &Options{}
+	o.EnsureDefaults()
 	if o.SetFlagsFunc == nil {
-		t.Error("SetFlagsFunc should be set to DefaultSetFlagsFunc")
+		t.Error("SetFlagsFunc should default to DefaultSetFlagsFunc")
 	}
 	if o.BindConfigFunc == nil {
-		t.Error("BindConfigFunc should be set to DefaultBindConfigFunc")
+		t.Error("BindConfigFunc should default to DefaultBindConfigFunc")
+	}
+
+	// NewOptions 路径同样生效。
+	o2 := NewOptions()
+	if o2.SetFlagsFunc == nil || o2.BindConfigFunc == nil {
+		t.Error("NewOptions should enable default config flags")
+	}
+	// StopTimeout 与 Name 双轨默认值已消除。
+	if o2.Name != DefaultName {
+		t.Errorf("Name = %q, want %q", o2.Name, DefaultName)
+	}
+	if o2.StopTimeout != DefaultStopTimeout {
+		t.Errorf("StopTimeout = %v, want %v", o2.StopTimeout, DefaultStopTimeout)
+	}
+}
+
+// TestWithDisableConfigFlags 验证 opt-out：显式关闭默认 flags 后
+// EnsureDefaults 不再启用它们（含 newLynx 的二次 EnsureDefaults 路径）。
+func TestWithDisableConfigFlags(t *testing.T) {
+	o := NewOptions(WithDisableConfigFlags())
+	if o.SetFlagsFunc != nil || o.BindConfigFunc != nil {
+		t.Fatal("WithDisableConfigFlags should clear SetFlagsFunc and BindConfigFunc")
+	}
+	o.EnsureDefaults()
+	if o.SetFlagsFunc != nil || o.BindConfigFunc != nil {
+		t.Fatal("EnsureDefaults must not re-enable disabled config flags")
 	}
 }
 

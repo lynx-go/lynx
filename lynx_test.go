@@ -11,6 +11,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/oklog/run"
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 )
 
 // blockingComponent blocks in Start until its context is cancelled.
@@ -22,7 +26,7 @@ type blockingComponent struct {
 
 func (c *blockingComponent) Name() string { return c.name }
 
-func (c *blockingComponent) Init(app App) error { return nil }
+func (c *blockingComponent) Init(env Env) error { return nil }
 
 func (c *blockingComponent) Start(ctx context.Context) error {
 	c.started.Store(true)
@@ -33,10 +37,11 @@ func (c *blockingComponent) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *blockingComponent) Stop(ctx context.Context) {
+func (c *blockingComponent) Stop(ctx context.Context) error {
 	if c.record != nil {
 		c.record("stop:" + c.name)
 	}
+	return nil
 }
 
 // failInitComponent fails in Init.
@@ -46,9 +51,9 @@ type failInitComponent struct {
 }
 
 func (c *failInitComponent) Name() string                    { return c.name }
-func (c *failInitComponent) Init(app App) error              { return c.err }
+func (c *failInitComponent) Init(env Env) error              { return c.err }
 func (c *failInitComponent) Start(ctx context.Context) error { return nil }
-func (c *failInitComponent) Stop(ctx context.Context)        {}
+func (c *failInitComponent) Stop(ctx context.Context) error  { return nil }
 
 // failStartComponent fails in Start.
 type failStartComponent struct {
@@ -57,23 +62,23 @@ type failStartComponent struct {
 }
 
 func (c *failStartComponent) Name() string                    { return c.name }
-func (c *failStartComponent) Init(app App) error              { return nil }
+func (c *failStartComponent) Init(env Env) error              { return nil }
 func (c *failStartComponent) Start(ctx context.Context) error { return c.err }
-func (c *failStartComponent) Stop(ctx context.Context)        {}
+func (c *failStartComponent) Stop(ctx context.Context) error  { return nil }
 
-// checkerComponent implements both Component and health.Checker.
+// checkerComponent implements both Component and Checker.
 type checkerComponent struct {
 	HealthChecker
 	name string
 }
 
 func (c *checkerComponent) Name() string       { return c.name }
-func (c *checkerComponent) Init(app App) error { return nil }
+func (c *checkerComponent) Init(env Env) error { return nil }
 func (c *checkerComponent) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
-func (c *checkerComponent) Stop(ctx context.Context) {}
+func (c *checkerComponent) Stop(ctx context.Context) error { return nil }
 
 // initRecorder records whether Init was called.
 type initRecorder struct {
@@ -82,7 +87,7 @@ type initRecorder struct {
 }
 
 func (c *initRecorder) Name() string { return c.name }
-func (c *initRecorder) Init(app App) error {
+func (c *initRecorder) Init(env Env) error {
 	c.initialized.Store(true)
 	return nil
 }
@@ -90,7 +95,7 @@ func (c *initRecorder) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
-func (c *initRecorder) Stop(ctx context.Context) {}
+func (c *initRecorder) Stop(ctx context.Context) error { return nil }
 
 // recordingBuilder builds blockingComponents and counts Build calls.
 type recordingBuilder struct {
@@ -144,16 +149,17 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) 
 type initAppAccessorComponent struct{}
 
 func (c *initAppAccessorComponent) Name() string { return "accessor" }
-func (c *initAppAccessorComponent) Init(app App) error {
-	app.HealthCheckFunc()
+func (c *initAppAccessorComponent) Init(env Env) error {
+	env.HealthCheckers()
+	app := env.(App)
 	app.OnStart(func(ctx context.Context) error { return nil })
 	app.OnStop(func(ctx context.Context) error { return nil })
-	app.Config()
-	app.Context()
+	env.Config()
+	env.Context()
 	return nil
 }
 func (c *initAppAccessorComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
-func (c *initAppAccessorComponent) Stop(ctx context.Context)        {}
+func (c *initAppAccessorComponent) Stop(ctx context.Context) error  { return nil }
 
 // stopRecorder 在 Stop 时向缓冲 chan 发送组件名，用于失败清理断言。
 type stopRecorder struct {
@@ -162,20 +168,31 @@ type stopRecorder struct {
 }
 
 func (c *stopRecorder) Name() string                    { return c.name }
-func (c *stopRecorder) Init(app App) error              { return nil }
+func (c *stopRecorder) Init(env Env) error              { return nil }
 func (c *stopRecorder) Start(ctx context.Context) error { <-ctx.Done(); return nil }
-func (c *stopRecorder) Stop(ctx context.Context)        { c.stopped <- c.name }
+func (c *stopRecorder) Stop(ctx context.Context) error {
+	c.stopped <- c.name
+	return nil
+}
 
 // hangStopComponent 的 Stop 永不返回，用于验证 StopTimeout 有界兜底。
 type hangStopComponent struct{ name string }
 
 func (c *hangStopComponent) Name() string                    { return c.name }
-func (c *hangStopComponent) Init(app App) error              { return nil }
+func (c *hangStopComponent) Init(env Env) error              { return nil }
 func (c *hangStopComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
-func (c *hangStopComponent) Stop(ctx context.Context)        { select {} }
+func (c *hangStopComponent) Stop(ctx context.Context) error  { select {} }
+
+// failStopComponent 的 Stop 返回错误，用于验证关停错误随 Run() 上抛。
+type failStopComponent struct{ name string }
+
+func (c *failStopComponent) Name() string                    { return c.name }
+func (c *failStopComponent) Init(env Env) error              { return nil }
+func (c *failStopComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (c *failStopComponent) Stop(ctx context.Context) error  { return errors.New("stop boom") }
 
 // slowInitComponent 的 Init 阻塞直到 release 放行，用于在 Register 与 Run
-// 之间制造确定性交错（P1-1 二轮修复的回归测试）。
+// 之间制造确定性交错（Register/Run 并发裁决的回归测试）。
 type slowInitComponent struct {
 	name        string
 	release     chan struct{}
@@ -186,7 +203,7 @@ type slowInitComponent struct {
 
 func (c *slowInitComponent) Name() string { return c.name }
 
-func (c *slowInitComponent) Init(app App) error {
+func (c *slowInitComponent) Init(env Env) error {
 	close(c.enteredInit)
 	<-c.release
 	return nil
@@ -198,7 +215,7 @@ func (c *slowInitComponent) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *slowInitComponent) Stop(ctx context.Context) { c.stopped.Store(true) }
+func (c *slowInitComponent) Stop(ctx context.Context) error { c.stopped.Store(true); return nil }
 
 func TestInitCanCallAppMethods(t *testing.T) {
 	cli := NewBuilder(func(ctx context.Context, app App) error {
@@ -208,7 +225,7 @@ func TestInitCanCallAppMethods(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		cli.Build()
+		_, _ = cli.Build()
 	}()
 	select {
 	case <-done:
@@ -265,12 +282,15 @@ func TestRunReturnsOnStopHookErrors(t *testing.T) {
 		app.OnStop(func(ctx context.Context) error { return errors.New("drain failed") })
 		return nil
 	})
-	app := cli.Build()
+	app, err := cli.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		app.Close()
 	}()
-	err := cli.RunE()
+	err = cli.RunE()
 	if err == nil || !strings.Contains(err.Error(), "drain failed") {
 		t.Fatalf("Run() error = %v, want drain failed", err)
 	}
@@ -281,24 +301,55 @@ func TestComponentStopBoundedByTimeout(t *testing.T) {
 		app.Register(&hangStopComponent{name: "hang"})
 		return nil
 	}, WithStopTimeout(time.Second))
-	app := cli.Build()
+	app, err := cli.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		app.Close()
 	}()
 	start := time.Now()
-	if err := cli.RunE(); err != nil {
-		t.Fatalf("Run() error = %v, want nil", err)
-	}
+	err = cli.RunE()
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("shutdown hung: elapsed %v, want bounded by StopTimeout", elapsed)
+	}
+	// 挂死组件的超时错误随 Run() 上抛（关停错误对称上抛）。
+	if err == nil || !strings.Contains(err.Error(), "stop timed out") {
+		t.Fatalf("Run() error = %v, want stop timed out error", err)
+	}
+}
+
+// TestComponentStopErrorSurfacesAtRun 验证组件 Stop 返回的错误随 Run()
+// 统一上抛（关停错误对称上抛）。
+func TestComponentStopErrorSurfacesAtRun(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	app.Register(&failStopComponent{name: "bad-stop"})
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- app.Run()
+	}()
+	time.Sleep(50 * time.Millisecond)
+	app.Close()
+
+	select {
+	case err := <-runErr:
+		if err == nil || !strings.Contains(err.Error(), "stop boom") {
+			t.Fatalf("Run() error = %v, want component stop error to surface", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after Close()")
 	}
 }
 
 func TestBuilderNilBuildFunc(t *testing.T) {
 	b := NewBuilder(nil)
-	if app := b.Build(); app != nil {
-		t.Fatalf("Build() = %v, want nil", app)
+	if app, err := b.Build(); app != nil || !errors.Is(err, ErrBuildFuncNil) {
+		t.Fatalf("Build() = %v, %v; want nil, ErrBuildFuncNil", app, err)
 	}
 	if err := b.RunE(); !errors.Is(err, ErrBuildFuncNil) {
 		t.Fatalf("RunE() error = %v, want ErrBuildFuncNil", err)
@@ -311,11 +362,11 @@ func TestBuilderBuildReturnsNilAfterCallbackFailure(t *testing.T) {
 		calls++
 		return errors.New("build boom")
 	})
-	if app := b.Build(); app != nil {
-		t.Fatalf("first Build() = %v, want nil", app)
+	if app, err := b.Build(); app != nil || err == nil {
+		t.Fatalf("first Build() = %v, %v; want nil, error", app, err)
 	}
-	if app := b.Build(); app != nil {
-		t.Fatalf("second Build() = %v, want nil (consistent contract after failure)", app)
+	if app, err := b.Build(); app != nil || err == nil {
+		t.Fatalf("second Build() = %v, %v; want nil, error (consistent contract after failure)", app, err)
 	}
 	if calls != 1 {
 		t.Fatalf("build called %d times, want 1", calls)
@@ -408,14 +459,14 @@ func TestHealthCheckersRegistered(t *testing.T) {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 
-	if got := len(app.HealthCheckFunc()()); got != 0 {
+	if got := len(app.HealthCheckers()); got != 0 {
 		t.Fatalf("health checkers = %d, want 0 before registering components", got)
 	}
 
 	comp := &checkerComponent{name: "checker"}
 	app.Register(comp)
 
-	checkers := app.HealthCheckFunc()()
+	checkers := app.HealthCheckers()
 	if len(checkers) != 1 {
 		t.Fatalf("health checkers = %d, want 1", len(checkers))
 	}
@@ -423,10 +474,22 @@ func TestHealthCheckersRegistered(t *testing.T) {
 		t.Error("registered health checker is not the component")
 	}
 
-	// A component that is not a health.Checker must not be registered.
+	// A component that is not a Checker must not be registered.
 	app.Register(&blockingComponent{name: "plain"})
-	if got := len(app.HealthCheckFunc()()); got != 1 {
+	if got := len(app.HealthCheckers()); got != 1 {
 		t.Errorf("health checkers = %d, want 1 after adding non-checker component", got)
+	}
+}
+
+// TestRegisterNilComponent 验证 plain nil 组件注册返回明确错误而非运行时 panic。
+func TestRegisterNilComponent(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	app.Register(nil)
+	if err := app.Run(); err == nil || !strings.Contains(err.Error(), "cannot register nil component") {
+		t.Fatalf("Run() error = %v, want cannot-register-nil error", err)
 	}
 }
 
@@ -624,7 +687,7 @@ func TestCLICommandRunsAndClosesApp(t *testing.T) {
 	}
 }
 
-// TestRegisterAfterRunRejected 回归 P1-1：Run 开始后注册为禁止操作——
+// TestRegisterAfterRunRejected 回归：Run 开始后注册为禁止操作——
 // Register/RegisterBuilders panic 报明确错误，CLI 返回错误；
 // 晚到的注册不得触碰 run.Group 的 actors（此前为 data race 且组件
 // 永不 Start 却被 Stop）。
@@ -667,7 +730,7 @@ func TestRegisterAfterRunRejected(t *testing.T) {
 	}
 }
 
-// TestRunJoinsOnStopErrorsWithStartFailure 回归 P1-2：组件 Start 先失败时，
+// TestRunJoinsOnStopErrorsWithStartFailure 回归：组件 Start 先失败时，
 // oklog/run 只返回首个 actor 错误，OnStop 钩子错误必须与之一并上抛，
 // 不得只落日志。
 func TestRunJoinsOnStopErrorsWithStartFailure(t *testing.T) {
@@ -688,7 +751,7 @@ func TestRunJoinsOnStopErrorsWithStartFailure(t *testing.T) {
 	}
 }
 
-// TestRunRejectedTwice 回归 P2-1：Run 不可重复调用——二次调用返回明确
+// TestRunRejectedTwice 回归：Run 不可重复调用——二次调用返回明确
 // 错误，组件不会被二次 Start/Stop。
 func TestRunRejectedTwice(t *testing.T) {
 	app, err := newLynx(NewOptions())
@@ -717,8 +780,8 @@ func TestRunRejectedTwice(t *testing.T) {
 	}
 }
 
-// TestRegisterRacingRunLeavesNoOrphan 回归 P1-1 二轮修复：Register 与 Run
-// 并发时，迟到的注册必须在持锁登记事务内被裁决为 panic——不得留下
+// TestRegisterRacingRunLeavesNoOrphan 回归 Register/Run 并发裁决：Register
+// 与 Run 并发时，迟到的注册必须在持锁登记事务内被裁决为 panic——不得留下
 // "Init 成功、计入 healthCheckers、永不 Start/Stop" 的孤儿组件，也不得与
 // run.Group 的 actors 产生 data race（-race 下运行）。
 // 交错是确定性的：slow 的 Init 阻塞期间 Run 先置位 running，随后才放行。
@@ -810,13 +873,13 @@ func TestSetLogger(t *testing.T) {
 }
 
 // TestConfigFileNotFoundIsNotFatal 验证未显式指定配置文件且不存在配置文件时
-// 应用仍能启动（配置是可选的），即修复 C1。
+// 应用仍能启动（配置是可选的；默认 flags 开启后同样如此）。
 func TestConfigFileNotFoundIsNotFatal(t *testing.T) {
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
 	os.Args = []string{"lynx"}
 
-	if _, err := newLynx(NewOptions(WithUseDefaultConfigFlagsFunc())); err != nil {
+	if _, err := newLynx(NewOptions()); err != nil {
 		t.Fatalf("newLynx() error = %v, want nil when no config file is present", err)
 	}
 }
@@ -827,8 +890,36 @@ func TestExplicitConfigFileMissingIsFatal(t *testing.T) {
 	defer func() { os.Args = origArgs }()
 	os.Args = []string{"lynx", "-c", "does-not-exist.yaml"}
 
-	if _, err := newLynx(NewOptions(WithUseDefaultConfigFlagsFunc())); err == nil {
+	if _, err := newLynx(NewOptions()); err == nil {
 		t.Fatal("newLynx() error = nil, want error when explicit config file is missing")
+	}
+}
+
+// TestUnknownFlagsIgnored 验证默认 flags 开启后，未知命令行参数（如 go test
+// 二进制的 -test.*）不会导致初始化失败。
+func TestUnknownFlagsIgnored(t *testing.T) {
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+	os.Args = []string{"lynx", "-test.timeout=1m", "--unknown-flag=value"}
+
+	if _, err := newLynx(NewOptions()); err != nil {
+		t.Fatalf("newLynx() error = %v, want nil with unknown flags present", err)
+	}
+}
+
+// TestDefaultFlagsDisabled 验证 WithDisableConfigFlags 关闭默认 flags 后，
+// 命令行参数不再被解析。
+func TestDefaultFlagsDisabled(t *testing.T) {
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+	os.Args = []string{"lynx", "-test.timeout=1m"}
+
+	o := NewOptions(WithDisableConfigFlags())
+	if o.SetFlagsFunc != nil || o.BindConfigFunc != nil {
+		t.Fatal("WithDisableConfigFlags should clear SetFlagsFunc and BindConfigFunc")
+	}
+	if _, err := newLynx(o); err != nil {
+		t.Fatalf("newLynx() error = %v, want nil", err)
 	}
 }
 
@@ -874,7 +965,7 @@ func TestOnStartRunsBeforeComponentsStart(t *testing.T) {
 }
 
 // TestOnStopHookBlockingBoundedByTimeout 验证忽略 ctx 的阻塞 OnStop hook
-// 不会挂起关闭流程，总时长受 ShutdownTimeout 约束（M3）。
+// 不会挂起关闭流程，总时长受 ShutdownTimeout 约束。
 func TestOnStopHookBlockingBoundedByTimeout(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
@@ -911,18 +1002,24 @@ func TestOnStopHookBlockingBoundedByTimeout(t *testing.T) {
 	}
 }
 
-// TestBuilderBuildIsIdempotent 验证 Build() 只运行一次构建回调（M6）。
+// TestBuilderBuildIsIdempotent 验证 Build() 只运行一次构建回调。
 func TestBuilderBuildIsIdempotent(t *testing.T) {
 	var calls atomic.Int32
 	builder := NewBuilder(func(ctx context.Context, app App) error {
 		calls.Add(1)
 		return nil
 	})
-	b := builder.Build()
+	b, err := builder.Build()
+	if err != nil {
+		t.Fatal("Build() returned error")
+	}
 	if b == nil {
 		t.Fatal("Build() returned nil")
 	}
-	b2 := builder.Build()
+	b2, err := builder.Build()
+	if err != nil {
+		t.Fatal("second Build() returned error")
+	}
 	if b2 != b {
 		t.Error("Build() should return the same app on subsequent calls")
 	}
@@ -932,7 +1029,7 @@ func TestBuilderBuildIsIdempotent(t *testing.T) {
 }
 
 // TestBuilderRunEReturnsInitError 验证 newLynx 初始化失败（如 Options 校验）
-// 通过 RunE 返回而非直接退出进程（L7）。
+// 通过 RunE 返回而非直接退出进程。
 func TestBuilderRunEReturnsInitError(t *testing.T) {
 	builder := NewBuilder(func(ctx context.Context, app App) error { return nil },
 		WithName(strings.Repeat("a", 64))) // 触发 ErrNameTooLong
@@ -941,7 +1038,7 @@ func TestBuilderRunEReturnsInitError(t *testing.T) {
 	}
 }
 
-// TestCommandStartBeforeInit 验证未注册的 command 直接 Start 返回 ErrNotInitialized（L3）。
+// TestCommandStartBeforeInit 验证未注册的 command 直接 Start 返回 ErrNotInitialized。
 func TestCommandStartBeforeInit(t *testing.T) {
 	cmd := NewCommand(func(ctx context.Context) error { return nil })
 	if err := cmd.Start(context.Background()); !errors.Is(err, ErrNotInitialized) {
@@ -949,7 +1046,7 @@ func TestCommandStartBeforeInit(t *testing.T) {
 	}
 }
 
-// TestParseLogLevel 验证日志级别解析（M12）。
+// TestParseLogLevel 验证日志级别解析。
 func TestParseLogLevel(t *testing.T) {
 	tests := []struct {
 		in   string
@@ -963,12 +1060,118 @@ func TestParseLogLevel(t *testing.T) {
 		{"error", slog.LevelError},
 	}
 	for _, tt := range tests {
-		lvl, err := parseLogLevel(tt.in)
+		lvl, err := ParseLogLevel(tt.in)
 		if err != nil || lvl != tt.want {
-			t.Errorf("parseLogLevel(%q) = %v, %v; want %v", tt.in, lvl, err, tt.want)
+			t.Errorf("ParseLogLevel(%q) = %v, %v; want %v", tt.in, lvl, err, tt.want)
 		}
 	}
-	if _, err := parseLogLevel("bogus"); err == nil {
-		t.Error("parseLogLevel(\"bogus\") should return an error")
+	if _, err := ParseLogLevel("bogus"); err == nil {
+		t.Error("ParseLogLevel(\"bogus\") should return an error")
 	}
+}
+
+// TestLogLevelFromConfigPriority 验证日志级别键的优先级：
+// logging.level → log-level → log_level。
+func TestLogLevelFromConfigPriority(t *testing.T) {
+	c := NewViperConfig(viper.New())
+	if got := LogLevelFromConfig(c); got != "" {
+		t.Errorf("LogLevelFromConfig() = %q, want empty", got)
+	}
+	c.Set("logging.level", "warn")
+	c.Set("log-level", "error")
+	c.Set("log_level", "debug")
+	if got := LogLevelFromConfig(c); got != "warn" {
+		t.Errorf("LogLevelFromConfig() = %q, want warn (logging.level wins)", got)
+	}
+
+	c = NewViperConfig(viper.New())
+	c.Set("log-level", "error")
+	c.Set("log_level", "debug")
+	if got := LogLevelFromConfig(c); got != "error" {
+		t.Errorf("LogLevelFromConfig() = %q, want error (log-level beats log_level)", got)
+	}
+
+	c = NewViperConfig(viper.New())
+	c.Set("log_level", "debug")
+	if got := LogLevelFromConfig(c); got != "debug" {
+		t.Errorf("LogLevelFromConfig() = %q, want debug (log_level fallback)", got)
+	}
+}
+
+// TestAppContextCarriesServiceConfigKeys 验证 service.name/service.id/
+// service.version 配置键优先于旧顶层键。
+func TestAppContextCarriesServiceConfigKeys(t *testing.T) {
+	v := viper.New()
+	v.Set("service.name", "svc-new")
+	v.Set("service.id", "id-new")
+	v.Set("service.version", "v-new")
+	v.Set("name", "svc-old")
+	v.Set("id", "id-old")
+	v.Set("version", "v-old")
+	c := NewViperConfig(v)
+
+	app, err := newLynxWithConfig(c)
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	ctx := app.Context()
+	if got := NameFromContext(ctx); got != "svc-new" {
+		t.Errorf("NameFromContext() = %q, want %q", got, "svc-new")
+	}
+	if got := IDFromContext(ctx); got != "id-new" {
+		t.Errorf("IDFromContext() = %q, want %q", got, "id-new")
+	}
+	if got := VersionFromContext(ctx); got != "v-new" {
+		t.Errorf("VersionFromContext() = %q, want %q", got, "v-new")
+	}
+}
+
+// TestAppContextFallsBackToLegacyConfigKeys 验证旧顶层键作为回退仍生效。
+func TestAppContextFallsBackToLegacyConfigKeys(t *testing.T) {
+	v := viper.New()
+	v.Set("name", "svc-old")
+	v.Set("id", "id-old")
+	v.Set("version", "v-old")
+	c := NewViperConfig(v)
+
+	app, err := newLynxWithConfig(c)
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	ctx := app.Context()
+	if got := NameFromContext(ctx); got != "svc-old" {
+		t.Errorf("NameFromContext() = %q, want %q", got, "svc-old")
+	}
+	if got := IDFromContext(ctx); got != "id-old" {
+		t.Errorf("IDFromContext() = %q, want %q", got, "id-old")
+	}
+	if got := VersionFromContext(ctx); got != "v-old" {
+		t.Errorf("VersionFromContext() = %q, want %q", got, "v-old")
+	}
+}
+
+// newLynxWithConfig 用预置配置源构建应用（绕过命令行 flags 解析）。
+func newLynxWithConfig(c ConfigSource) (App, error) {
+	o := NewOptions()
+	if err := o.Validate(); err != nil {
+		return nil, err
+	}
+	f := pflag.NewFlagSet(os.Args[0], pflag.ContinueOnError)
+	f.ParseErrorsAllowlist.UnknownFlags = true
+	app := &lynx{
+		o:        o,
+		c:        viper.New(),
+		f:        f,
+		runG:     &run.Group{},
+		logger:   slog.Default(),
+		onStarts: []HookFunc{},
+		onStops:  []HookFunc{},
+	}
+	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
+	app.components = []Component{}
+	app.c = c.(*viperConfig).v
+	if err := app.init(); err != nil {
+		return nil, err
+	}
+	return app, nil
 }

@@ -8,8 +8,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"gocloud.dev/server/health"
 )
 
 // sequenceChecker fails CheckHealth for the first `failures` calls, then succeeds.
@@ -35,7 +33,7 @@ func (c *sequenceChecker) Calls() int {
 	return c.calls
 }
 
-func newAppWithCheckers(t *testing.T, checkers ...health.Checker) App {
+func newAppWithCheckers(t *testing.T, checkers ...Checker) App {
 	t.Helper()
 	app, err := newLynx(NewOptions())
 	if err != nil {
@@ -248,8 +246,7 @@ func TestCommandStopClosesApp(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	cmd.Stop(context.Background())
-
+	_ = cmd.Stop(context.Background())
 	select {
 	case <-app.Context().Done():
 	case <-time.After(time.Second):

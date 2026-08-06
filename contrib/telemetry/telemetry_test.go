@@ -1,7 +1,8 @@
-package metrics
+package telemetry
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ func TestComponentLifecycle(t *testing.T) {
 	})
 
 	comp := New()
-	// Init 不使用 app 参数，直接传 nil。
+	// Init 不使用 env 参数，直接传 nil。
 	if err := comp.Init(nil); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
@@ -45,7 +46,7 @@ func TestComponentLifecycle(t *testing.T) {
 		t.Fatal("Start did not return after context cancel")
 	}
 
-	comp.Stop(context.Background())
+	_ = comp.Stop(context.Background())
 }
 
 func TestCustomProviders(t *testing.T) {
@@ -69,7 +70,7 @@ func TestCustomProviders(t *testing.T) {
 	if got := otel.GetMeterProvider(); got == beforeMP {
 		t.Error("MeterProvider was not replaced")
 	}
-	comp.Stop(context.Background())
+	_ = comp.Stop(context.Background())
 }
 
 // TestStopShutsDownProviders verifies the module's core lifecycle promise:
@@ -80,7 +81,7 @@ func TestStopShutsDownProviders(t *testing.T) {
 	if err := comp.Init(nil); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
-	comp.Stop(context.Background())
+	_ = comp.Stop(context.Background())
 	if got := exporter.shutdownCount.Load(); got != 1 {
 		t.Errorf("exporter Shutdown called %d times, want 1", got)
 	}
@@ -90,7 +91,54 @@ func TestStopShutsDownProviders(t *testing.T) {
 // called (providers are nil).
 func TestStopBeforeInitDoesNotPanic(t *testing.T) {
 	comp := New()
-	comp.Stop(context.Background()) // must not panic on nil providers
+	_ = comp.Stop(context.Background()) // must not panic on nil providers
+}
+
+// TestStopReturnsErrors 验证 provider Shutdown 错误经 Stop 返回（关停错误
+// 对称上抛）。
+func TestStopReturnsErrors(t *testing.T) {
+	comp := New(WithTraceExporter(&failShutdownExporter{}))
+	if err := comp.Init(nil); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	if err := comp.Stop(context.Background()); err == nil {
+		t.Fatal("Stop() error = nil, want shutdown errors")
+	}
+}
+
+// TestDefaultTraceExporterIsNoop 验证默认 trace exporter 为 noop：未配置
+// exporter 时 newProviders 不构造任何 exporter（生产忘配 exporter 不会向
+// stdout 倒 trace），span 只记录不导出。
+func TestDefaultTraceExporterIsNoop(t *testing.T) {
+	tp, mp, err := newProviders(&Options{})
+	if err != nil {
+		t.Fatalf("newProviders: %v", err)
+	}
+	defer func() { _ = mp.Shutdown(context.Background()) }()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	_, span := tp.Tracer("noop-test").Start(context.Background(), "span")
+	span.End()
+	if err := tp.ForceFlush(context.Background()); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+}
+
+// TestStdoutTraceOption 验证 WithStdoutTrace 显式启用 stdout pretty print
+// exporter。
+func TestStdoutTraceOption(t *testing.T) {
+	tp, mp, err := newProviders(&Options{stdoutTrace: true})
+	if err != nil {
+		t.Fatalf("newProviders: %v", err)
+	}
+	defer func() { _ = mp.Shutdown(context.Background()) }()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	_, span := tp.Tracer("stdout-test").Start(context.Background(), "span")
+	span.End()
+	if err := tp.ForceFlush(context.Background()); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
 }
 
 var _ lynx.Component = new(otelComponent)
@@ -117,6 +165,17 @@ func (e *recordingSpanExporter) ExportSpans(context.Context, []sdktrace.ReadOnly
 func (e *recordingSpanExporter) Shutdown(context.Context) error {
 	e.shutdownCount.Add(1)
 	return nil
+}
+
+// failShutdownExporter 的 Shutdown 恒返回错误。
+type failShutdownExporter struct{}
+
+func (e *failShutdownExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error {
+	return nil
+}
+
+func (e *failShutdownExporter) Shutdown(context.Context) error {
+	return errors.New("shutdown boom")
 }
 
 // TestInitTwiceFails 回归：重复 Init 覆盖 otel 全局且首个 provider 永不

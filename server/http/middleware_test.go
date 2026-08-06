@@ -66,7 +66,7 @@ func TestServerAppliesMiddleware(t *testing.T) {
 	startErr := make(chan error, 1)
 	go func() { startErr <- srv.Start(context.Background()) }()
 	waitForDial(t, addr)
-	defer srv.Stop(context.Background())
+	defer func() { _ = srv.Stop(context.Background()) }()
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get("http://" + addr + "/")
@@ -79,7 +79,7 @@ func TestServerAppliesMiddleware(t *testing.T) {
 		t.Errorf("X-Middleware header = %q, want %q", got, "applied")
 	}
 
-	srv.Stop(context.Background())
+	_ = srv.Stop(context.Background())
 	select {
 	case err := <-startErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {

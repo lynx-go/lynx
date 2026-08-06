@@ -7,15 +7,15 @@
 一个 Lynx 应用的完整生命周期由 `lynx.NewBuilder` 和 `cli.Run()` 串起来：
 
 1. `lynx.NewBuilder(setup, opts...)` 创建应用实例（返回 `*Builder`）：先调用 `EnsureDefaults` 补全 Options，再解析命令行参数、读取配置文件，最后把应用名称、ID、版本注入应用 Context（见 3.5 节）。
-2. `cli.Run()` 首先调用 `setup` 回调：在这里注册组件和钩子。组件的 `Init(app)` 在注册时（即 `app.Register` 调用时）同步执行，返回 error 会被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
+2. `cli.Run()` 首先调用 `setup` 回调：在这里注册组件和钩子。组件的 `Init(env Env)` 在注册时（即 `app.Register` 调用时）同步执行，返回 error 会被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
 3. `setup` 返回后进入 `Run()`：启动所有组件的 `Start(ctx)`，并阻塞等待退出信号。
 4. 收到退出信号（或某个执行单元结束）后进入关闭流程，依次执行 `OnStop` 钩子并调用各组件的 `Stop(ctx)`。
 
 即每个组件遵循 `Init → Start → Stop` 的调用顺序：
 
-- `Init`：注册组件时同步调用，用于初始化依赖。
+- `Init(env Env)`：注册组件时同步调用，用于初始化依赖。参数是 `lynx.Env`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），组件不依赖完整的 `App` 接口（见 3.6 节 Env 接口说明）。
 - `Start`：`Run()` 启动后并发调用，通常是阻塞式的（如监听端口、消费消息），其 `ctx` 被取消时应返回。
-- `Stop`：关闭阶段调用，用于释放资源。
+- `Stop(ctx) error`：关闭阶段调用，用于释放资源；返回的错误由框架收集，与 OnStop 钩子错误一起随 `Run()` 上抛。
 
 ### 并发模型：run group
 
@@ -77,18 +77,19 @@ return nil
 | `WithVersion(v)` | 应用版本 |
 | `WithSetFlagsFunc(f)` | 自定义命令行参数声明（见 3.4 节） |
 | `WithBindConfigFunc(f)` | 自定义配置绑定逻辑（见 3.4 节） |
-| `WithUseDefaultConfigFlagsFunc()` | 使用框架内置的参数声明与绑定 |
+| `WithDisableConfigFlags()` | 关闭默认的命令行参数声明与绑定（默认开启） |
 | `WithExitSignals(signals...)` | 自定义触发优雅关闭的信号列表 |
-| `WithShutdownTimeout(d)` | 关闭超时时间，默认 5 秒 |
+| `WithShutdownTimeout(d)` | OnStop 钩子关闭超时，默认 5 秒 |
+| `WithStopTimeout(d)` | 单个组件 Stop 最长等待时长，默认 5 秒 |
 
-`NewOptions` 自身已经填充了部分默认值：`ID` 取 `os.Hostname()`，`ShutdownTimeout` 为 5 秒，`ExitSignals` 为默认信号列表。
+`NewOptions` 自身已经填充了部分默认值：`ID` 取 `os.Hostname()`，`Name` 为 `DefaultName`，`ShutdownTimeout` 为 5 秒，`StopTimeout` 为 5 秒，`ExitSignals` 为默认信号列表，并默认启用内置配置 flags（`SetFlagsFunc`/`BindConfigFunc` 默认取 `DefaultSetFlagsFunc`/`DefaultBindConfigFunc`）。
 
 ### 校验规则
 
 `Options.Validate()` 定义了两条校验规则（相关常量与错误均定义在 `options.go`）：
 
 - 名称长度不能超过 63 个字符，否则返回 `ErrNameTooLong`。
-- `ShutdownTimeout` 大于 0 时，必须在 `[MinShutdownTimeout, MaxShutdownTimeout]` 区间内，即不小于 1 秒（否则 `ErrCloseTimeoutTooSmall`）、不大于 5 分钟（否则 `ErrCloseTimeoutTooLarge`）。`ShutdownTimeout` 为 0 视为合法，表示"使用默认值"。
+- `ShutdownTimeout` 大于 0 时，必须在 `[MinShutdownTimeout, MaxShutdownTimeout]` 区间内，即不小于 1 秒（否则 `ErrShutdownTimeoutTooSmall`）、不大于 5 分钟（否则 `ErrShutdownTimeoutTooLarge`）。`ShutdownTimeout` 为 0 视为合法，表示"使用默认值"。`StopTimeout` 的校验区间相同（`ErrStopTimeoutTooSmall`/`ErrStopTimeoutTooLarge`）。
 
 `lynx.NewBuilder` 在调用 `EnsureDefaults()` 补齐默认值后会自动调用 `Validate()`，校验失败会让 `Run()`/`RunE()` 返回对应错误。如果需要在创建应用之前单独校验配置（例如来自外部输入），也可以显式调用：
 
@@ -121,7 +122,7 @@ Lynx 的配置体系基于 Viper（读取与合并）加 pflag（命令行参数
 
 ### 内置参数
 
-使用 `lynx.WithUseDefaultConfigFlagsFunc()` 即获得框架内置的四个参数（`DefaultSetFlagsFunc`）及其绑定逻辑（`DefaultBindConfigFunc`）：
+默认启用框架内置的四个参数（`DefaultSetFlagsFunc`）及其绑定逻辑（`DefaultBindConfigFunc`），无需任何选项；不需要命令行参数时可显式关闭（`WithDisableConfigFlags`）：
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -129,6 +130,8 @@ Lynx 的配置体系基于 Viper（读取与合并）加 pflag（命令行参数
 | `--config-type` | `yaml` | 配置文件类型 |
 | `--config-dir` | 空 | 配置文件搜索目录 |
 | `--log-level` | `info` | 日志级别 |
+
+未知命令行参数（如 `go test` 二进制的 `-test.*`）会被忽略，不阻断启动。
 
 ### 环境变量
 
@@ -151,7 +154,7 @@ lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
 
 `SetEnvPrefix` 加 `AutomaticEnv` 让 Viper 自动读取带前缀的环境变量；`BindEnv` 则把指定配置键精确绑定到某个环境变量。配置来源的优先级遵循 Viper 的规则：命令行参数、环境变量、配置文件可以组合使用。
 
-另外，应用名称、ID、版本这三个元信息也参与配置合并：如果配置中存在 `name`、`id`、`version` 键，会覆盖 `Options` 中的对应值，最终注入应用 Context 的是合并后的结果。
+另外，应用名称、ID、版本这三个元信息也参与配置合并：配置中的 `service.name`、`service.id`、`service.version` 键优先，覆盖 `Options` 中的对应值；旧顶层键 `name`、`id`、`version` 作为过渡期回退（deprecated），最终注入应用 Context 的是合并后的结果。
 
 ### 配置接口
 
@@ -185,7 +188,25 @@ router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 })
 ```
 
-## 3.6 优雅关闭
+## 3.6 Env 接口与组件接缝
+
+组件的 `Init` 接收的不是完整的 `App` 接口，而是更窄的 `lynx.Env`：
+
+```go
+type Env interface {
+	Context() context.Context
+	Config() Config
+	Logger(kwargs ...any) *slog.Logger
+	HealthCheckers() []Checker
+	Close()
+}
+```
+
+`App` 是 `Env` 的超集（`App` 内嵌 `Env`，额外提供 `Register`/`OnStart`/`OnStop`/`CLI`/`Run`/`SetLogger`）。组件在 `Init` 中只依赖 `Env` 的五个方法：读取配置、取日志、访问应用元信息（经 Context）、获取健康检查快照、或请求关闭应用（如一次性命令执行完毕）。测试时只需实现这五个方法，无需为 `App` 的其余方法写空实现。
+
+框架的职责边界：组件不能通过 `Env` 注册其他组件或修改生命周期钩子——`Init` 阶段（注册时同步执行）只允许"读取环境、准备资源"。
+
+## 3.7 优雅关闭
 
 ### 信号处理
 
@@ -204,12 +225,14 @@ opts := lynx.NewOptions(
 关闭按固定步骤执行：
 
 1. 取消应用 Context，通知所有监听它的逻辑（包括 OnStart 钩子 actor）退出；
-2. 以 `ShutdownTimeout` 为超时创建新 Context，按注册顺序串行执行所有 `OnStop` 钩子，错误通过 `ShutdownErrors` 聚合并记录日志；
-3. run group 中断所有组件 actor：对每个组件先调用 `Stop(ctx)`，再取消其 Context（使 `Start` 中的 `<-ctx.Done()` 解除阻塞）。
+2. 以 `ShutdownTimeout` 为超时创建新 Context，按注册顺序串行执行所有 `OnStop` 钩子，错误通过 `ShutdownErrors` 聚合；
+3. run group 中断所有组件 actor：对每个组件先调用 `Stop(ctx)`，再取消其 Context（使 `Start` 中的 `<-ctx.Done()` 解除阻塞）。组件 `Stop` 返回的错误与超时错误同样聚合进 `ShutdownErrors`。
 
-`ShutdownTimeout` 默认 5 秒（`DefaultShutdownTimeout`），可通过 `WithShutdownTimeout` 调整，合法区间为 1 秒到 5 分钟（见 3.3 节校验规则）。它约束的是 `OnStop` 钩子的总执行时间；组件 `Stop` 由 run group 中断机制驱动，不单独受该超时约束。
+`ShutdownTimeout` 默认 5 秒（`DefaultShutdownTimeout`），可通过 `WithShutdownTimeout` 调整，合法区间为 1 秒到 5 分钟（见 3.3 节校验规则）。它约束的是 `OnStop` 钩子的总执行时间。组件 `Stop` 的单个最长等待由 `Options.StopTimeout`（默认 5 秒）约束：挂死（如等待 `ctx.Done()`）的 `Stop` 超时后跳过并记录错误，不会阻塞整个关停流程。
 
-## 3.7 综合示例
+`Run()` 返回时会把三类错误聚合上抛（`errors.Join`）：run group 的首个 actor 错误、OnStop 钩子错误（含超时）、组件 Stop 错误（含超时）——调用方（如 K8s）可以感知关停失败。
+
+## 3.8 综合示例
 
 下面这个完整示例把本章的概念串起来：自定义 `ShutdownTimeout`、注册 `OnStart`/`OnStop` 钩子、注册一个组件、通过 Context 辅助函数读取应用元信息。运行后按 `Ctrl+C` 可以观察完整的优雅关闭过程。
 
@@ -251,16 +274,16 @@ type myComponent struct{}
 
 func (c *myComponent) Name() string { return "my-component" }
 
-func (c *myComponent) Init(app lynx.App) error { return nil }
+func (c *myComponent) Init(env lynx.Env) error { return nil }
 
 func (c *myComponent) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
 
-func (c *myComponent) Stop(ctx context.Context) {}
+func (c *myComponent) Stop(ctx context.Context) error { return nil }
 ```
 
-## 3.8 下一步
+## 3.9 下一步
 
 - [第 4 章：组件系统](./04-component-system.md) - 深入理解 `Component` 接口契约、`ComponentBuilder` 与自定义组件编写

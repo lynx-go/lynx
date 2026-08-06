@@ -28,7 +28,6 @@ func main() {
 	},
 		lynx.WithID(lo.Must1(os.Hostname())),
 		lynx.WithName("pubsub"),
-		lynx.WithUseDefaultConfigFlagsFunc(),
 	)
 	builder.Run()
 }

@@ -2,6 +2,7 @@ package zap
 
 import (
 	"context"
+	"log/slog"
 	"path/filepath"
 	"testing"
 
@@ -9,50 +10,25 @@ import (
 	"github.com/spf13/viper"
 )
 
-// fakeApp implements lynx.App minimally for tests.
-type fakeApp struct {
-	lynx.App
+// fakeEnv implements lynx.Env minimally for tests.
+type fakeEnv struct {
+	lynx.Env
 	cfg lynx.Config
 }
 
-func (f *fakeApp) Config() lynx.Config      { return f.cfg }
-func (f *fakeApp) Context() context.Context { return context.Background() }
+func (f *fakeEnv) Config() lynx.Config      { return f.cfg }
+func (f *fakeEnv) Context() context.Context { return context.Background() }
+func (f *fakeEnv) Logger(...any) *slog.Logger { return slog.Default() }
+func (f *fakeEnv) HealthCheckers() []lynx.Checker { return nil }
 
-func newFakeApp(t *testing.T) *fakeApp {
+func newFakeEnv(t *testing.T) *fakeEnv {
 	t.Helper()
 	v := viper.New()
-	return &fakeApp{cfg: lynx.NewViperConfig(v)}
+	return &fakeEnv{cfg: lynx.NewViperConfig(v)}
 }
 
-func (f *fakeApp) set(key, val string) {
+func (f *fakeEnv) set(key, val string) {
 	f.cfg.(lynx.ConfigSource).Set(key, val)
-}
-
-func TestGetLevelDefaults(t *testing.T) {
-	app := newFakeApp(t)
-	if got := getLevel(app); got != "info" {
-		t.Errorf("getLevel() = %q, want default %q", got, "info")
-	}
-}
-
-func TestGetLevelKeyPriority(t *testing.T) {
-	app := newFakeApp(t)
-	app.set("logging.level", "warn")
-	if got := getLevel(app); got != "warn" {
-		t.Errorf("getLevel() = %q, want %q (logging.level takes priority)", got, "warn")
-	}
-
-	app = newFakeApp(t)
-	app.set("log_level", "error")
-	if got := getLevel(app); got != "error" {
-		t.Errorf("getLevel() = %q, want %q", got, "error")
-	}
-
-	app = newFakeApp(t)
-	app.set("log-level", "debug")
-	if got := getLevel(app); got != "debug" {
-		t.Errorf("getLevel() = %q, want %q (framework default flag key)", got, "debug")
-	}
 }
 
 func TestNewZapLogger(t *testing.T) {
@@ -64,16 +40,18 @@ func TestNewZapLogger(t *testing.T) {
 	}
 }
 
-func TestNewZapLoggerToFile(t *testing.T) {
+// TestNewZapLoggerToFileViaOutputs 验证文件输出经 outputs 参数实现
+//（原 NewZapLoggerToFile 的能力合并进 NewZapLogger）。
+func TestNewZapLoggerToFileViaOutputs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
 
 	// 无效级别在打开文件之前就返回错误，不会创建文件（回归：级别解析错误
-	// 不再被静默忽略）。happy path 由 NewZapLogger 覆盖（相同 Build 逻辑）。
+	// 不再被静默忽略）。happy path 由 TestNewZapLogger 覆盖（相同 Build 逻辑）。
 	// 注：zap.Logger 无 Close 方法，Windows 上无法释放文件句柄，
 	// 因此文件变体不做文件写入/清理断言。
-	if _, err := NewZapLoggerToFile("bogus", path); err == nil {
-		t.Error("NewZapLoggerToFile(bogus, ...) error = nil, want error")
+	if _, err := NewZapLogger("bogus", path); err == nil {
+		t.Error("NewZapLogger(bogus, path) error = nil, want error")
 	}
 }
 
@@ -91,22 +69,22 @@ func TestNewSLogger(t *testing.T) {
 }
 
 func TestNewLoggerAndMustNewLogger(t *testing.T) {
-	app := newFakeApp(t)
-	logger, err := NewLogger(app)
+	env := newFakeEnv(t)
+	logger, err := NewLogger(env)
 	if err != nil {
 		t.Fatalf("NewLogger() error = %v", err)
 	}
 	if logger == nil {
 		t.Fatal("NewLogger() returned nil")
 	}
-	if logger := MustNewLogger(app); logger == nil {
+	if logger := MustNewLogger(env); logger == nil {
 		t.Fatal("MustNewLogger() returned nil")
 	}
 }
 
 func TestSyncOnStop(t *testing.T) {
-	app := newFakeApp(t)
-	l, err := NewSyncableLogger(app)
+	env := newFakeEnv(t)
+	l, err := NewSyncableLogger(env)
 	if err != nil {
 		t.Fatalf("NewSyncableLogger() error = %v", err)
 	}
@@ -122,12 +100,36 @@ func TestSyncOnStop(t *testing.T) {
 // TestNewLoggerInvalidLevelError 回归：非法日志级别配置下 NewLogger
 // 必须返回错误而非静默回退。
 func TestNewLoggerInvalidLevelError(t *testing.T) {
-	app := newFakeApp(t)
-	app.set("logging.level", "not-a-level")
-	if _, err := NewLogger(app); err == nil {
+	env := newFakeEnv(t)
+	env.set("logging.level", "not-a-level")
+	if _, err := NewLogger(env); err == nil {
 		t.Fatal("expected error for invalid log level")
 	}
-	if _, err := NewSyncableLogger(app); err == nil {
+	if _, err := NewSyncableLogger(env); err == nil {
 		t.Fatal("expected error for invalid log level (SyncableLogger)")
+	}
+}
+
+// TestLogLevelFromConfigKeys 验证级别键来自框架统一解析
+//（logging.level 优先，log-level/log_level 为兼容回退），zap 不再
+// 维护独立的键优先级实现。
+func TestLogLevelFromConfigKeys(t *testing.T) {
+	env := newFakeEnv(t)
+	env.set("logging.level", "warn")
+	env.set("log-level", "error")
+	env.set("log_level", "debug")
+	if got := lynx.LogLevelFromConfig(env.Config()); got != "warn" {
+		t.Errorf("LogLevelFromConfig() = %q, want warn", got)
+	}
+
+	env = newFakeEnv(t)
+	env.set("log_level", "debug")
+	if got := lynx.LogLevelFromConfig(env.Config()); got != "debug" {
+		t.Errorf("LogLevelFromConfig() = %q, want debug", got)
+	}
+
+	env = newFakeEnv(t)
+	if got := lynx.LogLevelFromConfig(env.Config()); got != "" {
+		t.Errorf("LogLevelFromConfig() = %q, want empty", got)
 	}
 }

@@ -28,7 +28,7 @@ import (
 
 func main() {
 	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
-		router := http.NewRouter()
+		router := gohttp.NewServeMux()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			name := lynx.NameFromContext(app.Context())
 			id := lynx.IDFromContext(app.Context())
@@ -42,7 +42,7 @@ func main() {
 
 		app.Register(http.NewServer(router,
 			http.WithAddr(":8080"),
-			http.WithHealthCheck(app.HealthCheckFunc()),
+			http.WithHealthCheckers(app.HealthCheckers),
 		))
 		return nil
 	},
@@ -69,7 +69,7 @@ go run main.go
 
 - `lynx.NewOptions` 通过 `WithName`、`WithVersion` 等选项配置应用元信息。
 - `lynx.NewBuilder(setup, opts...)` 创建应用实例，`setup` 回调中通过 `app.Register(...)` 注册组件。
-- `http.NewServer` 创建一个 HTTP 服务器组件，`WithAddr` 指定监听地址，`WithHealthCheck` 开启健康检查（见 2.5 节）。
+- `http.NewServer` 创建一个 HTTP 服务器组件，`WithAddr` 指定监听地址，`WithHealthCheckers` 开启健康检查（见 2.5 节）。
 - `cli.Run()` 启动应用并阻塞，直到收到退出信号后优雅关闭。
 
 ## 2.3 使用配置文件
@@ -124,7 +124,7 @@ addr := app.Config().GetString("addr")
 
 配置来源的优先级遵循 Viper 的规则：命令行参数、环境变量、配置文件可以组合使用。上面的示例同时演示了三种来源——`--addr` 命令行参数、`LYNX_ADDR` 环境变量和 `config.yaml` 文件。
 
-如果只需要框架内置的配置参数（`--config`、`--config-type`、`--config-dir`、`--log-level`），可以直接使用 `lynx.WithUseDefaultConfigFlagsFunc()`，无需自定义上述两个函数。
+如果只需要框架内置的配置参数（`--config`、`--config-type`、`--config-dir`、`--log-level`），无需任何配置：默认启用框架内置的参数声明与绑定。不需要命令行参数时可显式关闭：`lynx.WithDisableConfigFlags()`。
 
 ## 2.4 CLI 模式
 
@@ -148,7 +148,6 @@ func main() {
 		})
 	},
 		lynx.WithName("cli-example"),
-		lynx.WithUseDefaultConfigFlagsFunc(),
 	)
 	cli.Run()
 }
@@ -164,10 +163,10 @@ go run main.go
 
 ## 2.5 健康检查端点
 
-为 HTTP 服务器传入 `http.WithHealthCheck(app.HealthCheckFunc())` 后，服务器会自动暴露两个健康检查端点：
+为 HTTP 服务器传入 `http.WithHealthCheckers(app.HealthCheckers)` 后，服务器会自动暴露两个健康检查端点：
 
 - `/healthz/liveness`：存活检查，进程存活即返回 200，用于探活。
-- `/healthz/readiness`：就绪检查，依次调用所有注册的健康检查器，全部通过才返回 200，否则返回 500。
+- `/healthz/readiness`：就绪检查，依次调用所有注册的健康检查器，全部通过才返回 200，任一失败返回 503 + 错误正文。
 
 验证方式：
 
@@ -176,9 +175,9 @@ curl -i http://localhost:8080/healthz/liveness
 curl -i http://localhost:8080/healthz/readiness
 ```
 
-`app.HealthCheckFunc()` 会收集所有实现了 `health.Checker` 接口的组件作为就绪检查项——收集发生在组件注册时，框架对每个通过 `app.Register` 注册的组件做 `health.Checker` 类型断言，通过断言的才会加入就绪检查列表。
+`app.HealthCheckers` 会收集所有实现了 `lynx.Checker` 接口的组件作为就绪检查项——收集发生在组件注册时，框架对每个通过 `app.Register` 注册的组件做 `Checker` 类型断言，通过断言的才会加入就绪检查列表。
 
-框架还提供了开箱即用的 `lynx.HealthChecker`，可通过 `SetHealthy(true/false)` 动态控制就绪状态。需要注意：`lynx.HealthChecker` 只实现了 `health.Checker` 接口，并不是 `Component`，单独创建它不会产生任何效果。正确的用法是把它内嵌到自己的组件中，再把组件注册进应用：
+框架还提供了开箱即用的 `lynx.HealthChecker`，可通过 `SetHealthy(true/false)` 动态控制就绪状态。需要注意：`lynx.HealthChecker` 只实现了 `Checker` 接口，并不是 `Component`，单独创建它不会产生任何效果。正确的用法是把它内嵌到自己的组件中，再把组件注册进应用：
 
 ```go
 type myComponent struct {
@@ -186,12 +185,12 @@ type myComponent struct {
 }
 
 func (c *myComponent) Name() string             { return "my-component" }
-func (c *myComponent) Init(app lynx.App) error { c.SetHealthy(true); return nil }
+func (c *myComponent) Init(env lynx.Env) error  { c.SetHealthy(true); return nil }
 func (c *myComponent) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
-func (c *myComponent) Stop(ctx context.Context) {}
+func (c *myComponent) Stop(ctx context.Context) error { return nil }
 ```
 
 注册组件（注意初始化内嵌的 `HealthChecker`，否则为空指针）：
@@ -201,7 +200,7 @@ app.Register(&myComponent{HealthChecker: &lynx.HealthChecker{}})
 return nil
 ```
 
-由于内嵌，`myComponent` 自动满足 `health.Checker` 接口，注册后即成为 `/healthz/readiness` 的检查项；之后在业务逻辑中调用 `c.SetHealthy(false)` 即可让就绪检查返回 500。这对于需要"预热后再接流量"或"运维时临时摘流"的场景非常实用。
+由于内嵌，`myComponent` 自动满足 `Checker` 接口，注册后即成为 `/healthz/readiness` 的检查项；之后在业务逻辑中调用 `c.SetHealthy(false)` 即可让就绪检查返回 503。这对于需要"预热后再接流量"或"运维时临时摘流"的场景非常实用。
 
 ## 2.6 下一步
 

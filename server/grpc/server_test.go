@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"gocloud.dev/server/health"
+	"github.com/lynx-go/lynx"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -120,7 +120,7 @@ func TestStartStop(t *testing.T) {
 	}()
 	waitRunning(t, s)
 
-	s.Stop(context.Background())
+	_ = s.Stop(context.Background())
 
 	select {
 	case err := <-startErr:
@@ -206,7 +206,7 @@ func TestStopForcesStopAfterTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	s.Stop(context.Background()) // no deadline: Timeout fallback must kick in
+	_ = s.Stop(context.Background()) // no deadline: Timeout fallback must kick in
 	elapsed := time.Since(start)
 
 	if elapsed > 3*time.Second {
@@ -245,7 +245,7 @@ func TestServerTracingProducesSpan(t *testing.T) {
 	go func() { _ = s.Start(context.Background()) }()
 	waitRunning(t, s)
 	// Failure-path cleanup; the explicit Stop below is the normal path.
-	defer s.Stop(context.Background())
+	defer func() { _ = s.Stop(context.Background()) }()
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -257,7 +257,7 @@ func TestServerTracingProducesSpan(t *testing.T) {
 		t.Fatalf("Invoke() error = %v", err)
 	}
 
-	s.Stop(context.Background())
+	_ = s.Stop(context.Background())
 
 	spans := recorder.Ended()
 	var found bool
@@ -301,7 +301,7 @@ func TestServerMetricsProduced(t *testing.T) {
 
 	go func() { _ = s.Start(context.Background()) }()
 	waitRunning(t, s)
-	defer s.Stop(context.Background())
+	defer func() { _ = s.Stop(context.Background()) }()
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -334,20 +334,20 @@ func (c *flipChecker) CheckHealth() error {
 	return nil
 }
 
-// TestHealthStatusFollowsCheckers 回归 M7：app 级健康检查器轮询结果同步到
+// TestHealthStatusFollowsCheckers 回归：app 级健康检查器轮询结果同步到
 // grpc health 服务，依赖不健康时探测返回 NOT_SERVING。
 func TestHealthStatusFollowsCheckers(t *testing.T) {
 	checker := &flipChecker{}
 	checker.healthy.Store(true)
 	s := NewServer(
 		WithAddr("127.0.0.1:0"),
-		WithHealthCheck(func() []health.Checker { return []health.Checker{checker} }),
+		WithHealthCheck(func() []lynx.Checker { return []lynx.Checker{checker} }),
 		WithHealthCheckPeriod(20*time.Millisecond),
 	)
 	startErr := make(chan error, 1)
 	go func() { startErr <- s.Start(context.Background()) }()
 	defer func() {
-		s.Stop(context.Background())
+		_ = s.Stop(context.Background())
 		select {
 		case <-startErr:
 		case <-time.After(5 * time.Second):
@@ -372,7 +372,7 @@ func TestHealthStatusFollowsCheckers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	client := grpc_health_v1.NewHealthClient(conn)
 
 	resp, err := client.Check(context.Background(), &grpc_health_v1.HealthCheckRequest{})
@@ -399,7 +399,7 @@ func TestHealthStatusFollowsCheckers(t *testing.T) {
 	t.Fatal("health status did not flip to NOT_SERVING after checker failed")
 }
 
-// TestHealthCheckDefaultPeriodNotPanic 回归 P0-1：WithHealthCheck 未设置
+// TestHealthCheckDefaultPeriodNotPanic 回归：WithHealthCheck 未设置
 // Period 时，NewServer 必须回退 DefaultHealthCheckPeriod，轮询 goroutine
 // 不得用零值 Ticker 触发 time.NewTicker(0) panic。
 func TestHealthCheckDefaultPeriodNotPanic(t *testing.T) {
@@ -407,7 +407,7 @@ func TestHealthCheckDefaultPeriodNotPanic(t *testing.T) {
 	checker.healthy.Store(true)
 	s := NewServer(
 		WithAddr(freeAddr(t)),
-		WithHealthCheck(func() []health.Checker { return []health.Checker{checker} }),
+		WithHealthCheck(func() []lynx.Checker { return []lynx.Checker{checker} }),
 	)
 	if s.o.HealthCheckPeriod != DefaultHealthCheckPeriod {
 		t.Fatalf("HealthCheckPeriod = %v, want default %v", s.o.HealthCheckPeriod, DefaultHealthCheckPeriod)
@@ -422,7 +422,7 @@ func TestHealthCheckDefaultPeriodNotPanic(t *testing.T) {
 	startErr := make(chan error, 1)
 	go func() { startErr <- s.Start(context.Background()) }()
 	waitRunning(t, s)
-	s.Stop(context.Background())
+	_ = s.Stop(context.Background())
 	select {
 	case <-startErr:
 	case <-time.After(5 * time.Second):
@@ -430,20 +430,20 @@ func TestHealthCheckDefaultPeriodNotPanic(t *testing.T) {
 	}
 }
 
-// TestHealthPollerNotLeakedWhenStoppedBeforeStart 回归二轮复审项 6：
-// Stop 早于 Start 执行到 startHealthPoller 时（healthCancel 为 nil），
-// poller 启动必须在同锁段内发现 stopped 并取消自身——不得留下永不
-// 取消的轮询 goroutine。直接调用 startHealthPoller 是确定性的：
-// 修复前 healthCancel 非 nil（goroutine 已启动），修复后保持 nil。
+// TestHealthPollerNotLeakedWhenStoppedBeforeStart 回归：Stop 早于 Start
+// 执行到 startHealthPoller 时（healthCancel 为 nil），poller 启动必须在
+// 同锁段内发现 stopped 并取消自身——不得留下永不取消的轮询 goroutine。
+// 直接调用 startHealthPoller 是确定性的：修复前 healthCancel 非 nil
+//（goroutine 已启动），修复后保持 nil。
 func TestHealthPollerNotLeakedWhenStoppedBeforeStart(t *testing.T) {
 	checker := &flipChecker{}
 	checker.healthy.Store(true)
 	s := NewServer(
-		WithHealthCheck(func() []health.Checker { return []health.Checker{checker} }),
+		WithHealthCheck(func() []lynx.Checker { return []lynx.Checker{checker} }),
 		WithHealthCheckPeriod(20*time.Millisecond),
 	)
 	// Stop 先于 Start 执行到 poller 启动点：healthCancel 尚无值。
-	s.Stop(context.Background())
+	_ = s.Stop(context.Background())
 
 	before := runtime.NumGoroutine()
 	s.startHealthPoller()

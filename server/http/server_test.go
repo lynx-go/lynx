@@ -18,12 +18,10 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
-	"gocloud.dev/server/health"
-	"gocloud.dev/server/requestlog"
 )
 
 func TestNewServerDefaults(t *testing.T) {
-	s := NewServer(NewRouter())
+	s := NewServer(http.NewServeMux())
 	if s.o.Addr != DefaultHTTPAddr {
 		t.Errorf("Addr = %q, want %q", s.o.Addr, DefaultHTTPAddr)
 	}
@@ -44,12 +42,12 @@ func TestNewServerDefaults(t *testing.T) {
 func TestNewServerOptions(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	s := NewServer(NewRouter(),
+	s := NewServer(http.NewServeMux(),
 		WithAddr("127.0.0.1:18080"),
 		WithTimeout(5*time.Second),
 		WithRequestLog(true),
 		WithLogger(logger),
-		WithHealthCheck(func() []health.Checker { return nil }),
+		WithHealthCheckers(func() []lynx.Checker { return nil }),
 	)
 	if s.o.Addr != "127.0.0.1:18080" {
 		t.Errorf("Addr = %q, want %q", s.o.Addr, "127.0.0.1:18080")
@@ -63,20 +61,20 @@ func TestNewServerOptions(t *testing.T) {
 	if s.o.Logger != logger {
 		t.Error("Logger was not set via WithLogger")
 	}
-	if s.o.HealthCheck == nil {
-		t.Error("HealthCheck was not set via WithHealthCheck")
+	if s.o.HealthCheckers == nil {
+		t.Error("HealthCheckers was not set via WithHealthCheckers")
 	}
 }
 
 func TestServerName(t *testing.T) {
-	s := NewServer(NewRouter())
+	s := NewServer(http.NewServeMux())
 	if got := s.Name(); got != "http" {
 		t.Errorf("Name() = %q, want %q", got, "http")
 	}
 }
 
 func TestServerInit(t *testing.T) {
-	s := NewServer(NewRouter())
+	s := NewServer(http.NewServeMux())
 	if err := s.Init(nil); err != nil {
 		t.Errorf("Init() error = %v, want nil", err)
 	}
@@ -107,7 +105,7 @@ func TestRequestLoggerLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
-	l.Log(&requestlog.Entry{
+	l.Log(&Entry{
 		Request:      req,
 		ReceivedTime: time.Now(),
 		Status:       http.StatusOK,
@@ -132,7 +130,7 @@ func TestTimeoutAppliedToServer(t *testing.T) {
 	}
 
 	const timeout = 300 * time.Millisecond
-	handler := NewRouter()
+	handler := http.NewServeMux()
 	handler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -172,7 +170,7 @@ func TestTimeoutAppliedToServer(t *testing.T) {
 		t.Errorf("connection closed after %v, want roughly %v", elapsed, timeout)
 	}
 
-	srv.Stop(context.Background())
+	_ = srv.Stop(context.Background())
 	select {
 	case err := <-startErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -205,7 +203,7 @@ func TestServerTracingProducesSpan(t *testing.T) {
 	waitForDial(t, addr)
 	// Failure-path cleanup; the explicit Stop below is the normal path and
 	// Shutdown is idempotent.
-	defer srv.Stop(context.Background())
+	defer func() { _ = srv.Stop(context.Background()) }()
 
 	resp, err := http.Get("http://" + addr + "/")
 	if err != nil {
@@ -213,7 +211,7 @@ func TestServerTracingProducesSpan(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	srv.Stop(context.Background())
+	_ = srv.Stop(context.Background())
 	select {
 	case err := <-startErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -260,7 +258,7 @@ func TestServerMetricsProduced(t *testing.T) {
 	startErr := make(chan error, 1)
 	go func() { startErr <- srv.Start(context.Background()) }()
 	waitForDial(t, addr)
-	defer srv.Stop(context.Background())
+	defer func() { _ = srv.Stop(context.Background()) }()
 
 	resp, err := http.Get("http://" + addr + "/")
 	if err != nil {
@@ -300,7 +298,7 @@ func TestServerPropagatorExtractsTraceParent(t *testing.T) {
 	startErr := make(chan error, 1)
 	go func() { startErr <- srv.Start(context.Background()) }()
 	waitForDial(t, addr)
-	defer srv.Stop(context.Background())
+	defer func() { _ = srv.Stop(context.Background()) }()
 
 	const traceID = "0102030405060708090a0b0c0d0e0f10"
 	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/", nil)
@@ -314,7 +312,7 @@ func TestServerPropagatorExtractsTraceParent(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	srv.Stop(context.Background())
+	_ = srv.Stop(context.Background())
 	select {
 	case err := <-startErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -362,7 +360,7 @@ var _ lynx.Component = (*Server)(nil)
 // on the nil embedded server.
 func TestStopBeforeStartIsNoop(t *testing.T) {
 	srv := NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Stop(context.Background())
+	_ = srv.Stop(context.Background())
 }
 
 // TestStopForcesCloseAfterTimeout is a regression test for the unbounded HTTP
@@ -402,7 +400,7 @@ func TestStopForcesCloseAfterTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	srv.Stop(context.Background())
+	_ = srv.Stop(context.Background())
 	elapsed := time.Since(start)
 
 	if elapsed > 3*time.Second {
@@ -440,7 +438,7 @@ func TestServerOptionsEscapeHatch(t *testing.T) {
 	go func() { startErr <- srv.Start(context.Background()) }()
 	waitForDial(t, addr)
 
-	srv.Stop(context.Background())
+	_ = srv.Stop(context.Background())
 	select {
 	case err := <-startErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -454,7 +452,7 @@ func TestServerOptionsEscapeHatch(t *testing.T) {
 	}
 }
 
-// TestProvidersDoNotMutateGlobals 回归 M9：显式注入的 otel provider 不得
+// TestProvidersDoNotMutateGlobals 回归：显式注入的 otel provider 不得
 // 改写进程全局 provider（旧 gocloud 实现通过 init 静默改写全局）。
 func TestProvidersDoNotMutateGlobals(t *testing.T) {
 	before := otel.GetTracerProvider()
@@ -476,7 +474,7 @@ func TestProvidersDoNotMutateGlobals(t *testing.T) {
 	startErr := make(chan error, 1)
 	go func() { startErr <- srv.Start(context.Background()) }()
 	waitForDial(t, addr)
-	defer srv.Stop(context.Background())
+	defer func() { _ = srv.Stop(context.Background()) }()
 
 	// 请求一次，确认插装确实使用了显式 provider。
 	resp, err := http.Get("http://" + addr + "/")
@@ -484,7 +482,7 @@ func TestProvidersDoNotMutateGlobals(t *testing.T) {
 		t.Fatalf("GET error = %v", err)
 	}
 	_ = resp.Body.Close()
-	srv.Stop(context.Background())
+	_ = srv.Stop(context.Background())
 	select {
 	case err := <-startErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {

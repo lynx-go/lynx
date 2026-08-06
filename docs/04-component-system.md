@@ -4,27 +4,27 @@
 
 ## 4.1 Component 接口契约
 
-`Component` 接口定义在 `component.go`，由 `Name` 方法和内嵌的 `LifecycleManaged` 接口组成：
+`Component` 接口定义在 `component.go`，由 `Name` 方法和内嵌的 `Lifecycle` 接口组成：
 
 ```go
-type LifecycleManaged interface {
-	Init(app App) error
+type Lifecycle interface {
+	Init(env Env) error
 	Start(ctx context.Context) error
-	Stop(ctx context.Context)
+	Stop(ctx context.Context) error
 }
 
 type Component interface {
 	Name() string
-	LifecycleManaged
+	Lifecycle
 }
 ```
 
 四个方法的契约如下：
 
 - `Name() string`：组件名称，用于启动/停止日志中的标识。框架不检查唯一性，多个实例可以重名。
-- `Init(app App) error`：注册组件时（即 `app.Register(...)` 调用时）**同步**执行，用于初始化依赖——可以通过参数 `app` 访问 `app.Config()`、`app.Logger()`、`app.Context()` 等。返回 error 不会在注册时立即返回，而是被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
+- `Init(env Env) error`：注册组件时（即 `app.Register(...)` 调用时）**同步**执行，用于初始化依赖——可以通过参数 `env` 访问 `env.Config()`、`env.Logger()`、`env.Context()` 等（`Env` 是 `App` 的窄化子集，见 3.6 节）。返回 error 不会在注册时立即返回，而是被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
 - `Start(ctx context.Context) error`：`cli.Run()` 启动后，每个组件在 run group 中作为独立 actor **并发**调用。通常是阻塞式的（监听端口、消费消息），收到 `ctx` 取消时应返回。任何一个组件的 `Start` 返回（无论是否出错）都会触发整个应用的优雅关闭（见 3.1 节并发模型）。
-- `Stop(ctx context.Context)`：关闭阶段由 run group 的中断函数调用，用于释放资源。注意框架是先调用 `Stop` 再取消组件 Context（见 3.1 节），因此 `Stop` 中不要等待 `ctx.Done()`。
+- `Stop(ctx context.Context) error`：关闭阶段由 run group 的中断函数调用，用于释放资源；返回的错误由框架收集，随 `Run()` 上抛。注意框架是先调用 `Stop` 再取消组件 Context（见 3.1 节），因此 `Stop` 中不要等待 `ctx.Done()`；`Stop` 必须容忍先于 `Start` 被调用（Init 成功但 Start 未执行时，框架会逆序调用 Stop 做资源清理）。
 
 注册组件通过 `app.Register` 完成：
 
@@ -67,26 +67,26 @@ app.RegisterBuilders(myBuilder)
 
 ## 4.3 ServerLike 与 CheckHealth 扩展接口
 
-很多组件（服务器、Broker、调度器）还需要对外报告"自己是否健康"。Lynx 复用 gocloud.dev 的 `health.Checker` 接口，定义了 `ServerLike`：
+很多组件（服务器、Broker、调度器）还需要对外报告"自己是否健康"。Lynx 内置了 `lynx.Checker` 接口（替代 gocloud.dev 的 `health.Checker`），并定义了 `ServerLike`：
 
 ```go
 type ServerLike interface {
-	health.Checker // CheckHealth() error
+	Checker // CheckHealth() error
 	Component
 }
 ```
 
-`health.Checker` 只有一个方法：`CheckHealth() error`——返回 nil 表示健康，返回 error 表示不健康。
+`Checker` 只有一个方法：`CheckHealth() error`——返回 nil 表示健康，返回 error 表示不健康。
 
-组件不需要显式声明自己实现了 `ServerLike`：框架在注册每个组件时会做 `health.Checker` 类型断言（`lynx.go` 的 `addComponents`），只要组件实现了 `CheckHealth() error`，就会被自动收集进应用的健康检查列表。这个列表通过 `app.HealthCheckFunc()` 暴露：
+组件不需要显式声明自己实现了 `ServerLike`：框架在注册每个组件时会做 `Checker` 类型断言（`lynx.go` 的 `addComponents`），只要组件实现了 `CheckHealth() error`，就会被自动收集进应用的健康检查列表。这个列表通过 `app.HealthCheckers()` 暴露（返回快照切片）：
 
 ```go
-type HealthCheckFunc func() []health.Checker
+HealthCheckers() []Checker
 ```
 
 它有两个消费方：
 
-- HTTP 服务器的就绪端点：传入 `http.WithHealthCheck(app.HealthCheckFunc())` 后，`/healthz/readiness` 会依次调用所有收集到的检查器，全部通过才返回 200（见 2.5 节）。
+- HTTP 服务器的就绪端点：传入 `http.WithHealthCheckers(app.HealthCheckers)`（方法值天然匹配 `lynx.HealthCheckersFunc` 签名）后，`/healthz/readiness` 会依次调用所有收集到的检查器，全部通过才返回 200（见 2.5 节）。
 - `app.CLI` 注册的命令：命令执行前会带退避重试地等待所有检查器就绪（`command.go`），保证 CLI 命令不会抢在依赖组件就绪之前运行。
 
 框架内置组件中，`server/grpc` 的 Server、`contrib/pubsub` 的 Broker、`contrib/kafka` 的 Transport、`contrib/schedule` 的 Scheduler 都实现了 `CheckHealth`。典型的实现语义是：未 `Start` 前返回 error，`Start` 成功后返回 nil，`Stop` 后再次返回 error（以 `contrib/schedule` 为例）：
@@ -144,7 +144,7 @@ type worker struct {
 
 func (w *worker) Name() string { return w.name }
 
-func (w *worker) Init(app lynx.App) error {
+func (w *worker) Init(env lynx.Env) error {
 	w.SetHealthy(true) // 也可以等 Start 中就绪后再置为健康
 	return nil
 }
@@ -154,8 +154,9 @@ func (w *worker) Start(ctx context.Context) error {
 	return nil
 }
 
-func (w *worker) Stop(ctx context.Context) {
+func (w *worker) Stop(ctx context.Context) error {
 	w.SetHealthy(false)
+	return nil
 }
 
 // workerBuilder 负责按指定实例数构建 worker。
@@ -189,7 +190,7 @@ var _ lynx.ComponentBuilder = (*workerBuilder)(nil)
 ```bash
 go get github.com/lynx-go/lynx/contrib/pubsub
 go get github.com/lynx-go/lynx/contrib/kafka
-go get github.com/lynx-go/lynx/contrib/metrics
+go get github.com/lynx-go/lynx/contrib/telemetry
 go get github.com/lynx-go/lynx/contrib/schedule
 go get github.com/lynx-go/lynx/contrib/zap
 ```
@@ -201,7 +202,7 @@ go get github.com/lynx-go/lynx/contrib/zap
 - `Broker`：事件总线门面，本身是 `ServerLike` 组件，提供 `Publish`/`Subscribe`/`Route`。内部维护一张 topic → Transport 路由表：`Options.Transports` 中每个 Transport 通过 `Topics()` 声明自己承接的逻辑 topic，`Init` 时自动建表；`Route(topic, t)` 可显式覆盖自动路由；`RouteKey(topic, t, key)` 在覆盖的同时把 transport 侧主题名改为 `key`（业务逻辑名与后端主题名解耦，如 kafka 时 `key` 对应 kafka 段配置的逻辑 key，发布与订阅两侧都会按 `key` 调用 transport）；未命中的 topic 回退到 `DefaultTransport`（两者皆无则返回错误）。
 - `Transport`：消息后端组件（kafka/内存），topic 参数一律是逻辑名，物理名解析在实现内部，见下文的 kafka 模块。
 - `Router`：把一组 `Handler` 在 `Init` 期缓冲订阅到 Broker 的组件，无时序依赖。`Handler` 接口由 `EventName()`、`HandlerName()`、`HandlerFunc()` 三个方法组成，公共 API 使用自有 `pubsub.Message` 类型（`ID`/`Key`/`Headers`/`Payload`），与底层 Watermill 解耦。
-- `NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载显式路由并逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），非 nil 的传入 transports 参与自动路由，`memory` 标识（提供时）兼作默认回退；不创建任何 transport，返回 `Broker`，transports 由调用方创建并注册。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用），调用方过滤后再放入 transports 表。
+- `NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载显式路由并逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），非 nil 的传入 transports 参与自动路由，`memory` 标识（提供时）兼作默认回退；不创建任何 transport，返回 `Broker`，transports 由调用方创建并注册。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用）——**返回 nil 时不得 Register**（框架对 nil 组件注册返回明确错误）。
 
 用法（取自 `_examples/pubsub/main.go`）：
 
@@ -337,9 +338,17 @@ var _ schedule.Task = new(task)
 
 `Scheduler` 实现了 `CheckHealth`：任务 handler 中的 panic 会被 recover 并记录日志，不会中断调度器。
 
+### telemetry：可观测性托管
+
+`contrib/telemetry` 以组件形式托管 OpenTelemetry 生命周期：Init 创建 TracerProvider/MeterProvider 并设置为 otel 全局值（**有意的全局副作用**，包注释中有醒目声明），默认 trace exporter 为 noop（生产忘配 exporter 不会向 stdout 倒 trace；开发调试用 `telemetry.WithStdoutTrace()`），metric reader 默认 Prometheus；Stop 自动 flush 并 shutdown。Init 在未显式 `WithResource` 时自动以应用名构建 `service.name` 资源属性。用法（取自 `_examples/http/main.go`）：
+
+```go
+app.Register(telemetry.New())
+```
+
 ### zap：日志集成
 
-`contrib/zap` 把 zap 包装成 `*slog.Logger`，日志级别依次读取配置中的 `logging.level`、`log_level`、`log-level`（框架默认 flag 的键），均未设置时默认 `info`（与框架一致）；并自动附加 `service_id`、`service_name`、`version` 三个字段。一行接入（取自 `_examples/pubsub/main.go`）：
+`contrib/zap` 把 zap 包装成 `*slog.Logger`，日志级别复用框架统一的 `lynx.LogLevelFromConfig` 解析（`logging.level` 优先，`log-level`/`log_level` 兼容回退，均未设置时默认 `info`）；并自动附加 `service_id`、`service_name`、`version` 三个字段。一行接入（取自 `_examples/pubsub/main.go`）：
 
 ```go
 app.SetLogger(zap.MustNewLogger(app))

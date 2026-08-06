@@ -18,12 +18,12 @@ type XDGSCRAMClient struct {
 
 // Begin 开始 SCRAM 认证会话。
 func (x *XDGSCRAMClient) Begin(userName, password, authzID string) error {
-	client, err := x.HashGeneratorFcn.NewClient(userName, password, authzID)
+	client, err := x.NewClient(userName, password, authzID)
 	if err != nil {
 		return err
 	}
 	x.Client = client
-	x.ClientConversation = x.Client.NewConversation()
+	x.ClientConversation = x.NewConversation()
 	return nil
 }
 

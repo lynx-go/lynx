@@ -45,28 +45,29 @@ func (b *Builder) Run() {
 	}
 }
 
-// Build 运行一次初始化回调并返回应用实例。回调失败或初始化失败时返回 nil，
-// 具体错误可通过 RunE 获取。Build 只执行一次回调；失败后的后续调用
-// 同样返回 nil（而非未初始化实例），保证契约一致。
-func (b *Builder) Build() App {
+// Build 运行一次初始化回调并返回应用实例与错误。回调失败或初始化失败时
+// 返回 (nil, err)——调用方必须先检查错误再使用返回的 App，避免
+// builder.Build().Register(...) 的 nil 解引用陷阱。Build 只执行一次回调；
+// 失败后的后续调用返回同一错误（而非未初始化实例），保证契约一致。
+func (b *Builder) Build() (App, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.err != nil {
-		return nil
+		return nil, b.err
 	}
 	if b.built {
-		return b.app
+		return b.app, nil
 	}
 	if b.build == nil {
 		b.err = ErrBuildFuncNil
-		return nil
+		return nil, b.err
 	}
 	if err := b.build(b.app.Context(), b.app); err != nil {
 		b.err = err
-		return nil
+		return nil, err
 	}
 	b.built = true
-	return b.app
+	return b.app, nil
 }
 
 // RunE 运行 Builder 应用并返回错误，由调用方决定错误处理方式。
@@ -78,7 +79,9 @@ func (b *Builder) RunE() error {
 		return ErrNotInitialized
 	}
 	if !b.built {
-		b.Build()
+		if _, err := b.Build(); err != nil {
+			return err
+		}
 	}
 	if b.err != nil {
 		return b.err

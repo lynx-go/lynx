@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	gohttp "net/http"
 
 	"github.com/google/uuid"
@@ -10,7 +11,6 @@ import (
 	"github.com/lynx-go/lynx/contrib/kafka"
 	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/lynx-go/lynx/server/http"
-	"github.com/lynx-go/x/log"
 )
 
 //go:generate wire
@@ -76,7 +76,7 @@ func NewHttpServer(broker pubsub.Broker) *http.Server {
 			pubsub.MustJSONMessage(map[string]any{"message": "hello"}),
 			pubsub.WithMessageKey(uuid.NewString()),
 		); err != nil {
-			log.ErrorContext(request.Context(), "failed to publish", err)
+			slog.ErrorContext(request.Context(), "failed to publish", "error", err)
 			writer.WriteHeader(gohttp.StatusInternalServerError)
 			return
 		}
@@ -87,7 +87,7 @@ func NewHttpServer(broker pubsub.Broker) *http.Server {
 			pubsub.MustJSONMessage(map[string]any{"message": "notify"}),
 			pubsub.WithMessageKey(uuid.NewString()),
 		); err != nil {
-			log.ErrorContext(request.Context(), "failed to publish", err)
+			slog.ErrorContext(request.Context(), "failed to publish", "error", err)
 			writer.WriteHeader(gohttp.StatusInternalServerError)
 			return
 		}

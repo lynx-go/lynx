@@ -41,11 +41,11 @@ func main() {
 }
 
 func NewHttpServer(app lynx.App) *http.Server {
-	router := http.NewRouter()
+	router := gohttp.NewServeMux()
 	router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 		_, _ = rw.Write([]byte("hello"))
 	})
 	addr := app.Config().GetString("addr")
 
-	return http.NewServer(router, http.WithAddr(addr), http.WithHealthCheck(app.HealthCheckFunc()), http.WithLogger(app.Logger("logger", "http-requestlog")))
+	return http.NewServer(router, http.WithAddr(addr), http.WithHealthCheckers(app.HealthCheckers), http.WithLogger(app.Logger("logger", "http-requestlog")))
 }

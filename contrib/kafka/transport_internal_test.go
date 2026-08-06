@@ -166,7 +166,7 @@ func TestXDGSCRAMClientHandshake(t *testing.T) {
 				if err != nil {
 					return scram.StoredCredentials{}, err
 				}
-				return client.GetStoredCredentials(scram.KeyFactors{Salt: "salt", Iters: 4096}), nil
+				return client.GetStoredCredentialsWithError(scram.KeyFactors{Salt: "salt", Iters: 4096})
 			}))
 			if err != nil {
 				t.Fatalf("NewServer: %v", err)

@@ -1,6 +1,7 @@
 package lynx
 
 import (
+	"errors"
 	"strings"
 	"sync"
 )
@@ -55,19 +56,7 @@ func (e *ShutdownErrors) Errors() []error {
 // Common errors that can be used throughout the framework.
 var (
 	// ErrNotInitialized 表示组件在 Init 之前被使用（如 Command 在未注册时直接 Start）。
-	ErrNotInitialized = errorf("component not initialized")
+	ErrNotInitialized = errors.New("component not initialized")
 	// ErrBuildFuncNil 表示 NewBuilder 未提供初始化回调。
-	ErrBuildFuncNil = errorf("build func is nil")
+	ErrBuildFuncNil = errors.New("build func is nil")
 )
-
-type wrappedError struct {
-	msg string
-}
-
-func (e *wrappedError) Error() string {
-	return e.msg
-}
-
-func errorf(msg string) error {
-	return &wrappedError{msg: msg}
-}

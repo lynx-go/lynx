@@ -4,8 +4,8 @@ use (
 	.
 	./_examples
 	./contrib/kafka
-	./contrib/metrics
 	./contrib/pubsub
 	./contrib/schedule
+	./contrib/telemetry
 	./contrib/zap
 )

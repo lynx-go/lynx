@@ -2,12 +2,12 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"fmt"
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/lynx-go/lynx/contrib/zap"
-	"github.com/lynx-go/x/log"
 )
 
 type Config struct {
@@ -21,7 +21,7 @@ func main() {
 		if logLevel == "" {
 			logLevel = "debug"
 		}
-		zlogger, err := zap.NewZapLoggerToFile(logLevel, "cli.out")
+		zlogger, err := zap.NewZapLogger(logLevel, "cli.out")
 		if err != nil {
 			return err
 		}
@@ -52,13 +52,11 @@ func main() {
 			if err := broker.Publish(ctx, "hello", pubsub.MustJSONMessage(map[string]any{"message": "hello world"})); err != nil {
 				return err
 			}
-			//time.Sleep(1 * time.Second)
 			logger.Info("command executed successfully")
 			return nil
 		})
 	},
 		lynx.WithName("cli-example"),
-		lynx.WithUseDefaultConfigFlagsFunc(),
 	)
 	builder.Run()
 }
@@ -76,7 +74,7 @@ func (h *helloHandler) HandlerName() string {
 
 func (h *helloHandler) HandlerFunc() pubsub.HandlerFunc {
 	return func(ctx context.Context, event *pubsub.Message) error {
-		log.InfoContext(ctx, "recv hello event", "payload", string(event.Payload))
+		slog.InfoContext(ctx, "recv hello event", "payload", string(event.Payload))
 		return nil
 	}
 }

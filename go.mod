@@ -4,7 +4,6 @@ go 1.25.0
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/lynx-go/x v0.1.0
 	github.com/oklog/run v1.2.0
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
@@ -15,7 +14,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/sdk/metric v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
-	gocloud.dev v0.46.0
 	google.golang.org/grpc v1.83.0
 )
 

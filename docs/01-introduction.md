@@ -35,8 +35,8 @@ Lynx 遵循"简单即美"的设计哲学，提供最小化的核心 API，开发
 - **gRPC 服务器**：内置 gRPC 服务器，支持拦截器、健康检查、反射服务
 
 ### 健康检查
-- 集成 gocloud.dev 健康检查机制
-- 支持自定义健康检查函数
+- 内置 `lynx.Checker` 健康检查机制（`CheckHealth() error`）
+- 实现 `Checker` 的组件注册时自动收集，经 `app.HealthCheckers()` 暴露
 - 便于监控和服务发现集成
 
 ### 配置管理
@@ -91,7 +91,6 @@ Lynx 适用于以下场景：
 Lynx 构建于以下优秀的开源项目之上：
 
 - **Go 1.25+**：编程语言
-- **gocloud.dev**：健康检查（`health.Checker`）与请求日志（`requestlog`）抽象（HTTP server 实现已脱钩，仅取用这两个包）
 - **Viper**：配置管理
 - **pflag**：命令行参数解析
 - **Wire**：依赖注入
@@ -106,9 +105,9 @@ lynx/
 ├── boot/           # 应用引导和依赖注入
 ├── contrib/        # 扩展组件
 │   ├── kafka/      # Kafka 支持
-│   ├── metrics/    # OpenTelemetry 生命周期托管
 │   ├── pubsub/     # 消息发布订阅
 │   ├── schedule/   # 定时任务
+│   ├── telemetry/  # OpenTelemetry 生命周期托管
 │   └── zap/        # Zap 日志集成
 ├── docs/           # 文档
 ├── server/         # 服务器实现
@@ -132,15 +131,15 @@ package main
 
 import (
     "context"
-    "net/http"
+    gohttp "net/http"
 
     "github.com/lynx-go/lynx"
     "github.com/lynx-go/lynx/server/http"
 )
 
 func main() {
-    router := http.NewRouter()
-    router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+    router := gohttp.NewServeMux()
+    router.HandleFunc("/", func(w gohttp.ResponseWriter, r *gohttp.Request) {
         w.Write([]byte("Hello, Lynx!"))
     })
 

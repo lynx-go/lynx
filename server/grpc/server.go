@@ -4,6 +4,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"sync"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/server/grpc/interceptor"
-	"github.com/lynx-go/x/log"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -31,18 +31,18 @@ const (
 
 // Options 是 gRPC 服务组件的配置项。
 type Options struct {
-	Addr           string
-	Timeout        time.Duration
-	Logger         *slog.Logger
-	Interceptors   []grpc.UnaryServerInterceptor
-	StreamInterceptors []grpc.StreamServerInterceptor
-	ServerOptions  []grpc.ServerOption
-	TracerProvider trace.TracerProvider
-	MeterProvider  metric.MeterProvider
+	Addr                string
+	Timeout             time.Duration
+	Logger              *slog.Logger
+	Interceptors        []grpc.UnaryServerInterceptor
+	StreamInterceptors  []grpc.StreamServerInterceptor
+	ServerOptions       []grpc.ServerOption
+	TracerProvider      trace.TracerProvider
+	MeterProvider       metric.MeterProvider
 	// HealthCheck 提供 app 级健康检查器；非 nil 时按 HealthCheckPeriod
 	// 轮询并同步到 grpc health 服务（依赖组件不健康时探测返回 NOT_SERVING）。
-	HealthCheck         lynx.HealthCheckFunc
-	HealthCheckPeriod time.Duration
+	HealthCheck         lynx.HealthCheckersFunc
+	HealthCheckPeriod   time.Duration
 }
 
 // Option 用于配置 gRPC 服务 Options 的选项函数。
@@ -64,9 +64,7 @@ func WithTimeout(timeout time.Duration) Option {
 
 // WithLogger 设置 gRPC 服务的日志实例。
 // 注意：请求拦截器路径的日志走本 logger；Start/Stop 路径的日志经
-// log.InfoContext 输出，ctx 无注入 logger 时回退 slog.Default()（若应用
-// 已通过 app.SetLogger 设置过默认 logger 则一致，未设置则与 WithLogger
-// 的实例可能不同——P2-8 已知行为）。
+// s.logger 输出，与 WithLogger 的实例一致。
 func WithLogger(l *slog.Logger) Option {
 	return func(o *Options) {
 		o.Logger = l
@@ -88,7 +86,7 @@ func WithStreamInterceptors(interceptors ...grpc.StreamServerInterceptor) Option
 }
 
 // WithHealthCheck 设置 app 级健康检查函数，轮询结果同步到 grpc health 服务。
-func WithHealthCheck(hc lynx.HealthCheckFunc) Option {
+func WithHealthCheck(hc lynx.HealthCheckersFunc) Option {
 	return func(o *Options) {
 		o.HealthCheck = hc
 	}
@@ -198,7 +196,7 @@ type Server struct {
 	healthCancel context.CancelFunc
 	// stopped 标记 Stop 已被调用（mu 保护）：Stop 早于 Start 执行到
 	// startHealthPoller 时，poller 启动即在同锁段内发现并取消自身，
-	// 不会泄漏无人取消的轮询 goroutine（二轮复审项 6）。
+	// 不会泄漏无人取消的轮询 goroutine。
 	stopped bool
 	running atomic.Bool
 }
@@ -218,13 +216,13 @@ func (s *Server) Name() string {
 }
 
 // Init 初始化组件，gRPC 服务无需在初始化阶段做额外工作。
-func (s *Server) Init(app lynx.App) error {
+func (s *Server) Init(env lynx.Env) error {
 	return nil
 }
 
 // Start 启动 gRPC 服务并开始监听，阻塞至服务退出。
 func (s *Server) Start(ctx context.Context) error {
-	log.InfoContext(ctx, "starting gRPC server, listening on "+s.o.Addr)
+	s.logger.InfoContext(ctx, "starting gRPC server, listening on "+s.o.Addr)
 
 	lis, err := net.Listen("tcp", s.o.Addr)
 	if err != nil {
@@ -294,8 +292,9 @@ func (s *Server) updateHealthStatus() {
 }
 
 // Stop 优雅关停 gRPC 服务：先关闭监听器，再等待在途请求完成，超时后强制停止。
-func (s *Server) Stop(ctx context.Context) {
-	log.InfoContext(ctx, "stopping gRPC server")
+// 返回错误（如强制停止）使调用方感知关停失败。
+func (s *Server) Stop(ctx context.Context) error {
+	s.logger.InfoContext(ctx, "stopping gRPC server")
 	if s.health != nil {
 		s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 		s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
@@ -319,7 +318,7 @@ func (s *Server) Stop(ctx context.Context) {
 	}
 
 	if s.server == nil {
-		return
+		return nil
 	}
 
 	// The configured Timeout is an upper bound on graceful stop: use it even
@@ -347,11 +346,13 @@ func (s *Server) Stop(ctx context.Context) {
 
 	select {
 	case <-done:
-		log.InfoContext(ctx, "gRPC server stopped gracefully")
+		s.logger.InfoContext(ctx, "gRPC server stopped gracefully")
+		return nil
 	case <-ctx.Done():
-		log.WarnContext(ctx, "graceful stop timeout, forcing stop")
+		s.logger.WarnContext(ctx, "graceful stop timeout, forcing stop")
 		s.server.Stop()
 		<-done
+		return fmt.Errorf("gRPC server graceful stop timed out")
 	}
 }
 

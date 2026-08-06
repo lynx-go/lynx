@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	gohttp "net/http"
 	"os"
 
@@ -9,7 +10,6 @@ import (
 	"github.com/lynx-go/lynx/contrib/schedule"
 	"github.com/lynx-go/lynx/contrib/zap"
 	"github.com/lynx-go/lynx/server/http"
-	"github.com/lynx-go/x/log"
 	"github.com/samber/lo"
 )
 
@@ -30,8 +30,7 @@ func main() {
 		return nil
 	},
 		lynx.WithID(lo.Must1(os.Hostname())),
-		lynx.WithName("pubsub"),
-		//lynx.WithUseDefaultConfigFlagsFunc(),
+		lynx.WithName("schedule-example"),
 	)
 	builder.Run()
 }
@@ -49,7 +48,7 @@ func (t *task) Cron() string {
 
 func (t *task) HandlerFunc() schedule.HandlerFunc {
 	return func(ctx context.Context) error {
-		log.InfoContext(ctx, "task triggered")
+		slog.InfoContext(ctx, "task triggered")
 		return nil
 	}
 }

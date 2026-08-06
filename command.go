@@ -3,10 +3,10 @@ package lynx
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
-	"github.com/lynx-go/x/log"
 )
 
 // CommandFunc 是命令组件执行的业务函数，返回错误时视为命令失败。
@@ -67,7 +67,8 @@ func NewCommand(fn CommandFunc, opts ...CommandOption) Component {
 
 type command struct {
 	fn      CommandFunc
-	lynx    App
+	env     Env
+	logger  *slog.Logger
 	options *CommandOptions
 }
 
@@ -75,13 +76,16 @@ func (cmd *command) Name() string {
 	return cmd.options.Name
 }
 
-func (cmd *command) Init(app App) error {
-	cmd.lynx = app
+func (cmd *command) Init(env Env) error {
+	cmd.env = env
+	if env != nil {
+		cmd.logger = env.Logger("component", cmd.options.Name)
+	}
 	return nil
 }
 
 func (cmd *command) Start(ctx context.Context) error {
-	if cmd.lynx == nil {
+	if cmd.env == nil {
 		return ErrNotInitialized
 	}
 	expBackoff := backoff.NewExponentialBackOff()
@@ -91,9 +95,9 @@ func (cmd *command) Start(ctx context.Context) error {
 		// 每轮重试重新获取健康检查快照：注册先于 Run 的组件在启动过程中
 		// 陆续变健康，快照按轮刷新可纳入等待范围（组件必须全部注册在
 		// Run 之前，见 App 接口注释）。
-		for _, checker := range cmd.lynx.HealthCheckFunc()() {
+		for _, checker := range cmd.env.HealthCheckers() {
 			if err := checker.CheckHealth(); err != nil {
-				log.WarnContext(ctx, "waiting for dependent component ready", "error", err)
+				cmd.logger.WarnContext(ctx, "waiting for dependent component ready", "error", err)
 				return nil, err
 			}
 		}
@@ -104,8 +108,9 @@ func (cmd *command) Start(ctx context.Context) error {
 	return cmd.fn(ctx)
 }
 
-func (cmd *command) Stop(ctx context.Context) {
-	if cmd.lynx != nil {
-		cmd.lynx.Close()
+func (cmd *command) Stop(ctx context.Context) error {
+	if cmd.env != nil {
+		cmd.env.Close()
 	}
+	return nil
 }

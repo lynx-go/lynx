@@ -193,17 +193,21 @@ func TestSchedulerRunsTask(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = s.Start(context.Background())
+		_ = s.Start(ctx)
 	}()
 
 	if !pollUntil(3*time.Second, 10*time.Millisecond, func() bool { return count.Load() >= 1 }) {
-		s.Stop(context.Background())
+		_ = s.Stop(context.Background())
+		cancel()
 		t.Fatalf("task did not run within 3s")
 	}
-	s.Stop(context.Background())
+	_ = s.Stop(context.Background())
+	// 对齐框架顺序：Stop 返回后取消 Start 的 ctx，Start 随即退出。
+	cancel()
 
 	select {
 	case <-done:
@@ -228,19 +232,22 @@ func TestSchedulerRecoversFromPanic(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = s.Start(context.Background())
+		_ = s.Start(ctx)
 	}()
 
 	// The handler panics on every tick; the scheduler must survive and keep
 	// invoking the task on subsequent ticks.
 	if !pollUntil(4*time.Second, 10*time.Millisecond, func() bool { return count.Load() >= 2 }) {
-		s.Stop(context.Background())
+		_ = s.Stop(context.Background())
+		cancel()
 		t.Fatalf("scheduler did not keep running after handler panic (count=%d)", count.Load())
 	}
-	s.Stop(context.Background())
+	_ = s.Stop(context.Background())
+	cancel()
 	<-done
 }
 
@@ -257,19 +264,22 @@ func TestSchedulerCheckHealthLifecycle(t *testing.T) {
 		t.Fatalf("expected CheckHealth error before Start")
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = s.Start(context.Background())
+		_ = s.Start(ctx)
 	}()
 
 	// While running: must not error.
 	if !pollUntil(2*time.Second, 5*time.Millisecond, func() bool { return s.CheckHealth() == nil }) {
-		s.Stop(context.Background())
+		_ = s.Stop(context.Background())
+		cancel()
 		t.Fatalf("expected CheckHealth to succeed while running")
 	}
 
-	s.Stop(context.Background())
+	_ = s.Stop(context.Background())
+	cancel()
 	<-done
 
 	// After Stop: must error again.
@@ -307,13 +317,15 @@ func TestSchedulerSkipsOverlappingRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { defer close(done); _ = s.Start(context.Background()) }()
+	go func() { defer close(done); _ = s.Start(ctx) }()
 
 	// First run blocks for 500ms; subsequent ticks must be skipped, not
 	// started concurrently.
 	time.Sleep(1200 * time.Millisecond)
-	s.Stop(context.Background())
+	_ = s.Stop(context.Background())
+	cancel()
 	<-done
 
 	if got := maxRunning.Load(); got > 1 {
@@ -337,17 +349,20 @@ func TestSchedulerHandlerErrorDoesNotStopScheduler(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = s.Start(context.Background())
+		_ = s.Start(ctx)
 	}()
 
 	if !pollUntil(4*time.Second, 10*time.Millisecond, func() bool { return count.Load() >= 2 }) {
-		s.Stop(context.Background())
+		_ = s.Stop(context.Background())
+		cancel()
 		t.Fatalf("scheduler did not keep running after handler error (count=%d)", count.Load())
 	}
-	s.Stop(context.Background())
+	_ = s.Stop(context.Background())
+	cancel()
 	<-done
 }
 
@@ -369,7 +384,7 @@ func TestStopBeforeStartNoHang(t *testing.T) {
 
 	stopped := make(chan struct{})
 	go func() {
-		s.Stop(context.Background())
+		_ = s.Stop(context.Background())
 		close(stopped)
 	}()
 	select {
@@ -397,22 +412,25 @@ func TestStopBeforeStartNoHang(t *testing.T) {
 	}
 }
 
-// TestStopRacingStartNoHang 回归 P0-3：Stop 与 Start 并发交错时不得挂死。
-// 复现窗口：Start 通过 stopping 检查 → Stop 读到 cancel==nil 且 started==false
-// 提前返回 → Start 创建 Background 衍生 ctx 后阻塞在 <-s.ctx.Done()，
-// 该 ctx 永无人取消。10 万次交错中任一次挂死即失败。
+// TestStopRacingStartNoHang 回归：Stop 与 Start 并发交错时不得挂死。
+// 复现窗口：Start 通过 stopping 检查 → Stop 读到 started==false 提前返回
+// → Start 启动 cron 后阻塞在 <-ctx.Done()。新语义下 Start 尊重传入的 ctx
+//（框架在 Stop 返回后取消组件 ctx），测试以 cancel 解除等待；stopping
+// 标志的握手不得在任何交错过挂死。10 万次交错中任一次挂死即失败。
 func TestStopRacingStartNoHang(t *testing.T) {
 	for i := 0; i < 100_000; i++ {
 		s, err := NewScheduler(nil, WithLogger(discardLogger()))
 		if err != nil {
 			t.Fatalf("iteration %d: NewScheduler: %v", i, err)
 		}
+		ctx, cancel := context.WithCancel(context.Background())
 		started := make(chan struct{})
 		go func() {
 			defer close(started)
-			_ = s.Start(context.Background())
+			_ = s.Start(ctx)
 		}()
-		s.Stop(context.Background())
+		_ = s.Stop(context.Background())
+		cancel()
 		select {
 		case <-started:
 		case <-time.After(2 * time.Second):
@@ -446,11 +464,11 @@ func TestErrorHandlerInvoked(t *testing.T) {
 	go func() { _ = s.Start(ctx) }()
 	if !pollUntil(2*time.Second, 10*time.Millisecond, func() bool { return got.Load() > 0 }) {
 		cancel()
-		s.Stop(context.Background())
+		_ = s.Stop(context.Background())
 		t.Fatal("error handler was not invoked")
 	}
 	cancel()
-	s.Stop(context.Background())
+	_ = s.Stop(context.Background())
 	if name, _ := gotName.Load().(string); name != "failing" {
 		t.Fatalf("error handler task name = %q, want failing", name)
 	}

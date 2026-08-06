@@ -1,44 +1,68 @@
-// Package metrics 以组件形式托管 OpenTelemetry 的生命周期：创建
+// Package telemetry 以组件形式托管 OpenTelemetry 的生命周期：创建
 // TracerProvider 与 MeterProvider、设置为 otel 全局值，并在应用停止时
 // 自动 flush 与关闭。
 //
-// 默认导出：stdout trace exporter（pretty print）+ Prometheus metric reader
-// + W3C TraceContext/Baggage propagator。Prometheus 指标需自行挂载
+// # 全局副作用（有意为之）
+//
+// Init 会把创建的 provider 设置为 otel 全局值（otel.SetTracerProvider /
+// otel.SetMeterProvider / otel.SetTextMapPropagator），此后业务代码与
+// server 包（其 provider 参数为 nil 时）都会使用这些全局 provider。
+// 这与 server 包"显式注入 provider，不修改全局"的策略互补：server 需要
+// 显式传 provider（或从 otel.GetTracerProvider() 自取），本组件则负责
+// 创建并托管全局 provider 的生命周期。重复注册（重复 Init）返回错误。
+//
+// 默认导出：noop trace exporter（span 直接丢弃——生产环境忘配 exporter
+// 不会向 stdout 倒 trace；开发调试用 WithStdoutTrace）+ Prometheus metric
+// reader + W3C TraceContext/Baggage propagator。Prometheus 指标需自行挂载
 // /metrics（如 promhttp.Handler()），其使用默认注册表，与默认 reader 兼容。
-package metrics
+//
+// Init 在 env 非 nil 且未显式 WithResource 时，自动以应用名
+//（NameFromContext(env.Context())）构建 service.name 资源属性，
+// 服务名零配置进入 trace/metrics。
+package telemetry
 
 import (
 	"context"
 	"errors"
-	"log/slog"
 
 	"github.com/lynx-go/lynx"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// Options 是 metrics 组件的配置项。
+// Options 是 telemetry 组件的配置项。
 type Options struct {
 	traceExporter sdktrace.SpanExporter
 	metricReader  sdkmetric.Reader
 	propagator    propagation.TextMapPropagator
 	// res 是附加到 trace/metrics 数据的 OTel Resource（如 service.name）；
-	// nil 时使用 SDK 默认资源。
+	// nil 时使用 SDK 默认资源（Init 时可能自动补 service.name）。
 	res *resource.Resource
+	// stdoutTrace 标记开发调试：无自定义 exporter 时使用 stdout pretty print。
+	stdoutTrace bool
 }
 
-// Option 用于配置 metrics 组件。
+// Option 用于配置 telemetry 组件。
 type Option func(*Options)
 
-// WithTraceExporter 设置自定义 trace exporter（默认 stdout，pretty print）。
+// WithTraceExporter 设置自定义 trace exporter（默认 noop）。
 func WithTraceExporter(exporter sdktrace.SpanExporter) Option {
 	return func(o *Options) {
 		o.traceExporter = exporter
+	}
+}
+
+// WithStdoutTrace 以 stdout pretty print exporter 输出 span，供开发调试。
+// 仅在未设置 WithTraceExporter 时生效。
+func WithStdoutTrace() Option {
+	return func(o *Options) {
+		o.stdoutTrace = true
 	}
 }
 
@@ -57,7 +81,7 @@ func WithPropagator(p propagation.TextMapPropagator) Option {
 }
 
 // WithResource 设置 OTel Resource（如 service.name 等标准属性），
-// nil 时使用 SDK 默认资源。
+// nil 时使用 SDK 默认资源，并在 Init 时自动附加应用名。
 func WithResource(r *resource.Resource) Option {
 	return func(o *Options) {
 		o.res = r
@@ -93,11 +117,19 @@ func (c *otelComponent) Name() string {
 
 // Init 创建 provider 并设置为 otel 全局值。重复 Init 返回错误：
 // 多次注册会覆盖 otel 全局且首个 provider 永不 Shutdown（泄漏）。
-func (c *otelComponent) Init(app lynx.App) error {
+func (c *otelComponent) Init(env lynx.Env) error {
 	if c.inited {
-		return errors.New("metrics component already initialized (register once)")
+		return errors.New("telemetry component already initialized (register once)")
 	}
-	tp, mp, err := newProviders(c.options)
+	options := *c.options
+	if env != nil && options.res == nil {
+		// DX 提升：服务名零配置进入 trace/metrics（应用名取自组件环境）。
+		options.res = resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName(lynx.NameFromContext(env.Context())),
+		)
+	}
+	tp, mp, err := newProviders(&options)
 	if err != nil {
 		return err
 	}
@@ -115,8 +147,9 @@ func (c *otelComponent) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop 自动 flush 并关闭 provider。未 Init（provider 为空）时安全返回。
-func (c *otelComponent) Stop(ctx context.Context) {
+// Stop 自动 flush 并关闭 provider。未 Init（provider 为空）时安全返回 nil。
+// 关闭错误聚合返回，由框架随 Run() 统一上抛。
+func (c *otelComponent) Stop(ctx context.Context) error {
 	var shutdownErrors lynx.ShutdownErrors
 	if c.tp != nil {
 		shutdownErrors.Add(c.tp.Shutdown(ctx))
@@ -125,22 +158,26 @@ func (c *otelComponent) Stop(ctx context.Context) {
 		shutdownErrors.Add(c.mp.Shutdown(ctx))
 	}
 	if shutdownErrors.HasErrors() {
-		slog.ErrorContext(ctx, "otel shutdown errors", "errors", shutdownErrors.Error())
+		return &shutdownErrors
 	}
+	return nil
 }
 
 // newProviders 按 Options 创建 TracerProvider 与 MeterProvider；
-// 未指定 exporter/reader 时使用默认值（stdout trace + Prometheus）。
+// 未指定 exporter/reader 时使用默认值（noop trace + Prometheus）。
 // 不修改传入的 Options（状态化 Options 是代码味道）。
 func newProviders(o *Options) (tp *sdktrace.TracerProvider, mp *sdkmetric.MeterProvider, err error) {
-	traceExporter := o.traceExporter
-	if traceExporter == nil {
-		traceExporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
+	traceOpts := []sdktrace.TracerProviderOption{}
+	if o.traceExporter != nil {
+		traceOpts = append(traceOpts, sdktrace.WithBatcher(o.traceExporter))
+	} else if o.stdoutTrace {
+		exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
 		if err != nil {
 			return nil, nil, err
 		}
+		traceOpts = append(traceOpts, sdktrace.WithBatcher(exporter))
 	}
-	traceOpts := []sdktrace.TracerProviderOption{sdktrace.WithBatcher(traceExporter)}
+	// 无 exporter：noop（span 直接丢弃），生产忘配 exporter 不污染 stdout。
 	if o.res != nil {
 		traceOpts = append(traceOpts, sdktrace.WithResource(o.res))
 	}

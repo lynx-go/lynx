@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/x/log"
 	"github.com/robfig/cron/v3"
 )
 
@@ -20,40 +19,22 @@ type Scheduler struct {
 	options *Options
 	tasks   []Task
 	cron    *cron.Cron
+	// logger 是组件日志实例：Init(env) 时从 env.Logger 取，未 Init 时
+	// 回落 NewScheduler 的 WithLogger（默认 slog.Default()）。
+	logger *slog.Logger
+	// taskCtx 是任务执行的上下文：Init(env) 时取自 env.Context()（携带
+	// 应用元数据，并在应用关闭时取消）；脱离框架单用（Init(nil)）时任务
+	// 使用 Background。
+	taskCtx context.Context
 	started atomic.Bool
 	// stopping 标记 Stop 已被调用：Start 在调度前检查它，避免 Stop 先于
 	// Start 时 cron.Stop() 空转（robfig/cron 未 running 时 Stop 不发信号，
 	// 随后 Run 进入无人能停的无限循环）。
 	stopping atomic.Bool
-	// runDone 在 cron 循环退出（或从未启动）时关闭，Stop 等待它解除，
-	// 不依赖 cron.Stop() 返回值（未 running 时其为 nil ctx，等待会挂死）。
-	runDone chan struct{}
+	// runDone 在 Start 退出（ctx 取消）时关闭，Stop 可借此等待调度循环
+	// 收敛；从未启动时由 Stop 幂等关闭。
+	runDone  chan struct{}
 	doneOnce sync.Once
-	// mu 保护 ctx/cancel：Init/Start 兜底写入与 Stop 读取可能并发。
-	mu     sync.Mutex
-	ctx    context.Context
-	cancel context.CancelFunc
-}
-
-// ensureCtx 确保任务上下文已创建（Init 或 Start 兜底），幂等且并发安全。
-func (s *Scheduler) ensureCtx(parent context.Context) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ctx != nil {
-		return
-	}
-	s.ctx, s.cancel = context.WithCancel(context.WithoutCancel(parent))
-}
-
-// ensureBackgroundCtx 在无 app 上下文时（Init(nil) 或未经 Init 直接 Start
-// 的误用路径）以 Background 创建任务上下文，幂等且并发安全。
-func (s *Scheduler) ensureBackgroundCtx() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ctx != nil {
-		return
-	}
-	s.ctx, s.cancel = context.WithCancel(context.Background())
 }
 
 // Options 是调度器组件的配置项。
@@ -83,17 +64,18 @@ func (s *Scheduler) Name() string {
 	return "cron-scheduler"
 }
 
-// Init 创建任务上下文（携带 app 元数据，关闭时取消）。
-func (s *Scheduler) Init(app lynx.App) error {
-	if app == nil {
-		s.ensureBackgroundCtx()
+// Init 记录任务上下文与日志实例。env 为 nil（脱离框架单用）时保持
+// 默认值：任务上下文回退 Background。
+func (s *Scheduler) Init(env lynx.Env) error {
+	if env == nil {
 		return nil
 	}
-	s.ensureCtx(app.Context())
+	s.taskCtx = env.Context()
+	s.logger = env.Logger("component", "cron-scheduler")
 	return nil
 }
 
-// Start 启动 cron 调度器并开始按调度执行任务，阻塞至调度器停止。
+// Start 启动 cron 调度器并开始按调度执行任务，阻塞至传入 ctx 取消。
 // 竞态安全：Stop 先于本方法调用时（组件启动失败引发的提前中断），
 // 不启动 cron 并立即返回，保证 run.Group 不会因停不掉的 cron 循环挂死。
 func (s *Scheduler) Start(ctx context.Context) error {
@@ -103,25 +85,24 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		s.closeRunDone()
 		return nil
 	}
-	// 兜底：直接调用 Start 而未先 Init 时（单测/误用），自建上下文，
-	// 避免 nil ctx 调用 panic。
-	s.ensureBackgroundCtx()
 	s.started.Store(true)
 	// 同步启动：cron.Start 置位 running 后，任何时刻的 Stop 都能设置
 	// stop channel 使内部循环退出。
 	s.cron.Start()
 	// 复查：Stop 可能刚好在上一行之前执行（其 cron.Stop 因 running 未置位
-	// 而空转，且读到的 cancel 为 nil 已提前返回），此处补发停止信号并取消
-	// 刚创建的 ctx，然后直接返回错误——不得进入下方的阻塞等待，否则
-	// s.ctx 永无人取消，Start 挂死（P0-3 交错窗口）。
+	// 而空转，且读到的 started 为 false 已提前返回），此处补发停止信号并
+	// 直接返回错误——不得进入下方的阻塞等待，否则 ctx 永无人取消，
+	// Start 挂死（Stop/Start 交错窗口）。
 	if s.stopping.Load() {
 		s.cron.Stop()
-		s.cancel()
 		s.started.Store(false)
 		s.closeRunDone()
 		return errors.New("scheduler stopped before start")
 	}
-	<-s.ctx.Done()
+	// 对齐 run.Group actor 语义：等待传入的 ctx 取消（框架在 Stop 返回后
+	// 取消组件 ctx）。任务执行的取消由 taskCtx（env.Context）在应用关闭时
+	// 触发，与 Start 的等待相互独立。
+	<-ctx.Done()
 	s.started.Store(false)
 	s.closeRunDone()
 	return nil
@@ -136,28 +117,26 @@ func (s *Scheduler) closeRunDone() {
 	s.doneOnce.Do(func() { close(s.runDone) })
 }
 
-// Stop 停止 cron 调度器并等待 cron 循环退出（受调用方截止时间约束）。
-// 任务上下文会被取消，让任务及时感知关闭。
-// 停止后调度器不可重启（stopping 永久置位，P2-6 已知语义）：
-// 需要再次运行时请重新构造 Scheduler。
-func (s *Scheduler) Stop(ctx context.Context) {
+// Stop 停止 cron 调度器。cron.Stop 发出停止信号，调度循环随即退出；
+// 等待 runDone 收敛受调用方 deadline 约束（调用方无 deadline 时立即
+// 返回，由框架的 StopTimeout 统一兜底）。
+// 停止后调度器不可重启（stopping 永久置位）：需要再次运行时请重新构造
+// Scheduler。
+func (s *Scheduler) Stop(ctx context.Context) error {
 	s.stopping.Store(true)
-	s.mu.Lock()
-	cancel := s.cancel
-	s.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
 	// cron 未启动或已停止：无在途调度循环，无需等待。
 	if !s.started.Load() {
 		s.closeRunDone()
-		return
+		return nil
 	}
 	s.cron.Stop()
-	select {
-	case <-s.runDone:
-	case <-ctx.Done():
+	if _, ok := ctx.Deadline(); ok {
+		select {
+		case <-s.runDone:
+		case <-ctx.Done():
+		}
 	}
+	return nil
 }
 
 var _ lynx.ServerLike = new(Scheduler)
@@ -198,7 +177,7 @@ func WithDebugEnabled() Option {
 
 // WithLocation 设置任务调度的时区；未设置时使用 time.Local。
 // 仅对内置默认 cron 实例生效：使用 WithCron 传入自定义实例时，
-// 请在其构造中自行设置 Location（P2-6 已知语义）。
+// 请在其构造中自行设置 Location。
 func WithLocation(loc *time.Location) Option {
 	return func(o *Options) {
 		o.Location = loc
@@ -208,7 +187,7 @@ func WithLocation(loc *time.Location) Option {
 // WithErrorHandler 设置任务执行错误回调（context 携带任务名与调度器元数据）；
 // 未设置时保持默认日志输出。
 // 注意：仅接收任务 HandlerFunc 返回的错误；任务 panic 由调度器恢复并记
-// 日志，不触发该回调（P2-6 已知语义）。
+// 日志，不触发该回调。
 func WithErrorHandler(fn func(ctx context.Context, task Task, err error)) Option {
 	return func(o *Options) {
 		o.OnTaskError = fn
@@ -242,6 +221,7 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 
 	scheduler := &Scheduler{
 		options: o,
+		logger:  o.Logger,
 		cron:    cronInstance,
 		tasks:   tasks,
 		runDone: make(chan struct{}),
@@ -249,22 +229,24 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	for i := range tasks {
 		task := tasks[i]
 		if _, err := scheduler.cron.AddFunc(task.Cron(), func() {
-			// 任务上下文取自调度器（Init 创建），携带 app 元数据并在关闭时取消。
-			taskCtx := scheduler.ctx
-			if taskCtx == nil {
-				taskCtx = context.Background()
+			// 任务上下文取自 Init（env.Context，携带应用元数据，关闭时
+			// 取消）；未 Init 时回退 Background。
+			ctx := scheduler.taskCtx
+			if ctx == nil {
+				ctx = context.Background()
 			}
-			ctx := log.WithContext(taskCtx, "component", "scheduler", "task_name", task.Name())
 			defer func() {
 				if r := recover(); r != nil {
-					log.ErrorContext(ctx, "schedule task panic", fmt.Errorf("%v", r))
+					scheduler.logger.ErrorContext(ctx, "schedule task panic",
+						"task_name", task.Name(), "error", fmt.Errorf("%v", r))
 				}
 			}()
 			if err := task.HandlerFunc()(ctx); err != nil {
 				if scheduler.options.OnTaskError != nil {
 					scheduler.options.OnTaskError(ctx, task, err)
 				} else {
-					log.ErrorContext(ctx, "schedule task execute error", err)
+					scheduler.logger.ErrorContext(ctx, "schedule task execute error",
+						"task_name", task.Name(), "error", err)
 				}
 			}
 		}); err != nil {

@@ -13,25 +13,14 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-func getLevel(app lynx.App) string {
-	// 依次检查：zap 专属键 → 示例/历史约定的 log_level → 框架默认 flag 的
-	// log-level（DefaultSetFlagsFunc 注册的是连字符版本）。默认 info 与框架一致。
-	for _, key := range []string{"logging.level", "log_level", "log-level"} {
-		if lvl := app.Config().GetString(key); lvl != "" {
-			return lvl
-		}
-	}
-	return "info"
-}
-
 // MustNewLogger 创建基于 zap 的 slog 实例，创建失败时 panic。
-func MustNewLogger(app lynx.App) *slog.Logger {
-	return lo.Must1(NewLogger(app))
+func MustNewLogger(env lynx.Env) *slog.Logger {
+	return lo.Must1(NewLogger(env))
 }
 
 // NewLogger 根据应用配置的日志级别创建基于 zap 的 slog 实例，并注入服务标识字段。
-func NewLogger(app lynx.App) (*slog.Logger, error) {
-	_, slogger, err := buildLogger(app)
+func NewLogger(env lynx.Env) (*slog.Logger, error) {
+	_, slogger, err := buildLogger(env)
 	if err != nil {
 		return nil, err
 	}
@@ -39,9 +28,11 @@ func NewLogger(app lynx.App) (*slog.Logger, error) {
 }
 
 // buildLogger 创建 zap 实例与包装后的 slog 实例，并注入服务标识字段。
-// NewLogger 与 NewSyncableLogger 共用，避免重复。
-func buildLogger(app lynx.App) (*zap.Logger, *slog.Logger, error) {
-	logLevel := getLevel(app)
+func buildLogger(env lynx.Env) (*zap.Logger, *slog.Logger, error) {
+	logLevel := lynx.LogLevelFromConfig(env.Config())
+	if logLevel == "" {
+		logLevel = "info"
+	}
 	zapLogger, err := NewZapLogger(logLevel)
 	if err != nil {
 		return nil, nil, err
@@ -51,14 +42,16 @@ func buildLogger(app lynx.App) (*zap.Logger, *slog.Logger, error) {
 		return nil, nil, err
 	}
 	return zapLogger, slogger.With(
-		"service_id", lynx.IDFromContext(app.Context()),
-		"service_name", lynx.NameFromContext(app.Context()),
-		"version", lynx.VersionFromContext(app.Context()),
+		"service_id", lynx.IDFromContext(env.Context()),
+		"service_name", lynx.NameFromContext(env.Context()),
+		"version", lynx.VersionFromContext(env.Context()),
 	), nil
 }
 
-// NewZapLoggerToFile 创建输出到指定文件的 zap 实例，日志格式为生产配置。
-func NewZapLoggerToFile(logLevel string, logFile string) (*zap.Logger, error) {
+// NewZapLogger 创建按生产配置输出的 zap 实例，日志格式为生产配置。
+// outputs 指定输出路径（zap 的 OutputPaths），为空时默认输出到 stdout；
+// 需要写文件时传入文件路径（替代旧 NewZapLoggerToFile）。
+func NewZapLogger(logLevel string, outputs ...string) (*zap.Logger, error) {
 	atomicLevel := zap.NewAtomicLevel()
 
 	zapLevel := zap.DebugLevel
@@ -70,23 +63,10 @@ func NewZapLoggerToFile(logLevel string, logFile string) (*zap.Logger, error) {
 	zapConfig := zap.NewProductionConfig()
 	zapConfig.Level = atomicLevel
 	zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	zapConfig.OutputPaths = []string{logFile}
-	return zapConfig.Build()
-}
-
-// NewZapLogger 创建按生产配置输出的 zap 实例。
-func NewZapLogger(logLevel string) (*zap.Logger, error) {
-	atomicLevel := zap.NewAtomicLevel()
-
-	zapLevel := zap.DebugLevel
-	if err := zapLevel.UnmarshalText([]byte(logLevel)); err != nil {
-		return nil, err
+	if len(outputs) == 0 {
+		outputs = []string{"stdout"}
 	}
-	atomicLevel.SetLevel(zapLevel)
-
-	zapConfig := zap.NewProductionConfig()
-	zapConfig.Level = atomicLevel
-	zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	zapConfig.OutputPaths = outputs
 	return zapConfig.Build()
 }
 
@@ -128,8 +108,8 @@ func SyncOnStop(l *SyncableLogger) lynx.HookFunc {
 
 // NewSyncableLogger creates a SyncableLogger that wraps both slog and zap loggers.
 // This allows using slog for structured logging while retaining the ability to Sync.
-func NewSyncableLogger(app lynx.App) (*SyncableLogger, error) {
-	zapLogger, slogger, err := buildLogger(app)
+func NewSyncableLogger(env lynx.Env) (*SyncableLogger, error) {
+	zapLogger, slogger, err := buildLogger(env)
 	if err != nil {
 		return nil, err
 	}

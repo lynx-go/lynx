@@ -35,7 +35,7 @@ func NewMemoryTransport() *MemoryTransport {
 func (t *MemoryTransport) Name() string { return "pubsub-memory" }
 
 // Init 无额外初始化工作。
-func (t *MemoryTransport) Init(app lynx.App) error { return nil }
+func (t *MemoryTransport) Init(env lynx.Env) error { return nil }
 
 // Start 标记运行并阻塞至 ctx 取消。
 func (t *MemoryTransport) Start(ctx context.Context) error {
@@ -46,11 +46,10 @@ func (t *MemoryTransport) Start(ctx context.Context) error {
 }
 
 // Stop 关闭底层 gochannel。
-func (t *MemoryTransport) Stop(ctx context.Context) {
-	if err := t.pubSub.Close(); err != nil {
-		// gochannel.Close 在正常关闭时无错误。
-	}
+func (t *MemoryTransport) Stop(ctx context.Context) error {
+	err := t.pubSub.Close()
 	t.running.Store(false)
+	return err
 }
 
 // CheckHealth 报告 Transport 是否在运行。

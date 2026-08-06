@@ -1,6 +1,6 @@
 # 5. 服务器与可观测性
 
-Lynx 在 `server/http` 与 `server/grpc` 两个包中提供了开箱即用的服务器组件，它们都实现了第 4 章介绍的 `Component` 接口，可以直接通过 `app.Register` 注册进应用。本章先逐一介绍两个服务器的全部配置项，再讲解可观测性接入：OpenTelemetry trace/metrics 的开箱即用（`contrib/metrics`）与手动接入、Prometheus 指标暴露、HTTP 中间件链序，以及日志与链路的关联（`lynx.NewTraceHandler`）。
+Lynx 在 `server/http` 与 `server/grpc` 两个包中提供了开箱即用的服务器组件，它们都实现了第 4 章介绍的 `Component` 接口，可以直接通过 `app.Register` 注册进应用。本章先逐一介绍两个服务器的全部配置项，再讲解可观测性接入：OpenTelemetry trace/metrics 的开箱即用（`contrib/telemetry`）与手动接入、Prometheus 指标暴露、HTTP 中间件链序，以及日志与链路的关联（`lynx.NewTraceHandler`）。
 
 ## 5.1 HTTP 服务器
 
@@ -12,7 +12,7 @@ HTTP 服务器定义在 `server/http/server.go`，通过 `NewServer` 创建：
 func NewServer(handler http.Handler, opts ...Option) *Server
 ```
 
-第一个参数是标准的 `http.Handler`。框架同时提供了一个 `NewRouter()` 辅助函数，返回标准库的 `*http.ServeMux`——Lynx 不绑定任何第三方路由，想换 chi、gin 的 mux 只需把对应的 `http.Handler` 传进来即可。
+第一个参数是标准的 `http.Handler`，用标准库的 `http.NewServeMux()`（或任意第三方的 mux）即可——Lynx 不绑定任何第三方路由，想换 chi、gin 的 mux 只需把对应的 `http.Handler` 传进来即可。
 
 默认值（`server/http/server.go` 顶部的常量）：
 
@@ -30,7 +30,7 @@ func NewServer(handler http.Handler, opts ...Option) *Server
 - `WithAddr(addr string)`：监听地址，默认 `:8080`。
 - `WithTimeout(timeout time.Duration)`：请求读写超时，默认 60 秒。该值会同时设置为底层 `http.Server` 的 `ReadHeaderTimeout`、`ReadTimeout` 和 `WriteTimeout`；传入 0 或负数则不设置（保持底层默认值）。
 - `WithShutdownTimeout(timeout time.Duration)`：优雅关闭超时，默认 10 秒。调用方 Context 无 deadline 时生效：`Stop` 以它为上限等待 `Shutdown` 排空连接，超时后强制 `Close()` 活动连接，避免长轮询/流式 handler 让关闭无限挂起。
-- `WithHealthCheck(hc lynx.HealthCheckFunc)`：健康检查函数。传入后服务器自动暴露两个端点：`/healthz/liveness` 恒返回 200，`/healthz/readiness` 依次调用所有收集到的检查器。通常直接传 `app.HealthCheckFunc()`，收集规则见 2.5 节与 4.3 节。两个端点始终注册；不传该 Option 只是就绪检查列表为空，此时 `/healthz/readiness` 恒返回 200。
+- `WithHealthCheckers(hc lynx.HealthCheckersFunc)`：健康检查器取值函数。传入后服务器自动暴露两个端点：`/healthz/liveness` 恒返回 200，`/healthz/readiness` 依次调用所有收集到的检查器，任一失败返回 503 + 错误正文。通常直接传方法值 `app.HealthCheckers`，收集规则见 2.5 节与 4.3 节。两个端点始终注册；不传该 Option 只是就绪检查列表为空，此时 `/healthz/readiness` 恒返回 200。
 - `WithLogger(l *slog.Logger)`：请求日志使用的日志器，默认 `slog.Default()`。
 - `WithRequestLog(requestLog bool)`：是否记录访问日志，默认 `false`。开启后每个请求以 Stackdriver 兼容的 JSON 格式输出一条 `Debug` 级别日志（`server/http/requestlog.go`），字段包含方法、URL、状态码、耗时、remote IP 以及 `trace`/`spanId`——注意需要日志器级别为 debug 才能看到。
 - `WithMiddleware(middlewares ...Middleware)`：注册自定义中间件，可多次调用叠加。链序见 5.3.5 节。
@@ -57,13 +57,13 @@ import (
 
 func main() {
 	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
-		router := http.NewRouter()
+		router := gohttp.NewServeMux()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			_, _ = rw.Write([]byte("hello lynx"))
 		})
 		app.Register(http.NewServer(router,
 			http.WithAddr(":8080"),
-			http.WithHealthCheck(app.HealthCheckFunc()),
+			http.WithHealthCheckers(app.HealthCheckers),
 			http.WithLogger(app.Logger("logger", "http-requestlog")),
 			http.WithRequestLog(true),
 			http.WithMiddleware(latencyMiddleware),
@@ -125,8 +125,10 @@ func NewServer(opts ...Option) *Server
 `NewServer` 总是先安装内置拦截器（`server/grpc/interceptor/interceptor.go`），再通过 `WithInterceptors` 追加自定义拦截器。一元 RPC 用 `grpc.ChainUnaryInterceptor` 串联，执行顺序为：
 
 ```
-Logging → Recovery → 自定义拦截器（按声明顺序） → handler
+Recovery → Logging → 自定义拦截器（按声明顺序） → handler
 ```
+
+Recovery 置于最外层：链内任意一环（含用户拦截器）的 panic 都能被恢复，不会拖垮整个进程。
 
 流式 RPC 同样安装了 `LoggingStream` 与 `RecoveryStream` 两个内置流式拦截器——gRPC 对流式 handler 的 panic 没有内置保护，不拦截会直接崩溃整个进程。
 
@@ -227,38 +229,39 @@ var echoServiceDesc = gogrpc.ServiceDesc{
 
 ## 5.3 可观测性接入
 
-### 5.3.1 开箱即用：contrib/metrics（框架托管）
+### 5.3.1 开箱即用：contrib/telemetry（框架托管）
 
-可观测性托管在独立 contrib 模块 `github.com/lynx-go/lynx/contrib/metrics`，以**组件**形式注册，provider 的创建、全局注册与优雅关闭 flush 全部由框架处理：
+可观测性托管在独立 contrib 模块 `github.com/lynx-go/lynx/contrib/telemetry`，以**组件**形式注册，provider 的创建、全局注册与优雅关闭 flush 全部由框架处理：
 
 ```go
 // 在 setup 回调中：
-app.Register(metrics.New())
+app.Register(telemetry.New())
 ```
 
 组件默认创建：
 
-- **TracerProvider**：stdout trace exporter（pretty print）批量导出，开发调试直接看 stdout；
+- **TracerProvider**：noop trace exporter（span 直接丢弃）——生产忘配 exporter 不会向 stdout 倒 trace；开发调试用 `telemetry.WithStdoutTrace()` 显式启用 stdout pretty print；
 - **MeterProvider**：Prometheus metric reader；
 - **propagator**：W3C TraceContext + Baggage 组合。
 
-创建后的 provider 会**自动设置为 otel 全局 provider**（`otel.SetTracerProvider` 等），因此服务器无需任何 otel 配置即自动采集——`WithTracerProvider`/`WithMeterProvider`/`WithPropagator` 为 nil 时服务器本就使用全局 provider。应用优雅关闭时，组件的 `Stop` 会自动 flush 并 shutdown provider（日志中可见 `component=otel`），无需手动注册。
+创建后的 provider 会**自动设置为 otel 全局 provider**（`otel.SetTracerProvider` 等——这是有意的全局副作用，详见包注释），因此服务器无需任何 otel 配置即自动采集——`WithTracerProvider`/`WithMeterProvider`/`WithPropagator` 为 nil 时服务器本就使用全局 provider。应用优雅关闭时，组件的 `Stop` 会自动 flush 并 shutdown provider（日志中可见 `component=otel`），无需手动注册。Init 还会在未显式 `WithResource` 时自动以应用名构建 `service.name` 资源属性，服务名零配置进入 trace/metrics。
 
-> 注意：组件的 `Init` 在注册时同步执行，因此业务指标（`otel.Meter` 创建的 instrument）必须在 `metrics.New()` 注册**之后**创建，否则拿到的是 noop meter。
+> 注意：组件的 `Init` 在注册时同步执行，因此业务指标（`otel.Meter` 创建的 instrument）必须在 `telemetry.New()` 注册**之后**创建，否则拿到的是 noop meter。
 
-Prometheus 指标仍需自行挂载 `/metrics`（见 5.3.4 节）；默认 exporter 使用 Prometheus 默认注册表，与 `promhttp.Handler()` 直接兼容。
+Prometheus 指标仍需自行挂载 `/metrics`（见 5.3.4 节）；默认 reader 使用 Prometheus 默认注册表，与 `promhttp.Handler()` 直接兼容。
 
 自定义导出目标通过 `Option` 替换：
 
 ```go
-metrics.New(
-    metrics.WithTraceExporter(otlpTraceExporter), // 替换默认 stdout（示例见 5.3.3 节）
-    metrics.WithMetricReader(otlpMetricReader),   // 替换默认 Prometheus
-    metrics.WithPropagator(customPropagator),     // 替换默认 TraceContext+Baggage
+telemetry.New(
+    telemetry.WithTraceExporter(otlpTraceExporter), // 替换默认 noop（示例见 5.3.3 节）
+    telemetry.WithMetricReader(otlpMetricReader),   // 替换默认 Prometheus
+    telemetry.WithPropagator(customPropagator),     // 替换默认 TraceContext+Baggage
 )
 ```
 
 - `WithTraceExporter(exporter sdktrace.SpanExporter)`：自定义 trace exporter；
+- `WithStdoutTrace()`：开发调试——无自定义 exporter 时使用 stdout pretty print；
 - `WithMetricReader(reader sdkmetric.Reader)`：自定义 metric reader（OTLP 等后端 exporter 均实现 `Reader` 接口）；
 - `WithPropagator(p propagation.TextMapPropagator)`：自定义传播器。
 
@@ -266,7 +269,7 @@ metrics.New(
 
 ### 5.3.2 高阶自定义：手动创建 provider
 
-不使用 `contrib/metrics` 组件时，exporter 与 provider 的初始化、shutdown **都是调用方的职责**——典型的做法是在应用初始化函数里创建 provider，并通过服务器 `WithTracerProvider`/`WithMeterProvider`/`WithPropagator` 传入、把 shutdown 注册进 `OnStop` 钩子：
+不使用 `contrib/telemetry` 组件时，exporter 与 provider 的初始化、shutdown **都是调用方的职责**——典型的做法是在应用初始化函数里创建 provider，并通过服务器 `WithTracerProvider`/`WithMeterProvider`/`WithPropagator` 传入、把 shutdown 注册进 `OnStop` 钩子：
 
 ```go
 shutdown, tp, mp, propagator, err := setupOTel()
@@ -314,7 +317,7 @@ func setupOTel() (shutdown func(context.Context) error, tp *sdktrace.TracerProvi
 go get go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc
 ```
 
-初始化 exporter（注意：这里创建的是 **exporter** 而不是 TracerProvider，可以直接交给 5.3.1 的 `metrics.WithTraceExporter` 由组件托管；手动路径则自行包成 provider）：
+初始化 exporter（注意：这里创建的是 **exporter** 而不是 TracerProvider，可以直接交给 5.3.1 的 `telemetry.WithTraceExporter` 由组件托管；手动路径则自行包成 provider）：
 
 ```go
 // setupOTLPExporter 初始化 OTLP gRPC trace exporter。
@@ -329,12 +332,12 @@ func setupOTLPExporter(ctx context.Context, endpoint string) (sdktrace.SpanExpor
 托管路径用法：
 
 ```go
-metrics.New(
-	metrics.WithTraceExporter(exporter), // exporter 由上面的 setupOTLPExporter 创建
+telemetry.New(
+	telemetry.WithTraceExporter(exporter), // exporter 由上面的 setupOTLPExporter 创建
 )
 ```
 
-如果 collector 只暴露 HTTP 端口，把 `otlptracegrpc` 换成 `otlptracehttp`，API 形状一致。endpoint 也支持通过环境变量 `OTEL_EXPORTER_OTLP_ENDPOINT` 配置（不传 `WithEndpoint` 时生效）。metrics 侧同理：`go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc` 的 exporter 实现了 `sdkmetric.Reader`，交给 `metrics.WithMetricReader` 即可。
+如果 collector 只暴露 HTTP 端口，把 `otlptracegrpc` 换成 `otlptracehttp`，API 形状一致。endpoint 也支持通过环境变量 `OTEL_EXPORTER_OTLP_ENDPOINT` 配置（不传 `WithEndpoint` 时生效）。metrics 侧同理：`go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc` 的 exporter 实现了 `sdkmetric.Reader`，交给 `telemetry.WithMetricReader` 即可。
 
 ### 5.3.4 Prometheus 指标与 /metrics
 

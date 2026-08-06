@@ -10,7 +10,7 @@
 | `github.com/lynx-go/lynx/contrib/zap` | `contrib/zap/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/pubsub` | `contrib/pubsub/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/kafka` | `contrib/kafka/v1.0.0` |
-| `github.com/lynx-go/lynx/contrib/metrics` | `contrib/metrics/v1.0.0` |
+| `github.com/lynx-go/lynx/contrib/telemetry` | `contrib/telemetry/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/schedule` | `contrib/schedule/v1.0.0` |
 
 > Go 规定位于子目录的模块，其 tag 必须以模块路径相对仓库根的目录作为前缀（`contrib/<name>/vX.Y.Z`），这是模块代理正确识别子模块版本的必要条件。
@@ -45,7 +45,7 @@ task release-tag Version=contrib/kafka/vX.Y.Z Comment="release vX.Y.Z"         #
 
 ```
 lynx（根） ──────────┬──> contrib/zap
-                      ├──> contrib/metrics
+                      ├──> contrib/telemetry
                       ├──> contrib/schedule
                       ├──> contrib/pubsub ──> contrib/kafka
 ```
@@ -55,8 +55,8 @@ lynx（根） ──────────┬──> contrib/zap
 1. **根模块**：`v1.0.0`（所有 contrib 都 require 它，必须先发）；
 2. **contrib/pubsub**：`contrib/pubsub/v1.0.0`（kafka 依赖它）；
 3. **contrib/kafka**：`contrib/kafka/v1.0.0`；
-4. **contrib/metrics / contrib/schedule / contrib/zap**：无交叉依赖，可并行
-   （`contrib/{metrics,schedule,zap}/v1.0.0`）。
+4. **contrib/telemetry / contrib/schedule / contrib/zap**：无交叉依赖，可并行
+   （`contrib/{telemetry,schedule,zap}/v1.0.0`）。
 
 > 依赖关系以各 `contrib/*/go.mod` 的 require 为准；后续若新增 contrib 间
 > 依赖，须在发布前更新本清单。

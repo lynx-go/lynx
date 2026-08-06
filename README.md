@@ -36,7 +36,7 @@ package main
 import (
     "context"
     "encoding/json"
-    "net/http"
+    gohttp "net/http"
 
     "github.com/lynx-go/lynx"
     "github.com/lynx-go/lynx/server/http"
@@ -45,8 +45,8 @@ import (
 func main() {
     cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
         // 创建 HTTP 路由
-        router := http.NewRouter()
-        router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        router := gohttp.NewServeMux()
+        router.HandleFunc("/", func(w gohttp.ResponseWriter, r *gohttp.Request) {
             json.NewEncoder(w).Encode(map[string]string{
                 "hello": "world",
                 "app":   lynx.NameFromContext(app.Context()),
@@ -56,7 +56,7 @@ func main() {
         // 注册 HTTP 服务器组件
         app.Register(http.NewServer(router,
             http.WithAddr(":8080"),
-            http.WithHealthCheck(app.HealthCheckFunc()),
+            http.WithHealthCheckers(app.HealthCheckers),
         ))
         return nil
     },
@@ -191,11 +191,14 @@ app.Register(scheduler)
 ```go
 type Component interface {
     Name() string
-    Init(app App) error
+    Init(env Env) error
     Start(ctx context.Context) error
-    Stop(ctx context.Context)
+    Stop(ctx context.Context) error
 }
 ```
+
+组件的 `Init` 接收 `lynx.Env`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），
+不依赖完整的 `App` 接口。`Stop` 返回的错误与 OnStop 钩子错误一起由 `Run()` 统一上抛。
 
 ### Hooks（钩子）
 
@@ -240,9 +243,9 @@ lynx/
 ├── component.go    # 组件接口定义
 ├── contrib/        # 扩展组件
 │   ├── kafka/      # Kafka 支持
-│   ├── metrics/    # OpenTelemetry 生命周期托管
 │   ├── pubsub/     # 消息发布订阅
 │   ├── schedule/   # 定时任务
+│   ├── telemetry/  # OpenTelemetry 生命周期托管
 │   └── zap/        # Zap 日志集成
 ├── docs/           # 文档
 ├── errors.go       # 错误聚合
@@ -268,7 +271,6 @@ Lynx 使用 Viper 进行配置管理，支持多种配置来源：
 - 命令行参数
 - 环境变量
 - 配置文件（JSON/YAML/TOML）
-- 远程配置中心
 
 配置通过统一的 `lynx.Config` 接口访问（`app.Config()`），绑定阶段使用其超集 `lynx.ConfigSource`——接口与具体配置库解耦，默认实现适配 `*viper.Viper`，可替换为其他配置库。
 
@@ -295,7 +297,7 @@ github.com/lynx-go/lynx/server/http
 github.com/lynx-go/lynx/contrib/kafka
 
 # 可观测性（OpenTelemetry 托管）
-github.com/lynx-go/lynx/contrib/metrics
+github.com/lynx-go/lynx/contrib/telemetry
 
 # PubSub 抽象
 github.com/lynx-go/lynx/contrib/pubsub

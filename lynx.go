@@ -14,11 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lynx-go/x/log"
 	"github.com/oklog/run"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
-	"gocloud.dev/server/health"
 )
 
 // BindConfigFunc 将命令行 flags 绑定到应用配置源（ConfigSource 实例）。
@@ -27,14 +25,10 @@ type BindConfigFunc func(f *pflag.FlagSet, c ConfigSource) error
 // SetFlagsFunc 定义应用启动时需要注册的命令行 flags。
 type SetFlagsFunc func(f *pflag.FlagSet)
 
-// App 是 App 应用实例的核心接口，提供配置、上下文、组件与生命周期管理能力。
+// App 是应用实例的核心接口：在 Env 的基础上增加组件注册、
+// 生命周期钩子与运行控制能力。
 type App interface {
-	// Close 关闭应用实例
-	Close()
-	// Config 获取配置实例（默认由 *viper.Viper 适配实现）
-	Config() Config
-	// Context 获取应用上下文
-	Context() context.Context
+	Env
 	// CLI 注册启动的命令，用于 CLI 模式
 	CLI(cmd CommandFunc) error
 
@@ -51,15 +45,13 @@ type App interface {
 	// 错误处理语义与 Register 相同；同样必须先于 Run。
 	RegisterBuilders(builders ...ComponentBuilder)
 
-	// HealthCheckFunc 注册到 HTTP 的 Health Check 方法
-	HealthCheckFunc() HealthCheckFunc
 	// Run 运行应用主流程：执行 on-start 钩子、启动所有组件并等待退出信号。
 	// Run 开始后，Register/RegisterBuilders 为禁止操作（panic），CLI 返回错误。
 	Run() error
-	// SetLogger 设置 logger
+	// SetLogger 设置 logger。注意：同时调用 slog.SetDefault 同步全局默认
+	// logger，使进程内不经框架的裸 slog 调用（如 slog.Info）落到同一
+	// logger——这是有意的全局副作用。
 	SetLogger(logger *slog.Logger)
-	// Logger 获取 logger
-	Logger(kwargs ...any) *slog.Logger
 }
 
 type nameCtx struct{}
@@ -116,17 +108,19 @@ type lynx struct {
 	cancelCtx      context.CancelFunc
 	runG           *run.Group
 	logger         *slog.Logger
-	healthCheckers []health.Checker
+	healthCheckers []Checker
 	// components 按注册顺序记录已 Init 成功的组件，用于失败路径的逆序清理。
 	components []Component
-	// running 标记 Run 已开始：此后 Register/RegisterBuilders 为禁止操作
-	//（P1-1 定语义），Run 侧无需再与注册侧并发争用 run.G 的 actors。
+	// running 标记 Run 已开始：此后 Register/RegisterBuilders 为禁止操作，
+	// Run 侧无需再与注册侧并发争用 run.G 的 actors。
 	running atomic.Bool
 
 	onStarts []HookFunc
 	onStops  []HookFunc
 	// initErr 记录注册阶段产生的首个错误，由 Run() 统一返回。
 	initErr error
+	// shutdownErrors 聚合组件 Stop 返回的错误与超时错误，由 Run() 统一上抛。
+	shutdownErrors ShutdownErrors
 }
 
 func (app *lynx) OnStart(fns ...HookFunc) {
@@ -143,8 +137,8 @@ func (app *lynx) OnStop(fns ...HookFunc) {
 
 func (app *lynx) Register(components ...Component) {
 	if app.running.Load() {
-		// P1-1 定语义：所有注册必须先于 Run。Run 已开始的注册是编程错误，
-		// panic 明确报错（Register 无返回值，无法以错误返回）。
+		// 所有注册必须先于 Run。Run 已开始的注册是编程错误，panic 明确
+		// 报错（Register 无返回值，无法以错误返回）。
 		panic("lynx: Register must not be called after Run() has started")
 	}
 	app.mu.Lock()
@@ -153,7 +147,7 @@ func (app *lynx) Register(components ...Component) {
 	if initErr != nil {
 		return
 	}
-	// addComponents 在锁外执行 Init：组件 Init 内调用 app.HealthCheckFunc()、
+	// addComponents 在锁外执行 Init：组件 Init 内调用 app.HealthCheckers()、
 	// OnStart 等需要 app.mu 的方法时不会死锁。
 	if err := app.addComponents(components...); err != nil {
 		if errors.Is(err, errRunStarted) {
@@ -161,7 +155,7 @@ func (app *lynx) Register(components ...Component) {
 			panic("lynx: Register must not be called after Run() has started")
 		}
 		app.recordInitError(err)
-		log.ErrorContext(app.ctx, "failed to register components", err)
+		app.logger.ErrorContext(app.ctx, "failed to register components", "error", err)
 	}
 }
 
@@ -180,7 +174,7 @@ func (app *lynx) RegisterBuilders(builders ...ComponentBuilder) {
 			panic("lynx: RegisterBuilders must not be called after Run() has started")
 		}
 		app.recordInitError(err)
-		log.ErrorContext(app.ctx, "failed to register component builders", err)
+		app.logger.ErrorContext(app.ctx, "failed to register component builders", "error", err)
 	}
 }
 
@@ -195,22 +189,23 @@ func (app *lynx) recordInitError(err error) {
 
 // errRunStarted 由 addComponents 在持锁登记事务中发现 Run 已开始时返回，
 // 调用方（Register/RegisterBuilders/CLI）翻译为各自的明确错误/panic
-//（P1-1 语义：所有注册必须先于 Run）。
+//（所有注册必须先于 Run）。
 var errRunStarted = errors.New("lynx: registration after Run() has started")
 
+// SetLogger 设置 logger，并同步 slog.SetDefault 使全局默认 logger 与应用
+// 一致（全局副作用见 App 接口注释）。
 func (app *lynx) SetLogger(logger *slog.Logger) {
 	slog.SetDefault(logger)
 	app.logger = logger
 }
 
-func (app *lynx) HealthCheckFunc() HealthCheckFunc {
-	return func() []health.Checker {
-		app.mu.Lock()
-		defer app.mu.Unlock()
-		out := make([]health.Checker, len(app.healthCheckers))
-		copy(out, app.healthCheckers)
-		return out
-	}
+// HealthCheckers 返回当前已注册的健康检查器快照。
+func (app *lynx) HealthCheckers() []Checker {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	out := make([]Checker, len(app.healthCheckers))
+	copy(out, app.healthCheckers)
+	return out
 }
 
 func (app *lynx) CLI(cmd CommandFunc) error {
@@ -242,17 +237,27 @@ func (app *lynx) init() error {
 		return err
 	}
 
-	name := app.c.GetString("name")
+	name := app.c.GetString("service.name")
+	if name == "" {
+		// 旧顶层键回退（过渡期，deprecated）。
+		name = app.c.GetString("name")
+	}
 	if name == "" {
 		name = app.o.Name
 	}
 	app.ctx = context.WithValue(app.ctx, keyName, name)
-	id := app.c.GetString("id")
+	id := app.c.GetString("service.id")
+	if id == "" {
+		id = app.c.GetString("id")
+	}
 	if id == "" {
 		id = app.o.ID
 	}
 	app.ctx = context.WithValue(app.ctx, keyId, id)
-	version := app.c.GetString("version")
+	version := app.c.GetString("service.version")
+	if version == "" {
+		version = app.c.GetString("version")
+	}
 	if version == "" {
 		version = app.o.Version
 	}
@@ -262,21 +267,15 @@ func (app *lynx) init() error {
 	return nil
 }
 
-// applyLogLevel 读取配置中的日志级别（--log-level / log_level）并应用到
-// 应用默认 logger 上。仅当用户未通过 SetLogger 覆盖时生效——init 在
-// 构建回调之前运行，构建回调里的 SetLogger 会再次替换 app.logger。
+// applyLogLevel 读取配置中的日志级别并应用到应用默认 logger 上。
+// 仅当用户未通过 SetLogger 覆盖时生效——init 在构建回调之前运行，
+// 构建回调里的 SetLogger 会再次替换 app.logger。
 func (app *lynx) applyLogLevel() {
-	levelStr := app.c.GetString("log-level")
-	if levelStr == "" {
-		levelStr = app.c.GetString("log_level")
-	}
-	if levelStr == "" {
-		levelStr = app.c.GetString("logging.level")
-	}
+	levelStr := LogLevelFromConfig(app.Config())
 	if levelStr == "" {
 		return
 	}
-	level, err := parseLogLevel(levelStr)
+	level, err := ParseLogLevel(levelStr)
 	if err != nil {
 		app.logger.Warn("invalid log level, using default", "level", levelStr)
 		return
@@ -284,9 +283,24 @@ func (app *lynx) applyLogLevel() {
 	var levelVar slog.LevelVar
 	levelVar.Set(level)
 	app.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &levelVar}))
+	// 与应用日志保持单通道：--log-level 对框架与应用日志一致生效。
+	slog.SetDefault(app.logger)
 }
 
-func parseLogLevel(s string) (slog.Level, error) {
+// LogLevelFromConfig 从配置中解析日志级别字符串，优先级：
+// logging.level（结构化配置）→ log-level → log_level（扁平键兼容回退）。
+// 未设置任何键时返回空字符串。
+func LogLevelFromConfig(c Config) string {
+	for _, key := range []string{"logging.level", "log-level", "log_level"} {
+		if lvl := c.GetString(key); lvl != "" {
+			return lvl
+		}
+	}
+	return ""
+}
+
+// ParseLogLevel 解析日志级别字符串为 slog.Level。
+func ParseLogLevel(s string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
 		return slog.LevelDebug, nil
@@ -323,26 +337,31 @@ func DefaultBindConfigFunc(f *pflag.FlagSet, c ConfigSource) error {
 }
 
 func (app *lynx) initConfigure() error {
-	if fn := app.o.SetFlagsFunc; fn != nil {
-		fn(app.f)
+	if app.o.SetFlagsFunc != nil {
+		app.o.SetFlagsFunc(app.f)
 		if err := app.f.Parse(os.Args[1:]); err != nil {
+			if errors.Is(err, pflag.ErrHelp) {
+				// --help：usage 已由 pflag 输出，作为初始化错误返回，
+				// 由 Builder.Run 以非零状态码退出。
+				return err
+			}
 			return fmt.Errorf("failed to parse flags: %w", err)
 		}
 	}
 
-	if fn := app.o.BindConfigFunc; fn != nil {
-		if err := fn(app.f, NewViperConfig(app.c)); err != nil {
+	if app.o.BindConfigFunc != nil {
+		if err := app.o.BindConfigFunc(app.f, NewViperConfig(app.c)); err != nil {
 			return err
 		}
+	}
 
-		if err := app.c.ReadInConfig(); err != nil {
-			// 未显式指定配置文件且搜索路径下也不存在配置文件时，配置是可选的，
-			// 不应阻止应用启动。只有显式指定的文件（如 -c missing.yaml）或
-			// 解析错误才是硬失败。
-			var notFound viper.ConfigFileNotFoundError
-			if !errors.As(err, &notFound) {
-				return fmt.Errorf("failed to read config: %w", err)
-			}
+	if err := app.c.ReadInConfig(); err != nil {
+		// 未显式指定配置文件且搜索路径下也不存在配置文件时，配置是可选的，
+		// 不应阻止应用启动。只有显式指定的文件（如 -c missing.yaml）或
+		// 解析错误才是硬失败。
+		var notFound viper.ConfigFileNotFoundError
+		if !errors.As(err, &notFound) {
+			return fmt.Errorf("failed to read config: %w", err)
 		}
 	}
 
@@ -385,30 +404,33 @@ func (app *lynx) Context() context.Context {
 	return app.ctx
 }
 
-func (app *lynx) Option() *Options {
-	return app.o
-}
-
 func (app *lynx) addComponents(components ...Component) error {
 	for _, component := range components {
+		if component == nil {
+			// plain nil 检查：误注册 nil 组件返回明确错误而非运行时 panic。
+			// （typed-nil 无法在不使用反射的前提下完全防御，见各 contrib
+			// NewFromConfig 返回 nil 不得注册的文档约定。）
+			app.stopComponents(app.ctx)
+			return errors.New("lynx: cannot register nil component")
+		}
 		// 组件上下文携带应用元数据（name/id/version），但不继承取消信号：
 		// 组件仍由 run.Group 中断（Stop + cancel）来停止，从而保证关闭时
 		// OnStop hooks 先于组件 Stop 执行。
 		ctx, cancel := context.WithCancel(context.WithoutCancel(app.ctx))
-		log.InfoContext(ctx, "initializing component", "component", component.Name())
-		// Init 在锁外执行（调用方不持 app.mu）：Init 内调用 app.HealthCheckFunc()
-		// 等需要 app.mu 的方法时不会死锁。
+		app.logger.InfoContext(ctx, "initializing component", "component", component.Name())
+		// Init 在锁外执行（调用方不持 app.mu）：Init 内调用
+		// app.HealthCheckers() 等需要 app.mu 的方法时不会死锁。
 		if err := component.Init(app); err != nil {
 			cancel()
 			// 逆序有界停止本批及此前已 Init 成功的组件，释放其打开的资源。
 			app.stopComponents(app.ctx)
 			return err
 		}
-		log.InfoContext(ctx, "initialized component", "component", component.Name())
-		// 登记事务：running 检查与 runG.Add 同持 app.mu（P1-1 二轮修复）。
-		// 这是与 Run 并发时的权威裁决点——Run 在持 mu 时置位 running，
-		// 此处同样持 mu 判定+登记，任何迟到的 Add 都不可能越过该检查；
-		// 检查失败时组件不进入 components/healthCheckers/runG（无孤儿）。
+		app.logger.InfoContext(ctx, "initialized component", "component", component.Name())
+		// 登记事务：running 检查与 runG.Add 同持 app.mu。这是与 Run 并发时
+		// 的权威裁决点——Run 在持 mu 时置位 running，此处同样持 mu 判定+登记，
+		// 任何迟到的 Add 都不可能越过该检查；检查失败时组件不进入
+		// components/healthCheckers/runG（无孤儿）。
 		app.mu.Lock()
 		if app.running.Load() {
 			app.mu.Unlock()
@@ -417,17 +439,17 @@ func (app *lynx) addComponents(components ...Component) error {
 		}
 		app.components = append(app.components, component)
 		app.runG.Add(func() error {
-			log.InfoContext(ctx, "starting component", "component", component.Name())
+			app.logger.InfoContext(ctx, "starting component", "component", component.Name())
 			return component.Start(ctx)
 		}, func(err error) {
-			log.InfoContext(ctx, "stopping component", "component", component.Name())
+			app.logger.InfoContext(ctx, "stopping component", "component", component.Name())
 			// cancel 在 Stop 之后执行：Stop 收到的 ctx 在 Stop 期间保持存活，
 			// 组件可用它作为优雅关停的宽限期（如 HTTP 的 Shutdown）。
 			// 挂死（如等待 ctx.Done()）的 Stop 由 StopTimeout 有界兜底。
 			app.stopComponentBounded(ctx, component)
 			cancel()
 		})
-		if hc, ok := component.(health.Checker); ok {
+		if hc, ok := component.(Checker); ok {
 			app.healthCheckers = append(app.healthCheckers, hc)
 		}
 		app.mu.Unlock()
@@ -438,18 +460,26 @@ func (app *lynx) addComponents(components ...Component) error {
 // stopComponentBounded 有界停止单个组件：超过 StopTimeout 后记录错误并继续，
 // 防止挂死的组件 Stop 阻塞整个关停流程。
 // 注意：超时后组件 Stop 仍在后台 goroutine 运行，若其永久阻塞则该 goroutine
-// 随之泄漏（可接受的取舍——保证关停流程不被挂死优先，P2-2 已知语义）。
+// 随之泄漏（可接受的取舍——保证关停流程不被挂死优先）。
+// 组件 Stop 返回的错误与超时错误写入 shutdownErrors，由 Run() 统一上抛，
+// 使调用方（如 K8s）能感知组件级关停失败。
 func (app *lynx) stopComponentBounded(ctx context.Context, component Component) {
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
-		component.Stop(ctx)
+		done <- component.Stop(ctx)
 	}()
+	var stopErr error
 	select {
-	case <-done:
+	case stopErr = <-done:
 	case <-time.After(app.o.StopTimeout):
+		stopErr = fmt.Errorf("component %q stop timed out after %v", component.Name(), app.o.StopTimeout)
 		app.logger.ErrorContext(app.ctx, "component stop timed out",
 			"component", component.Name(), "timeout", app.o.StopTimeout.String())
+	}
+	if stopErr != nil {
+		app.logger.ErrorContext(app.ctx, "component stop error",
+			"component", component.Name(), "error", stopErr)
+		app.shutdownErrors.Add(stopErr)
 	}
 }
 
@@ -466,10 +496,10 @@ func (app *lynx) stopComponents(ctx context.Context) {
 func (app *lynx) Run() error {
 	app.mu.Lock()
 	initErr := app.initErr
-	// P1-1：running 在持 app.mu 时置位——与 Register 侧持锁登记事务的
-	// running 检查互斥，形成"检查与 runG.Add 同事务"的闭合判定。
-	// P2-1：同时作为 Run 的单次守卫——二次调用直接返回错误，
-	// 组件不会被二次 Start/Stop。
+	// running 在持 app.mu 时置位——与 Register 侧持锁登记事务的 running
+	// 检查互斥，形成"检查与 runG.Add 同事务"的闭合判定。
+	// 同时作为 Run 的单次守卫：二次调用直接返回错误，组件不会被二次
+	// Start/Stop。
 	alreadyRunning := app.running.Swap(true)
 	app.mu.Unlock()
 	if initErr != nil {
@@ -510,8 +540,8 @@ func (app *lynx) Run() error {
 		shutdownErr = app.runOnStopHooks()
 	}
 	// 关闭 actor 的登记同样持 app.mu：保证所有 runG.Add 都在锁内完成，
-	// runG.Run() 迭代 actors 前不存在并发 Add（P1-1 二轮修复）。
-	// oklog/run 的 Add 仅是切片 append，持锁调用不会死锁。
+	// runG.Run() 迭代 actors 前不存在并发 Add。oklog/run 的 Add 仅是切片
+	// append，持锁调用不会死锁。
 	app.mu.Lock()
 	app.runG.Add(func() error {
 		select {
@@ -531,9 +561,13 @@ func (app *lynx) Run() error {
 	app.mu.Unlock()
 
 	// Step 3: run.Group 在第一个 actor 返回后停止所有组件。
-	// P1-2：组件 Start 先失败时 oklog/run 只返回首个 actor 错误，OnStop
-	// 钩子错误仅落日志；此处用 errors.Join 聚合两者一起上抛（nil 安全）。
-	return errors.Join(app.runG.Run(), shutdownErr)
+	// 组件 Start 先失败时 oklog/run 只返回首个 actor 错误；此处把 run group
+	// 错误、OnStop 钩子错误与组件 Stop 错误聚合后一并上抛（nil 安全）。
+	runErr := app.runG.Run()
+	if app.shutdownErrors.HasErrors() {
+		return errors.Join(runErr, shutdownErr, &app.shutdownErrors)
+	}
+	return errors.Join(runErr, shutdownErr)
 }
 
 func (app *lynx) runOnStartHooks() error {
@@ -568,7 +602,6 @@ func (app *lynx) runOnStopHooks() error {
 			shutdownErrors.Add(errors.New("shutdown timeout exceeded while running on-stop hooks"))
 			break
 		}
-		fn := fn
 		done := make(chan error, 1)
 		go func() { done <- fn(ctx) }()
 		select {
@@ -594,10 +627,13 @@ func newLynx(o *Options) (App, error) {
 	if err := o.Validate(); err != nil {
 		return nil, err
 	}
+	f := pflag.NewFlagSet(os.Args[0], pflag.ContinueOnError)
+	// 忽略未知 flag：go test 二进制自带的 -test.* 参数不应导致初始化失败。
+	f.ParseErrorsAllowlist.UnknownFlags = true
 	app := &lynx{
 		o:        o,
 		c:        viper.New(),
-		f:        pflag.NewFlagSet(os.Args[0], pflag.ContinueOnError),
+		f:        f,
 		runG:     &run.Group{},
 		logger:   slog.Default(),
 		onStarts: []HookFunc{},

@@ -8,7 +8,6 @@ import (
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/boot"
 	"github.com/spf13/viper"
-	"gocloud.dev/server/health"
 )
 
 // fakeLynx is a minimal lynx.App implementation that records registration calls.
@@ -35,9 +34,7 @@ func (f *fakeLynx) CLI(cmd lynx.CommandFunc) error    { return nil }
 func (f *fakeLynx) Run() error                        { return nil }
 func (f *fakeLynx) SetLogger(logger *slog.Logger)     {}
 func (f *fakeLynx) Logger(kwargs ...any) *slog.Logger { return slog.Default() }
-func (f *fakeLynx) HealthCheckFunc() lynx.HealthCheckFunc {
-	return func() []health.Checker { return nil }
-}
+func (f *fakeLynx) HealthCheckers() []lynx.Checker    { return nil }
 
 var _ lynx.App = (*fakeLynx)(nil)
 

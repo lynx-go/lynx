@@ -6,7 +6,6 @@ replace github.com/lynx-go/lynx => ../../
 
 require (
 	github.com/lynx-go/lynx v1.0.0
-	github.com/lynx-go/x v0.1.0
 	github.com/robfig/cron/v3 v3.0.1
 )
 
@@ -27,7 +26,6 @@ require (
 	go.opentelemetry.io/otel v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	gocloud.dev v0.46.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )

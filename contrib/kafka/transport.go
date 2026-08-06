@@ -1,5 +1,9 @@
 // Package kafka 提供 Kafka Transport 组件：按逻辑 topic 配置集群、
 // 物理主题与消费/发布参数，接入 pubsub.Broker。
+//
+// 配置驱动：NewFromConfig 从配置 "kafka" 段加载 Options 并创建 Transport；
+// 段缺失或为空时返回 (nil, nil) 表示 Kafka 未启用——**返回 nil 时不得
+// Register**（框架对 plain nil 组件注册会返回明确错误）。
 package kafka
 
 import (
@@ -10,6 +14,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -22,7 +27,6 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/pubsub"
-	"github.com/lynx-go/x/log"
 )
 
 // Options 是 Kafka Transport 的配置；可用 app.Config().UnmarshalKey("kafka", &opts)
@@ -122,7 +126,9 @@ type ProducerOptions struct {
 // 订阅按（消费组 × 物理 topic × 实例数）展开后 fan-in。
 type Transport struct {
 	opts Options
-	app  lynx.App
+	// logger 是组件日志实例：Init(env) 时从 env.Logger 取，未 Init
+	//（脱离框架单用）时回落 slog.Default()。
+	logger *slog.Logger
 
 	mu          sync.Mutex
 	publishers  map[string]message.Publisher  // key: brokers 列表
@@ -162,6 +168,7 @@ type subscriberParams struct {
 func NewTransport(opts Options) (*Transport, error) {
 	t := &Transport{
 		opts:             opts,
+		logger:           slog.Default(),
 		publishers:       map[string]message.Publisher{},
 		subscribers:      map[string]message.Subscriber{},
 		pubSaramaConfigs: map[string]*sarama.Config{},
@@ -192,9 +199,11 @@ func NewTransport(opts Options) (*Transport, error) {
 // Name 返回组件名称 "kafka-transport"。
 func (t *Transport) Name() string { return "kafka-transport" }
 
-// Init 校验配置并保存应用实例。
-func (t *Transport) Init(app lynx.App) error {
-	t.app = app
+// Init 校验配置并记录日志实例。
+func (t *Transport) Init(env lynx.Env) error {
+	if env != nil {
+		t.logger = env.Logger("component", t.Name())
+	}
 	for name, topic := range t.opts.Topics {
 		if len(topic.Brokers) == 0 {
 			return fmt.Errorf("kafka: topic %q has no brokers", name)
@@ -214,23 +223,30 @@ func (t *Transport) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop 关闭全部客户端并取消组件上下文。
-func (t *Transport) Stop(ctx context.Context) {
+// Stop 关闭全部客户端并取消组件上下文；关闭错误聚合返回。
+func (t *Transport) Stop(ctx context.Context) error {
 	t.stopped.Store(true)
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	var closeErrors lynx.ShutdownErrors
 	for _, p := range t.publishers {
 		if err := p.Close(); err != nil {
-			log.ErrorContext(ctx, "error closing kafka publisher", err)
+			t.logger.ErrorContext(ctx, "error closing kafka publisher", "error", err)
+			closeErrors.Add(err)
 		}
 	}
 	for _, s := range t.subscribers {
 		if err := s.Close(); err != nil {
-			log.ErrorContext(ctx, "error closing kafka subscriber", err)
+			t.logger.ErrorContext(ctx, "error closing kafka subscriber", "error", err)
+			closeErrors.Add(err)
 		}
 	}
 	t.running.Store(false)
 	t.cancel()
+	if closeErrors.HasErrors() {
+		return &closeErrors
+	}
+	return nil
 }
 
 // CheckHealth 报告 Transport 是否在运行。
@@ -250,11 +266,11 @@ func (t *Transport) Topics() []string {
 	return names
 }
 
-func (t *Transport) logger() watermill.LoggerAdapter {
-	if t.app == nil {
+func (t *Transport) watermillLogger() watermill.LoggerAdapter {
+	if t.logger == nil {
 		return watermill.NopLogger{}
 	}
-	return watermill.NewSlogLogger(t.app.Logger("component", "kafka"))
+	return watermill.NewSlogLogger(t.logger)
 }
 
 // Publish 将消息发布到逻辑 topic 对应的物理 topic；ctx 用于传播 trace/元数据。
@@ -282,7 +298,7 @@ func (t *Transport) Publish(ctx context.Context, topic string, msgs ...*message.
 	}
 	if to.Producer.LogMessage {
 		for _, msg := range msgs {
-			log.DebugContext(ctx, "sending kafka message", "message", string(msg.Payload), "topic", physical)
+			t.logger.DebugContext(ctx, "sending kafka message", "message", string(msg.Payload), "topic", physical)
 		}
 	}
 	return p.Publish(physical, msgs...)
@@ -501,7 +517,7 @@ func (t *Transport) publisherFor(brokers []string, producer *ProducerOptions, sa
 	if err != nil {
 		return nil, err
 	}
-	p, err := t.newPublisher(brokers, cfg, t.logger())
+	p, err := t.newPublisher(brokers, cfg, t.watermillLogger())
 	if err != nil {
 		return nil, err
 	}
@@ -525,7 +541,7 @@ func (t *Transport) subscriberFor(brokers []string, group string, consumer *Cons
 		params.nackResendSleep = consumer.NackResendSleep
 		params.reconnectRetrySleep = consumer.ReconnectRetrySleep
 	}
-	s, err := t.newSubscriber(params, t.logger())
+	s, err := t.newSubscriber(params, t.watermillLogger())
 	if err != nil {
 		return nil, err
 	}
@@ -540,7 +556,7 @@ func (t *Transport) logMessages(ctx context.Context, physical string, in <-chan 
 	go func() {
 		defer close(out)
 		for msg := range in {
-			log.DebugContext(ctx, "received kafka message", "message", string(msg.Payload), "topic", physical)
+			t.logger.DebugContext(ctx, "received kafka message", "message", string(msg.Payload), "topic", physical)
 			out <- msg
 		}
 	}()

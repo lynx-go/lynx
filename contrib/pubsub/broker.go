@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -14,7 +15,6 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	"github.com/ThreeDotsLabs/watermill/message/router/plugin"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/x/log"
 )
 
 // Broker 是消息代理门面组件：按 topic 路由到 Transport，统一发布订阅。
@@ -74,6 +74,7 @@ func NewBroker(opts Options) Broker {
 		options:  opts,
 		routes:   map[string]routeEntry{},
 		explicit: map[string]routeEntry{},
+		logger:   slog.Default(),
 	}
 }
 
@@ -178,8 +179,10 @@ func (a subscriberAdapter) Close() error { return nil }
 // Broker 是 Broker 接口的具体实现。
 type broker struct {
 	options Options
-	app     lynx.App
-	router  *message.Router
+	// logger 是组件日志实例：Init(env) 时从 env.Logger 取，未 Init 时
+	// 回落 slog.Default()。
+	logger *slog.Logger
+	router *message.Router
 
 	// routes 与 explicit 由 routeMu 保护：Route/RouteKey 与 Init 自动路由写，
 	// resolve（Publish/Start）读。
@@ -230,10 +233,11 @@ func (b *broker) CheckHealth() error {
 }
 
 // Init 创建 watermill router 并执行自动路由。
-func (b *broker) Init(app lynx.App) error {
-	b.app = app
-	slogger := app.Logger("component", "pubsub")
-	logger := watermill.NewSlogLogger(slogger)
+func (b *broker) Init(env lynx.Env) error {
+	if env != nil {
+		b.logger = env.Logger("component", "pubsub")
+	}
+	logger := watermill.NewSlogLogger(b.logger)
 
 	router, err := message.NewRouter(message.RouterConfig{}, logger)
 	if err != nil {
@@ -350,13 +354,15 @@ func (b *broker) Start(ctx context.Context) error {
 	return b.router.Run(ctx)
 }
 
-// Stop 关闭 watermill router。
-func (b *broker) Stop(ctx context.Context) {
+// Stop 关闭 watermill router；关闭错误返回。
+func (b *broker) Stop(ctx context.Context) error {
 	if b.router != nil {
 		if err := b.router.Close(); err != nil {
-			log.ErrorContext(ctx, "error closing router", err)
+			b.logger.ErrorContext(ctx, "error closing router", "error", err)
+			return err
 		}
 	}
+	return nil
 }
 
 // Subscribe 缓冲注册订阅；Start 后调用返回错误。handlerName 在缓冲期内
@@ -390,10 +396,9 @@ func (b *broker) wrapHandler(h HandlerFunc, o SubscribeOptions) message.NoPublis
 	handler := func(msg *message.Message) error {
 		ctx := ContextWithMessageID(msg.Context(), msg.UUID)
 		ctx = ContextWithMessageKey(ctx, msg.Metadata.Get(MessageKeyKey.String()))
-		ctx = log.Context(ctx, log.FromContext(ctx), MessageIDKey.String(), msg.UUID)
 
 		if err := h(ctx, fromWatermill(msg)); err != nil {
-			log.ErrorContext(ctx, "error handling message", err, "x-message-id", msg.UUID)
+			b.logger.ErrorContext(ctx, "error handling message", "error", err, "x-message-id", msg.UUID)
 			if o.ContinueOnError {
 				msg.Ack()
 				return nil
