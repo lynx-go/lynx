@@ -99,7 +99,8 @@ pubsub:
 	}
 }
 
-// TestNewFromConfigNilEntrySkipped 验证字面 nil 条目被防御性跳过。
+// TestNewFromConfigNilEntrySkipped 验证字面 nil 条目被防御性跳过，
+// 且路由引用 nil 条目按未知标识报错（resolve 表视 nil 为未提供）。
 func TestNewFromConfigNilEntrySkipped(t *testing.T) {
 	b, err := NewFromConfig(builderTestConfig(t, "addr: \":9090\"\n"),
 		map[string]Transport{"kafka": nil})
@@ -108,6 +109,16 @@ func TestNewFromConfigNilEntrySkipped(t *testing.T) {
 	}
 	if b == nil {
 		t.Fatal("expected non-nil broker")
+	}
+	// 路由引用 nil 条目：视为未提供，报未知标识错误。
+	_, err = NewFromConfig(builderTestConfig(t, `
+pubsub:
+  routes:
+    hello:
+      transport: kafka
+`), map[string]Transport{"kafka": nil})
+	if err == nil || !strings.Contains(err.Error(), `route "hello" references unknown transport "kafka"`) {
+		t.Fatalf("expected unknown transport error for nil entry, got %v", err)
 	}
 }
 
