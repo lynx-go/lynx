@@ -2,7 +2,6 @@ package pubsub
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/lynx-go/lynx"
 )
@@ -29,16 +28,8 @@ func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (Broker, er
 		return nil, err
 	}
 
-	// 自动路由 transports 按名字排序遍历，保证多个 transport 声明同一
-	// topic 时 Init 的冲突报错顺序确定（启动行为可复现）。
 	opts := Options{}
-	names := make([]string, 0, len(transports))
-	for name := range transports {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		t := transports[name]
+	for name, t := range transports {
 		if t == nil {
 			continue // 字面 nil 防御性跳过
 		}
