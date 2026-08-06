@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	gohttp "net/http"
 	"os"
 
@@ -20,57 +19,30 @@ func main() {
 	builder := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 
-		// kafka 配置从 config.yaml 的 kafka 段加载（--config 指定路径）。
-		var kafkaOpts kafka.Options
-		if err := app.Config().UnmarshalKey("kafka", &kafkaOpts); err != nil {
-			return err
-		}
-		kafkaT, err := kafka.NewTransport(kafkaOpts)
+		// kafka transport 由 kafka.NewFromConfig 从 config.yaml 的 kafka 段加载
+		//（--config 指定路径）；段缺失/为空时返回 nil，表示 Kafka 未启用。
+		kafkaT, err := kafka.NewFromConfig(app.Config())
 		if err != nil {
 			return err
 		}
-		memT := pubsub.NewMemoryTransport()
-		broker := pubsub.NewBroker(pubsub.Options{
-			Transports:       []pubsub.Transport{kafkaT},
-			DefaultTransport: memT,
-		})
-
-		// 显式路由从 config.yaml 的 pubsub 段加载：逻辑 topic → {transport,
-		// key}。key 是调用 transport 时的主题名（kafka 时为 kafka 段配置的
-		// key），经 broker.RouteKey 应用，覆盖自动路由；transport 标识未知
-		// 时报错，避免路由表静默失真。
-		var pubsubCfg struct {
-			Routes map[string]struct {
-				Transport string
-				Key       string
-			}
+		transports := map[string]pubsub.Transport{}
+		if kafkaT != nil {
+			transports["kafka"] = kafkaT
 		}
-		if err := app.Config().UnmarshalKey("pubsub", &pubsubCfg); err != nil {
+		// pubsub.NewFromConfig 从 config.yaml 的 pubsub 段加载显式路由并应用
+		// RouteKey（逻辑 topic → {transport, key}）；内置内存 Transport 作为
+		// 默认回退。路由引用未知 transport 标识（或 kafka 未启用仍引用
+		// kafka）时构建期报错，避免路由表静默失真。
+		bundle, err := pubsub.NewFromConfig(app.Config(), transports)
+		if err != nil {
 			return err
 		}
-		transports := map[string]pubsub.Transport{
-			"kafka":  kafkaT,
-			"memory": memT,
-		}
-		for topic, route := range pubsubCfg.Routes {
-			t, ok := transports[route.Transport]
-			if !ok {
-				return fmt.Errorf("pubsub: route %q references unknown transport %q", topic, route.Transport)
-			}
-			if route.Key == "" {
-				route.Key = topic
-			}
-			broker.RouteKey(topic, t, route.Key)
-		}
-
-		app.Register(memT)
-		app.Register(kafkaT)
-		app.Register(broker)
-		app.Register(pubsub.NewRouter(broker, []pubsub.Handler{&helloHandler{}, &notifyHandler{}}))
+		app.Register(bundle.Components()...)
+		app.Register(pubsub.NewRouter(bundle.Broker, []pubsub.Handler{&helloHandler{}, &notifyHandler{}}))
 
 		mux := gohttp.NewServeMux()
 		mux.HandleFunc("/hello", func(writer gohttp.ResponseWriter, request *gohttp.Request) {
-			if err := broker.Publish(ctx, "hello",
+			if err := bundle.Broker.Publish(ctx, "hello",
 				pubsub.MustJSONMessage(map[string]any{"message": "hello"}),
 				pubsub.WithMessageKey(uuid.NewString()),
 			); err != nil {
@@ -81,7 +53,7 @@ func main() {
 			_, _ = writer.Write([]byte("ok"))
 		})
 		mux.HandleFunc("/notify", func(writer gohttp.ResponseWriter, request *gohttp.Request) {
-			if err := broker.Publish(ctx, "notify",
+			if err := bundle.Broker.Publish(ctx, "notify",
 				pubsub.MustJSONMessage(map[string]any{"message": "notify"}),
 				pubsub.WithMessageKey(uuid.NewString()),
 			); err != nil {
