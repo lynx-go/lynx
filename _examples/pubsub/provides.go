@@ -21,7 +21,8 @@ var ProviderSet = wire.NewSet(
 	boot.New,
 	NewConfig,
 	NewKafkaTransport,
-	NewBundle,
+	NewMemoryTransport,
+	NewBroker,
 	NewHandlers,
 	NewRouter,
 	NewHttpServer,
@@ -42,10 +43,15 @@ func NewKafkaTransport(cfg lynx.Config) (*kafka.Transport, error) {
 	return kafka.NewFromConfig(cfg)
 }
 
-// NewBundle 装配消息组件：pubsub.NewFromConfig 从配置 pubsub 段加载
-// 显式路由，内置内存 Transport 兜底；kafka 未启用时过滤。
-func NewBundle(cfg lynx.Config, kafkaT *kafka.Transport) (*pubsub.Bundle, error) {
-	transports := map[string]pubsub.Transport{}
+// NewMemoryTransport 提供进程内 Transport（默认回退与本地开发用）。
+func NewMemoryTransport() *pubsub.MemoryTransport {
+	return pubsub.NewMemoryTransport()
+}
+
+// NewBroker 装配消息组件：pubsub.NewFromConfig 从配置 pubsub 段加载
+// 显式路由，memory 兼作默认回退；kafka 未启用时过滤。
+func NewBroker(cfg lynx.Config, kafkaT *kafka.Transport, memT *pubsub.MemoryTransport) (pubsub.Broker, error) {
+	transports := map[string]pubsub.Transport{"memory": memT}
 	if kafkaT != nil {
 		transports["kafka"] = kafkaT
 	}
@@ -58,15 +64,15 @@ func NewHandlers() []pubsub.Handler {
 }
 
 // NewRouter 将处理器缓冲订阅到 Broker。
-func NewRouter(bundle *pubsub.Bundle, handlers []pubsub.Handler) *pubsub.Router {
-	return pubsub.NewRouter(bundle.Broker, handlers)
+func NewRouter(broker pubsub.Broker, handlers []pubsub.Handler) *pubsub.Router {
+	return pubsub.NewRouter(broker, handlers)
 }
 
 // NewHttpServer 构建 HTTP 服务：/hello 与 /notify 端点发布事件。
-func NewHttpServer(bundle *pubsub.Bundle) *http.Server {
+func NewHttpServer(broker pubsub.Broker) *http.Server {
 	mux := gohttp.NewServeMux()
 	mux.HandleFunc("/hello", func(writer gohttp.ResponseWriter, request *gohttp.Request) {
-		if err := bundle.Broker.Publish(request.Context(), "hello",
+		if err := broker.Publish(request.Context(), "hello",
 			pubsub.MustJSONMessage(map[string]any{"message": "hello"}),
 			pubsub.WithMessageKey(uuid.NewString()),
 		); err != nil {
@@ -77,7 +83,7 @@ func NewHttpServer(bundle *pubsub.Bundle) *http.Server {
 		_, _ = writer.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/notify", func(writer gohttp.ResponseWriter, request *gohttp.Request) {
-		if err := bundle.Broker.Publish(request.Context(), "notify",
+		if err := broker.Publish(request.Context(), "notify",
 			pubsub.MustJSONMessage(map[string]any{"message": "notify"}),
 			pubsub.WithMessageKey(uuid.NewString()),
 		); err != nil {
@@ -91,8 +97,13 @@ func NewHttpServer(bundle *pubsub.Bundle) *http.Server {
 }
 
 // NewComponents 聚合全部组件供 bootstrap 注册。
-func NewComponents(bundle *pubsub.Bundle, router *pubsub.Router, hs *http.Server) []lynx.Component {
-	return append(bundle.Components(), router, hs)
+func NewComponents(memT *pubsub.MemoryTransport, kafkaT *kafka.Transport,
+	broker pubsub.Broker, router *pubsub.Router, hs *http.Server) []lynx.Component {
+	comps := []lynx.Component{memT}
+	if kafkaT != nil {
+		comps = append(comps, kafkaT)
+	}
+	return append(comps, broker, router, hs)
 }
 
 // NewComponentBuilders 提供空组件构建器集合（pubsub 示例无需动态构建）。

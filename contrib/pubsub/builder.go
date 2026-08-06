@@ -7,30 +7,18 @@ import (
 	"github.com/lynx-go/lynx"
 )
 
-// Bundle 是配置驱动装配的结果：Broker 与需要随应用注册的 Transports。
-type Bundle struct {
-	Broker     Broker
-	Transports []Transport
-}
-
-// Components 返回应注册的全部组件（Transports + Broker），供 app.Register 使用。
-func (b *Bundle) Components() []lynx.Component {
-	comps := make([]lynx.Component, 0, len(b.Transports)+1)
-	for _, t := range b.Transports {
-		comps = append(comps, t)
-	}
-	return append(comps, b.Broker)
-}
-
-// NewFromConfig 从配置装配消息组件：
+// NewFromConfig 从配置装配 Broker：
 //   - "pubsub" 段 routes（逻辑 topic → {transport, key}）逐条应用 RouteKey，
 //     引用未提供的 transport 标识时报错；
 //   - 传入 transports 的非 nil 值参与自动路由；
-//   - 标识 "memory" 的 transport 兼作默认回退；未提供时内置创建一个
-//     内存 Transport 作为默认回退并纳入 Transports；
-//   - map 中的字面 nil 值条目被防御性跳过；具体类型 nil 指针赋给接口
-//     形成的 typed nil 无法在此检测，调用方须过滤后再放入 map。
-func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (*Bundle, error) {
+//   - 标识 "memory" 的 transport（提供且非 nil 时）兼作默认回退——未路由
+//     的 topic 走它；不提供则无默认回退，未路由 topic 发布报错；
+//   - 不创建任何 transport：kafka 与 memory 一律由调用方创建并注册
+//     （生命周期归属应用）；
+//   - map 中的字面 nil 值条目被防御性跳过；kafka 未启用的过滤由调用方
+//     完成（示例 `if kafkaT != nil` 写法）。注意：具体类型 nil 指针赋给
+//     Transport 接口（typed nil）无法在此检测，调用方必须过滤后再放入 map。
+func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (Broker, error) {
 	var routesCfg struct {
 		Routes map[string]struct {
 			Transport string
@@ -41,53 +29,29 @@ func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (*Bundle, e
 		return nil, err
 	}
 
-	// 默认回退：优先复用调用方提供的 "memory"，否则内置创建。
-	memT, hasMemory := transports["memory"]
-	if !hasMemory || memT == nil {
-		memT = NewMemoryTransport()
-	}
-	opts := Options{DefaultTransport: memT}
-
-	// 自动路由 transports 与注册列表；字面 nil 防御性跳过；memory 仅作
-	// 默认回退（Topics() 为 nil），不重复进入自动路由表。按名字排序遍历，
-	// 保证注册顺序确定（组件启动顺序可复现）。
+	// 自动路由 transports 按名字排序遍历，保证多个 transport 声明同一
+	// topic 时 Init 的冲突报错顺序确定（启动行为可复现）。
+	opts := Options{}
 	names := make([]string, 0, len(transports))
 	for name := range transports {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	registered := make([]Transport, 0, len(transports)+1)
 	for _, name := range names {
 		t := transports[name]
 		if t == nil {
-			continue
-		}
-		if name == "memory" {
-			registered = append(registered, t)
-			continue
+			continue // 字面 nil 防御性跳过
 		}
 		opts.Transports = append(opts.Transports, t)
-		registered = append(registered, t)
-	}
-	if !hasMemory || memT == nil {
-		registered = append(registered, memT)
-	}
-
-	// 路由解析表：memory 标识始终可用（未提供时指向内置默认）。
-	resolve := make(map[string]Transport, len(transports)+1)
-	for name, t := range transports {
-		if t != nil {
-			resolve[name] = t
+		if name == "memory" {
+			opts.DefaultTransport = t
 		}
-	}
-	if _, ok := resolve["memory"]; !ok {
-		resolve["memory"] = memT
 	}
 
 	broker := NewBroker(opts)
 	for topic, route := range routesCfg.Routes {
-		t, ok := resolve[route.Transport]
-		if !ok {
+		t, ok := transports[route.Transport]
+		if !ok || t == nil {
 			return nil, fmt.Errorf("pubsub: route %q references unknown transport %q", topic, route.Transport)
 		}
 		if route.Key == "" {
@@ -95,5 +59,5 @@ func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (*Bundle, e
 		}
 		broker.RouteKey(topic, t, route.Key)
 	}
-	return &Bundle{Broker: broker, Transports: registered}, nil
+	return broker, nil
 }

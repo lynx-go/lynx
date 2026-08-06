@@ -16,19 +16,20 @@ import (
 func wireBootstrap(app lynx.App) (*boot.Bootstrap, func(), error) {
 	onStartHooks := NewOnStarts()
 	onStopHooks := NewOnStops()
+	memoryTransport := NewMemoryTransport()
 	config := NewConfig(app)
 	transport, err := NewKafkaTransport(config)
 	if err != nil {
 		return nil, nil, err
 	}
-	bundle, err := NewBundle(config, transport)
+	broker, err := NewBroker(config, transport, memoryTransport)
 	if err != nil {
 		return nil, nil, err
 	}
 	v := NewHandlers()
-	router := NewRouter(bundle, v)
-	server := NewHttpServer(bundle)
-	v2 := NewComponents(bundle, router, server)
+	router := NewRouter(broker, v)
+	server := NewHttpServer(broker)
+	v2 := NewComponents(memoryTransport, transport, broker, router, server)
 	v3 := NewComponentBuilders()
 	bootstrap := boot.New(onStartHooks, onStopHooks, v2, v3)
 	return bootstrap, func() {
