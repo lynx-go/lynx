@@ -88,22 +88,22 @@ func WithResource(r *resource.Resource) Option {
 	}
 }
 
-// New 创建托管 OTel 生命周期的组件：Init 创建 provider 并设置为 otel
+// New 创建托管 OTel 生命周期的服务：Init 创建 provider 并设置为 otel
 // 全局值，Start 阻塞至应用关闭，Stop 自动 flush 并 shutdown。
 //
-// 业务指标（otel.Meter 创建的 instrument）需在组件注册之后创建，
+// 业务指标（otel.Meter 创建的 instrument）需在服务注册之后创建，
 // 否则拿到的是 noop meter。
-func New(opts ...Option) lynx.Component {
+func New(opts ...Option) lynx.Service {
 	o := &Options{
 		propagator: propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}),
 	}
 	for _, opt := range opts {
 		opt(o)
 	}
-	return &otelComponent{options: o}
+	return &otelService{options: o}
 }
 
-type otelComponent struct {
+type otelService struct {
 	options *Options
 	tp      *sdktrace.TracerProvider
 	mp      *sdkmetric.MeterProvider
@@ -111,15 +111,15 @@ type otelComponent struct {
 }
 
 // Name 返回组件名称 "otel"。
-func (c *otelComponent) Name() string {
+func (c *otelService) Name() string {
 	return "otel"
 }
 
 // Init 创建 provider 并设置为 otel 全局值。重复 Init 返回错误：
 // 多次注册会覆盖 otel 全局且首个 provider 永不 Shutdown（泄漏）。
-func (c *otelComponent) Init(ctx lynx.AppContext) error {
+func (c *otelService) Init(ctx lynx.AppContext) error {
 	if c.inited {
-		return errors.New("telemetry component already initialized (register once)")
+		return errors.New("telemetry service already initialized (register once)")
 	}
 	options := *c.options
 	if ctx != nil && options.res == nil {
@@ -142,14 +142,14 @@ func (c *otelComponent) Init(ctx lynx.AppContext) error {
 }
 
 // Start 阻塞至应用关闭（组件 actor 语义）。
-func (c *otelComponent) Start(ctx context.Context) error {
+func (c *otelService) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
 
 // Stop 自动 flush 并关闭 provider。未 Init（provider 为空）时安全返回 nil。
 // 关闭错误聚合返回，由框架随 Run() 统一上抛。
-func (c *otelComponent) Stop(ctx context.Context) error {
+func (c *otelService) Stop(ctx context.Context) error {
 	var shutdownErrors lynx.ShutdownErrors
 	if c.tp != nil {
 		shutdownErrors.Add(c.tp.Shutdown(ctx))

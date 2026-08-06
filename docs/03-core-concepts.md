@@ -1,32 +1,32 @@
 # 3. 核心概念
 
-本章介绍 Lynx 的核心设计理念：应用生命周期与并发模型、Hooks 机制、Options 选项、配置管理、Context 辅助函数以及优雅关闭。这些概念贯穿整个框架，理解它们之后再去读第 4 章的组件系统会顺畅得多。
+本章介绍 Lynx 的核心设计理念：应用生命周期与并发模型、Hooks 机制、Options 选项、配置管理、Context 辅助函数以及优雅关闭。这些概念贯穿整个框架，理解它们之后再去读第 4 章的服务系统会顺畅得多。
 
 ## 3.1 应用生命周期
 
 一个 Lynx 应用的完整生命周期由 `lynx.NewBuilder` 和 `cli.Run()` 串起来：
 
 1. `lynx.NewBuilder(setup, opts...)` 创建应用实例（返回 `*Builder`）：先调用 `EnsureDefaults` 补全 Options，再解析命令行参数、读取配置文件，最后把应用名称、ID、版本注入应用 Context（见 3.5 节）。
-2. `cli.Run()` 首先调用 `setup` 回调：在这里注册组件和钩子。组件的 `Init(ctx AppContext)` 在注册时（即 `app.Register` 调用时）同步执行，返回 error 会被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
-3. `setup` 返回后进入 `Run()`：启动所有组件的 `Start(ctx)`，并阻塞等待退出信号。
-4. 收到退出信号（或某个执行单元结束）后进入关闭流程，依次执行 `OnStop` 钩子并调用各组件的 `Stop(ctx)`。
+2. `cli.Run()` 首先调用 `setup` 回调：在这里注册服务和钩子。服务的 `Init(ctx AppContext)` 在注册时（即 `app.Register` 调用时）同步执行，返回 error 会被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
+3. `setup` 返回后进入 `Run()`：启动所有服务的 `Start(ctx)`，并阻塞等待退出信号。
+4. 收到退出信号（或某个执行单元结束）后进入关闭流程，依次执行 `OnStop` 钩子并调用各服务的 `Stop(ctx)`。
 
-即每个组件遵循 `Init → Start → Stop` 的调用顺序：
+即每个服务遵循 `Init → Start → Stop` 的调用顺序：
 
-- `Init(ctx AppContext)`：注册组件时同步调用，用于初始化依赖。参数是 `lynx.AppContext`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），组件不依赖完整的 `App` 接口（见 3.6 节 AppContext 接口说明）。
+- `Init(ctx AppContext)`：注册服务时同步调用，用于初始化依赖。参数是 `lynx.AppContext`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），服务不依赖完整的 `App` 接口（见 3.6 节 AppContext 接口说明）。
 - `Start`：`Run()` 启动后并发调用，通常是阻塞式的（如监听端口、消费消息），其 `ctx` 被取消时应返回。
 - `Stop(ctx) error`：关闭阶段调用，用于释放资源；返回的错误由框架收集，与 OnStop 钩子错误一起随 `Run()` 上抛。
 
 ### 并发模型：run group
 
-Lynx 使用 oklog/run 的 `run.Group` 管理所有并发执行单元。每个通过 `app.Register` / `app.RegisterFactories` 注册的组件是一个 actor；此外 `Run()` 还会注册一个信号 actor。
+Lynx 使用 oklog/run 的 `run.Group` 管理所有并发执行单元。每个通过 `app.Register` / `app.RegisterFactories` 注册的服务是一个 actor；此外 `Run()` 还会注册一个信号 actor。
 
-- `OnStart` 钩子不占用 run group actor：在 `Run()` 中、组件启动前按注册顺序串行执行，全部成功后才启动组件（见 3.2 节）。
-- 信号 actor：监听退出信号（见 3.6 节）或应用 Context 取消。一旦触发，先在 actor 内按顺序执行所有 `OnStop` 钩子，然后返回，run group 随之中断各组件。
+- `OnStart` 钩子不占用 run group actor：在 `Run()` 中、服务启动前按注册顺序串行执行，全部成功后才启动服务（见 3.2 节）。
+- 信号 actor：监听退出信号（见 3.6 节）或应用 Context 取消。一旦触发，先在 actor 内按顺序执行所有 `OnStop` 钩子，然后返回，run group 随之中断各服务。
 
-run group 的语义是：所有组件 actor 并发运行；一旦有任何一个 actor 返回——组件 `Start` 出错、CLI 命令执行完毕（`app.Command` 注册的命令结束时调用 `app.Close()`）、或信号 actor 返回——框架会中断其余所有 actor，整个应用随之进入统一关闭流程。这意味着任何一个组件失败都会触发整体优雅关闭，不会出现"半个应用还在跑"的状态。
+run group 的语义是：所有服务 actor 并发运行；一旦有任何一个 actor 返回——服务 `Start` 出错、CLI 命令执行完毕（`app.Command` 注册的命令结束时调用 `app.Close()`）、或信号 actor 返回——框架会中断其余所有 actor，整个应用随之进入统一关闭流程。这意味着任何一个服务失败都会触发整体优雅关闭，不会出现"半个应用还在跑"的状态。
 
-需要注意一个细节：每个组件拥有独立的 Context（注册组件时创建）。关闭时 run group 对每个组件 actor 先调用 `Stop(ctx)`，再取消其 Context。因此组件的 `Stop` 实现不要等待 `ctx.Done()`——它永远不会等到；`Start` 中阻塞在 `<-ctx.Done()` 上的逻辑会在 `Stop` 返回后被解除。
+需要注意一个细节：每个服务拥有独立的 Context（注册服务时创建）。关闭时 run group 对每个服务 actor 先调用 `Stop(ctx)`，再取消其 Context。因此服务的 `Stop` 实现不要等待 `ctx.Done()`——它永远不会等到；`Start` 中阻塞在 `<-ctx.Done()` 上的逻辑会在 `Stop` 返回后被解除。
 
 ## 3.2 Hooks 与错误聚合
 
@@ -52,8 +52,8 @@ return nil
 
 两类钩子的执行时机和语义不同：
 
-- `OnStart`：在 `Run()` 启动阶段、组件启动前按注册顺序串行执行，收到的 `ctx` 是应用 Context。任何一个钩子返回 error，`Run()` 立即返回该错误，组件不会启动。
-- `OnStop`：在关闭阶段、组件 `Stop` 之前按注册顺序串行执行，收到带有 `ShutdownTimeout` 超时的 `ctx`（见 3.6 节）；单个钩子阻塞超过时限会被判定超时并继续执行后续钩子，不会挂起整个关闭流程。
+- `OnStart`：在 `Run()` 启动阶段、服务启动前按注册顺序串行执行，收到的 `ctx` 是应用 Context。任何一个钩子返回 error，`Run()` 立即返回该错误，服务不会启动。
+- `OnStop`：在关闭阶段、服务 `Stop` 之前按注册顺序串行执行，收到带有 `ShutdownTimeout` 超时的 `ctx`（见 3.6 节）；单个钩子阻塞超过时限会被判定超时并继续执行后续钩子，不会挂起整个关闭流程。
 
 `OnStop` 钩子的错误处理使用 `errors.go` 中的 `ShutdownErrors` 做聚合：某个钩子出错不会中断后续钩子的执行，所有错误被收集后以分号连接成一条日志输出。`ShutdownErrors` 的 API：
 
@@ -80,7 +80,7 @@ return nil
 | `WithDisableConfigFlags()` | 关闭默认的命令行参数声明与绑定（默认开启） |
 | `WithExitSignals(signals...)` | 自定义触发优雅关闭的信号列表 |
 | `WithShutdownTimeout(d)` | OnStop 钩子关闭超时，默认 5 秒 |
-| `WithStopTimeout(d)` | 单个组件 Stop 最长等待时长，默认 5 秒 |
+| `WithStopTimeout(d)` | 单个服务 Stop 最长等待时长，默认 5 秒 |
 
 `NewOptions` 自身已经填充了部分默认值：`ID` 取 `os.Hostname()`，`Name` 为 `DefaultName`，`ShutdownTimeout` 为 5 秒，`StopTimeout` 为 5 秒，`ExitSignals` 为默认信号列表，并默认启用内置配置 flags（`SetFlagsFunc`/`BindConfigFunc` 默认取 `DefaultSetFlagsFunc`/`DefaultBindConfigFunc`）。
 
@@ -188,9 +188,9 @@ router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 })
 ```
 
-## 3.6 AppContext 接口与组件接缝
+## 3.6 AppContext 接口与服务接缝
 
-组件的 `Init` 接收的不是完整的 `App` 接口，而是更窄的 `lynx.AppContext`：
+服务的 `Init` 接收的不是完整的 `App` 接口，而是更窄的 `lynx.AppContext`：
 
 ```go
 type AppContext interface {
@@ -202,9 +202,9 @@ type AppContext interface {
 }
 ```
 
-`App` 是 `AppContext` 的超集（`App` 内嵌 `AppContext`，额外提供 `Register`/`OnStart`/`OnStop`/`Command`/`Run`/`SetLogger`）。组件在 `Init` 中只依赖 `AppContext` 的五个方法：读取配置、取日志、访问应用元信息（经 Context）、获取健康检查快照、或请求关闭应用（如一次性命令执行完毕）。测试时只需实现这五个方法，无需为 `App` 的其余方法写空实现。
+`App` 是 `AppContext` 的超集（`App` 内嵌 `AppContext`，额外提供 `Register`/`OnStart`/`OnStop`/`Command`/`Run`/`SetLogger`）。服务在 `Init` 中只依赖 `AppContext` 的五个方法：读取配置、取日志、访问应用元信息（经 Context）、获取健康检查快照、或请求关闭应用（如一次性命令执行完毕）。测试时只需实现这五个方法，无需为 `App` 的其余方法写空实现。
 
-框架的职责边界：组件不能通过 `AppContext` 注册其他组件或修改生命周期钩子——`Init` 阶段（注册时同步执行）只允许"读取环境、准备资源"。
+框架的职责边界：服务不能通过 `AppContext` 注册其他服务或修改生命周期钩子——`Init` 阶段（注册时同步执行）只允许"读取环境、准备资源"。
 
 ## 3.7 优雅关闭
 
@@ -218,7 +218,7 @@ opts := lynx.NewOptions(
 )
 ```
 
-除了信号，以下事件同样会进入关闭流程：任一组件 `Start` 返回（正常结束或出错）、`app.CLI` 注册的命令执行完毕、用户代码主动调用 `app.Close()`（取消应用 Context）。
+除了信号，以下事件同样会进入关闭流程：任一服务 `Start` 返回（正常结束或出错）、`app.Command` 注册的命令执行完毕、用户代码主动调用 `app.Close()`（取消应用 Context）。
 
 ### 关闭流程
 
@@ -226,15 +226,15 @@ opts := lynx.NewOptions(
 
 1. 取消应用 Context，通知所有监听它的逻辑（包括 OnStart 钩子 actor）退出；
 2. 以 `ShutdownTimeout` 为超时创建新 Context，按注册顺序串行执行所有 `OnStop` 钩子，错误通过 `ShutdownErrors` 聚合；
-3. run group 中断所有组件 actor：对每个组件先调用 `Stop(ctx)`，再取消其 Context（使 `Start` 中的 `<-ctx.Done()` 解除阻塞）。组件 `Stop` 返回的错误与超时错误同样聚合进 `ShutdownErrors`。
+3. run group 中断所有服务 actor：对每个服务先调用 `Stop(ctx)`，再取消其 Context（使 `Start` 中的 `<-ctx.Done()` 解除阻塞）。服务 `Stop` 返回的错误与超时错误同样聚合进 `ShutdownErrors`。
 
-`ShutdownTimeout` 默认 5 秒（`DefaultShutdownTimeout`），可通过 `WithShutdownTimeout` 调整，合法区间为 1 秒到 5 分钟（见 3.3 节校验规则）。它约束的是 `OnStop` 钩子的总执行时间。组件 `Stop` 的单个最长等待由 `Options.StopTimeout`（默认 5 秒）约束：挂死（如等待 `ctx.Done()`）的 `Stop` 超时后跳过并记录错误，不会阻塞整个关停流程。
+`ShutdownTimeout` 默认 5 秒（`DefaultShutdownTimeout`），可通过 `WithShutdownTimeout` 调整，合法区间为 1 秒到 5 分钟（见 3.3 节校验规则）。它约束的是 `OnStop` 钩子的总执行时间。服务 `Stop` 的单个最长等待由 `Options.StopTimeout`（默认 5 秒）约束：挂死（如等待 `ctx.Done()`）的 `Stop` 超时后跳过并记录错误，不会阻塞整个关停流程。
 
-`Run()` 返回时会把三类错误聚合上抛（`errors.Join`）：run group 的首个 actor 错误、OnStop 钩子错误（含超时）、组件 Stop 错误（含超时）——调用方（如 K8s）可以感知关停失败。
+`Run()` 返回时会把三类错误聚合上抛（`errors.Join`）：run group 的首个 actor 错误、OnStop 钩子错误（含超时）、服务 Stop 错误（含超时）——调用方（如 K8s）可以感知关停失败。
 
 ## 3.8 综合示例
 
-下面这个完整示例把本章的概念串起来：自定义 `ShutdownTimeout`、注册 `OnStart`/`OnStop` 钩子、注册一个组件、通过 Context 辅助函数读取应用元信息。运行后按 `Ctrl+C` 可以观察完整的优雅关闭过程。
+下面这个完整示例把本章的概念串起来：自定义 `ShutdownTimeout`、注册 `OnStart`/`OnStop` 钩子、注册一个服务、通过 Context 辅助函数读取应用元信息。运行后按 `Ctrl+C` 可以观察完整的优雅关闭过程。
 
 ```go
 package main
@@ -260,7 +260,7 @@ func main() {
 			app.Logger().Info("on-stop hook")
 			return nil
 		})
-		app.Register(&myComponent{})
+		app.Register(&myService{})
 		return nil
 	},
 		lynx.WithName("core-concepts"),
@@ -270,20 +270,20 @@ func main() {
 	cli.Run()
 }
 
-type myComponent struct{}
+type myService struct{}
 
-func (c *myComponent) Name() string { return "my-component" }
+func (c *myService) Name() string { return "my-component" }
 
-func (c *myComponent) Init(ctx lynx.AppContext) error { return nil }
+func (c *myService) Init(ctx lynx.AppContext) error { return nil }
 
-func (c *myComponent) Start(ctx context.Context) error {
+func (c *myService) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
 
-func (c *myComponent) Stop(ctx context.Context) error { return nil }
+func (c *myService) Stop(ctx context.Context) error { return nil }
 ```
 
 ## 3.9 下一步
 
-- [第 4 章：组件系统](./04-component-system.md) - 深入理解 `Component` 接口契约、`ComponentFactory` 与自定义组件编写
+- [第 4 章：服务系统](./04-component-system.md) - 深入理解 `Service` 接口契约、`ServiceFactory` 与自定义服务编写

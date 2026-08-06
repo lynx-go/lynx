@@ -202,7 +202,7 @@ func (t *Transport) Name() string { return "kafka-transport" }
 // Init 校验配置并记录日志实例。
 func (t *Transport) Init(ctx lynx.AppContext) error {
 	if ctx != nil {
-		t.logger = ctx.Logger("component", t.Name())
+		t.logger = ctx.Logger("service", t.Name())
 	}
 	for name, topic := range t.opts.Topics {
 		if len(topic.Brokers) == 0 {
@@ -588,4 +588,6 @@ func fanIn(chans []<-chan *message.Message, done func()) <-chan *message.Message
 }
 
 var _ pubsub.Transport = (*Transport)(nil)
-var _ lynx.Component = (*Transport)(nil)
+var _ lynx.Service = (*Transport)(nil)
+
+var _ lynx.Checker = (*Transport)(nil)

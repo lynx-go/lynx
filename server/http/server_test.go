@@ -353,7 +353,7 @@ func waitForDial(t *testing.T, addr string) {
 	t.Fatalf("server at %s did not start accepting connections", addr)
 }
 
-var _ lynx.Component = (*Server)(nil)
+var _ lynx.Service = (*Server)(nil)
 
 // TestStopBeforeStartIsNoop ensures Stop is safe before Start has assigned
 // the underlying server (e.g. shutdown during startup), and does not panic

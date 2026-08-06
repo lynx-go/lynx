@@ -12,7 +12,7 @@ import (
 // CommandFunc 是命令组件执行的业务函数，返回错误时视为命令失败。
 type CommandFunc func(ctx context.Context) error
 
-// CommandOptions configures the command component behavior.
+// CommandOptions configures the command service behavior.
 type CommandOptions struct {
 	Name           string
 	MaxTries       uint
@@ -23,7 +23,7 @@ type CommandOptions struct {
 // CommandOption is a function that configures CommandOptions.
 type CommandOption func(*CommandOptions)
 
-// WithCommandName sets the command component name used in logs.
+// WithCommandName sets the command service name used in logs.
 func WithCommandName(name string) CommandOption {
 	return func(o *CommandOptions) { o.Name = name }
 }
@@ -41,8 +41,8 @@ func WithBackoff(initial, max time.Duration) CommandOption {
 	}
 }
 
-// NewCommand creates a new command component with the given function and options.
-func NewCommand(fn CommandFunc, opts ...CommandOption) Component {
+// NewCommand creates a new command service with the given function and options.
+func NewCommand(fn CommandFunc, opts ...CommandOption) Service {
 	options := &CommandOptions{
 		Name:           "command",
 		MaxTries:       10,
@@ -79,7 +79,7 @@ func (cmd *command) Name() string {
 func (cmd *command) Init(ctx AppContext) error {
 	cmd.appctx = ctx
 	if ctx != nil {
-		cmd.logger = ctx.Logger("component", cmd.options.Name)
+		cmd.logger = ctx.Logger("service", cmd.options.Name)
 	}
 	return nil
 }
@@ -97,7 +97,7 @@ func (cmd *command) Start(ctx context.Context) error {
 		// Run 之前，见 App 接口注释）。
 		for _, checker := range cmd.appctx.HealthCheckers() {
 			if err := checker.CheckHealth(); err != nil {
-				cmd.logger.WarnContext(ctx, "waiting for dependent component ready", "error", err)
+				cmd.logger.WarnContext(ctx, "waiting for dependent service ready", "error", err)
 				return nil, err
 			}
 		}

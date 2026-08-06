@@ -13,7 +13,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-func TestComponentLifecycle(t *testing.T) {
+func TestServiceLifecycle(t *testing.T) {
 	beforeTP := otel.GetTracerProvider()
 	beforeMP := otel.GetMeterProvider()
 	t.Cleanup(func() {
@@ -141,7 +141,7 @@ func TestStdoutTraceOption(t *testing.T) {
 	}
 }
 
-var _ lynx.Component = new(otelComponent)
+var _ lynx.Service = new(otelService)
 
 type fakeSpanExporter struct{}
 

@@ -22,7 +22,7 @@ func (r *Router) Name() string { return "pubsub-router" }
 // Init 将全部 Handler 缓冲订阅到 Broker（纯缓冲，无时序依赖）。
 func (r *Router) Init(ctx lynx.AppContext) error {
 	if ctx != nil {
-		r.logger = ctx.Logger("component", "pubsub-router")
+		r.logger = ctx.Logger("service", "pubsub-router")
 	}
 	for _, h := range r.handlers {
 		r.logger.InfoContext(ctx.Context(), "add event handler", "event_name", h.EventName(), "handler_name", h.HandlerName())
@@ -49,9 +49,9 @@ func (r *Router) Stop(ctx context.Context) error {
 	return nil
 }
 
-var _ lynx.Component = (*Router)(nil)
+var _ lynx.Service = (*Router)(nil)
 
-// NewRouter 创建事件路由组件。
+// NewRouter 创建事件路由服务。
 func NewRouter(broker Broker, handlers []Handler) *Router {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Router{broker: broker, handlers: handlers, ctx: ctx, cancel: cancel, logger: slog.Default()}

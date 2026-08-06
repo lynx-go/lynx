@@ -15,8 +15,8 @@ var ProviderSet = wire.NewSet(
 	boot.New,
 	NewHttpServer,
 	NewConfig,
-	NewComponents,
-	NewComponentFactories,
+	NewServices,
+	NewServiceFactories,
 	NewOnStarts,
 	NewOnStops,
 )
@@ -29,12 +29,12 @@ func NewConfig(app lynx.App) (*AppConfig, error) {
 	return c, nil
 }
 
-func NewComponents(hs *http.Server) []lynx.Component {
-	return []lynx.Component{hs}
+func NewServices(hs *http.Server) []lynx.Service {
+	return []lynx.Service{hs}
 }
 
-func NewComponentFactories() []lynx.ComponentFactory {
-	return []lynx.ComponentFactory{}
+func NewServiceFactories() []lynx.ServiceFactory {
+	return []lynx.ServiceFactory{}
 }
 
 func NewOnStarts(app lynx.App) boot.OnStartHooks {

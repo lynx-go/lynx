@@ -68,8 +68,8 @@ go run main.go
 代码要点：
 
 - `lynx.NewOptions` 通过 `WithName`、`WithVersion` 等选项配置应用元信息。
-- `lynx.NewBuilder(setup, opts...)` 创建应用实例，`setup` 回调中通过 `app.Register(...)` 注册组件。
-- `http.NewServer` 创建一个 HTTP 服务器组件，`WithAddr` 指定监听地址，`WithHealthCheckers` 开启健康检查（见 2.5 节）。
+- `lynx.NewBuilder(setup, opts...)` 创建应用实例，`setup` 回调中通过 `app.Register(...)` 注册服务。
+- `http.NewServer` 创建一个 HTTP 服务器服务，`WithAddr` 指定监听地址，`WithHealthCheckers` 开启健康检查（见 2.5 节）。
 - `cli.Run()` 启动应用并阻塞，直到收到退出信号后优雅关闭。
 
 ## 2.3 使用配置文件
@@ -159,7 +159,7 @@ func main() {
 go run main.go
 ```
 
-输出 `hello cli` 后进程自动退出。`app.Command` 注册的命令同样运行在 Lynx 的生命周期管理中，可以与 `OnStart`/`OnStop` 钩子及其他组件（如 PubSub Broker）配合使用，完整示例见 `_examples/cli/main.go`。
+输出 `hello cli` 后进程自动退出。`app.Command` 注册的命令同样运行在 Lynx 的生命周期管理中，可以与 `OnStart`/`OnStop` 钩子及其他服务（如 PubSub Broker）配合使用，完整示例见 `_examples/cli/main.go`。
 
 ## 2.5 健康检查端点
 
@@ -175,32 +175,32 @@ curl -i http://localhost:8080/healthz/liveness
 curl -i http://localhost:8080/healthz/readiness
 ```
 
-`app.HealthCheckers` 会收集所有实现了 `lynx.Checker` 接口的组件作为就绪检查项——收集发生在组件注册时，框架对每个通过 `app.Register` 注册的组件做 `Checker` 类型断言，通过断言的才会加入就绪检查列表。
+`app.HealthCheckers` 会收集所有实现了 `lynx.Checker` 接口的服务作为就绪检查项——收集发生在服务注册时，框架对每个通过 `app.Register` 注册的服务做 `Checker` 类型断言，通过断言的才会加入就绪检查列表。
 
-框架还提供了开箱即用的 `lynx.HealthChecker`，可通过 `SetHealthy(true/false)` 动态控制就绪状态。需要注意：`lynx.HealthChecker` 只实现了 `Checker` 接口，并不是 `Component`，单独创建它不会产生任何效果。正确的用法是把它内嵌到自己的组件中，再把组件注册进应用：
+框架还提供了开箱即用的 `lynx.HealthChecker`，可通过 `SetHealthy(true/false)` 动态控制就绪状态。需要注意：`lynx.HealthChecker` 只实现了 `Checker` 接口，并不是 `Service`，单独创建它不会产生任何效果。正确的用法是把它内嵌到自己的服务中，再把服务注册进应用：
 
 ```go
-type myComponent struct {
+type myService struct {
 	*lynx.HealthChecker
 }
 
-func (c *myComponent) Name() string             { return "my-component" }
-func (c *myComponent) Init(ctx lynx.AppContext) error { c.SetHealthy(true); return nil }
-func (c *myComponent) Start(ctx context.Context) error {
+func (c *myService) Name() string             { return "my-component" }
+func (c *myService) Init(ctx lynx.AppContext) error { c.SetHealthy(true); return nil }
+func (c *myService) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
-func (c *myComponent) Stop(ctx context.Context) error { return nil }
+func (c *myService) Stop(ctx context.Context) error { return nil }
 ```
 
-注册组件（注意初始化内嵌的 `HealthChecker`，否则为空指针）：
+注册服务（注意初始化内嵌的 `HealthChecker`，否则为空指针）：
 
 ```go
-app.Register(&myComponent{HealthChecker: &lynx.HealthChecker{}})
+app.Register(&myService{HealthChecker: &lynx.HealthChecker{}})
 return nil
 ```
 
-由于内嵌，`myComponent` 自动满足 `Checker` 接口，注册后即成为 `/healthz/readiness` 的检查项；之后在业务逻辑中调用 `c.SetHealthy(false)` 即可让就绪检查返回 503。这对于需要"预热后再接流量"或"运维时临时摘流"的场景非常实用。
+由于内嵌，`myService` 自动满足 `Checker` 接口，注册后即成为 `/healthz/readiness` 的检查项；之后在业务逻辑中调用 `c.SetHealthy(false)` 即可让就绪检查返回 503。这对于需要"预热后再接流量"或"运维时临时摘流"的场景非常实用。
 
 ## 2.6 下一步
 

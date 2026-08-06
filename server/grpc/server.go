@@ -183,7 +183,7 @@ func NewServer(opts ...Option) *Server {
 	return s
 }
 
-// Server 是 gRPC 服务组件，实现 lynx.Service 接口。
+// Server 是 gRPC 服务，实现 lynx.Service 接口。
 type Server struct {
 	// mu guards listener, which is written by Start and read by Stop on a
 	// different goroutine during shutdown.
@@ -362,3 +362,5 @@ func (s *Server) GetServer() *grpc.Server {
 }
 
 var _ lynx.Service = (*Server)(nil)
+
+var _ lynx.Checker = (*Server)(nil)

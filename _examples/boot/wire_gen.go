@@ -18,8 +18,8 @@ func wireBootstrap(app lynx.App, slogger *slog.Logger) (*boot.Bootstrap, func(),
 	onStartHooks := NewOnStarts(app)
 	onStopHooks := NewOnStops(app)
 	server := NewHttpServer(app)
-	v := NewComponents(server)
-	v2 := NewComponentFactories()
+	v := NewServices(server)
+	v2 := NewServiceFactories()
 	bootstrap := boot.New(onStartHooks, onStopHooks, v, v2)
 	return bootstrap, func() {
 	}, nil

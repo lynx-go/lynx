@@ -67,4 +67,6 @@ func TestMemoryTransportLifecycle(t *testing.T) {
 }
 
 var _ Transport = (*MemoryTransport)(nil)
-var _ lynx.Component = (*MemoryTransport)(nil)
+var _ lynx.Service = (*MemoryTransport)(nil)
+
+var _ lynx.Checker = (*MemoryTransport)(nil)

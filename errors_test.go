@@ -77,7 +77,7 @@ func TestShutdownErrorsConcurrentAdd(t *testing.T) {
 }
 
 func TestCommonErrors(t *testing.T) {
-	if got := ErrNotInitialized.Error(); got != "component not initialized" {
+	if got := ErrNotInitialized.Error(); got != "service not initialized" {
 		t.Errorf("ErrNotInitialized = %q", got)
 	}
 	if got := ErrBuildFuncNil.Error(); got != "build func is nil" {

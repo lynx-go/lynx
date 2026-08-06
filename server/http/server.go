@@ -165,7 +165,7 @@ func NewServer(handler http.Handler, opts ...Option) *Server {
 	}
 }
 
-// Server 是 HTTP 服务组件，实现 lynx.Component 接口。
+// Server 是 HTTP 服务，实现 lynx.Service 接口。
 type Server struct {
 	// mu guards httpServer, which is assigned in Start and read in Stop;
 	// the two may run on different goroutines during shutdown.
@@ -313,4 +313,4 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 }
 
-var _ lynx.Component = (*Server)(nil)
+var _ lynx.Service = (*Server)(nil)

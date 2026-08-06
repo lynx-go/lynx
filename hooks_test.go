@@ -70,7 +70,7 @@ func TestRegisterConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			app.Register(&blockingComponent{name: "c"})
+			app.Register(&blockingService{name: "c"})
 		}()
 	}
 	wg.Wait()

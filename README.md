@@ -3,12 +3,12 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Lynx 是一个轻量级的 Go 微服务框架，提供了开箱即用的应用生命周期管理、组件系统、HTTP 服务器、健康检查、配置管理和事件驱动等功能。
+Lynx 是一个轻量级的 Go 微服务框架，提供了开箱即用的应用生命周期管理、服务系统、HTTP 服务器、健康检查、配置管理和事件驱动等功能。
 
 ## 特性
 
 - **应用生命周期管理** - 简洁的启动/停止流程，支持优雅关闭
-- **组件系统** - 基于 `Component` 接口的插件化架构
+- **服务系统** - 基于 `Service` 接口的插件化架构
 - **HTTP 服务器** - 内置 HTTP 服务器，支持健康检查和请求日志
 - **健康检查** - 集成健康检查机制，便于监控和服务发现
 - **可观测性** - 集成 OpenTelemetry tracing/metrics 与 Prometheus
@@ -53,7 +53,7 @@ func main() {
             })
         })
 
-        // 注册 HTTP 服务器组件
+        // 注册 HTTP 服务器服务
         app.Register(http.NewServer(router,
             http.WithAddr(":8080"),
             http.WithHealthCheckers(app.HealthCheckers),
@@ -184,12 +184,12 @@ app.Register(scheduler)
 
 ## 核心概念
 
-### Component（组件）
+### Service（服务）
 
-所有可管理的功能单元都实现 `Component` 接口：
+所有可管理的功能单元都实现 `Service` 接口：
 
 ```go
-type Component interface {
+type Service interface {
     Name() string
     Init(ctx AppContext) error
     Start(ctx context.Context) error
@@ -197,7 +197,7 @@ type Component interface {
 }
 ```
 
-组件的 `Init` 接收 `lynx.AppContext`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），
+服务的 `Init` 接收 `lynx.AppContext`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），
 不依赖完整的 `App` 接口。`Stop` 返回的错误与 OnStop 钩子错误一起由 `Run()` 统一上抛。
 
 ### Hooks（钩子）
@@ -239,9 +239,9 @@ func InitializeApp() (*Bootstrap, error) {
 lynx/
 ├── boot/           # 应用引导和依赖注入
 ├── builder.go      # Builder 入口（NewBuilder）
-├── command.go      # CLI 命令组件
-├── component.go    # 组件接口定义
-├── contrib/        # 扩展组件
+├── command.go      # CLI 命令服务
+├── service.go      # 服务接口定义
+├── contrib/        # 扩展服务
 │   ├── kafka/      # Kafka 支持
 │   ├── pubsub/     # 消息发布订阅
 │   ├── schedule/   # 定时任务

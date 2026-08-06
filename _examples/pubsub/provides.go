@@ -26,8 +26,8 @@ var ProviderSet = wire.NewSet(
 	NewHandlers,
 	NewRouter,
 	NewHttpServer,
-	NewComponents,
-	NewComponentFactories,
+	NewServices,
+	NewServiceFactories,
 	NewOnStarts,
 	NewOnStops,
 )
@@ -96,19 +96,19 @@ func NewHttpServer(broker pubsub.Broker) *http.Server {
 	return http.NewServer(mux, http.WithAddr(":7071"))
 }
 
-// NewComponents 聚合全部组件供 bootstrap 注册。
-func NewComponents(memT *pubsub.MemoryTransport, kafkaT *kafka.Transport,
-	broker pubsub.Broker, router *pubsub.Router, hs *http.Server) []lynx.Component {
-	comps := []lynx.Component{memT}
+// NewServices 聚合全部服务供 bootstrap 注册。
+func NewServices(memT *pubsub.MemoryTransport, kafkaT *kafka.Transport,
+	broker pubsub.Broker, router *pubsub.Router, hs *http.Server) []lynx.Service {
+	comps := []lynx.Service{memT}
 	if kafkaT != nil {
 		comps = append(comps, kafkaT)
 	}
 	return append(comps, broker, router, hs)
 }
 
-// NewComponentFactories 提供空组件工厂集合（pubsub 示例无需动态构建）。
-func NewComponentFactories() []lynx.ComponentFactory {
-	return []lynx.ComponentFactory{}
+// NewServiceFactories 提供空服务工厂集合（pubsub 示例无需动态构建）。
+func NewServiceFactories() []lynx.ServiceFactory {
+	return []lynx.ServiceFactory{}
 }
 
 func NewOnStarts() boot.OnStartHooks { return nil }

@@ -13,34 +13,34 @@ type OnStartHooks []lynx.HookFunc
 // OnStopHooks 是一组停止钩子函数。
 type OnStopHooks []lynx.HookFunc
 
-// Bootstrap 聚合应用启动所需的钩子函数、组件与组件工厂。
+// Bootstrap 聚合应用启动所需的钩子函数、服务与服务工厂。
 type Bootstrap struct {
-	StartHooks         OnStartHooks
-	StopHooks          OnStopHooks
-	Components         []lynx.Component
-	ComponentFactories []lynx.ComponentFactory
+	StartHooks       OnStartHooks
+	StopHooks        OnStopHooks
+	Services         []lynx.Service
+	ServiceFactories []lynx.ServiceFactory
 }
 
 // New 创建 Bootstrap 实例。
 func New(
 	onStarts OnStartHooks,
 	onStops OnStopHooks,
-	components []lynx.Component,
-	componentFactories []lynx.ComponentFactory,
+	services []lynx.Service,
+	serviceFactories []lynx.ServiceFactory,
 ) *Bootstrap {
 	return &Bootstrap{
-		StartHooks:         onStarts,
-		StopHooks:          onStops,
-		Components:         components,
-		ComponentFactories: componentFactories,
+		StartHooks:       onStarts,
+		StopHooks:        onStops,
+		Services:         services,
+		ServiceFactories: serviceFactories,
 	}
 }
 
-// Bind 将 Bootstrap 中的钩子函数、组件与组件工厂注册到 Lynx 应用。
-// 注册阶段产生的错误（如组件 Init 失败）由 app.Run() 统一返回。
+// Bind 将 Bootstrap 中的钩子函数、服务与服务工厂注册到 Lynx 应用。
+// 注册阶段产生的错误（如服务 Init 失败）由 app.Run() 统一返回。
 func (b *Bootstrap) Bind(app lynx.App) {
 	app.OnStart(b.StartHooks...)
 	app.OnStop(b.StopHooks...)
-	app.Register(b.Components...)
-	app.RegisterFactories(b.ComponentFactories...)
+	app.Register(b.Services...)
+	app.RegisterFactories(b.ServiceFactories...)
 }

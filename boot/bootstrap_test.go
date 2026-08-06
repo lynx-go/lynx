@@ -12,18 +12,18 @@ import (
 
 // fakeLynx is a minimal lynx.App implementation that records registration calls.
 type fakeLynx struct {
-	onStarts   []lynx.HookFunc
-	onStops    []lynx.HookFunc
-	components []lynx.Component
-	factories  []lynx.ComponentFactory
+	onStarts  []lynx.HookFunc
+	onStops   []lynx.HookFunc
+	services  []lynx.Service
+	factories []lynx.ServiceFactory
 }
 
 func (f *fakeLynx) OnStart(fns ...lynx.HookFunc) { f.onStarts = append(f.onStarts, fns...) }
 func (f *fakeLynx) OnStop(fns ...lynx.HookFunc)  { f.onStops = append(f.onStops, fns...) }
-func (f *fakeLynx) Register(cs ...lynx.Component) {
-	f.components = append(f.components, cs...)
+func (f *fakeLynx) Register(cs ...lynx.Service) {
+	f.services = append(f.services, cs...)
 }
-func (f *fakeLynx) RegisterFactories(fs ...lynx.ComponentFactory) {
+func (f *fakeLynx) RegisterFactories(fs ...lynx.ServiceFactory) {
 	f.factories = append(f.factories, fs...)
 }
 

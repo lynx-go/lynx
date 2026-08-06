@@ -17,18 +17,18 @@ import (
 	"github.com/spf13/viper"
 )
 
-// blockingComponent blocks in Start until its context is cancelled.
-type blockingComponent struct {
+// blockingService blocks in Start until its context is cancelled.
+type blockingService struct {
 	name    string
 	record  func(string)
 	started atomic.Bool
 }
 
-func (c *blockingComponent) Name() string { return c.name }
+func (c *blockingService) Name() string { return c.name }
 
-func (c *blockingComponent) Init(ctx AppContext) error { return nil }
+func (c *blockingService) Init(ctx AppContext) error { return nil }
 
-func (c *blockingComponent) Start(ctx context.Context) error {
+func (c *blockingService) Start(ctx context.Context) error {
 	c.started.Store(true)
 	if c.record != nil {
 		c.record("start:" + c.name)
@@ -37,48 +37,48 @@ func (c *blockingComponent) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *blockingComponent) Stop(ctx context.Context) error {
+func (c *blockingService) Stop(ctx context.Context) error {
 	if c.record != nil {
 		c.record("stop:" + c.name)
 	}
 	return nil
 }
 
-// failInitComponent fails in Init.
-type failInitComponent struct {
+// failInitService fails in Init.
+type failInitService struct {
 	name string
 	err  error
 }
 
-func (c *failInitComponent) Name() string                    { return c.name }
-func (c *failInitComponent) Init(ctx AppContext) error       { return c.err }
-func (c *failInitComponent) Start(ctx context.Context) error { return nil }
-func (c *failInitComponent) Stop(ctx context.Context) error  { return nil }
+func (c *failInitService) Name() string                    { return c.name }
+func (c *failInitService) Init(ctx AppContext) error       { return c.err }
+func (c *failInitService) Start(ctx context.Context) error { return nil }
+func (c *failInitService) Stop(ctx context.Context) error  { return nil }
 
-// failStartComponent fails in Start.
-type failStartComponent struct {
+// failStartService fails in Start.
+type failStartService struct {
 	name string
 	err  error
 }
 
-func (c *failStartComponent) Name() string                    { return c.name }
-func (c *failStartComponent) Init(ctx AppContext) error       { return nil }
-func (c *failStartComponent) Start(ctx context.Context) error { return c.err }
-func (c *failStartComponent) Stop(ctx context.Context) error  { return nil }
+func (c *failStartService) Name() string                    { return c.name }
+func (c *failStartService) Init(ctx AppContext) error       { return nil }
+func (c *failStartService) Start(ctx context.Context) error { return c.err }
+func (c *failStartService) Stop(ctx context.Context) error  { return nil }
 
-// checkerComponent implements both Component and Checker.
-type checkerComponent struct {
+// checkerService implements both Service and Checker.
+type checkerService struct {
 	HealthChecker
 	name string
 }
 
-func (c *checkerComponent) Name() string              { return c.name }
-func (c *checkerComponent) Init(ctx AppContext) error { return nil }
-func (c *checkerComponent) Start(ctx context.Context) error {
+func (c *checkerService) Name() string              { return c.name }
+func (c *checkerService) Init(ctx AppContext) error { return nil }
+func (c *checkerService) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
-func (c *checkerComponent) Stop(ctx context.Context) error { return nil }
+func (c *checkerService) Stop(ctx context.Context) error { return nil }
 
 // initRecorder records whether Init was called.
 type initRecorder struct {
@@ -97,15 +97,15 @@ func (c *initRecorder) Start(ctx context.Context) error {
 }
 func (c *initRecorder) Stop(ctx context.Context) error { return nil }
 
-// recordingFactory builds blockingComponents and counts New calls.
+// recordingFactory builds blockingServices and counts New calls.
 type recordingFactory struct {
 	instances int
 	builds    atomic.Int32
 }
 
-func (b *recordingFactory) New() Component {
+func (b *recordingFactory) New() Service {
 	b.builds.Add(1)
-	return &blockingComponent{name: "built"}
+	return &blockingService{name: "built"}
 }
 
 func (b *recordingFactory) Options() FactoryOptions {
@@ -144,12 +144,12 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) 
 	t.Fatalf("timeout waiting for %s", msg)
 }
 
-// initAppAccessorComponent 在 Init 中调用需要 app.mu 的 App 方法：
-// Init 若在持锁时执行（旧的 addComponents 路径）会死锁。
-type initAppAccessorComponent struct{}
+// initAppAccessorService 在 Init 中调用需要 app.mu 的 App 方法：
+// Init 若在持锁时执行（旧的 addServices 路径）会死锁。
+type initAppAccessorService struct{}
 
-func (c *initAppAccessorComponent) Name() string { return "accessor" }
-func (c *initAppAccessorComponent) Init(ctx AppContext) error {
+func (c *initAppAccessorService) Name() string { return "accessor" }
+func (c *initAppAccessorService) Init(ctx AppContext) error {
 	ctx.HealthCheckers()
 	app := ctx.(App)
 	app.OnStart(func(ctx context.Context) error { return nil })
@@ -158,8 +158,8 @@ func (c *initAppAccessorComponent) Init(ctx AppContext) error {
 	ctx.Context()
 	return nil
 }
-func (c *initAppAccessorComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
-func (c *initAppAccessorComponent) Stop(ctx context.Context) error  { return nil }
+func (c *initAppAccessorService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (c *initAppAccessorService) Stop(ctx context.Context) error  { return nil }
 
 // stopRecorder 在 Stop 时向缓冲 chan 发送组件名，用于失败清理断言。
 type stopRecorder struct {
@@ -175,25 +175,25 @@ func (c *stopRecorder) Stop(ctx context.Context) error {
 	return nil
 }
 
-// hangStopComponent 的 Stop 永不返回，用于验证 StopTimeout 有界兜底。
-type hangStopComponent struct{ name string }
+// hangStopService 的 Stop 永不返回，用于验证 StopTimeout 有界兜底。
+type hangStopService struct{ name string }
 
-func (c *hangStopComponent) Name() string                    { return c.name }
-func (c *hangStopComponent) Init(ctx AppContext) error       { return nil }
-func (c *hangStopComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
-func (c *hangStopComponent) Stop(ctx context.Context) error  { select {} }
+func (c *hangStopService) Name() string                    { return c.name }
+func (c *hangStopService) Init(ctx AppContext) error       { return nil }
+func (c *hangStopService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (c *hangStopService) Stop(ctx context.Context) error  { select {} }
 
-// failStopComponent 的 Stop 返回错误，用于验证关停错误随 Run() 上抛。
-type failStopComponent struct{ name string }
+// failStopService 的 Stop 返回错误，用于验证关停错误随 Run() 上抛。
+type failStopService struct{ name string }
 
-func (c *failStopComponent) Name() string                    { return c.name }
-func (c *failStopComponent) Init(ctx AppContext) error       { return nil }
-func (c *failStopComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
-func (c *failStopComponent) Stop(ctx context.Context) error  { return errors.New("stop boom") }
+func (c *failStopService) Name() string                    { return c.name }
+func (c *failStopService) Init(ctx AppContext) error       { return nil }
+func (c *failStopService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (c *failStopService) Stop(ctx context.Context) error  { return errors.New("stop boom") }
 
-// slowInitComponent 的 Init 阻塞直到 release 放行，用于在 Register 与 Run
+// slowInitService 的 Init 阻塞直到 release 放行，用于在 Register 与 Run
 // 之间制造确定性交错（Register/Run 并发裁决的回归测试）。
-type slowInitComponent struct {
+type slowInitService struct {
 	name        string
 	release     chan struct{}
 	enteredInit chan struct{}
@@ -201,25 +201,25 @@ type slowInitComponent struct {
 	stopped     atomic.Bool
 }
 
-func (c *slowInitComponent) Name() string { return c.name }
+func (c *slowInitService) Name() string { return c.name }
 
-func (c *slowInitComponent) Init(ctx AppContext) error {
+func (c *slowInitService) Init(ctx AppContext) error {
 	close(c.enteredInit)
 	<-c.release
 	return nil
 }
 
-func (c *slowInitComponent) Start(ctx context.Context) error {
+func (c *slowInitService) Start(ctx context.Context) error {
 	c.started.Store(true)
 	<-ctx.Done()
 	return nil
 }
 
-func (c *slowInitComponent) Stop(ctx context.Context) error { c.stopped.Store(true); return nil }
+func (c *slowInitService) Stop(ctx context.Context) error { c.stopped.Store(true); return nil }
 
 func TestInitCanCallAppMethods(t *testing.T) {
 	cli := NewBuilder(func(ctx context.Context, app App) error {
-		app.Register(&initAppAccessorComponent{})
+		app.Register(&initAppAccessorService{})
 		return nil
 	})
 	done := make(chan struct{})
@@ -234,10 +234,10 @@ func TestInitCanCallAppMethods(t *testing.T) {
 	}
 }
 
-func TestInitFailureStopsPreviouslyInitializedComponents(t *testing.T) {
+func TestInitFailureStopsPreviouslyInitializedServices(t *testing.T) {
 	stopped := make(chan string, 10)
 	good := &stopRecorder{name: "good", stopped: stopped}
-	bad := &failInitComponent{name: "bad", err: errors.New("init boom")}
+	bad := &failInitService{name: "bad", err: errors.New("init boom")}
 	cli := NewBuilder(func(ctx context.Context, app App) error {
 		app.Register(good, bad)
 		return nil
@@ -251,11 +251,11 @@ func TestInitFailureStopsPreviouslyInitializedComponents(t *testing.T) {
 			t.Fatalf("stopped %q, want good", name)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("previously initialized component was not stopped after init failure")
+		t.Fatal("previously initialized Service was not stopped after init failure")
 	}
 }
 
-func TestOnStartHookErrorStopsInitializedComponents(t *testing.T) {
+func TestOnStartHookErrorStopsInitializedServices(t *testing.T) {
 	stopped := make(chan string, 10)
 	comp := &stopRecorder{name: "comp", stopped: stopped}
 	cli := NewBuilder(func(ctx context.Context, app App) error {
@@ -272,13 +272,13 @@ func TestOnStartHookErrorStopsInitializedComponents(t *testing.T) {
 			t.Fatalf("stopped %q, want comp", name)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("component was not stopped after on-start hook failure")
+		t.Fatal("Service was not stopped after on-start hook failure")
 	}
 }
 
 func TestRunReturnsOnStopHookErrors(t *testing.T) {
 	cli := NewBuilder(func(ctx context.Context, app App) error {
-		app.Register(&blockingComponent{name: "c"})
+		app.Register(&blockingService{name: "c"})
 		app.OnStop(func(ctx context.Context) error { return errors.New("drain failed") })
 		return nil
 	})
@@ -296,9 +296,9 @@ func TestRunReturnsOnStopHookErrors(t *testing.T) {
 	}
 }
 
-func TestComponentStopBoundedByTimeout(t *testing.T) {
+func TestServiceStopBoundedByTimeout(t *testing.T) {
 	cli := NewBuilder(func(ctx context.Context, app App) error {
-		app.Register(&hangStopComponent{name: "hang"})
+		app.Register(&hangStopService{name: "hang"})
 		return nil
 	}, WithStopTimeout(time.Second))
 	app, err := cli.Build()
@@ -320,14 +320,14 @@ func TestComponentStopBoundedByTimeout(t *testing.T) {
 	}
 }
 
-// TestComponentStopErrorSurfacesAtRun 验证组件 Stop 返回的错误随 Run()
+// TestServiceStopErrorSurfacesAtRun 验证组件 Stop 返回的错误随 Run()
 // 统一上抛（关停错误对称上抛）。
-func TestComponentStopErrorSurfacesAtRun(t *testing.T) {
+func TestServiceStopErrorSurfacesAtRun(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
-	app.Register(&failStopComponent{name: "bad-stop"})
+	app.Register(&failStopService{name: "bad-stop"})
 
 	runErr := make(chan error, 1)
 	go func() {
@@ -339,7 +339,7 @@ func TestComponentStopErrorSurfacesAtRun(t *testing.T) {
 	select {
 	case err := <-runErr:
 		if err == nil || !strings.Contains(err.Error(), "stop boom") {
-			t.Fatalf("Run() error = %v, want component stop error to surface", err)
+			t.Fatalf("Run() error = %v, want Service stop error to surface", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run() did not return after Close()")
@@ -396,7 +396,7 @@ func TestRegisterInitErrorSurfacesAtRun(t *testing.T) {
 	}
 
 	wantErr := errors.New("init failed")
-	app.Register(&failInitComponent{name: "bad", err: wantErr})
+	app.Register(&failInitService{name: "bad", err: wantErr})
 
 	if err := app.Run(); !errors.Is(err, wantErr) {
 		t.Fatalf("Run() error = %v, want %v", err, wantErr)
@@ -405,19 +405,19 @@ func TestRegisterInitErrorSurfacesAtRun(t *testing.T) {
 
 // TestRegisterSkippedAfterInitError verifies the poison-pill semantics:
 // once a registration fails, later registrations are skipped so that
-// dependent components are not initialized against a broken state.
+// dependent Services are not initialized against a broken state.
 func TestRegisterSkippedAfterInitError(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 
-	app.Register(&failInitComponent{name: "bad", err: errors.New("init failed")})
+	app.Register(&failInitService{name: "bad", err: errors.New("init failed")})
 
 	second := &initRecorder{name: "second"}
 	app.Register(second)
 	if second.initialized.Load() {
-		t.Error("second component should not be initialized after a failed registration")
+		t.Error("second Service should not be initialized after a failed registration")
 	}
 
 	factory := &recordingFactory{instances: 1}
@@ -427,7 +427,7 @@ func TestRegisterSkippedAfterInitError(t *testing.T) {
 	}
 }
 
-func TestComponentFactoriesInstances(t *testing.T) {
+func TestServiceFactoriesInstances(t *testing.T) {
 	tests := []struct {
 		name       string
 		instances  int
@@ -460,10 +460,10 @@ func TestHealthCheckersRegistered(t *testing.T) {
 	}
 
 	if got := len(app.HealthCheckers()); got != 0 {
-		t.Fatalf("health checkers = %d, want 0 before registering components", got)
+		t.Fatalf("health checkers = %d, want 0 before registering Services", got)
 	}
 
-	comp := &checkerComponent{name: "checker"}
+	comp := &checkerService{name: "checker"}
 	app.Register(comp)
 
 	checkers := app.HealthCheckers()
@@ -471,24 +471,24 @@ func TestHealthCheckersRegistered(t *testing.T) {
 		t.Fatalf("health checkers = %d, want 1", len(checkers))
 	}
 	if checkers[0] != comp {
-		t.Error("registered health checker is not the component")
+		t.Error("registered health checker is not the Service")
 	}
 
-	// A component that is not a Checker must not be registered.
-	app.Register(&blockingComponent{name: "plain"})
+	// A Service that is not a Checker must not be registered.
+	app.Register(&blockingService{name: "plain"})
 	if got := len(app.HealthCheckers()); got != 1 {
-		t.Errorf("health checkers = %d, want 1 after adding non-checker component", got)
+		t.Errorf("health checkers = %d, want 1 after adding non-checker Service", got)
 	}
 }
 
-// TestRegisterNilComponent 验证 plain nil 组件注册返回明确错误而非运行时 panic。
-func TestRegisterNilComponent(t *testing.T) {
+// TestRegisterNilService 验证 plain nil 服务注册返回明确错误而非运行时 panic。
+func TestRegisterNilService(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 	app.Register(nil)
-	if err := app.Run(); err == nil || !strings.Contains(err.Error(), "cannot register nil component") {
+	if err := app.Run(); err == nil || !strings.Contains(err.Error(), "cannot register nil service") {
 		t.Fatalf("Run() error = %v, want cannot-register-nil error", err)
 	}
 }
@@ -500,8 +500,8 @@ func TestRunLifecycleStartStopOrdering(t *testing.T) {
 	}
 
 	rec := &eventRecorder{}
-	c1 := &blockingComponent{name: "c1", record: rec.record}
-	c2 := &blockingComponent{name: "c2", record: rec.record}
+	c1 := &blockingService{name: "c1", record: rec.record}
+	c2 := &blockingService{name: "c2", record: rec.record}
 	app.Register(c1, c2)
 	app.OnStop(func(ctx context.Context) error {
 		rec.record("onstop")
@@ -515,7 +515,7 @@ func TestRunLifecycleStartStopOrdering(t *testing.T) {
 
 	waitFor(t, 2*time.Second, func() bool {
 		return c1.started.Load() && c2.started.Load()
-	}, "components to start")
+	}, "Services to start")
 
 	app.Close()
 
@@ -530,7 +530,7 @@ func TestRunLifecycleStartStopOrdering(t *testing.T) {
 
 	events := rec.snapshot()
 
-	// Both components must have started (start order is concurrent, so check membership).
+	// Both Services must have started (start order is concurrent, so check membership).
 	started := map[string]bool{}
 	for _, e := range events {
 		if e == "start:c1" || e == "start:c2" {
@@ -538,11 +538,11 @@ func TestRunLifecycleStartStopOrdering(t *testing.T) {
 		}
 	}
 	if !started["start:c1"] || !started["start:c2"] {
-		t.Errorf("events = %v, want both components started", events)
+		t.Errorf("events = %v, want both Services started", events)
 	}
 
-	// Shutdown ordering is deterministic: OnStop hooks run before components
-	// stop, and components stop in registration order.
+	// Shutdown ordering is deterministic: OnStop hooks run before Services
+	// stop, and Services stop in registration order.
 	var stops []string
 	for _, e := range events {
 		if e == "stop:c1" || e == "stop:c2" || e == "onstop" {
@@ -576,14 +576,14 @@ func TestRunOnStartHookError(t *testing.T) {
 	}
 }
 
-func TestRunComponentStartError(t *testing.T) {
+func TestRunServiceStartError(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 
 	wantErr := errors.New("start failed")
-	app.Register(&failStartComponent{name: "bad", err: wantErr})
+	app.Register(&failStartService{name: "bad", err: wantErr})
 
 	if err := app.Run(); !errors.Is(err, wantErr) {
 		t.Fatalf("Run() error = %v, want %v", err, wantErr)
@@ -696,12 +696,12 @@ func TestRegisterAfterRunRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
-	c := &blockingComponent{name: "c"}
+	c := &blockingService{name: "c"}
 	app.Register(c)
 
 	runErr := make(chan error, 1)
 	go func() { runErr <- app.Run() }()
-	waitFor(t, 2*time.Second, func() bool { return c.started.Load() }, "component to start")
+	waitFor(t, 2*time.Second, func() bool { return c.started.Load() }, "Service to start")
 
 	assertPanics := func(name string, fn func()) {
 		t.Helper()
@@ -712,7 +712,7 @@ func TestRegisterAfterRunRejected(t *testing.T) {
 		}()
 		fn()
 	}
-	assertPanics("Register", func() { app.Register(&blockingComponent{name: "late"}) })
+	assertPanics("Register", func() { app.Register(&blockingService{name: "late"}) })
 	assertPanics("RegisterFactories", func() { app.RegisterFactories(&recordingFactory{instances: 1}) })
 	if err := app.Command(func(ctx context.Context) error { return nil }); err == nil ||
 		!strings.Contains(err.Error(), "must not be called after Run") {
@@ -739,7 +739,7 @@ func TestRunJoinsOnStopErrorsWithStartFailure(t *testing.T) {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 
-	app.Register(&failStartComponent{name: "bad", err: errors.New("start boom")})
+	app.Register(&failStartService{name: "bad", err: errors.New("start boom")})
 	app.OnStop(func(ctx context.Context) error { return errors.New("onstop boom") })
 
 	err = app.Run()
@@ -758,12 +758,12 @@ func TestRunRejectedTwice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
-	c := &blockingComponent{name: "c"}
+	c := &blockingService{name: "c"}
 	app.Register(c)
 
 	runErr := make(chan error, 1)
 	go func() { runErr <- app.Run() }()
-	waitFor(t, 2*time.Second, func() bool { return c.started.Load() }, "component to start")
+	waitFor(t, 2*time.Second, func() bool { return c.started.Load() }, "Service to start")
 
 	if err := app.Run(); err == nil || !strings.Contains(err.Error(), "more than once") {
 		t.Fatalf("second Run() error = %v, want explicit once-only error", err)
@@ -790,8 +790,8 @@ func TestRegisterRacingRunLeavesNoOrphan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
-	c1 := &blockingComponent{name: "c1"}
-	slow := &slowInitComponent{
+	c1 := &blockingService{name: "c1"}
+	slow := &slowInitService{
 		name:        "slow",
 		release:     make(chan struct{}),
 		enteredInit: make(chan struct{}),
@@ -825,10 +825,10 @@ func TestRegisterRacingRunLeavesNoOrphan(t *testing.T) {
 		t.Fatal("late Register racing Run did not panic")
 	}
 	if slow.started.Load() {
-		t.Error("orphan component was started")
+		t.Error("orphan Service was started")
 	}
 	if slow.stopped.Load() {
-		t.Error("orphan component was stopped")
+		t.Error("orphan Service was stopped")
 	}
 
 	app.Close()
@@ -923,19 +923,19 @@ func TestDefaultFlagsDisabled(t *testing.T) {
 	}
 }
 
-// TestOnStartRunsBeforeComponentsStart 验证 OnStart hooks 在组件启动前顺序执行。
-func TestOnStartRunsBeforeComponentsStart(t *testing.T) {
+// TestOnStartRunsBeforeServicesStart 验证 OnStart hooks 在组件启动前顺序执行。
+func TestOnStartRunsBeforeServicesStart(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 
 	rec := &eventRecorder{}
-	c := &blockingComponent{name: "c1", record: rec.record}
+	c := &blockingService{name: "c1", record: rec.record}
 	app.Register(c)
 	app.OnStart(func(ctx context.Context) error {
 		if c.started.Load() {
-			t.Error("OnStart hook ran after component had already started")
+			t.Error("OnStart hook ran after Service had already started")
 		}
 		rec.record("onstart")
 		return nil
@@ -946,7 +946,7 @@ func TestOnStartRunsBeforeComponentsStart(t *testing.T) {
 		runErr <- app.Run()
 	}()
 
-	waitFor(t, 2*time.Second, func() bool { return c.started.Load() }, "component to start")
+	waitFor(t, 2*time.Second, func() bool { return c.started.Load() }, "Service to start")
 	app.Close()
 
 	select {
@@ -960,7 +960,7 @@ func TestOnStartRunsBeforeComponentsStart(t *testing.T) {
 
 	events := rec.snapshot()
 	if len(events) == 0 || events[0] != "onstart" {
-		t.Fatalf("events = %v, want onstart recorded before component start", events)
+		t.Fatalf("events = %v, want onstart recorded before Service start", events)
 	}
 }
 
@@ -1168,7 +1168,7 @@ func newLynxWithConfig(c ConfigSource) (App, error) {
 		onStops:  []HookFunc{},
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
-	app.components = []Component{}
+	app.services = []Service{}
 	app.c = c.(*viperConfig).v
 	if err := app.init(); err != nil {
 		return nil, err

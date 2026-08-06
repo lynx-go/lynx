@@ -14,12 +14,12 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-// Scheduler 是基于 cron 的定时任务调度组件，实现 lynx.Service 接口。
+// Scheduler 是基于 cron 的定时任务调度服务，实现 lynx.Service 接口。
 type Scheduler struct {
 	options *Options
 	tasks   []Task
 	cron    *cron.Cron
-	// logger 是组件日志实例：Init(ctx) 时从 ctx.Logger 取，未 Init 时
+	// logger 是服务日志实例：Init(ctx) 时从 ctx.Logger 取，未 Init 时
 	// 回落 NewScheduler 的 WithLogger（默认 slog.Default()）。
 	logger *slog.Logger
 	// taskCtx 是任务执行的上下文：Init(ctx) 时取自 ctx.Context()（携带
@@ -71,7 +71,7 @@ func (s *Scheduler) Init(ctx lynx.AppContext) error {
 		return nil
 	}
 	s.taskCtx = ctx.Context()
-	s.logger = ctx.Logger("component", "cron-scheduler")
+	s.logger = ctx.Logger("service", "cron-scheduler")
 	return nil
 }
 
@@ -140,6 +140,8 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 }
 
 var _ lynx.Service = new(Scheduler)
+
+var _ lynx.Checker = new(Scheduler)
 
 // Task 定义一个定时任务：名称、cron 表达式与处理函数。
 type Task interface {

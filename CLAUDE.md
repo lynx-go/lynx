@@ -65,10 +65,10 @@ Each contrib module has its own `go.mod` with local replace directives pointing 
 
 ### Core Abstractions
 
-**Component System**
-All managed units implement the `Component` interface (component.go):
+**Service System**
+All managed units implement the `Service` interface (service.go):
 ```go
-type Component interface {
+type Service interface {
     Name() string
     Lifecycle
 }
@@ -88,31 +88,31 @@ type Lifecycle interface {
 }
 ```
 
-Components are registered via `app.Register(...)` and automatically managed through their lifecycle. Components implementing `lynx.Checker` (`CheckHealth() error`, defined locally in health.go — no gocloud.dev dependency) are automatically added to health checks; `app.HealthCheckers()` returns the snapshot slice. `Stop` errors are collected (bounded by `Options.StopTimeout`) and surfaced by `Run()` together with OnStop hook errors.
+Services are registered via `app.Register(...)` and automatically managed through their lifecycle. Services implementing `lynx.Checker` (`CheckHealth() error`, defined locally in health.go — no gocloud.dev dependency) are automatically added to health checks; `app.HealthCheckers()` returns the snapshot slice. `Stop` errors are collected (bounded by `Options.StopTimeout`) and surfaced by `Run()` together with OnStop hook errors.
 
-**ComponentFactory**
-For dynamic component creation with configurable instance counts (component.go:40-55):
+**ServiceFactory**
+For dynamic service creation with configurable instance counts (service.go:40-55):
 ```go
-type ComponentFactory interface {
-    New() Component
+type ServiceFactory interface {
+    New() Service
     Options() FactoryOptions
 }
 ```
 
 **Hooks & Registration**
-Lifecycle hooks and components are registered via direct methods on the `App` interface (lynx.go):
+Lifecycle hooks and services are registered via direct methods on the `App` interface (lynx.go):
 - `app.OnStart(fns ...HookFunc)` - Functions to execute on startup
 - `app.OnStop(fns ...HookFunc)` - Functions to execute on shutdown
-- `app.Register(components ...Component)` - Register components (Init runs synchronously at registration; the first error is recorded and returned by `Run()`). All registration must happen before `Run()`: after `Run()` starts, `Register`/`RegisterFactories` panic and `Command` returns an error
-- `app.RegisterFactories(factories ...ComponentFactory)` - Register component factories
+- `app.Register(services ...Service)` - Register services (Init runs synchronously at registration; the first error is recorded and returned by `Run()`). All registration must happen before `Run()`: after `Run()` starts, `Register`/`RegisterFactories` panic and `Command` returns an error
+- `app.RegisterFactories(factories ...ServiceFactory)` - Register service factories
 - `app.Command(cmd CommandFunc)` - Register a one-shot CLI command
 
 **Application Lifecycle**
 The main run loop (lynx.go:466-533) uses `oklog/run` to manage concurrent goroutines:
 1. Executes OnStart hooks
-2. Runs all components (each component gets its own goroutine)
+2. Runs all services (each service gets its own goroutine)
 3. Listens for shutdown signals (SIGTERM, SIGQUIT, SIGINT)
-4. On shutdown: runs OnStop hooks with timeout, stops all components
+4. On shutdown: runs OnStop hooks with timeout, stops all services
 
 **Context Values**
 The application context carries standard values (lynx.go:65-105):
@@ -152,11 +152,11 @@ The `boot` package provides a structured way to organize application initializat
 2. Define a Wire injector function with `//go:build wireinject` tag
 3. Register providers in a ProviderSet
 4. Wire generates the dependency graph
-5. Bootstrap.Bind(app) registers all hooks/components with the app
+5. Bootstrap.Bind(app) registers all hooks/services with the app
 
-This pattern is particularly useful for complex applications with many components.
+This pattern is particularly useful for complex applications with many services.
 
-### Key Components
+### Key Services
 
 **HTTP Server** (server/http/server.go)
 - Wraps stdlib `net/http.Server` with otelhttp instrumentation (health check handlers and request log are implemented locally — no gocloud.dev dependency)
@@ -170,9 +170,9 @@ This pattern is particularly useful for complex applications with many component
 - Health check service registered at `grpc.health.v1.Health`
 
 **PubSub** (contrib/pubsub/)
-- Broker 门面组件：topic → Transport 路由表（自动路由 + 显式 Route + 默认回退）
-- Transport 接口：后端即组件（kafka/内存），公共 API 使用自有 Message 类型
-- Router 组件：Init 期缓冲注册 Handler 订阅，无时序依赖
+- Broker 门面服务：topic → Transport 路由表（自动路由 + 显式 Route + 默认回退）
+- Transport 接口：后端即服务（kafka/内存），公共 API 使用自有 Message 类型
+- Router 服务：Init 期缓冲注册 Handler 订阅，无时序依赖
 
 **Kafka Transport** (contrib/kafka/transport.go)
 - 配置驱动：UnmarshalKey("kafka") 加载 map[逻辑topic] 配置（brokers/topics/consumer/producer）
@@ -186,12 +186,12 @@ This pattern is particularly useful for complex applications with many component
 
 **Command** (command.go)
 - CLI command execution with health check dependency
-- Retries waiting for components to be healthy before executing
+- Retries waiting for services to be healthy before executing
 - Auto-closes application after command completes
 
 ### Health Checks
 
-Components implementing `lynx.Checker` interface are automatically registered in the health check endpoint. HTTP server exposes these at `/healthz/liveness` and `/healthz/readiness`, gRPC server uses `grpc.health.v1.Health`.
+Services implementing `lynx.Checker` interface are automatically registered in the health check endpoint. HTTP server exposes these at `/healthz/liveness` and `/healthz/readiness`, gRPC server uses `grpc.health.v1.Health`.
 
 ### Application Entry Point
 
@@ -205,14 +205,14 @@ The `lynx.NewBuilder()` function creates a `*Builder` instance with two run meth
 - Unit tests exist for core packages and most contrib modules; run `go test -race ./...` per module
 - Uses slog for structured logging (Go 1.24+)
 - Uses local `pkg/errors` package with panic-based `Fatal()` helper
-- Components obtain loggers via `env.Logger(...)` in `Init`; no external logging package
+- Services obtain loggers via `ctx.Logger(...)` in `Init`; no external logging package
 
 ## Common Patterns
 
-**Adding a New Component**
-1. Implement the Component interface
+**Adding a New Service**
+1. Implement the Service interface
 2. Optionally implement lynx.Checker
-3. Register via `app.Register(myComponent)`
+3. Register via `app.Register(myService)`
 
 **Adding a Hook**
 ```go

@@ -29,8 +29,8 @@ func wireBootstrap(app lynx.App) (*boot.Bootstrap, func(), error) {
 	v := NewHandlers()
 	router := NewRouter(broker, v)
 	server := NewHttpServer(broker)
-	v2 := NewComponents(memoryTransport, transport, broker, router, server)
-	v3 := NewComponentFactories()
+	v2 := NewServices(memoryTransport, transport, broker, router, server)
+	v3 := NewServiceFactories()
 	bootstrap := boot.New(onStartHooks, onStopHooks, v2, v3)
 	return bootstrap, func() {
 	}, nil
