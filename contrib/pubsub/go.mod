@@ -9,6 +9,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/lynx-go/lynx v1.0.0
 	github.com/lynx-go/x v0.1.0
+	github.com/spf13/viper v1.21.0
 )
 
 require (
@@ -27,7 +28,6 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/spf13/viper v1.21.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	go.opentelemetry.io/otel v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
