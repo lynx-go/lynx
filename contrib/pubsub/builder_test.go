@@ -126,7 +126,45 @@ func TestNewFromConfigNilEntrySkipped(t *testing.T) {
 	}
 }
 
-// TestNewFromConfigComponentsOrder 验证 Components() 顺序稳定（transports 前、broker 后）。
+// TestNewFromConfigRouteKeyDefaultsToTopic 验证路由未指定 key 时缺省为逻辑 topic 名。
+func TestNewFromConfigRouteKeyDefaultsToTopic(t *testing.T) {
+	kafkaT := newFakeTransport("hello")
+	b, err := NewFromConfig(builderTestConfig(t, `
+pubsub:
+  routes:
+    hello:
+      transport: kafka
+`), map[string]Transport{"kafka": kafkaT})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if err := b.Broker.Publish(t.Context(), "hello", NewMessage([]byte("x"))); err != nil {
+		t.Fatalf("publish hello: %v", err)
+	}
+	if got := kafkaT.publishedTopics(); len(got) != 1 || got[0] != "hello" {
+		t.Fatalf("hello published to %v, want [hello]", got)
+	}
+}
+
+// TestNewFromConfigRouteToBuiltinMemory 验证显式路由指向未提供的 memory
+// 标识时解析到内置内存 Transport（不报未知标识错误）。
+func TestNewFromConfigRouteToBuiltinMemory(t *testing.T) {
+	b, err := NewFromConfig(builderTestConfig(t, `
+pubsub:
+  routes:
+    notify:
+      transport: memory
+`), map[string]Transport{})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if err := b.Broker.Publish(t.Context(), "notify", NewMessage([]byte("x"))); err != nil {
+		t.Fatalf("publish notify via built-in memory: %v", err)
+	}
+}
+
+// TestNewFromConfigComponentsOrder 验证 Components() 顺序确定性：按名字
+// 排序的 transports（内置 memory 最后）在前、Broker 最后。
 func TestNewFromConfigComponentsOrder(t *testing.T) {
 	kafkaT := newFakeTransport("hello")
 	b, err := NewFromConfig(builderTestConfig(t, "addr: \":9090\"\n"),
@@ -134,16 +172,14 @@ func TestNewFromConfigComponentsOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
+	want := []lynx.Component{kafkaT, b.Transports[1], b.Broker}
 	comps := b.Components()
-	if len(comps) != len(b.Transports)+1 {
-		t.Fatalf("Components len %d, want %d", len(comps), len(b.Transports)+1)
+	if len(comps) != 3 {
+		t.Fatalf("Components len %d, want 3", len(comps))
 	}
-	for i, tr := range b.Transports {
-		if comps[i] != tr {
-			t.Fatalf("Components[%d] = %v, want transport %v", i, comps[i], tr)
+	for i, w := range want {
+		if comps[i] != w {
+			t.Fatalf("Components[%d] = %v, want %v", i, comps[i], w)
 		}
-	}
-	if comps[len(comps)-1] != b.Broker {
-		t.Fatalf("last component = %v, want broker", comps[len(comps)-1])
 	}
 }

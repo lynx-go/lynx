@@ -39,11 +39,7 @@ func NewConfig(app lynx.App) lynx.Config {
 // ProvideKafkaTransport 从配置 kafka 段创建 Transport；段缺失/为空时
 // kafka.NewFromConfig 返回 nil（未启用），Wire 注入 nil 指针。
 func ProvideKafkaTransport(cfg lynx.Config) (*kafka.Transport, error) {
-	t, err := kafka.NewFromConfig(cfg)
-	if t == nil {
-		return nil, err
-	}
-	return t, err
+	return kafka.NewFromConfig(cfg)
 }
 
 // ProvideBundle 装配消息组件：pubsub.NewFromConfig 从配置 pubsub 段加载

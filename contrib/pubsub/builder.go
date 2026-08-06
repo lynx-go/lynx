@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/lynx-go/lynx"
 )
@@ -48,9 +49,16 @@ func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (*Bundle, e
 	opts := Options{DefaultTransport: memT}
 
 	// 自动路由 transports 与注册列表；字面 nil 防御性跳过；memory 仅作
-	// 默认回退（Topics() 为 nil），不重复进入自动路由表。
+	// 默认回退（Topics() 为 nil），不重复进入自动路由表。按名字排序遍历，
+	// 保证注册顺序确定（组件启动顺序可复现）。
+	names := make([]string, 0, len(transports))
+	for name := range transports {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	registered := make([]Transport, 0, len(transports)+1)
-	for name, t := range transports {
+	for _, name := range names {
+		t := transports[name]
 		if t == nil {
 			continue
 		}

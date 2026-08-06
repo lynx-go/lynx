@@ -60,3 +60,18 @@ kafka:
 		t.Fatalf("unexpected topics: %v", topics)
 	}
 }
+
+// TestNewFromConfigInvalidSection 验证 kafka 段类型非法时返回错误。
+func TestNewFromConfigInvalidSection(t *testing.T) {
+	tr, err := NewFromConfig(fromConfigTestConfig(t, `
+kafka:
+  hello:
+    brokers: 42
+`))
+	if err == nil {
+		t.Fatal("expected error for invalid kafka section (brokers must be []string)")
+	}
+	if tr != nil {
+		t.Fatalf("expected nil transport on error, got %+v", tr)
+	}
+}

@@ -1,7 +1,7 @@
 # pubsub 示例
 
 基于 Kafka Transport 的发布/订阅示例：HTTP 端点触发发布，consumer group 消费事件。
-Kafka 配置驱动：`config.yaml` 的 `kafka` 段定义逻辑 topic（brokers、物理 topics、consumer/producer 参数），`main.go` 通过 `app.Config().UnmarshalKey("kafka", &kafkaOpts)` 加载。
+Kafka 配置驱动：`config.yaml` 的 `kafka` 段定义逻辑 topic（brokers、物理 topics、consumer/producer 参数），`provides.go` 的 `ProvideKafkaTransport` 经 `kafka.NewFromConfig` 从 `app.Config()` 加载。
 
 ## 依赖
 
