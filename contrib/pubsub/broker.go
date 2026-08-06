@@ -82,18 +82,6 @@ func NewBroker(opts Options) Broker {
 // HandlerFunc 是事件处理函数，返回错误时按订阅选项决定重试或确认。
 type HandlerFunc func(ctx context.Context, event *Message) error
 
-// Handler 定义事件处理器的元信息与处理函数。
-type Handler interface {
-	EventName() string
-	HandlerName() string
-	HandlerFunc() HandlerFunc
-}
-
-// HandlerOptions 可为 Handler 附加订阅选项。
-type HandlerOptions interface {
-	Options() []SubscribeOption
-}
-
 // SubscribeOptions 是订阅行为的配置项。
 type SubscribeOptions struct {
 	AutoAck         bool   `json:"auto_ack"`

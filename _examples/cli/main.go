@@ -42,7 +42,10 @@ func main() {
 		broker := pubsub.NewBroker(pubsub.Options{DefaultTransport: pubsub.NewMemoryTransport()})
 		app.Register(broker)
 		router := pubsub.NewRouter(broker, []pubsub.Handler{
-			&helloHandler{},
+			pubsub.NewRawHandler("hello", "helloHandler", func(ctx context.Context, event *pubsub.Message) error {
+				slog.InfoContext(ctx, "recv hello event", "payload", string(event.Payload))
+				return nil
+			}),
 		})
 		app.Register(router)
 
@@ -60,23 +63,3 @@ func main() {
 	)
 	builder.Run()
 }
-
-type helloHandler struct {
-}
-
-func (h *helloHandler) EventName() string {
-	return "hello"
-}
-
-func (h *helloHandler) HandlerName() string {
-	return "helloHandler"
-}
-
-func (h *helloHandler) HandlerFunc() pubsub.HandlerFunc {
-	return func(ctx context.Context, event *pubsub.Message) error {
-		slog.InfoContext(ctx, "recv hello event", "payload", string(event.Payload))
-		return nil
-	}
-}
-
-var _ pubsub.Handler = new(helloHandler)
