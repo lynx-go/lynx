@@ -55,10 +55,11 @@ func pollUntil(deadline time.Duration, interval time.Duration, cond func() bool)
 
 // fakeTransport 记录 Publish 调用并可注入订阅消息。
 type fakeTransport struct {
-	mu        sync.Mutex
-	topics    []string
-	published []string
-	subCh     chan *message.Message
+	mu            sync.Mutex
+	topics        []string
+	published     []string
+	publishedMsgs []*message.Message
+	subCh         chan *message.Message
 }
 
 func newFakeTransport(topics ...string) *fakeTransport {
@@ -76,6 +77,7 @@ func (f *fakeTransport) Publish(ctx context.Context, topic string, msgs ...*mess
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.published = append(f.published, topic)
+	f.publishedMsgs = append(f.publishedMsgs, msgs...)
 	return nil
 }
 
@@ -99,6 +101,18 @@ func (f *fakeTransport) publishedTopics() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.published...)
+}
+
+// publishedMessages 返回发布的消息副本（marshaller 测试用）。
+func (f *fakeTransport) publishedMessages() []*message.Message {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*message.Message(nil), f.publishedMsgs...)
+}
+
+// inject 向订阅者注入一条消息。
+func (f *fakeTransport) inject(msg *message.Message) {
+	f.subCh <- msg
 }
 
 // startBroker 创建内存默认 Transport 的 Broker，注册订阅并启动。

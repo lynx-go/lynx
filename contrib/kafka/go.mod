@@ -11,8 +11,8 @@ require (
 	github.com/IBM/sarama v1.43.3
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/ThreeDotsLabs/watermill-kafka/v3 v3.1.0
-	github.com/lynx-go/lynx v0.3.7
-	github.com/lynx-go/lynx/contrib/pubsub v0.7.2
+	github.com/lynx-go/lynx v1.0.0
+	github.com/lynx-go/lynx/contrib/pubsub v1.0.0
 	github.com/lynx-go/x v0.1.0
 	github.com/spf13/viper v1.21.0
 )

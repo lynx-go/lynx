@@ -7,7 +7,7 @@ replace github.com/lynx-go/lynx => ../../
 require (
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/google/uuid v1.6.0
-	github.com/lynx-go/lynx v0.3.7
+	github.com/lynx-go/lynx v1.0.0
 	github.com/lynx-go/x v0.1.0
 )
 

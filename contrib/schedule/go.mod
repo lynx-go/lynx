@@ -5,7 +5,7 @@ go 1.25.0
 replace github.com/lynx-go/lynx => ../../
 
 require (
-	github.com/lynx-go/lynx v0.3.7
+	github.com/lynx-go/lynx v1.0.0
 	github.com/lynx-go/x v0.1.0
 	github.com/robfig/cron/v3 v3.0.1
 )

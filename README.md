@@ -103,9 +103,28 @@ opts := lynx.NewOptions(
 
 ### 使用事件驱动
 
+**透明序列化（推荐）**：Publish 直接传业务对象，订阅用类型化 handler，
+序列化由 Broker 的 marshaller（默认 JSON）自动处理：
+
 ```go
 import "github.com/lynx-go/lynx/contrib/pubsub"
 
+// 发布：业务对象自动 JSON 序列化
+err := broker.Publish(ctx, "user.created", map[string]string{"user": "alice"},
+    pubsub.WithMessageKey("alice"))
+
+// 订阅：自动反序列化到指定类型
+err := pubsub.Subscribe(ctx, broker, "user.created", "notify",
+    func(ctx context.Context, event *pubsub.TypedMessage[User]) error {
+        // event.Payload 已是 User 结构
+        return nil
+    })
+```
+
+需要原始字节时保留字节级语义（payload 传 `*pubsub.Message` 不序列化，
+或直接用 `pubsub.MustJSONMessage` 预构建）：
+
+```go
 handler := pubsub.HandlerFunc(func(ctx context.Context, msg *pubsub.Message) error {
     // msg.ID / msg.Key / msg.Headers / msg.Payload
     return nil
@@ -114,6 +133,10 @@ handler := pubsub.HandlerFunc(func(ctx context.Context, msg *pubsub.Message) err
 msg := pubsub.MustJSONMessage(map[string]string{"user": "alice"})
 err := broker.Publish(ctx, "user.created", msg, pubsub.WithMessageKey("alice"))
 ```
+
+自定义序列化器（如 Protobuf）：`pubsub.NewBroker(pubsub.Options{Marshaler: myMarshaler})`；
+按 topic 差异化（如 audit 用 Protobuf、其余 JSON）：
+`pubsub.Options{Marshaler: jsonMarshaler, TopicMarshalers: map[string]pubsub.Marshaler{"audit": pbMarshaler}}`。
 
 ### 使用 Kafka Transport
 

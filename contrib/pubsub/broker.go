@@ -20,13 +20,18 @@ import (
 // Broker 是消息代理门面组件：按 topic 路由到 Transport，统一发布订阅。
 type Broker interface {
 	lynx.ServerLike
-	// Publish 将消息发布到逻辑 topic；路由表未命中时走默认 Transport。
-	Publish(ctx context.Context, topic string, msg *Message, opts ...PublishOption) error
+	// Publish 发布消息到逻辑 topic；路由表未命中时走默认 Transport。
+	// payload 为 *Message 时直接发送（字节级语义，不序列化）；
+	// 否则视为业务对象，经 Broker 的 Marshaler 自动序列化后发送。
+	Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) error
 	// Subscribe 注册 topic 的消费 handler。Start 前调用为缓冲注册，
 	// Start 后调用返回错误。
 	Subscribe(ctx context.Context, topic, handlerName string, h HandlerFunc, opts ...SubscribeOption) error
 	// Route 显式将 topic 路由到指定 Transport，覆盖自动路由；须在 Start 前调用。
 	Route(topic string, t Transport)
+	// MarshalerFor 返回 topic 的业务对象序列化器：TopicMarshalers 命中则
+	// 用之，否则回退 Options.Marshaler 或 JSON 默认。
+	MarshalerFor(topic string) Marshaler
 }
 
 // RetryOptions 配置 handler 处理失败后的重试行为。
@@ -49,6 +54,13 @@ type Options struct {
 	// （如 Kafka 关闭自动提交）会重投；开启自动提交时 offset 已被提交，
 	// 消息可能静默丢失，需自行权衡。
 	Retry *RetryOptions
+	// Marshaler 负责业务对象与 Payload 的序列化（Publish 传业务对象与
+	// Subscribe[T] 使用）；nil 时使用 JSON 默认。
+	Marshaler Marshaler
+	// TopicMarshalers 按逻辑 topic 覆盖 Marshaler；未命中时回退
+	// Marshaler（或 JSON 默认）。同一 topic 的发布与消费必须使用
+	// 同一种格式，跨服务部署时需对齐配置。
+	TopicMarshalers map[string]Marshaler
 }
 
 // NewBroker 创建消息代理门面。
@@ -387,13 +399,25 @@ func cloneMessage(m *Message) *Message {
 	return &cp
 }
 
-// Publish 将消息发布到逻辑 topic；路由未命中且无默认 Transport 时返回错误。
-func (b *broker) Publish(ctx context.Context, topic string, msg *Message, opts ...PublishOption) error {
+// Publish 发布消息到逻辑 topic；路由未命中且无默认 Transport 时返回错误。
+// payload 为 *Message 时直接发送（字节级语义，不序列化）；否则视为业务
+// 对象，经 Marshaler 序列化后发送。
+func (b *broker) Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) error {
 	o := &PublishOptions{}
 	for _, opt := range opts {
 		opt(o)
 	}
-	m := cloneMessage(msg)
+	var m *Message
+	if msg, ok := payload.(*Message); ok {
+		m = msg
+	} else {
+		data, err := b.MarshalerFor(topic).Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("pubsub: marshal payload: %w", err)
+		}
+		m = NewMessage(data)
+	}
+	m = cloneMessage(m)
 	if o.MessageKey != "" {
 		m.Key = o.MessageKey
 	}
@@ -408,4 +432,16 @@ func (b *broker) Publish(ctx context.Context, topic string, msg *Message, opts .
 		return err
 	}
 	return t.Publish(ctx, topic, toWatermill(m))
+}
+
+// MarshalerFor 返回 topic 的业务对象序列化器：TopicMarshalers 命中则用之，
+// 否则回退 Options.Marshaler 或 JSON 默认。
+func (b *broker) MarshalerFor(topic string) Marshaler {
+	if m, ok := b.options.TopicMarshalers[topic]; ok {
+		return m
+	}
+	if b.options.Marshaler != nil {
+		return b.options.Marshaler
+	}
+	return JSONMarshaler{}
 }

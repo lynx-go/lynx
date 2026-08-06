@@ -1,6 +1,6 @@
 # Lynx 路线图
 
-> 最后更新：2026-07-27
+> 最后更新：2026-08-05
 
 ## 定位与目标
 
@@ -57,6 +57,22 @@ Lynx 目前为团队内部使用的 Go 微服务框架，计划对外推广开�
 - [x] GoDoc 全覆盖；README 与代码现状对齐（如 `cli/`、`command/` 目录描述）
 - [x] 全量 API 审查并冻结（含 `CLI` 命名、接口残留注释清理）
 - [x] Taskfile release 变量参数化，补 `RELEASE.md` 说明多模块打 tag 流程
+
+## Phase D — v1.0 发布前审查修复（2026-08-05）
+
+v1.0 发布前全量审查（功能缺失/设计缺陷/实现缺陷）的修复记录，详见 `CHANGELOG.md`。
+
+- [x] **Kafka 发布阻断**：缺省 Marshaler 与 `Producer.Return.Successes` 双重缺陷
+- [x] **Kafka 生产可用**：SASL/TLS 认证配置；consumer/producer 参数按侧独立
+- [x] **PubSub**：Start 两阶段提交（重试不再 panic）；handler 重名提前报错；
+      重试可配置；`Transport.Publish` 增加 ctx；删除遗留 Deprecated API
+- [x] **核心**：组件 Stop 有界超时；Init 锁外执行；失败路径资源清理；
+      OnStop 错误上抛；退出信号提前注册
+- [x] **Schedule**：Stop/Start 竞态挂死修复；时区；任务错误回调
+- [x] **HTTP**：脱钩 gocloud.dev/server（消除全局 provider 副作用）；TLS/逃生口
+- [x] **gRPC**：app 级健康检查同步；Recovery 最外层；流式拦截器入口
+- [x] **发布卫生**：contrib go.mod bump、各模块 LICENSE、CHANGELOG、
+      内部文档清理
 
 ## 原则
 

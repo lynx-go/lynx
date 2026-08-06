@@ -5,7 +5,7 @@ go 1.25.0
 replace github.com/lynx-go/lynx => ../../
 
 require (
-	github.com/lynx-go/lynx v0.4.0
+	github.com/lynx-go/lynx v1.0.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.67.0
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.45.0
