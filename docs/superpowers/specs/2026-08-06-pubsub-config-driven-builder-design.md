@@ -1,7 +1,7 @@
 # PubSub 配置驱动装配（开箱即用）设计
 
 日期：2026-08-06
-状态：已批准
+状态：已批准（2026-08-06 修订：移除 Bundle，transports 一律显式——见"方案取舍记录"与修订记录）
 
 ## 背景与目标
 
@@ -18,8 +18,8 @@
 ## 方案取舍记录
 
 - **配置驱动构造函数（采用）** vs **装配器组件（否决）**：装配器把 broker/transports 藏进不透明组件，与 Wire 的类型图匹配、显式依赖注入哲学冲突（需 `set.Broker()` 式访问器绕行），且把注册时序藏进 Init 难以推理。构造函数是纯 `(值, error)` 函数，直接可作 Wire provider。
-- **类型命名 `Bundle`（采用）**：它是构建**结果**（broker + transports 打包），不是构建者。`Builder` 语义反转且与框架已有 `lynx.ComponentBuilder`/`lynx.NewBuilder()` 撞名，否决。
-- **内置 memory 默认（采用）**：`NewFromConfig` 未收到 `memory` 标识 transport 时，内置创建一个内存 Transport 作为默认回退并纳入注册列表。本地开发零配置可用。
+- **不引入装配结果类型（最终采用）**：初版设计曾用 `Bundle`（broker + transports 打包，含 `Components()`），后经评审移除。移除理由：①`Bundle` 的必要性完全源于"隐式内置 memory transport"这一个设计选择——内置 transport 必须逃逸出构造函数（否则永不 Start/Stop，健康检查挂红、gochannel 泄漏），且 Wire provider 单值约束（wire guide：`(T, error)`）要求打包；②改为 **transports 一律显式**（kafka 与 memory 对称，都是调用方创建、注册），`NewFromConfig` 退化为纯"配置 → Broker"构造，返回 `Broker` 单值，天然 Wire 友好；③概念减负——pubsub 少 1 个类型 + 1 个方法，"memory 特殊"从类型级降为一行文档约定。代价：直接用户多 2 行（显式创建并注册 memory transport）。
+- **内置 memory 默认（初版采用 → 修订为显式）**：初版"未提供 memory 时内置创建并纳入注册列表"已修订——不再内置创建任何 transport；`transports["memory"]`（提供且非 nil 时）兼作默认回退的文档约定**保留**，保住"未路由 topic 兜底"与本地开发体验。
 - **kafka 无配置段即禁用（采用）**：`kafka.NewFromConfig` 读不到 `kafka` 段（或段为空、无任何 topic）时返回 `(nil, nil)`。调用方判定后不注册 kafka，config.yaml 删掉 kafka 段即可纯内存运行。
 - **transport 标识绑定用 `map[string]Transport`（采用）**：路由表 `{transport, key}` 的标识需要名字绑定，map key 即标识；无需给 `Transport` 接口加 `Identifier()` 方法。
 
@@ -40,25 +40,18 @@ func NewFromConfig(cfg lynx.Config) (*Transport, error)
 ### contrib/pubsub —— 新增 `builder.go`
 
 ```go
-// Bundle 是配置驱动装配的结果：Broker 与需要随应用注册的 Transports。
-type Bundle struct {
-	Broker     Broker
-	Transports []Transport
-}
-
-// Components 返回应注册的全部组件（Transports + Broker），供 app.Register 使用。
-func (b *Bundle) Components() []lynx.Component
-
-// NewFromConfig 从配置装配消息组件：
+// NewFromConfig 从配置装配 Broker：
 //   - "pubsub" 段 routes（逻辑 topic → {transport, key}）逐条应用 RouteKey，
 //     引用未提供的 transport 标识时报错（沿用现有错误语义）；
 //   - 传入 transports 的非 nil 值参与自动路由；
-//   - 标识 "memory" 的 transport 兼作默认回退；未提供时内置创建一个
-//     内存 Transport 作为默认回退并纳入 Transports；
+//   - 标识 "memory" 的 transport（提供且非 nil 时）兼作默认回退——未路由
+//     的 topic 走它；不提供则无默认回退，未路由 topic 发布报错；
+//   - 不创建任何 transport：kafka 与 memory 一律由调用方创建并注册
+//     （生命周期归属应用）；
 //   - map 中的字面 nil 值条目被防御性跳过；kafka 未启用的过滤由调用方
 //     完成（示例 `if kafkaT != nil` 写法）。注意：具体类型 nil 指针赋给
 //     Transport 接口（typed nil）无法在此检测，调用方必须过滤后再放入 map。
-func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (*Bundle, error)
+func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (Broker, error)
 ```
 
 ## 内部行为
@@ -66,7 +59,7 @@ func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (*Bundle, e
 `NewFromConfig` 装配流程（全部基于现有 broker 语义，无新时序）：
 
 1. `UnmarshalKey("pubsub", &routesCfg)` 读路由表（缺段 = 无显式路由，不报错）；
-2. 构建 broker options：`Transports` = 传入 map 的非 nil 值；`DefaultTransport` = `map["memory"]`（存在且非 nil 时），否则 `NewMemoryTransport()` 内置并追加进 `Transports` 结果；
+2. 构建 broker options：`Transports` = 传入 map 的非 nil 值（`memory` 条目也计入）；`DefaultTransport` = `map["memory"]`（存在且非 nil 时），否则 nil；
 3. `NewBroker(options)`——`Init` 期自动路由照常运行（传入 transport 声明的 topic 自动路由，显式 RouteKey 覆盖）；
 4. 逐条 route 应用：标识在 map 中不存在（包括 kafka 未启用却仍引用 "kafka"）→ 报错 `pubsub: route %q references unknown transport %q`（沿用现有错误消息与构建期报错语义）；`key` 为空 → 缺省为 topic 名。
 
@@ -87,38 +80,52 @@ func NewKafkaTransport(cfg lynx.Config) (*kafka.Transport, error) {
 	return kafka.NewFromConfig(cfg) // nil = 未启用，Wire 注入 nil 指针
 }
 
-func NewBundle(cfg lynx.Config, kafkaT *kafka.Transport) (*pubsub.Bundle, error) {
-	transports := map[string]pubsub.Transport{}
+func NewMemoryTransport() *pubsub.MemoryTransport {
+	return pubsub.NewMemoryTransport()
+}
+
+func NewBroker(cfg lynx.Config, kafkaT *kafka.Transport, memT *pubsub.MemoryTransport) (pubsub.Broker, error) {
+	transports := map[string]pubsub.Transport{"memory": memT}
 	if kafkaT != nil {
 		transports["kafka"] = kafkaT
 	}
 	return pubsub.NewFromConfig(cfg, transports)
 }
 
-func NewComponents(b *pubsub.Bundle, router *pubsub.Router) []lynx.Component {
-	return append(b.Components(), router)
+func NewComponents(memT *pubsub.MemoryTransport, kafkaT *kafka.Transport,
+	broker pubsub.Broker, router *pubsub.Router, hs *http.Server) []lynx.Component {
+	comps := []lynx.Component{memT}
+	if kafkaT != nil {
+		comps = append(comps, kafkaT)
+	}
+	return append(comps, broker, router, hs)
 }
 ```
 
-kafka 未启用时 Wire 注入 nil `*kafka.Transport`，`NewBundle` 过滤——依赖图完整，无魔法。
+kafka 未启用时 Wire 注入 nil `*kafka.Transport`，`NewBroker`/`NewComponents` 过滤——依赖图完整，每个节点类型显式可见，无魔法。
 
-## 示例更新（_examples/pubsub/main.go 最终形态）
+## 示例更新（非 Wire 直接使用形态）
 
 ```go
 kafkaT, err := kafka.NewFromConfig(app.Config()) // nil = 未配置，禁用
 if err != nil {
 	return err
 }
-transports := map[string]pubsub.Transport{}
+memT := pubsub.NewMemoryTransport() // 显式创建，与 kafka 对称
+transports := map[string]pubsub.Transport{"memory": memT}
 if kafkaT != nil {
 	transports["kafka"] = kafkaT
 }
-b, err := pubsub.NewFromConfig(app.Config(), transports)
+broker, err := pubsub.NewFromConfig(app.Config(), transports)
 if err != nil {
 	return err
 }
-app.Register(b.Components()...)
-app.Register(pubsub.NewRouter(b.Broker, []pubsub.Handler{&helloHandler{}, &notifyHandler{}}))
+app.Register(memT)
+if kafkaT != nil {
+	app.Register(kafkaT)
+}
+app.Register(broker)
+app.Register(pubsub.NewRouter(broker, []pubsub.Handler{&helloHandler{}, &notifyHandler{}}))
 ```
 
 `config.yaml` 的 `kafka`/`pubsub` 段 schema 不变，现有配置兼容。
@@ -135,14 +142,13 @@ app.Register(pubsub.NewRouter(b.Broker, []pubsub.Handler{&helloHandler{}, &notif
 ### contrib/pubsub（新增 `builder_test.go`）
 
 - 显式路由生效（`hello → kafka`，发布/解析命中 kafka Transport）
-- key 别名生效（`notify → user_notify`）
+- key 别名生效（`notify → user_notify`）；key 缺省为 topic 名
 - 未知 transport 标识报错
 - map 含字面 nil 值条目时被防御性跳过（typed nil 不在框架职责内）
 - kafka 未启用但路由仍引用 "kafka" 时按未知标识报错
-- 无显式路由时默认回退内存
-- 未提供 memory 时内置创建，且出现在 `Transports` 中
-- 提供 memory 标识时复用之，不重复创建
-- `Components()` 顺序稳定（transports 先、broker 后）
+- 提供 memory 标识时未路由 topic 回退到它（默认回退约定）
+- 未提供 memory 时未路由 topic 发布报 "no transport routed"
+- 不创建任何 transport：返回类型为 `Broker`（无 Transports 列表断言）
 
 ### 示例与文档
 
@@ -156,3 +162,4 @@ app.Register(pubsub.NewRouter(b.Broker, []pubsub.Handler{&helloHandler{}, &notif
 - 不给 `Transport`/`Broker` 接口加方法
 - 不加"全自动"装配器组件（与 Wire 冲突，见方案取舍记录）
 - 不新增 `pubsub` 段的 retry/marshaler 配置项（现有 Options 已支持，按需再扩）
+- 不内置创建任何 transport（kafka 与 memory 一律显式，生命周期归属应用；"memory" 标识兼作默认回退仅是一行文档约定）
