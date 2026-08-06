@@ -82,16 +82,12 @@ func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (*Bundle, e
 ## Wire boot 适配（provides.go 形态）
 
 ```go
-// 每个 provider 一行转发，纯函数，Wire 类型图完整
-func ProvideKafkaTransport(cfg lynx.Config) (*kafka.Transport, error) {
-	t, err := kafka.NewFromConfig(cfg) // nil = 未启用，Wire 注入 nil 指针
-	if t == nil {
-		return nil, err
-	}
-	return t, err
+// 每个 provider 一行转发，纯函数，Wire 类型图完整；命名统一 New* 前缀
+func NewKafkaTransport(cfg lynx.Config) (*kafka.Transport, error) {
+	return kafka.NewFromConfig(cfg) // nil = 未启用，Wire 注入 nil 指针
 }
 
-func ProvideBundle(cfg lynx.Config, kafkaT *kafka.Transport) (*pubsub.Bundle, error) {
+func NewBundle(cfg lynx.Config, kafkaT *kafka.Transport) (*pubsub.Bundle, error) {
 	transports := map[string]pubsub.Transport{}
 	if kafkaT != nil {
 		transports["kafka"] = kafkaT
@@ -100,11 +96,11 @@ func ProvideBundle(cfg lynx.Config, kafkaT *kafka.Transport) (*pubsub.Bundle, er
 }
 
 func NewComponents(b *pubsub.Bundle, router *pubsub.Router) []lynx.Component {
-	return append(append([]lynx.Component{}, b.Transports...), b.Broker, router)
+	return append(b.Components(), router)
 }
 ```
 
-kafka 未启用时 Wire 注入 nil `*kafka.Transport`，`ProvideBundle` 过滤——依赖图完整，无魔法。
+kafka 未启用时 Wire 注入 nil `*kafka.Transport`，`NewBundle` 过滤——依赖图完整，无魔法。
 
 ## 示例更新（_examples/pubsub/main.go 最终形态）
 

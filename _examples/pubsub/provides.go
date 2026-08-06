@@ -20,10 +20,10 @@ import (
 var ProviderSet = wire.NewSet(
 	boot.New,
 	NewConfig,
-	ProvideKafkaTransport,
-	ProvideBundle,
-	ProvideHandlers,
-	ProvideRouter,
+	NewKafkaTransport,
+	NewBundle,
+	NewHandlers,
+	NewRouter,
 	NewHttpServer,
 	NewComponents,
 	NewComponentBuilders,
@@ -36,15 +36,15 @@ func NewConfig(app lynx.App) lynx.Config {
 	return app.Config()
 }
 
-// ProvideKafkaTransport 从配置 kafka 段创建 Transport；段缺失/为空时
+// NewKafkaTransport 从配置 kafka 段创建 Transport；段缺失/为空时
 // kafka.NewFromConfig 返回 nil（未启用），Wire 注入 nil 指针。
-func ProvideKafkaTransport(cfg lynx.Config) (*kafka.Transport, error) {
+func NewKafkaTransport(cfg lynx.Config) (*kafka.Transport, error) {
 	return kafka.NewFromConfig(cfg)
 }
 
-// ProvideBundle 装配消息组件：pubsub.NewFromConfig 从配置 pubsub 段加载
+// NewBundle 装配消息组件：pubsub.NewFromConfig 从配置 pubsub 段加载
 // 显式路由，内置内存 Transport 兜底；kafka 未启用时过滤。
-func ProvideBundle(cfg lynx.Config, kafkaT *kafka.Transport) (*pubsub.Bundle, error) {
+func NewBundle(cfg lynx.Config, kafkaT *kafka.Transport) (*pubsub.Bundle, error) {
 	transports := map[string]pubsub.Transport{}
 	if kafkaT != nil {
 		transports["kafka"] = kafkaT
@@ -52,13 +52,13 @@ func ProvideBundle(cfg lynx.Config, kafkaT *kafka.Transport) (*pubsub.Bundle, er
 	return pubsub.NewFromConfig(cfg, transports)
 }
 
-// ProvideHandlers 提供事件处理器集合。
-func ProvideHandlers() []pubsub.Handler {
+// NewHandlers 提供事件处理器集合。
+func NewHandlers() []pubsub.Handler {
 	return []pubsub.Handler{&helloHandler{}, &notifyHandler{}}
 }
 
-// ProvideRouter 将处理器缓冲订阅到 Broker。
-func ProvideRouter(bundle *pubsub.Bundle, handlers []pubsub.Handler) *pubsub.Router {
+// NewRouter 将处理器缓冲订阅到 Broker。
+func NewRouter(bundle *pubsub.Bundle, handlers []pubsub.Handler) *pubsub.Router {
 	return pubsub.NewRouter(bundle.Broker, handlers)
 }
 

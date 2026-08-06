@@ -1,7 +1,7 @@
 # pubsub 示例
 
 基于 Kafka Transport 的发布/订阅示例：HTTP 端点触发发布，consumer group 消费事件。
-Kafka 配置驱动：`config.yaml` 的 `kafka` 段定义逻辑 topic（brokers、物理 topics、consumer/producer 参数），`provides.go` 的 `ProvideKafkaTransport` 经 `kafka.NewFromConfig` 从 `app.Config()` 加载。
+Kafka 配置驱动：`config.yaml` 的 `kafka` 段定义逻辑 topic（brokers、物理 topics、consumer/producer 参数），`provides.go` 的 `NewKafkaTransport` 经 `kafka.NewFromConfig` 从 `app.Config()` 加载。
 
 ## 依赖
 
@@ -20,8 +20,8 @@ curl http://127.0.0.1:7071/notify
 ## 关键代码点
 
 - `provides.go` `ProviderSet`：Wire 依赖集合——`kafka.NewFromConfig`/`pubsub.NewFromConfig` 等配置驱动构造函数直接作为 provider。
-- `provides.go` `ProvideKafkaTransport`：从 `app.Config()` 的 `kafka` 段加载配置创建 Kafka Transport（订阅按消费组 × 物理 topic × 实例数展开）；段缺失/为空时返回 nil，Wire 注入 nil 指针、`ProvideBundle` 过滤，kafka 未启用。
-- `provides.go` `ProvideBundle`：装配消息组件——加载 `pubsub` 段路由表逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错）；内置内存 Transport 作为默认回退。
+- `provides.go` `NewKafkaTransport`：从 `app.Config()` 的 `kafka` 段加载配置创建 Kafka Transport（订阅按消费组 × 物理 topic × 实例数展开）；段缺失/为空时返回 nil，Wire 注入 nil 指针、`NewBundle` 过滤，kafka 未启用。
+- `provides.go` `NewBundle`：装配消息组件——加载 `pubsub` 段路由表逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错）；内置内存 Transport 作为默认回退。
 - `provides.go` `NewComponents`：聚合 `bundle.Components()`（transports + broker）、Router、HTTP Server 供 `boot.Bootstrap.Bind` 注册。
 - `wire.go`：`//go:build wireinject` 注入器 stub，`go generate` 生成 `wire_gen.go`。
 - `handlers.go` `helloHandler`/`notifyHandler`：实现 `pubsub.Handler`，分别消费 `hello`（Kafka）与 `notify`（内存）事件并记录 payload。

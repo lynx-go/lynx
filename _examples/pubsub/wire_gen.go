@@ -17,16 +17,16 @@ func wireBootstrap(app lynx.App) (*boot.Bootstrap, func(), error) {
 	onStartHooks := NewOnStarts()
 	onStopHooks := NewOnStops()
 	config := NewConfig(app)
-	transport, err := ProvideKafkaTransport(config)
+	transport, err := NewKafkaTransport(config)
 	if err != nil {
 		return nil, nil, err
 	}
-	bundle, err := ProvideBundle(config, transport)
+	bundle, err := NewBundle(config, transport)
 	if err != nil {
 		return nil, nil, err
 	}
-	v := ProvideHandlers()
-	router := ProvideRouter(bundle, v)
+	v := NewHandlers()
+	router := NewRouter(bundle, v)
 	server := NewHttpServer(bundle)
 	v2 := NewComponents(bundle, router, server)
 	v3 := NewComponentBuilders()
