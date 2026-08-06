@@ -10,24 +10,24 @@ import (
 	"github.com/spf13/viper"
 )
 
-// fakeEnv implements lynx.Env minimally for tests.
-type fakeEnv struct {
-	lynx.Env
+// fakeCtx implements lynx.AppContext minimally for tests.
+type fakeCtx struct {
+	lynx.AppContext
 	cfg lynx.Config
 }
 
-func (f *fakeEnv) Config() lynx.Config      { return f.cfg }
-func (f *fakeEnv) Context() context.Context { return context.Background() }
-func (f *fakeEnv) Logger(...any) *slog.Logger { return slog.Default() }
-func (f *fakeEnv) HealthCheckers() []lynx.Checker { return nil }
+func (f *fakeCtx) Config() lynx.Config       { return f.cfg }
+func (f *fakeCtx) Context() context.Context  { return context.Background() }
+func (f *fakeCtx) Logger(...any) *slog.Logger { return slog.Default() }
+func (f *fakeCtx) HealthCheckers() []lynx.Checker { return nil }
 
-func newFakeEnv(t *testing.T) *fakeEnv {
+func newFakeCtx(t *testing.T) *fakeCtx {
 	t.Helper()
 	v := viper.New()
-	return &fakeEnv{cfg: lynx.NewViperConfig(v)}
+	return &fakeCtx{cfg: lynx.NewViperConfig(v)}
 }
 
-func (f *fakeEnv) set(key, val string) {
+func (f *fakeCtx) set(key, val string) {
 	f.cfg.(lynx.ConfigSource).Set(key, val)
 }
 
@@ -69,22 +69,22 @@ func TestNewSLogger(t *testing.T) {
 }
 
 func TestNewLoggerAndMustNewLogger(t *testing.T) {
-	env := newFakeEnv(t)
-	logger, err := NewLogger(env)
+	ctx := newFakeCtx(t)
+	logger, err := NewLogger(ctx)
 	if err != nil {
 		t.Fatalf("NewLogger() error = %v", err)
 	}
 	if logger == nil {
 		t.Fatal("NewLogger() returned nil")
 	}
-	if logger := MustNewLogger(env); logger == nil {
+	if logger := MustNewLogger(ctx); logger == nil {
 		t.Fatal("MustNewLogger() returned nil")
 	}
 }
 
 func TestSyncOnStop(t *testing.T) {
-	env := newFakeEnv(t)
-	l, err := NewSyncableLogger(env)
+	ctx := newFakeCtx(t)
+	l, err := NewSyncableLogger(ctx)
 	if err != nil {
 		t.Fatalf("NewSyncableLogger() error = %v", err)
 	}
@@ -100,12 +100,12 @@ func TestSyncOnStop(t *testing.T) {
 // TestNewLoggerInvalidLevelError 回归：非法日志级别配置下 NewLogger
 // 必须返回错误而非静默回退。
 func TestNewLoggerInvalidLevelError(t *testing.T) {
-	env := newFakeEnv(t)
-	env.set("logging.level", "not-a-level")
-	if _, err := NewLogger(env); err == nil {
+	ctx := newFakeCtx(t)
+	ctx.set("logging.level", "not-a-level")
+	if _, err := NewLogger(ctx); err == nil {
 		t.Fatal("expected error for invalid log level")
 	}
-	if _, err := NewSyncableLogger(env); err == nil {
+	if _, err := NewSyncableLogger(ctx); err == nil {
 		t.Fatal("expected error for invalid log level (SyncableLogger)")
 	}
 }
@@ -114,22 +114,22 @@ func TestNewLoggerInvalidLevelError(t *testing.T) {
 //（logging.level 优先，log-level/log_level 为兼容回退），zap 不再
 // 维护独立的键优先级实现。
 func TestLogLevelFromConfigKeys(t *testing.T) {
-	env := newFakeEnv(t)
-	env.set("logging.level", "warn")
-	env.set("log-level", "error")
-	env.set("log_level", "debug")
-	if got := lynx.LogLevelFromConfig(env.Config()); got != "warn" {
+	ctx := newFakeCtx(t)
+	ctx.set("logging.level", "warn")
+	ctx.set("log-level", "error")
+	ctx.set("log_level", "debug")
+	if got := lynx.LogLevelFromConfig(ctx.Config()); got != "warn" {
 		t.Errorf("LogLevelFromConfig() = %q, want warn", got)
 	}
 
-	env = newFakeEnv(t)
-	env.set("log_level", "debug")
-	if got := lynx.LogLevelFromConfig(env.Config()); got != "debug" {
+	ctx = newFakeCtx(t)
+	ctx.set("log_level", "debug")
+	if got := lynx.LogLevelFromConfig(ctx.Config()); got != "debug" {
 		t.Errorf("LogLevelFromConfig() = %q, want debug", got)
 	}
 
-	env = newFakeEnv(t)
-	if got := lynx.LogLevelFromConfig(env.Config()); got != "" {
+	ctx = newFakeCtx(t)
+	if got := lynx.LogLevelFromConfig(ctx.Config()); got != "" {
 		t.Errorf("LogLevelFromConfig() = %q, want empty", got)
 	}
 }

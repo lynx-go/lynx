@@ -15,7 +15,7 @@ import (
 	"github.com/lynx-go/lynx"
 )
 
-// fakeApp is a minimal lynx.Env implementation for tests.
+// fakeApp is a minimal lynx.AppContext implementation for tests.
 type fakeApp struct {
 	ctx    context.Context
 	logger *slog.Logger
@@ -34,7 +34,7 @@ func (f *fakeApp) Logger(kwargs ...any) *slog.Logger { return f.logger.With(kwar
 func (f *fakeApp) HealthCheckers() []lynx.Checker    { return nil }
 func (f *fakeApp) Close()                            {}
 
-var _ lynx.Env = (*fakeApp)(nil)
+var _ lynx.AppContext = (*fakeApp)(nil)
 
 func pollUntil(deadline time.Duration, interval time.Duration, cond func() bool) bool {
 	end := time.Now().Add(deadline)
@@ -61,7 +61,7 @@ func newFakeTransport(topics ...string) *fakeTransport {
 }
 
 func (f *fakeTransport) Name() string                { return "fake-transport" }
-func (f *fakeTransport) Init(lynx.Env) error         { return nil }
+func (f *fakeTransport) Init(lynx.AppContext) error { return nil }
 func (f *fakeTransport) Start(context.Context) error { return nil }
 func (f *fakeTransport) Stop(context.Context) error  { return nil }
 func (f *fakeTransport) CheckHealth() error          { return nil }

@@ -14,13 +14,13 @@ import (
 )
 
 // MustNewLogger 创建基于 zap 的 slog 实例，创建失败时 panic。
-func MustNewLogger(env lynx.Env) *slog.Logger {
-	return lo.Must1(NewLogger(env))
+func MustNewLogger(ctx lynx.AppContext) *slog.Logger {
+	return lo.Must1(NewLogger(ctx))
 }
 
 // NewLogger 根据应用配置的日志级别创建基于 zap 的 slog 实例，并注入服务标识字段。
-func NewLogger(env lynx.Env) (*slog.Logger, error) {
-	_, slogger, err := buildLogger(env)
+func NewLogger(ctx lynx.AppContext) (*slog.Logger, error) {
+	_, slogger, err := buildLogger(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -28,8 +28,8 @@ func NewLogger(env lynx.Env) (*slog.Logger, error) {
 }
 
 // buildLogger 创建 zap 实例与包装后的 slog 实例，并注入服务标识字段。
-func buildLogger(env lynx.Env) (*zap.Logger, *slog.Logger, error) {
-	logLevel := lynx.LogLevelFromConfig(env.Config())
+func buildLogger(ctx lynx.AppContext) (*zap.Logger, *slog.Logger, error) {
+	logLevel := lynx.LogLevelFromConfig(ctx.Config())
 	if logLevel == "" {
 		logLevel = "info"
 	}
@@ -42,9 +42,9 @@ func buildLogger(env lynx.Env) (*zap.Logger, *slog.Logger, error) {
 		return nil, nil, err
 	}
 	return zapLogger, slogger.With(
-		"service_id", lynx.IDFromContext(env.Context()),
-		"service_name", lynx.NameFromContext(env.Context()),
-		"version", lynx.VersionFromContext(env.Context()),
+		"service_id", lynx.IDFromContext(ctx.Context()),
+		"service_name", lynx.NameFromContext(ctx.Context()),
+		"version", lynx.VersionFromContext(ctx.Context()),
 	), nil
 }
 
@@ -108,8 +108,8 @@ func SyncOnStop(l *SyncableLogger) lynx.HookFunc {
 
 // NewSyncableLogger creates a SyncableLogger that wraps both slog and zap loggers.
 // This allows using slog for structured logging while retaining the ability to Sync.
-func NewSyncableLogger(env lynx.Env) (*SyncableLogger, error) {
-	zapLogger, slogger, err := buildLogger(env)
+func NewSyncableLogger(ctx lynx.AppContext) (*SyncableLogger, error) {
+	zapLogger, slogger, err := buildLogger(ctx)
 	if err != nil {
 		return nil, err
 	}

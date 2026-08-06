@@ -26,7 +26,7 @@ type blockingComponent struct {
 
 func (c *blockingComponent) Name() string { return c.name }
 
-func (c *blockingComponent) Init(env Env) error { return nil }
+func (c *blockingComponent) Init(ctx AppContext) error { return nil }
 
 func (c *blockingComponent) Start(ctx context.Context) error {
 	c.started.Store(true)
@@ -51,7 +51,7 @@ type failInitComponent struct {
 }
 
 func (c *failInitComponent) Name() string                    { return c.name }
-func (c *failInitComponent) Init(env Env) error              { return c.err }
+func (c *failInitComponent) Init(ctx AppContext) error       { return c.err }
 func (c *failInitComponent) Start(ctx context.Context) error { return nil }
 func (c *failInitComponent) Stop(ctx context.Context) error  { return nil }
 
@@ -62,7 +62,7 @@ type failStartComponent struct {
 }
 
 func (c *failStartComponent) Name() string                    { return c.name }
-func (c *failStartComponent) Init(env Env) error              { return nil }
+func (c *failStartComponent) Init(ctx AppContext) error       { return nil }
 func (c *failStartComponent) Start(ctx context.Context) error { return c.err }
 func (c *failStartComponent) Stop(ctx context.Context) error  { return nil }
 
@@ -72,8 +72,8 @@ type checkerComponent struct {
 	name string
 }
 
-func (c *checkerComponent) Name() string       { return c.name }
-func (c *checkerComponent) Init(env Env) error { return nil }
+func (c *checkerComponent) Name() string              { return c.name }
+func (c *checkerComponent) Init(ctx AppContext) error { return nil }
 func (c *checkerComponent) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
@@ -87,7 +87,7 @@ type initRecorder struct {
 }
 
 func (c *initRecorder) Name() string { return c.name }
-func (c *initRecorder) Init(env Env) error {
+func (c *initRecorder) Init(ctx AppContext) error {
 	c.initialized.Store(true)
 	return nil
 }
@@ -97,19 +97,19 @@ func (c *initRecorder) Start(ctx context.Context) error {
 }
 func (c *initRecorder) Stop(ctx context.Context) error { return nil }
 
-// recordingBuilder builds blockingComponents and counts Build calls.
-type recordingBuilder struct {
+// recordingFactory builds blockingComponents and counts New calls.
+type recordingFactory struct {
 	instances int
 	builds    atomic.Int32
 }
 
-func (b *recordingBuilder) Build() Component {
+func (b *recordingFactory) New() Component {
 	b.builds.Add(1)
 	return &blockingComponent{name: "built"}
 }
 
-func (b *recordingBuilder) Options() BuildOptions {
-	return BuildOptions{Instances: b.instances}
+func (b *recordingFactory) Options() FactoryOptions {
+	return FactoryOptions{Instances: b.instances}
 }
 
 // eventRecorder records events in a concurrency-safe way.
@@ -149,13 +149,13 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) 
 type initAppAccessorComponent struct{}
 
 func (c *initAppAccessorComponent) Name() string { return "accessor" }
-func (c *initAppAccessorComponent) Init(env Env) error {
-	env.HealthCheckers()
-	app := env.(App)
+func (c *initAppAccessorComponent) Init(ctx AppContext) error {
+	ctx.HealthCheckers()
+	app := ctx.(App)
 	app.OnStart(func(ctx context.Context) error { return nil })
 	app.OnStop(func(ctx context.Context) error { return nil })
-	env.Config()
-	env.Context()
+	ctx.Config()
+	ctx.Context()
 	return nil
 }
 func (c *initAppAccessorComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
@@ -168,7 +168,7 @@ type stopRecorder struct {
 }
 
 func (c *stopRecorder) Name() string                    { return c.name }
-func (c *stopRecorder) Init(env Env) error              { return nil }
+func (c *stopRecorder) Init(ctx AppContext) error       { return nil }
 func (c *stopRecorder) Start(ctx context.Context) error { <-ctx.Done(); return nil }
 func (c *stopRecorder) Stop(ctx context.Context) error {
 	c.stopped <- c.name
@@ -179,7 +179,7 @@ func (c *stopRecorder) Stop(ctx context.Context) error {
 type hangStopComponent struct{ name string }
 
 func (c *hangStopComponent) Name() string                    { return c.name }
-func (c *hangStopComponent) Init(env Env) error              { return nil }
+func (c *hangStopComponent) Init(ctx AppContext) error       { return nil }
 func (c *hangStopComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
 func (c *hangStopComponent) Stop(ctx context.Context) error  { select {} }
 
@@ -187,7 +187,7 @@ func (c *hangStopComponent) Stop(ctx context.Context) error  { select {} }
 type failStopComponent struct{ name string }
 
 func (c *failStopComponent) Name() string                    { return c.name }
-func (c *failStopComponent) Init(env Env) error              { return nil }
+func (c *failStopComponent) Init(ctx AppContext) error       { return nil }
 func (c *failStopComponent) Start(ctx context.Context) error { <-ctx.Done(); return nil }
 func (c *failStopComponent) Stop(ctx context.Context) error  { return errors.New("stop boom") }
 
@@ -203,7 +203,7 @@ type slowInitComponent struct {
 
 func (c *slowInitComponent) Name() string { return c.name }
 
-func (c *slowInitComponent) Init(env Env) error {
+func (c *slowInitComponent) Init(ctx AppContext) error {
 	close(c.enteredInit)
 	<-c.release
 	return nil
@@ -420,14 +420,14 @@ func TestRegisterSkippedAfterInitError(t *testing.T) {
 		t.Error("second component should not be initialized after a failed registration")
 	}
 
-	builder := &recordingBuilder{instances: 1}
-	app.RegisterBuilders(builder)
-	if got := builder.builds.Load(); got != 0 {
-		t.Errorf("Build() called %d times after a failed registration, want 0", got)
+	factory := &recordingFactory{instances: 1}
+	app.RegisterFactories(factory)
+	if got := factory.builds.Load(); got != 0 {
+		t.Errorf("New() called %d times after a failed registration, want 0", got)
 	}
 }
 
-func TestComponentBuildersInstances(t *testing.T) {
+func TestComponentFactoriesInstances(t *testing.T) {
 	tests := []struct {
 		name       string
 		instances  int
@@ -444,10 +444,10 @@ func TestComponentBuildersInstances(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newLynx() error = %v", err)
 			}
-			builder := &recordingBuilder{instances: tt.instances}
-			app.RegisterBuilders(builder)
-			if got := builder.builds.Load(); got != tt.wantBuilds {
-				t.Errorf("Build() called %d times, want %d", got, tt.wantBuilds)
+			factory := &recordingFactory{instances: tt.instances}
+			app.RegisterFactories(factory)
+			if got := factory.builds.Load(); got != tt.wantBuilds {
+				t.Errorf("New() called %d times, want %d", got, tt.wantBuilds)
 			}
 		})
 	}
@@ -654,11 +654,11 @@ func TestCLICommandRunsAndClosesApp(t *testing.T) {
 	}
 
 	var ran atomic.Int32
-	if err := app.CLI(func(ctx context.Context) error {
+	if err := app.Command(func(ctx context.Context) error {
 		ran.Add(1)
 		return nil
 	}); err != nil {
-		t.Fatalf("CLI() error = %v", err)
+		t.Fatalf("Command() error = %v", err)
 	}
 
 	runErr := make(chan error, 1)
@@ -688,7 +688,7 @@ func TestCLICommandRunsAndClosesApp(t *testing.T) {
 }
 
 // TestRegisterAfterRunRejected 回归：Run 开始后注册为禁止操作——
-// Register/RegisterBuilders panic 报明确错误，CLI 返回错误；
+// Register/RegisterFactories panic 报明确错误，Command 返回错误；
 // 晚到的注册不得触碰 run.Group 的 actors（此前为 data race 且组件
 // 永不 Start 却被 Stop）。
 func TestRegisterAfterRunRejected(t *testing.T) {
@@ -713,10 +713,10 @@ func TestRegisterAfterRunRejected(t *testing.T) {
 		fn()
 	}
 	assertPanics("Register", func() { app.Register(&blockingComponent{name: "late"}) })
-	assertPanics("RegisterBuilders", func() { app.RegisterBuilders(&recordingBuilder{instances: 1}) })
-	if err := app.CLI(func(ctx context.Context) error { return nil }); err == nil ||
+	assertPanics("RegisterFactories", func() { app.RegisterFactories(&recordingFactory{instances: 1}) })
+	if err := app.Command(func(ctx context.Context) error { return nil }); err == nil ||
 		!strings.Contains(err.Error(), "must not be called after Run") {
-		t.Fatalf("CLI() error = %v, want explicit after-Run error", err)
+		t.Fatalf("Command() error = %v, want explicit after-Run error", err)
 	}
 
 	app.Close()

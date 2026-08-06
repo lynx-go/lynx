@@ -15,7 +15,7 @@ type fakeLynx struct {
 	onStarts   []lynx.HookFunc
 	onStops    []lynx.HookFunc
 	components []lynx.Component
-	builders   []lynx.ComponentBuilder
+	factories  []lynx.ComponentFactory
 }
 
 func (f *fakeLynx) OnStart(fns ...lynx.HookFunc) { f.onStarts = append(f.onStarts, fns...) }
@@ -23,18 +23,18 @@ func (f *fakeLynx) OnStop(fns ...lynx.HookFunc)  { f.onStops = append(f.onStops,
 func (f *fakeLynx) Register(cs ...lynx.Component) {
 	f.components = append(f.components, cs...)
 }
-func (f *fakeLynx) RegisterBuilders(bs ...lynx.ComponentBuilder) {
-	f.builders = append(f.builders, bs...)
+func (f *fakeLynx) RegisterFactories(fs ...lynx.ComponentFactory) {
+	f.factories = append(f.factories, fs...)
 }
 
-func (f *fakeLynx) Close()                            {}
-func (f *fakeLynx) Config() lynx.Config               { return lynx.NewViperConfig(viper.New()) }
-func (f *fakeLynx) Context() context.Context          { return context.Background() }
-func (f *fakeLynx) CLI(cmd lynx.CommandFunc) error    { return nil }
-func (f *fakeLynx) Run() error                        { return nil }
-func (f *fakeLynx) SetLogger(logger *slog.Logger)     {}
-func (f *fakeLynx) Logger(kwargs ...any) *slog.Logger { return slog.Default() }
-func (f *fakeLynx) HealthCheckers() []lynx.Checker    { return nil }
+func (f *fakeLynx) Close()                             {}
+func (f *fakeLynx) Config() lynx.Config                { return lynx.NewViperConfig(viper.New()) }
+func (f *fakeLynx) Context() context.Context           { return context.Background() }
+func (f *fakeLynx) Command(cmd lynx.CommandFunc) error { return nil }
+func (f *fakeLynx) Run() error                         { return nil }
+func (f *fakeLynx) SetLogger(logger *slog.Logger)      {}
+func (f *fakeLynx) Logger(kwargs ...any) *slog.Logger  { return slog.Default() }
+func (f *fakeLynx) HealthCheckers() []lynx.Checker     { return nil }
 
 var _ lynx.App = (*fakeLynx)(nil)
 

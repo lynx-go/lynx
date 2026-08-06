@@ -20,17 +20,17 @@ type Router struct {
 func (r *Router) Name() string { return "pubsub-router" }
 
 // Init 将全部 Handler 缓冲订阅到 Broker（纯缓冲，无时序依赖）。
-func (r *Router) Init(env lynx.Env) error {
-	if env != nil {
-		r.logger = env.Logger("component", "pubsub-router")
+func (r *Router) Init(ctx lynx.AppContext) error {
+	if ctx != nil {
+		r.logger = ctx.Logger("component", "pubsub-router")
 	}
 	for _, h := range r.handlers {
-		r.logger.InfoContext(env.Context(), "add event handler", "event_name", h.EventName(), "handler_name", h.HandlerName())
+		r.logger.InfoContext(ctx.Context(), "add event handler", "event_name", h.EventName(), "handler_name", h.HandlerName())
 		var opts []SubscribeOption
 		if o, ok := h.(HandlerOptions); ok {
 			opts = append(opts, o.Options()...)
 		}
-		if err := r.broker.Subscribe(env.Context(), h.EventName(), h.HandlerName(), h.HandlerFunc(), opts...); err != nil {
+		if err := r.broker.Subscribe(ctx.Context(), h.EventName(), h.HandlerName(), h.HandlerFunc(), opts...); err != nil {
 			return err
 		}
 	}

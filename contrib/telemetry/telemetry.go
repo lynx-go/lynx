@@ -16,8 +16,8 @@
 // reader + W3C TraceContext/Baggage propagator。Prometheus 指标需自行挂载
 // /metrics（如 promhttp.Handler()），其使用默认注册表，与默认 reader 兼容。
 //
-// Init 在 env 非 nil 且未显式 WithResource 时，自动以应用名
-//（NameFromContext(env.Context())）构建 service.name 资源属性，
+// Init 在 ctx 非 nil 且未显式 WithResource 时，自动以应用名
+//（NameFromContext(ctx.Context())）构建 service.name 资源属性，
 // 服务名零配置进入 trace/metrics。
 package telemetry
 
@@ -117,16 +117,16 @@ func (c *otelComponent) Name() string {
 
 // Init 创建 provider 并设置为 otel 全局值。重复 Init 返回错误：
 // 多次注册会覆盖 otel 全局且首个 provider 永不 Shutdown（泄漏）。
-func (c *otelComponent) Init(env lynx.Env) error {
+func (c *otelComponent) Init(ctx lynx.AppContext) error {
 	if c.inited {
 		return errors.New("telemetry component already initialized (register once)")
 	}
 	options := *c.options
-	if env != nil && options.res == nil {
+	if ctx != nil && options.res == nil {
 		// DX 提升：服务名零配置进入 trace/metrics（应用名取自组件环境）。
 		options.res = resource.NewWithAttributes(
 			semconv.SchemaURL,
-			semconv.ServiceName(lynx.NameFromContext(env.Context())),
+			semconv.ServiceName(lynx.NameFromContext(ctx.Context())),
 		)
 	}
 	tp, mp, err := newProviders(&options)

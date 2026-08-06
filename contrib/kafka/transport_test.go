@@ -852,7 +852,7 @@ func TestTransportEndToEndWithRouter(t *testing.T) {
 	}
 }
 
-// --- fakeApp：最小 lynx.Env（组件 Init 只依赖 Env，无需实现完整 App） ---
+// --- fakeApp：最小 lynx.AppContext（组件 Init 只依赖 AppContext，无需实现完整 App） ---
 
 type fakeApp struct{}
 
@@ -866,4 +866,4 @@ func (a *fakeApp) Logger(_ ...any) *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-var _ lynx.Env = (*fakeApp)(nil)
+var _ lynx.AppContext = (*fakeApp)(nil)

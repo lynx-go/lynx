@@ -27,7 +27,7 @@ var ProviderSet = wire.NewSet(
 	NewRouter,
 	NewHttpServer,
 	NewComponents,
-	NewComponentBuilders,
+	NewComponentFactories,
 	NewOnStarts,
 	NewOnStops,
 )
@@ -106,9 +106,9 @@ func NewComponents(memT *pubsub.MemoryTransport, kafkaT *kafka.Transport,
 	return append(comps, broker, router, hs)
 }
 
-// NewComponentBuilders 提供空组件构建器集合（pubsub 示例无需动态构建）。
-func NewComponentBuilders() []lynx.ComponentBuilder {
-	return []lynx.ComponentBuilder{}
+// NewComponentFactories 提供空组件工厂集合（pubsub 示例无需动态构建）。
+func NewComponentFactories() []lynx.ComponentFactory {
+	return []lynx.ComponentFactory{}
 }
 
 func NewOnStarts() boot.OnStartHooks { return nil }

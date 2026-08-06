@@ -5,9 +5,10 @@ import (
 	"log/slog"
 )
 
-// Env 是框架提供给组件的运行环境：组件的 Init 只依赖 Env，不依赖完整的
-// App（App 是 Env 的超集）。组件因此不需要为测试实现 App 的其余方法。
-type Env interface {
+// AppContext 是框架提供给组件的应用上下文：组件的 Init 只依赖 AppContext，
+// 不依赖完整的 App（App 是 AppContext 的超集）。组件因此不需要为测试实现
+// App 的其余方法。
+type AppContext interface {
 	// Context 获取应用上下文
 	Context() context.Context
 	// Config 获取配置实例（默认由 *viper.Viper 适配实现）
@@ -26,7 +27,7 @@ type Env interface {
 // 实现不得假设 Start 必然先于 Stop。Stop 返回的错误会被框架收集，
 // 与 OnStop 钩子错误一起由 Run() 统一上抛给调用方。
 type Lifecycle interface {
-	Init(env Env) error
+	Init(ctx AppContext) error
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 }
@@ -37,25 +38,25 @@ type Component interface {
 	Lifecycle
 }
 
-// ComponentBuilder 按 BuildOptions 描述的方式构建组件实例。
-type ComponentBuilder interface {
-	Build() Component
-	Options() BuildOptions
+// ComponentFactory 按 FactoryOptions 描述的方式构建组件实例。
+type ComponentFactory interface {
+	New() Component
+	Options() FactoryOptions
 }
 
-// BuildOptions 描述组件构建参数。
-type BuildOptions struct {
+// FactoryOptions 描述组件构建参数。
+type FactoryOptions struct {
 	Instances int `json:"instances"` // 实例数
 }
 
-func (o *BuildOptions) ensureDefaults() {
+func (o *FactoryOptions) ensureDefaults() {
 	if o.Instances < 1 {
 		o.Instances = 1
 	}
 }
 
-// ServerLike 是同时具备健康检查能力的服务类组件。
-type ServerLike interface {
+// Service 是同时具备健康检查能力的服务类组件。
+type Service interface {
 	Checker
 	Component
 }

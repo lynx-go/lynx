@@ -7,24 +7,24 @@
 一个 Lynx 应用的完整生命周期由 `lynx.NewBuilder` 和 `cli.Run()` 串起来：
 
 1. `lynx.NewBuilder(setup, opts...)` 创建应用实例（返回 `*Builder`）：先调用 `EnsureDefaults` 补全 Options，再解析命令行参数、读取配置文件，最后把应用名称、ID、版本注入应用 Context（见 3.5 节）。
-2. `cli.Run()` 首先调用 `setup` 回调：在这里注册组件和钩子。组件的 `Init(env Env)` 在注册时（即 `app.Register` 调用时）同步执行，返回 error 会被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
+2. `cli.Run()` 首先调用 `setup` 回调：在这里注册组件和钩子。组件的 `Init(ctx AppContext)` 在注册时（即 `app.Register` 调用时）同步执行，返回 error 会被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
 3. `setup` 返回后进入 `Run()`：启动所有组件的 `Start(ctx)`，并阻塞等待退出信号。
 4. 收到退出信号（或某个执行单元结束）后进入关闭流程，依次执行 `OnStop` 钩子并调用各组件的 `Stop(ctx)`。
 
 即每个组件遵循 `Init → Start → Stop` 的调用顺序：
 
-- `Init(env Env)`：注册组件时同步调用，用于初始化依赖。参数是 `lynx.Env`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），组件不依赖完整的 `App` 接口（见 3.6 节 Env 接口说明）。
+- `Init(ctx AppContext)`：注册组件时同步调用，用于初始化依赖。参数是 `lynx.AppContext`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），组件不依赖完整的 `App` 接口（见 3.6 节 AppContext 接口说明）。
 - `Start`：`Run()` 启动后并发调用，通常是阻塞式的（如监听端口、消费消息），其 `ctx` 被取消时应返回。
 - `Stop(ctx) error`：关闭阶段调用，用于释放资源；返回的错误由框架收集，与 OnStop 钩子错误一起随 `Run()` 上抛。
 
 ### 并发模型：run group
 
-Lynx 使用 oklog/run 的 `run.Group` 管理所有并发执行单元。每个通过 `app.Register` / `app.RegisterBuilders` 注册的组件是一个 actor；此外 `Run()` 还会注册一个信号 actor。
+Lynx 使用 oklog/run 的 `run.Group` 管理所有并发执行单元。每个通过 `app.Register` / `app.RegisterFactories` 注册的组件是一个 actor；此外 `Run()` 还会注册一个信号 actor。
 
 - `OnStart` 钩子不占用 run group actor：在 `Run()` 中、组件启动前按注册顺序串行执行，全部成功后才启动组件（见 3.2 节）。
 - 信号 actor：监听退出信号（见 3.6 节）或应用 Context 取消。一旦触发，先在 actor 内按顺序执行所有 `OnStop` 钩子，然后返回，run group 随之中断各组件。
 
-run group 的语义是：所有组件 actor 并发运行；一旦有任何一个 actor 返回——组件 `Start` 出错、CLI 命令执行完毕（`app.CLI` 注册的命令结束时调用 `app.Close()`）、或信号 actor 返回——框架会中断其余所有 actor，整个应用随之进入统一关闭流程。这意味着任何一个组件失败都会触发整体优雅关闭，不会出现"半个应用还在跑"的状态。
+run group 的语义是：所有组件 actor 并发运行；一旦有任何一个 actor 返回——组件 `Start` 出错、CLI 命令执行完毕（`app.Command` 注册的命令结束时调用 `app.Close()`）、或信号 actor 返回——框架会中断其余所有 actor，整个应用随之进入统一关闭流程。这意味着任何一个组件失败都会触发整体优雅关闭，不会出现"半个应用还在跑"的状态。
 
 需要注意一个细节：每个组件拥有独立的 Context（注册组件时创建）。关闭时 run group 对每个组件 actor 先调用 `Stop(ctx)`，再取消其 Context。因此组件的 `Stop` 实现不要等待 `ctx.Done()`——它永远不会等到；`Start` 中阻塞在 `<-ctx.Done()` 上的逻辑会在 `Stop` 返回后被解除。
 
@@ -188,12 +188,12 @@ router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 })
 ```
 
-## 3.6 Env 接口与组件接缝
+## 3.6 AppContext 接口与组件接缝
 
-组件的 `Init` 接收的不是完整的 `App` 接口，而是更窄的 `lynx.Env`：
+组件的 `Init` 接收的不是完整的 `App` 接口，而是更窄的 `lynx.AppContext`：
 
 ```go
-type Env interface {
+type AppContext interface {
 	Context() context.Context
 	Config() Config
 	Logger(kwargs ...any) *slog.Logger
@@ -202,9 +202,9 @@ type Env interface {
 }
 ```
 
-`App` 是 `Env` 的超集（`App` 内嵌 `Env`，额外提供 `Register`/`OnStart`/`OnStop`/`CLI`/`Run`/`SetLogger`）。组件在 `Init` 中只依赖 `Env` 的五个方法：读取配置、取日志、访问应用元信息（经 Context）、获取健康检查快照、或请求关闭应用（如一次性命令执行完毕）。测试时只需实现这五个方法，无需为 `App` 的其余方法写空实现。
+`App` 是 `AppContext` 的超集（`App` 内嵌 `AppContext`，额外提供 `Register`/`OnStart`/`OnStop`/`Command`/`Run`/`SetLogger`）。组件在 `Init` 中只依赖 `AppContext` 的五个方法：读取配置、取日志、访问应用元信息（经 Context）、获取健康检查快照、或请求关闭应用（如一次性命令执行完毕）。测试时只需实现这五个方法，无需为 `App` 的其余方法写空实现。
 
-框架的职责边界：组件不能通过 `Env` 注册其他组件或修改生命周期钩子——`Init` 阶段（注册时同步执行）只允许"读取环境、准备资源"。
+框架的职责边界：组件不能通过 `AppContext` 注册其他组件或修改生命周期钩子——`Init` 阶段（注册时同步执行）只允许"读取环境、准备资源"。
 
 ## 3.7 优雅关闭
 
@@ -274,7 +274,7 @@ type myComponent struct{}
 
 func (c *myComponent) Name() string { return "my-component" }
 
-func (c *myComponent) Init(env lynx.Env) error { return nil }
+func (c *myComponent) Init(ctx lynx.AppContext) error { return nil }
 
 func (c *myComponent) Start(ctx context.Context) error {
 	<-ctx.Done()
@@ -286,4 +286,4 @@ func (c *myComponent) Stop(ctx context.Context) error { return nil }
 
 ## 3.9 下一步
 
-- [第 4 章：组件系统](./04-component-system.md) - 深入理解 `Component` 接口契约、`ComponentBuilder` 与自定义组件编写
+- [第 4 章：组件系统](./04-component-system.md) - 深入理解 `Component` 接口契约、`ComponentFactory` 与自定义组件编写

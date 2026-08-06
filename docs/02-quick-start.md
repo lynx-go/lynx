@@ -128,7 +128,7 @@ addr := app.Config().GetString("addr")
 
 ## 2.4 CLI 模式
 
-Lynx 也可以用来构建执行一次性命令的 CLI 工具。通过 `app.CLI(cmd)` 注册命令函数，应用启动后执行该命令，执行完毕后自动退出。下面是一个最小示例（改编自 `_examples/cli/main.go`）：
+Lynx 也可以用来构建执行一次性命令的 CLI 工具。通过 `app.Command(cmd)` 注册命令函数，应用启动后执行该命令，执行完毕后自动退出。下面是一个最小示例（改编自 `_examples/cli/main.go`）：
 
 ```go
 package main
@@ -142,7 +142,7 @@ import (
 
 func main() {
 	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
-		return app.CLI(func(ctx context.Context) error {
+		return app.Command(func(ctx context.Context) error {
 			fmt.Println("hello cli")
 			return nil
 		})
@@ -159,7 +159,7 @@ func main() {
 go run main.go
 ```
 
-输出 `hello cli` 后进程自动退出。`app.CLI` 注册的命令同样运行在 Lynx 的生命周期管理中，可以与 `OnStart`/`OnStop` 钩子及其他组件（如 PubSub Broker）配合使用，完整示例见 `_examples/cli/main.go`。
+输出 `hello cli` 后进程自动退出。`app.Command` 注册的命令同样运行在 Lynx 的生命周期管理中，可以与 `OnStart`/`OnStop` 钩子及其他组件（如 PubSub Broker）配合使用，完整示例见 `_examples/cli/main.go`。
 
 ## 2.5 健康检查端点
 
@@ -185,7 +185,7 @@ type myComponent struct {
 }
 
 func (c *myComponent) Name() string             { return "my-component" }
-func (c *myComponent) Init(env lynx.Env) error  { c.SetHealthy(true); return nil }
+func (c *myComponent) Init(ctx lynx.AppContext) error { c.SetHealthy(true); return nil }
 func (c *myComponent) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil

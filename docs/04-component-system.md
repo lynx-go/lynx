@@ -1,6 +1,6 @@
 # 4. 组件系统
 
-组件是 Lynx 应用的基本构建单元：HTTP/gRPC 服务器、消息 Broker、定时调度器，乃至一段需要在应用生命周期内运行的后台逻辑，都可以抽象为一个组件。本章介绍 `Component` 接口契约、`ComponentBuilder` 与多实例机制、`ServerLike`/`CheckHealth` 扩展接口，并通过一个完整示例演示如何编写自定义组件，最后概览 `contrib/` 下的五个官方组件模块。
+组件是 Lynx 应用的基本构建单元：HTTP/gRPC 服务器、消息 Broker、定时调度器，乃至一段需要在应用生命周期内运行的后台逻辑，都可以抽象为一个组件。本章介绍 `Component` 接口契约、`ComponentFactory` 与多实例机制、`Service`/`CheckHealth` 扩展接口，并通过一个完整示例演示如何编写自定义组件，最后概览 `contrib/` 下的五个官方组件模块。
 
 ## 4.1 Component 接口契约
 
@@ -8,7 +8,7 @@
 
 ```go
 type Lifecycle interface {
-	Init(env Env) error
+	Init(ctx AppContext) error
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 }
@@ -22,7 +22,7 @@ type Component interface {
 四个方法的契约如下：
 
 - `Name() string`：组件名称，用于启动/停止日志中的标识。框架不检查唯一性，多个实例可以重名。
-- `Init(env Env) error`：注册组件时（即 `app.Register(...)` 调用时）**同步**执行，用于初始化依赖——可以通过参数 `env` 访问 `env.Config()`、`env.Logger()`、`env.Context()` 等（`Env` 是 `App` 的窄化子集，见 3.6 节）。返回 error 不会在注册时立即返回，而是被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
+- `Init(ctx AppContext) error`：注册组件时（即 `app.Register(...)` 调用时）**同步**执行，用于初始化依赖——可以通过参数 `ctx` 访问 `ctx.Config()`、`ctx.Logger()`、`ctx.Context()` 等（`AppContext` 是 `App` 的窄化子集，见 3.6 节）。返回 error 不会在注册时立即返回，而是被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
 - `Start(ctx context.Context) error`：`cli.Run()` 启动后，每个组件在 run group 中作为独立 actor **并发**调用。通常是阻塞式的（监听端口、消费消息），收到 `ctx` 取消时应返回。任何一个组件的 `Start` 返回（无论是否出错）都会触发整个应用的优雅关闭（见 3.1 节并发模型）。
 - `Stop(ctx context.Context) error`：关闭阶段由 run group 的中断函数调用，用于释放资源；返回的错误由框架收集，随 `Run()` 上抛。注意框架是先调用 `Stop` 再取消组件 Context（见 3.1 节），因此 `Stop` 中不要等待 `ctx.Done()`；`Stop` 必须容忍先于 `Start` 被调用（Init 成功但 Start 未执行时，框架会逆序调用 Stop 做资源清理）。
 
@@ -34,43 +34,43 @@ app.Register(myComponent)
 
 每个通过 `app.Register` 注册的组件会获得一个独立的 Context（注册时创建），`Start` 和 `Stop` 收到的都是这个 Context。
 
-## 4.2 ComponentBuilder 与多实例
+## 4.2 ComponentFactory 与多实例
 
-当同一类组件需要运行多个实例时（例如同一个 Kafka 消费组起 3 个 consumer），直接 new 多个组件会很啰嗦，`ComponentBuilder` 为此而生（定义同样在 `component.go`）：
+当同一类组件需要运行多个实例时（例如同一个 Kafka 消费组起 3 个 consumer），直接 new 多个组件会很啰嗦，`ComponentFactory` 为此而生（定义同样在 `component.go`）：
 
 ```go
-type ComponentBuilder interface {
-	Build() Component
-	Options() BuildOptions
+type ComponentFactory interface {
+	New() Component
+	Options() FactoryOptions
 }
 
-type BuildOptions struct {
+type FactoryOptions struct {
 	Instances int `json:"instances"` // 实例数
 }
 ```
 
-注册方式与组件类似，使用 `app.RegisterBuilders`：
+注册方式与组件类似，使用 `app.RegisterFactories`：
 
 ```go
-app.RegisterBuilders(myBuilder)
+app.RegisterFactories(myFactory)
 ```
 
-框架对 builder 的处理逻辑（`lynx.go` 的 `addComponentBuilders`）：
+框架对工厂的处理逻辑（`lynx.go` 的 `addComponentFactories`）：
 
 1. 调用 `Options()` 获取构建选项，`Instances` 小于 1 时按 1 处理；
-2. 循环调用 `Instances` 次 `Build()`，每次得到一个**全新**的组件实例；
+2. 循环调用 `Instances` 次 `New()`，每次得到一个**全新**的组件实例；
 3. 把这些实例逐一走与 `app.Register` 相同的注册流程（各自独立 `Init`/独立 Context/独立 run group actor）。
 
-也就是说，`Instances: 3` 等价于注册三个互不影响的组件实例，`Build()` 必须每次返回新对象，各实例之间不应共享会互相干扰的状态。
+也就是说，`Instances: 3` 等价于注册三个互不影响的组件实例，`New()` 必须每次返回新对象，各实例之间不应共享会互相干扰的状态。
 
-`boot` 包的 Wire 引导流程（`boot.Bind`）会把聚合好的组件与 builder 一次性注册进应用，用法见 `_examples/boot/provides.go`。
+`boot` 包的 Wire 引导流程（`boot.Bind`）会把聚合好的组件与工厂一次性注册进应用，用法见 `_examples/boot/provides.go`。
 
-## 4.3 ServerLike 与 CheckHealth 扩展接口
+## 4.3 Service 与 CheckHealth 扩展接口
 
-很多组件（服务器、Broker、调度器）还需要对外报告"自己是否健康"。Lynx 内置了 `lynx.Checker` 接口（替代 gocloud.dev 的 `health.Checker`），并定义了 `ServerLike`：
+很多组件（服务器、Broker、调度器）还需要对外报告"自己是否健康"。Lynx 内置了 `lynx.Checker` 接口（替代 gocloud.dev 的 `health.Checker`），并定义了 `Service`：
 
 ```go
-type ServerLike interface {
+type Service interface {
 	Checker // CheckHealth() error
 	Component
 }
@@ -78,7 +78,7 @@ type ServerLike interface {
 
 `Checker` 只有一个方法：`CheckHealth() error`——返回 nil 表示健康，返回 error 表示不健康。
 
-组件不需要显式声明自己实现了 `ServerLike`：框架在注册每个组件时会做 `Checker` 类型断言（`lynx.go` 的 `addComponents`），只要组件实现了 `CheckHealth() error`，就会被自动收集进应用的健康检查列表。这个列表通过 `app.HealthCheckers()` 暴露（返回快照切片）：
+组件不需要显式声明自己实现了 `Service`：框架在注册每个组件时会做 `Checker` 类型断言（`lynx.go` 的 `addComponents`），只要组件实现了 `CheckHealth() error`，就会被自动收集进应用的健康检查列表。这个列表通过 `app.HealthCheckers()` 暴露（返回快照切片）：
 
 ```go
 HealthCheckers() []Checker
@@ -87,7 +87,7 @@ HealthCheckers() []Checker
 它有两个消费方：
 
 - HTTP 服务器的就绪端点：传入 `http.WithHealthCheckers(app.HealthCheckers)`（方法值天然匹配 `lynx.HealthCheckersFunc` 签名）后，`/healthz/readiness` 会依次调用所有收集到的检查器，全部通过才返回 200（见 2.5 节）。
-- `app.CLI` 注册的命令：命令执行前会带退避重试地等待所有检查器就绪（`command.go`），保证 CLI 命令不会抢在依赖组件就绪之前运行。
+- `app.Command` 注册的命令：命令执行前会带退避重试地等待所有检查器就绪（`command.go`），保证 CLI 命令不会抢在依赖组件就绪之前运行。
 
 框架内置组件中，`server/grpc` 的 Server、`contrib/pubsub` 的 Broker、`contrib/kafka` 的 Transport、`contrib/schedule` 的 Scheduler 都实现了 `CheckHealth`。典型的实现语义是：未 `Start` 前返回 error，`Start` 成功后返回 nil，`Stop` 后再次返回 error（以 `contrib/schedule` 为例）：
 
@@ -110,11 +110,11 @@ func (s *Scheduler) CheckHealth() error {
 编写自定义组件的要点：
 
 1. 实现 `Name/Init/Start/Stop` 四个方法，`Start` 一般阻塞在 `ctx.Done()` 上；
-2. 需要多实例时再配一个实现 `Build/Options` 的 builder，`Build()` 每次返回新实例；
+2. 需要多实例时再配一个实现 `New/Options` 的工厂，`New()` 每次返回新实例；
 3. 需要参与就绪检查就实现 `CheckHealth() error`，或直接内嵌 `lynx.HealthChecker`；
-4. 在 `setup` 回调中用 `app.Register`（或 `app.RegisterBuilders` 注册 builder）挂载组件。
+4. 在 `setup` 回调中用 `app.Register`（或 `app.RegisterFactories` 注册工厂）挂载组件。
 
-下面是一个完整可编译的示例：一个 worker 组件内嵌 `HealthChecker` 参与就绪检查，并通过 builder 以 2 个实例运行：
+下面是一个完整可编译的示例：一个 worker 组件内嵌 `HealthChecker` 参与就绪检查，并通过工厂以 2 个实例运行：
 
 ```go
 package main
@@ -127,7 +127,7 @@ import (
 
 func main() {
 	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
-		app.RegisterBuilders(NewWorkerBuilder("worker", 2))
+		app.RegisterFactories(NewWorkerFactory("worker", 2))
 		return nil
 	},
 		lynx.WithName("custom-component"),
@@ -144,7 +144,7 @@ type worker struct {
 
 func (w *worker) Name() string { return w.name }
 
-func (w *worker) Init(env lynx.Env) error {
+func (w *worker) Init(ctx lynx.AppContext) error {
 	w.SetHealthy(true) // 也可以等 Start 中就绪后再置为健康
 	return nil
 }
@@ -159,26 +159,26 @@ func (w *worker) Stop(ctx context.Context) error {
 	return nil
 }
 
-// workerBuilder 负责按指定实例数构建 worker。
-type workerBuilder struct {
+// workerFactory 负责按指定实例数构建 worker。
+type workerFactory struct {
 	name      string
 	instances int
 }
 
-func NewWorkerBuilder(name string, instances int) lynx.ComponentBuilder {
-	return &workerBuilder{name: name, instances: instances}
+func NewWorkerFactory(name string, instances int) lynx.ComponentFactory {
+	return &workerFactory{name: name, instances: instances}
 }
 
-func (b *workerBuilder) Build() lynx.Component {
+func (f *workerFactory) New() lynx.Component {
 	// 每次调用都返回新实例，实例之间不共享状态
-	return &worker{name: b.name, HealthChecker: &lynx.HealthChecker{}}
+	return &worker{name: f.name, HealthChecker: &lynx.HealthChecker{}}
 }
 
-func (b *workerBuilder) Options() lynx.BuildOptions {
-	return lynx.BuildOptions{Instances: b.instances}
+func (f *workerFactory) Options() lynx.FactoryOptions {
+	return lynx.FactoryOptions{Instances: f.instances}
 }
 
-var _ lynx.ComponentBuilder = (*workerBuilder)(nil)
+var _ lynx.ComponentFactory = (*workerFactory)(nil)
 ```
 
 运行后通过日志可以看到两个 worker 实例各自经历了 `initializing component` → `starting component`；按 `Ctrl+C` 后各自收到 `Stop`。由于内嵌了 `HealthChecker`，两个实例都会被收集为就绪检查项。
@@ -199,7 +199,7 @@ go get github.com/lynx-go/lynx/contrib/zap
 
 `contrib/pubsub` 基于 Watermill 提供进程内/跨进程的事件发布订阅。核心概念：
 
-- `Broker`：事件总线门面，本身是 `ServerLike` 组件，提供 `Publish`/`Subscribe`/`Route`。内部维护一张 topic → Transport 路由表：`Options.Transports` 中每个 Transport 通过 `Topics()` 声明自己承接的逻辑 topic，`Init` 时自动建表；`Route(topic, t)` 可显式覆盖自动路由；`RouteKey(topic, t, key)` 在覆盖的同时把 transport 侧主题名改为 `key`（业务逻辑名与后端主题名解耦，如 kafka 时 `key` 对应 kafka 段配置的逻辑 key，发布与订阅两侧都会按 `key` 调用 transport）；未命中的 topic 回退到 `DefaultTransport`（两者皆无则返回错误）。
+- `Broker`：事件总线门面，本身是 `Service` 组件，提供 `Publish`/`Subscribe`/`Route`。内部维护一张 topic → Transport 路由表：`Options.Transports` 中每个 Transport 通过 `Topics()` 声明自己承接的逻辑 topic，`Init` 时自动建表；`Route(topic, t)` 可显式覆盖自动路由；`RouteKey(topic, t, key)` 在覆盖的同时把 transport 侧主题名改为 `key`（业务逻辑名与后端主题名解耦，如 kafka 时 `key` 对应 kafka 段配置的逻辑 key，发布与订阅两侧都会按 `key` 调用 transport）；未命中的 topic 回退到 `DefaultTransport`（两者皆无则返回错误）。
 - `Transport`：消息后端组件（kafka/内存），topic 参数一律是逻辑名，物理名解析在实现内部，见下文的 kafka 模块。
 - `Router`：把一组 `Handler` 在 `Init` 期缓冲订阅到 Broker 的组件，无时序依赖。`Handler` 接口由 `EventName()`、`HandlerName()`、`HandlerFunc()` 三个方法组成，公共 API 使用自有 `pubsub.Message` 类型（`ID`/`Key`/`Headers`/`Payload`），与底层 Watermill 解耦。
 - `NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载显式路由并逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），非 nil 的传入 transports 参与自动路由，`memory` 标识（提供时）兼作默认回退；不创建任何 transport，返回 `Broker`，transports 由调用方创建并注册。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用）——**返回 nil 时不得 Register**（框架对 nil 组件注册返回明确错误）。

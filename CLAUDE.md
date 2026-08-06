@@ -73,7 +73,7 @@ type Component interface {
     Lifecycle
 }
 
-type Env interface {
+type AppContext interface {
     Context() context.Context
     Config() Config
     Logger(kwargs ...any) *slog.Logger
@@ -82,7 +82,7 @@ type Env interface {
 }
 
 type Lifecycle interface {
-    Init(env Env) error
+    Init(ctx AppContext) error
     Start(ctx context.Context) error
     Stop(ctx context.Context) error
 }
@@ -90,12 +90,12 @@ type Lifecycle interface {
 
 Components are registered via `app.Register(...)` and automatically managed through their lifecycle. Components implementing `lynx.Checker` (`CheckHealth() error`, defined locally in health.go — no gocloud.dev dependency) are automatically added to health checks; `app.HealthCheckers()` returns the snapshot slice. `Stop` errors are collected (bounded by `Options.StopTimeout`) and surfaced by `Run()` together with OnStop hook errors.
 
-**ComponentBuilder**
-For dynamic component creation with configurable instance counts (component.go:26-29):
+**ComponentFactory**
+For dynamic component creation with configurable instance counts (component.go:40-55):
 ```go
-type ComponentBuilder interface {
-    Build() Component
-    Options() BuildOptions
+type ComponentFactory interface {
+    New() Component
+    Options() FactoryOptions
 }
 ```
 
@@ -103,8 +103,9 @@ type ComponentBuilder interface {
 Lifecycle hooks and components are registered via direct methods on the `App` interface (lynx.go):
 - `app.OnStart(fns ...HookFunc)` - Functions to execute on startup
 - `app.OnStop(fns ...HookFunc)` - Functions to execute on shutdown
-- `app.Register(components ...Component)` - Register components (Init runs synchronously at registration; the first error is recorded and returned by `Run()`). All registration must happen before `Run()`: after `Run()` starts, `Register`/`RegisterBuilders` panic and `CLI` returns an error
-- `app.RegisterBuilders(builders ...ComponentBuilder)` - Register component builders
+- `app.Register(components ...Component)` - Register components (Init runs synchronously at registration; the first error is recorded and returned by `Run()`). All registration must happen before `Run()`: after `Run()` starts, `Register`/`RegisterFactories` panic and `Command` returns an error
+- `app.RegisterFactories(factories ...ComponentFactory)` - Register component factories
+- `app.Command(cmd CommandFunc)` - Register a one-shot CLI command
 
 **Application Lifecycle**
 The main run loop (lynx.go:466-533) uses `oklog/run` to manage concurrent goroutines:

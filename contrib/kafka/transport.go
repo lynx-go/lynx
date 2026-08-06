@@ -126,7 +126,7 @@ type ProducerOptions struct {
 // 订阅按（消费组 × 物理 topic × 实例数）展开后 fan-in。
 type Transport struct {
 	opts Options
-	// logger 是组件日志实例：Init(env) 时从 env.Logger 取，未 Init
+	// logger 是组件日志实例：Init(ctx) 时从 ctx.Logger 取，未 Init
 	//（脱离框架单用）时回落 slog.Default()。
 	logger *slog.Logger
 
@@ -200,9 +200,9 @@ func NewTransport(opts Options) (*Transport, error) {
 func (t *Transport) Name() string { return "kafka-transport" }
 
 // Init 校验配置并记录日志实例。
-func (t *Transport) Init(env lynx.Env) error {
-	if env != nil {
-		t.logger = env.Logger("component", t.Name())
+func (t *Transport) Init(ctx lynx.AppContext) error {
+	if ctx != nil {
+		t.logger = ctx.Logger("component", t.Name())
 	}
 	for name, topic := range t.opts.Topics {
 		if len(topic.Brokers) == 0 {

@@ -25,12 +25,12 @@ type BindConfigFunc func(f *pflag.FlagSet, c ConfigSource) error
 // SetFlagsFunc 定义应用启动时需要注册的命令行 flags。
 type SetFlagsFunc func(f *pflag.FlagSet)
 
-// App 是应用实例的核心接口：在 Env 的基础上增加组件注册、
+// App 是应用实例的核心接口：在 AppContext 的基础上增加组件注册、
 // 生命周期钩子与运行控制能力。
 type App interface {
-	Env
-	// CLI 注册启动的命令，用于 CLI 模式
-	CLI(cmd CommandFunc) error
+	AppContext
+	// Command 注册启动的命令，用于 CLI 模式
+	Command(cmd CommandFunc) error
 
 	// OnStart 注册应用启动阶段执行的钩子函数
 	OnStart(fns ...HookFunc)
@@ -41,12 +41,12 @@ type App interface {
 	// 首个错误会被记录，并在 Run() 时统一返回。
 	// 所有注册必须先于 Run：Run 开始后调用将 panic（见 Run）。
 	Register(components ...Component)
-	// RegisterBuilders 注册需要由应用托管生命周期的组件构建器，
+	// RegisterFactories 注册需要由应用托管生命周期的组件工厂，
 	// 错误处理语义与 Register 相同；同样必须先于 Run。
-	RegisterBuilders(builders ...ComponentBuilder)
+	RegisterFactories(factories ...ComponentFactory)
 
 	// Run 运行应用主流程：执行 on-start 钩子、启动所有组件并等待退出信号。
-	// Run 开始后，Register/RegisterBuilders 为禁止操作（panic），CLI 返回错误。
+	// Run 开始后，Register/RegisterFactories 为禁止操作（panic），Command 返回错误。
 	Run() error
 	// SetLogger 设置 logger。注意：同时调用 slog.SetDefault 同步全局默认
 	// logger，使进程内不经框架的裸 slog 调用（如 slog.Info）落到同一
@@ -111,7 +111,7 @@ type lynx struct {
 	healthCheckers []Checker
 	// components 按注册顺序记录已 Init 成功的组件，用于失败路径的逆序清理。
 	components []Component
-	// running 标记 Run 已开始：此后 Register/RegisterBuilders 为禁止操作，
+	// running 标记 Run 已开始：此后 Register/RegisterFactories 为禁止操作，
 	// Run 侧无需再与注册侧并发争用 run.G 的 actors。
 	running atomic.Bool
 
@@ -159,9 +159,9 @@ func (app *lynx) Register(components ...Component) {
 	}
 }
 
-func (app *lynx) RegisterBuilders(builders ...ComponentBuilder) {
+func (app *lynx) RegisterFactories(factories ...ComponentFactory) {
 	if app.running.Load() {
-		panic("lynx: RegisterBuilders must not be called after Run() has started")
+		panic("lynx: RegisterFactories must not be called after Run() has started")
 	}
 	app.mu.Lock()
 	initErr := app.initErr
@@ -169,12 +169,12 @@ func (app *lynx) RegisterBuilders(builders ...ComponentBuilder) {
 	if initErr != nil {
 		return
 	}
-	if err := app.addComponentBuilders(builders...); err != nil {
+	if err := app.addComponentFactories(factories...); err != nil {
 		if errors.Is(err, errRunStarted) {
-			panic("lynx: RegisterBuilders must not be called after Run() has started")
+			panic("lynx: RegisterFactories must not be called after Run() has started")
 		}
 		app.recordInitError(err)
-		app.logger.ErrorContext(app.ctx, "failed to register component builders", "error", err)
+		app.logger.ErrorContext(app.ctx, "failed to register component factories", "error", err)
 	}
 }
 
@@ -188,7 +188,7 @@ func (app *lynx) recordInitError(err error) {
 }
 
 // errRunStarted 由 addComponents 在持锁登记事务中发现 Run 已开始时返回，
-// 调用方（Register/RegisterBuilders/CLI）翻译为各自的明确错误/panic
+// 调用方（Register/RegisterFactories/Command）翻译为各自的明确错误/panic
 //（所有注册必须先于 Run）。
 var errRunStarted = errors.New("lynx: registration after Run() has started")
 
@@ -208,9 +208,9 @@ func (app *lynx) HealthCheckers() []Checker {
 	return out
 }
 
-func (app *lynx) CLI(cmd CommandFunc) error {
+func (app *lynx) Command(cmd CommandFunc) error {
 	if app.running.Load() {
-		return errors.New("lynx: CLI must not be called after Run() has started")
+		return errors.New("lynx: Command must not be called after Run() has started")
 	}
 	app.mu.Lock()
 	initErr := app.initErr
@@ -220,7 +220,7 @@ func (app *lynx) CLI(cmd CommandFunc) error {
 	}
 	if err := app.addComponents(NewCommand(cmd)); err != nil {
 		if errors.Is(err, errRunStarted) {
-			return errors.New("lynx: CLI must not be called after Run() has started")
+			return errors.New("lynx: Command must not be called after Run() has started")
 		}
 		app.recordInitError(err)
 		return err
@@ -374,15 +374,15 @@ func (app *lynx) initConfigure() error {
 	return nil
 }
 
-func (app *lynx) addComponentBuilders(builders ...ComponentBuilder) error {
+func (app *lynx) addComponentFactories(factories ...ComponentFactory) error {
 
-	for _, builder := range builders {
-		build := builder.Build
-		options := builder.Options()
+	for _, factory := range factories {
+		fn := factory.New
+		options := factory.Options()
 		options.ensureDefaults()
 		var components []Component
 		for i := 0; i < options.Instances; i++ {
-			comp := build()
+			comp := fn()
 			components = append(components, comp)
 		}
 		if err := app.addComponents(components...); err != nil {

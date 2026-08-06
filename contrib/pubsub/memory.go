@@ -35,7 +35,7 @@ func NewMemoryTransport() *MemoryTransport {
 func (t *MemoryTransport) Name() string { return "pubsub-memory" }
 
 // Init 无额外初始化工作。
-func (t *MemoryTransport) Init(env lynx.Env) error { return nil }
+func (t *MemoryTransport) Init(ctx lynx.AppContext) error { return nil }
 
 // Start 标记运行并阻塞至 ctx 取消。
 func (t *MemoryTransport) Start(ctx context.Context) error {

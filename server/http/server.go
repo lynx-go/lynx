@@ -182,7 +182,7 @@ func (s *Server) Name() string {
 }
 
 // Init 初始化组件，HTTP 服务无需在初始化阶段做额外工作。
-func (s *Server) Init(env lynx.Env) error {
+func (s *Server) Init(ctx lynx.AppContext) error {
 	return nil
 }
 

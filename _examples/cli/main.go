@@ -48,7 +48,7 @@ func main() {
 
 		fmt.Println("hello cli")
 
-		return app.CLI(func(ctx context.Context) error {
+		return app.Command(func(ctx context.Context) error {
 			if err := broker.Publish(ctx, "hello", pubsub.MustJSONMessage(map[string]any{"message": "hello world"})); err != nil {
 				return err
 			}

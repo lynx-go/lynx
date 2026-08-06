@@ -19,7 +19,7 @@ import (
 
 // Broker 是消息代理门面组件：按 topic 路由到 Transport，统一发布订阅。
 type Broker interface {
-	lynx.ServerLike
+	lynx.Service
 	// Publish 发布消息到逻辑 topic；路由表未命中时走默认 Transport。
 	// payload 为 *Message 时直接发送（字节级语义，不序列化）；
 	// 否则视为业务对象，经 Broker 的 Marshaler 自动序列化后发送。
@@ -179,7 +179,7 @@ func (a subscriberAdapter) Close() error { return nil }
 // Broker 是 Broker 接口的具体实现。
 type broker struct {
 	options Options
-	// logger 是组件日志实例：Init(env) 时从 env.Logger 取，未 Init 时
+	// logger 是组件日志实例：Init(ctx) 时从 ctx.Logger 取，未 Init 时
 	// 回落 slog.Default()。
 	logger *slog.Logger
 	router *message.Router
@@ -233,9 +233,9 @@ func (b *broker) CheckHealth() error {
 }
 
 // Init 创建 watermill router 并执行自动路由。
-func (b *broker) Init(env lynx.Env) error {
-	if env != nil {
-		b.logger = env.Logger("component", "pubsub")
+func (b *broker) Init(ctx lynx.AppContext) error {
+	if ctx != nil {
+		b.logger = ctx.Logger("component", "pubsub")
 	}
 	logger := watermill.NewSlogLogger(b.logger)
 

@@ -191,13 +191,13 @@ app.Register(scheduler)
 ```go
 type Component interface {
     Name() string
-    Init(env Env) error
+    Init(ctx AppContext) error
     Start(ctx context.Context) error
     Stop(ctx context.Context) error
 }
 ```
 
-组件的 `Init` 接收 `lynx.Env`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），
+组件的 `Init` 接收 `lynx.AppContext`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），
 不依赖完整的 `App` 接口。`Stop` 返回的错误与 OnStop 钩子错误一起由 `Run()` 统一上抛。
 
 ### Hooks（钩子）

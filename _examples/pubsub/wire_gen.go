@@ -30,7 +30,7 @@ func wireBootstrap(app lynx.App) (*boot.Bootstrap, func(), error) {
 	router := NewRouter(broker, v)
 	server := NewHttpServer(broker)
 	v2 := NewComponents(memoryTransport, transport, broker, router, server)
-	v3 := NewComponentBuilders()
+	v3 := NewComponentFactories()
 	bootstrap := boot.New(onStartHooks, onStopHooks, v2, v3)
 	return bootstrap, func() {
 	}, nil

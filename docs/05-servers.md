@@ -100,7 +100,7 @@ func NewServer(opts ...Option) *Server
 
 业务服务通过 `GetServer()` 拿到原生 `*grpc.Server` 后注册（见下文完整示例）。默认值：监听地址 `:9090`（`DefaultGRPCAddr`）、超时 60 秒、日志器 `slog.Default()`。
 
-返回的 `*Server` 实现了 `lynx.ServerLike`（即 `Component` + `CheckHealth() error`，见 4.3 节），`Name()` 为 `"grpc"`。这意味着它会被自动收集进应用的健康检查列表：未在运行时 `CheckHealth` 返回 `grpc.ErrServerStopped`。
+返回的 `*Server` 实现了 `lynx.Service`（即 `Component` + `CheckHealth() error`，见 4.3 节），`Name()` 为 `"grpc"`。这意味着它会被自动收集进应用的健康检查列表：未在运行时 `CheckHealth` 返回 `grpc.ErrServerStopped`。
 
 ### Options 一览
 

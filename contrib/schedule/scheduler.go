@@ -14,15 +14,15 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-// Scheduler 是基于 cron 的定时任务调度组件，实现 lynx.ServerLike 接口。
+// Scheduler 是基于 cron 的定时任务调度组件，实现 lynx.Service 接口。
 type Scheduler struct {
 	options *Options
 	tasks   []Task
 	cron    *cron.Cron
-	// logger 是组件日志实例：Init(env) 时从 env.Logger 取，未 Init 时
+	// logger 是组件日志实例：Init(ctx) 时从 ctx.Logger 取，未 Init 时
 	// 回落 NewScheduler 的 WithLogger（默认 slog.Default()）。
 	logger *slog.Logger
-	// taskCtx 是任务执行的上下文：Init(env) 时取自 env.Context()（携带
+	// taskCtx 是任务执行的上下文：Init(ctx) 时取自 ctx.Context()（携带
 	// 应用元数据，并在应用关闭时取消）；脱离框架单用（Init(nil)）时任务
 	// 使用 Background。
 	taskCtx context.Context
@@ -64,14 +64,14 @@ func (s *Scheduler) Name() string {
 	return "cron-scheduler"
 }
 
-// Init 记录任务上下文与日志实例。env 为 nil（脱离框架单用）时保持
+// Init 记录任务上下文与日志实例。ctx 为 nil（脱离框架单用）时保持
 // 默认值：任务上下文回退 Background。
-func (s *Scheduler) Init(env lynx.Env) error {
-	if env == nil {
+func (s *Scheduler) Init(ctx lynx.AppContext) error {
+	if ctx == nil {
 		return nil
 	}
-	s.taskCtx = env.Context()
-	s.logger = env.Logger("component", "cron-scheduler")
+	s.taskCtx = ctx.Context()
+	s.logger = ctx.Logger("component", "cron-scheduler")
 	return nil
 }
 
@@ -100,7 +100,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		return errors.New("scheduler stopped before start")
 	}
 	// 对齐 run.Group actor 语义：等待传入的 ctx 取消（框架在 Stop 返回后
-	// 取消组件 ctx）。任务执行的取消由 taskCtx（env.Context）在应用关闭时
+	// 取消组件 ctx）。任务执行的取消由 taskCtx（ctx.Context）在应用关闭时
 	// 触发，与 Start 的等待相互独立。
 	<-ctx.Done()
 	s.started.Store(false)
@@ -139,7 +139,7 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 	return nil
 }
 
-var _ lynx.ServerLike = new(Scheduler)
+var _ lynx.Service = new(Scheduler)
 
 // Task 定义一个定时任务：名称、cron 表达式与处理函数。
 type Task interface {
@@ -229,7 +229,7 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	for i := range tasks {
 		task := tasks[i]
 		if _, err := scheduler.cron.AddFunc(task.Cron(), func() {
-			// 任务上下文取自 Init（env.Context，携带应用元数据，关闭时
+			// 任务上下文取自 Init（ctx.Context，携带应用元数据，关闭时
 			// 取消）；未 Init 时回退 Background。
 			ctx := scheduler.taskCtx
 			if ctx == nil {
