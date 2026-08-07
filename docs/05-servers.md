@@ -118,7 +118,7 @@ mux.Handle("/users/", lynxhttp.NewErrorHandler(nil, func(ctx context.Context, w 
 
 **"写了一半再报错"的语义**：传给 `fn` 的 `w` 是包装 writer（记录响应是否已开始，并保留 Flusher/Hijacker 能力）。若 `fn` 已写过响应头/体后再返回错误，`DefaultErrorHandler` 检测到响应已开始，**只记 Error 日志、不再改写响应**——不会触发 `superfluous WriteHeader`，也不会把错误 JSON 追加进已发出的响应体。业务代码应避免该用法（先完成校验再开始写响应）。
 
-**与 Recovery 中间件的分工**：`NewErrorHandler` 只处理"返回错误"，**不捕获 panic**——panic 的恢复由专门的 Recovery 中间件负责（v1.1 后续提供，挂载方式见 5.4.5 节），两者各司其职：业务错误走 `ErrorHandler`，崩溃保护走 Recovery。
+**与 Recovery 中间件的分工**：`NewErrorHandler` 只处理"返回错误"，**不捕获 panic**——panic 的恢复由专门的 Recovery 中间件负责（挂载方式与用法见 5.4.8 节），两者各司其职：业务错误走 `ErrorHandler`，崩溃保护走 Recovery。
 
 服务器级默认 `ErrorHandler`（`WithErrorHandler` 选项，使 `NewErrorHandler` 传 nil 时取服务器级默认而非包级默认）定位在 v1.2，当前 `NewErrorHandler(nil, ...)` 一律使用包级 `DefaultErrorHandler`。
 
@@ -587,6 +587,45 @@ broker := pubsub.NewBroker(pubsub.Options{
 ```
 
 注意：消息头传播的字段是"日志关联"级别的；发布侧的 ctx 属性优先级最低，消息自身 `Headers` 与 `WithMetadata` 显式设置的值不被覆盖。
+
+### 5.4.8 HTTP 恢复与限流中间件
+
+`server/http` 提供两个开箱即用的防御性中间件：**Recovery**（panic 恢复）与 **RateLimit**（服务器级限流）。两者都通过既有的 `WithMiddleware` 挂载（5.4.5 节），**不改变默认中间件链**——用户显式启用。
+
+**Recovery**：捕获链内任意一环（其余中间件、业务 handler）抛出的 panic，记一条 Error 日志（字段 `panic` + `stack` 完整调用栈），并经 ErrorHandler 写响应——缺省 `DefaultErrorHandler` 写 500 + 统一 JSON 错误体（`{"error":{"message":...}}`）。恢复后连接保持可用，后续请求不受影响。
+
+```go
+srv := http.NewServer(router,
+	http.WithAddr(addr),
+	// Recovery 建议声明在最外层：链内任意一环的 panic 都能被恢复
+	http.WithMiddleware(http.Recovery(), http.WithRequestID()),
+	http.WithLogger(app.Logger("logger", "http-requestlog")),
+)
+```
+
+`WithRecoveryHandler(h ErrorHandler)` 可覆盖 panic 响应（自定义状态码/响应体格式，如返回 502 透传网关语义）。panic 时响应已开始（先写后 panic）的情形无法改写已发出的部分，业务应避免该用法（见 F4 节"写了一半再报错"的语义）。
+
+**RateLimit**：服务器级令牌桶限流（`golang.org/x/time/rate`），`rps` 为每秒放行请求数，超限请求写 429 + `{"error":{"message":"rate limit exceeded"}}`：
+
+```go
+srv := http.NewServer(router,
+	http.WithAddr(addr),
+	http.WithMiddleware(
+		http.Recovery(),                        // 最外层：恢复 panic
+		http.RateLimit(100),                    // 全局限流：100 req/s
+		http.WithRequestID(),
+	),
+	http.WithLogger(app.Logger("logger", "http-requestlog")),
+)
+```
+
+- `WithBurst(n)`：令牌桶突发容量，缺省 `max(1, rps)`——burst 越大短时突发越宽松，长期平均速率仍受 rps 约束；
+- `WithRateLimitHandler(fn http.HandlerFunc)`：覆盖超限响应（如自定义 429 响应体）；
+- **rps ≤ 0 在构造期直接 panic**（配置错误在启动阶段暴露，而非运行期静默放行/拒绝全部请求）；
+- v1.1 只有**服务器级全局限流**（全部请求共享同一 limiter）；按路由、按 IP/用户维度限流定位 v1.2。
+
+链序建议：**Recovery 声明在第一个 `WithMiddleware` 参数（最外层）**——这样限流中间件自身（含自定义限流 handler）抛 panic 时同样被恢复；RateLimit 声明在 Recovery 之后、业务中间件之前，超限请求不进入下游处理链。
+
 
 ## 5.5 延伸阅读
 
