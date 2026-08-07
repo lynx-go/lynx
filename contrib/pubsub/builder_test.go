@@ -85,7 +85,9 @@ func TestNewFromConfigEventWithoutRouteKeepsOptions(t *testing.T) {
 pubsub:
   events:
     orders:
-      log_message: true
+      log_message:
+        publish: true
+        subscribe: true
       auto_ack: true
       group: orders-group
       instances: 2
@@ -100,7 +102,9 @@ pubsub:
 pubsub:
   events:
     orders:
-      log_message: true
+      log_message:
+        publish: true
+        subscribe: true
       auto_ack: true
       group: orders-group
       instances: 2
@@ -115,7 +119,10 @@ pubsub:
 	if !ok {
 		t.Fatal("expected event options for orders")
 	}
-	if !ev.LogMessage || !ev.AutoAck || ev.Group != "orders-group" || ev.Instances != 2 {
+	if ev.LogMessage == nil || !ev.LogMessage.Publish || !ev.LogMessage.Subscribe {
+		t.Fatalf("unexpected event log_message: %+v", ev.LogMessage)
+	}
+	if !ev.AutoAck || ev.Group != "orders-group" || ev.Instances != 2 {
 		t.Fatalf("unexpected event options: %+v", ev)
 	}
 	if ev.Retry == nil || ev.Retry.MaxRetries != 0 {
@@ -123,6 +130,96 @@ pubsub:
 	}
 	if len(broker.routes) != 0 {
 		t.Fatalf("expected no explicit routes, got %v", broker.routes)
+	}
+}
+
+// TestNewFromConfigDebug 验证 pubsub.debug 加载到 Options.Debug（缺省 false）。
+func TestNewFromConfigDebug(t *testing.T) {
+	b, err := NewFromConfig(builderTestConfig(t, `
+pubsub:
+  debug: true
+  events:
+    hello:
+      route:
+        transport: kafka
+`), map[string]Transport{"kafka": newFakeTransport()})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if !b.(*broker).options.Debug {
+		t.Fatal("expected Debug=true from config")
+	}
+	br, err := NewFromConfig(builderTestConfig(t, "addr: \":9090\"\n"),
+		map[string]Transport{"kafka": newFakeTransport()})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if br.(*broker).options.Debug {
+		t.Fatal("expected Debug=false by default")
+	}
+}
+
+// TestNewFromConfigGlobalLogMessage 验证 pubsub.log_message 全局默认配置
+// 加载到 Options.LogMessage，事件未单独配置时生效。
+func TestNewFromConfigGlobalLogMessage(t *testing.T) {
+	b, err := NewFromConfig(builderTestConfig(t, `
+pubsub:
+  log_message:
+    publish: true
+    subscribe: false
+  events:
+    hello:
+      route:
+        transport: kafka
+`), map[string]Transport{"kafka": newFakeTransport()})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	bb := b.(*broker)
+	if bb.options.LogMessage == nil || !bb.options.LogMessage.Publish || bb.options.LogMessage.Subscribe {
+		t.Fatalf("unexpected global log_message: %+v", bb.options.LogMessage)
+	}
+	lm := bb.logMessageFor("hello")
+	if !lm.Publish || lm.Subscribe {
+		t.Fatalf("logMessageFor fallback: %+v", lm)
+	}
+	// 未配置任何 log_message 时默认关闭。
+	br, err := NewFromConfig(builderTestConfig(t, "addr: \":9090\"\n"),
+		map[string]Transport{"kafka": newFakeTransport()})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	if lm := br.(*broker).logMessageFor("anything"); lm.Publish || lm.Subscribe {
+		t.Fatalf("logMessageFor default should be off, got %+v", lm)
+	}
+}
+
+// TestNewFromConfigEventLogMessageOverridesGlobal 验证事件级 log_message
+// 整体覆盖全局配置（未开启的一侧关闭）。
+func TestNewFromConfigEventLogMessageOverridesGlobal(t *testing.T) {
+	b, err := NewFromConfig(builderTestConfig(t, `
+pubsub:
+  log_message:
+    publish: true
+    subscribe: true
+  events:
+    hello:
+      route:
+        transport: kafka
+      log_message:
+        subscribe: true
+`), map[string]Transport{"kafka": newFakeTransport()})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	broker := b.(*broker)
+	lm := broker.logMessageFor("hello")
+	if lm.Publish || !lm.Subscribe {
+		t.Fatalf("event log_message should override global as a whole, got %+v", lm)
+	}
+	// 未覆盖的事件沿用全局。
+	if lm := broker.logMessageFor("notify"); !lm.Publish || !lm.Subscribe {
+		t.Fatalf("unconfigured event should inherit global log_message, got %+v", lm)
 	}
 }
 

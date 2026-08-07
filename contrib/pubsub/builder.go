@@ -9,6 +9,10 @@ import (
 
 // pubsubConfig 是 "pubsub" 段的配置结构（NewFromConfig 使用）。
 type pubsubConfig struct {
+	// Debug 控制 watermill 核心（router）debug 日志的输出，缺省 false。
+	Debug bool `mapstructure:"debug"`
+	// LogMessage 是全局收发日志配置（事件未单独配置时生效）。
+	LogMessage *logMessageConfig `mapstructure:"log_message"`
 	// Retry 是全局 handler 重试默认值；事件未单独配置 retry 时生效。
 	Retry *retryConfig `mapstructure:"retry"`
 	// Events 按逻辑 topic（业务事件名）配置路由与事件级选项。
@@ -20,8 +24,9 @@ type pubsubConfig struct {
 type eventConfig struct {
 	// Route 显式路由 {transport, key}；缺省时走自动路由/默认回退。
 	Route *routeConfig `mapstructure:"route"`
-	// LogMessage 对该事件的发布与消费输出 debug 日志。
-	LogMessage bool `mapstructure:"log_message"`
+	// LogMessage 覆盖该事件的收发日志配置；缺省沿用 pubsub.log_message。
+	// 注意：事件级是整体覆盖（非逐字段合并），未开启的一侧关闭。
+	LogMessage *logMessageConfig `mapstructure:"log_message"`
 	// AutoAck/ContinueOnError/Group/Instances 作为 Subscribe 的默认选项
 	//（显式 SubscribeOption 优先）。
 	AutoAck         bool   `mapstructure:"auto_ack"`
@@ -30,6 +35,21 @@ type eventConfig struct {
 	Instances       int    `mapstructure:"instances"`
 	// Retry 覆盖全局重试；缺省沿用 pubsub.retry（再缺省 {MaxRetries: 3}）。
 	Retry *retryConfig `mapstructure:"retry"`
+}
+
+// logMessageConfig 是收发日志配置（发布与订阅两侧独立）。
+type logMessageConfig struct {
+	// Publish 对发布输出 debug 日志。
+	Publish bool `mapstructure:"publish"`
+	// Subscribe 对消费输出 debug 日志。
+	Subscribe bool `mapstructure:"subscribe"`
+}
+
+func (l *logMessageConfig) toOptions() *LogMessageOptions {
+	if l == nil {
+		return nil
+	}
+	return &LogMessageOptions{Publish: l.Publish, Subscribe: l.Subscribe}
 }
 
 // routeConfig 是事件的路由配置：transport 是后端标识（如 kafka/memory），
@@ -57,9 +77,13 @@ func (r *retryConfig) toOptions() *RetryOptions {
 //   - "pubsub" 段 events（逻辑 topic → 事件配置）：route 指定 {transport, key}
 //     时逐条应用 RouteKey，引用未提供的 transport 标识时报错；route 缺省的
 //     topic 走自动路由/默认回退；
-//   - events 的事件级选项（log_message/auto_ack/continue_on_error/group/
-//     instances/retry）作为 Broker 的 Options.Events：Subscribe 合并为默认
-//     订阅选项，发布/消费按 log_message 输出日志，retry 覆盖全局重试；
+//   - 段级 debug 控制 watermill 核心（router）debug 日志输出（缺省 false，
+//     过滤为 info+）；
+//   - 段级 log_message（publish/subscribe）作为全局收发日志默认值，事件级
+//     events.<name>.log_message 整体覆盖（未开启的一侧关闭）；
+//   - events 的事件级选项（auto_ack/continue_on_error/group/instances/retry）
+//     作为 Broker 的 Options.Events：Subscribe 合并为默认订阅选项，retry
+//     覆盖全局重试；
 //   - "pubsub" 段 retry 配置全局 handler 重试默认值（事件未单独配置时生效）；
 //   - 传入 transports 的非 nil 值参与自动路由；
 //   - 标识 "memory" 的 transport（提供且非 nil 时）兼作默认回退——未路由
@@ -75,7 +99,11 @@ func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (Broker, er
 		return nil, err
 	}
 
-	opts := Options{Retry: cfgPubsub.Retry.toOptions()}
+	opts := Options{
+		Debug:      cfgPubsub.Debug,
+		LogMessage: cfgPubsub.LogMessage.toOptions(),
+		Retry:      cfgPubsub.Retry.toOptions(),
+	}
 	for name, t := range transports {
 		if t == nil {
 			continue // 字面 nil 防御性跳过
@@ -89,7 +117,7 @@ func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (Broker, er
 		opts.Events = make(map[string]EventOptions, len(cfgPubsub.Events))
 		for topic, ev := range cfgPubsub.Events {
 			opts.Events[topic] = EventOptions{
-				LogMessage:      ev.LogMessage,
+				LogMessage:      ev.LogMessage.toOptions(),
 				AutoAck:         ev.AutoAck,
 				ContinueOnError: ev.ContinueOnError,
 				Group:           ev.Group,

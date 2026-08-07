@@ -199,12 +199,19 @@ go get github.com/lynx-go/lynx/contrib/zap
 - `Broker`：事件总线门面，本身是 `Service` 服务，提供 `Publish`/`Subscribe`/`Route`。内部维护一张 topic → Transport 路由表：`Options.Transports` 中每个 Transport 通过 `Topics()` 声明自己承接的逻辑 topic，`Init` 时自动建表；`Route(topic, t)` 可显式覆盖自动路由；`RouteKey(topic, t, key)` 在覆盖的同时把 transport 侧主题名改为 `key`（业务逻辑名与后端主题名解耦，如 kafka 时 `key` 对应 kafka 段配置的逻辑 key，发布与订阅两侧都会按 `key` 调用 transport）；未命中的 topic 回退到 `DefaultTransport`（两者皆无则返回错误）。
 - `Transport`：消息后端服务（kafka/内存），topic 参数一律是逻辑名，物理名解析在实现内部，见下文的 kafka 模块。
 - `Router`：把一组 `Handler` 在 `Init` 期缓冲订阅到 Broker 的服务，无时序依赖。`Handler` 接口由 `EventName()`、`HandlerName()`、`NewEvent()`、`Handle(ctx, event)` 四个方法组成，公共 API 使用自有 `pubsub.Message` 类型（`ID`/`Key`/`Headers`/`Payload`），与底层 Watermill 解耦。绝大多数场景无需手动实现该接口——用 `NewTypedHandler`/`NewHandler` 工厂构造（见下文）。
-- `NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载 `events`（逻辑 topic → 事件配置）：每个事件的 `route: {transport, key}` 逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），事件级选项（`log_message`/`auto_ack`/`continue_on_error`/`group`/`instances`/`retry`）写入 `Options.Events`——`Subscribe` 时合并为默认订阅选项（显式 `SubscribeOption` 优先）、发布/消费按 `log_message` 输出 debug 日志、`retry` 按事件覆盖全局重试；`pubsub` 段顶层 `retry` 配置全局默认重试。route 缺省的事件走自动路由/默认回退。非 nil 的传入 transports 参与自动路由，`memory` 标识（提供时）兼作默认回退；不创建任何 transport，返回 `Broker`，transports 由调用方创建并注册。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用）——**返回 nil 时不得 Register**（框架对 nil 服务注册返回明确错误）。
+- `NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载 `events`（逻辑 topic → 事件配置）：每个事件的 `route: {transport, key}` 逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），事件级选项（`log_message`/`auto_ack`/`continue_on_error`/`group`/`instances`/`retry`）写入 `Options.Events`——`Subscribe` 时合并为默认订阅选项（显式 `SubscribeOption` 优先）、收发日志与重试按事件覆盖全局配置；`pubsub` 段顶层 `debug` 控制 watermill 核心（router）debug 日志输出（缺省 false，过滤为 info+），`log_message`（publish/subscribe 两侧独立）与 `retry` 分别提供全局收发日志与重试默认值。route 缺省的事件走自动路由/默认回退。非 nil 的传入 transports 参与自动路由，`memory` 标识（提供时）兼作默认回退；不创建任何 transport，返回 `Broker`，transports 由调用方创建并注册。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用）——**返回 nil 时不得 Register**（框架对 nil 服务注册返回明确错误）。
 
 `pubsub` 段配置示例（`_examples/pubsub/config.yaml`）：
 
 ```yaml
 pubsub:
+  # 控制 watermill 核心（router）debug 日志：true 时按应用日志级别输出；
+  # false（缺省）时过滤为 info+，订阅接线等内部日志不刷屏
+  debug: false
+  # 全局收发日志默认值（事件未单独配置时生效；debug 级）
+  log_message:
+    publish: true
+    subscribe: true
   # 全局 handler 重试默认值（事件未单独配置 retry 时生效）
   retry:
     max_retries: 3
@@ -214,7 +221,9 @@ pubsub:
       route:            # 显式路由；缺省走自动路由/默认回退
         transport: kafka
         key: hello      # transport 侧主题名，缺省与逻辑 topic 同名
-      log_message: true # 该事件发布/消费 debug 日志
+      # 事件级整体覆盖全局（未开启的一侧关闭）；缺省沿用 pubsub.log_message
+      log_message:
+        subscribe: true
       # 事件级选项：以下均为 Subscribe 默认值，显式 SubscribeOption 优先
       # auto_ack: true
       # continue_on_error: true
@@ -222,6 +231,8 @@ pubsub:
       # instances: 3            # 覆盖 transport 默认实例数
       # retry: {max_retries: 2, backoff: 500ms}  # 覆盖全局重试
 ```
+
+kafka 层的收发日志独立配置：`kafka.<topic>.consumer.log_message`（订阅侧）/ `kafka.<topic>.producer.log_message`（发布侧），与 pubsub 核心的 `log_message` 各管一层（transport 边界 vs broker 边界）。
 
 Handler 的类型化工厂（对齐 `_examples/pubsub/handlers.go` 的写法）：
 

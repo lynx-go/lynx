@@ -48,13 +48,23 @@ type RetryOptions struct {
 	Backoff time.Duration
 }
 
+// LogMessageOptions 控制消息收发日志（debug 级），发布与订阅两侧独立。
+type LogMessageOptions struct {
+	// Publish 对发布输出 "publishing message" 日志。
+	Publish bool
+	// Subscribe 对消费输出 "received message" 日志。
+	Subscribe bool
+}
+
 // EventOptions 是单事件（逻辑 topic）的选项。Subscribe 时合并为默认订阅
-// 选项（显式传入的 SubscribeOption 优先）；LogMessage 控制该事件的发布/消费
-// debug 日志；Retry 覆盖 Broker 级重试（nil = 沿用全局）。NewFromConfig
-// 从配置 pubsub.events 段加载；直接使用 NewBroker 的用户也可手动配置。
+// 选项（显式传入的 SubscribeOption 优先）；LogMessage 覆盖 Broker 级收发
+// 日志配置（nil = 沿用全局）；Retry 覆盖 Broker 级重试（nil = 沿用全局）。
+// NewFromConfig 从配置 pubsub.events 段加载；直接使用 NewBroker 的用户也可
+// 手动配置。
 type EventOptions struct {
-	// LogMessage 对该事件的发布与消费输出 debug 日志。
-	LogMessage bool
+	// LogMessage 覆盖该事件的收发日志配置；nil = 沿用 Options.LogMessage。
+	// 注意：事件级是整体覆盖（非逐字段合并），未开启的一侧关闭。
+	LogMessage *LogMessageOptions
 	// AutoAck 作为 Subscribe 默认选项：消息到达即 Ack，处理失败不影响确认。
 	AutoAck bool
 	// ContinueOnError 作为 Subscribe 默认选项：处理失败时仍确认消息。
@@ -74,6 +84,14 @@ type Options struct {
 	Transports []Transport
 	// DefaultTransport 承接路由表未命中的 topic。
 	DefaultTransport Transport
+	// LogMessage 是全局收发日志配置（所有事件未单独配置时的默认值）；
+	// nil = 默认不输出。事件可通过 Events[topic].LogMessage 覆盖。
+	LogMessage *LogMessageOptions
+	// Debug 控制 watermill 核心（router）debug 日志的输出：true 时按应用
+	// 日志级别输出（仅当应用处于 debug 级别时可见）；false（缺省）时
+	// watermill 核心 debug 日志一律不输出（过滤为 info+），避免订阅接线、
+	// 中间件装载等内部日志刷屏。不作用于 transport 自己的日志。
+	Debug bool
 	// Retry 配置 handler 失败重试（所有事件的默认值）；nil 时使用默认
 	// {MaxRetries: 3}。事件可通过 Events[topic].Retry 覆盖。
 	// 注意：重试耗尽后消息不确认，依赖 at-least-once 语义的 Transport
@@ -88,8 +106,8 @@ type Options struct {
 	// 同一种格式，跨服务部署时需对齐配置。
 	TopicMarshalers map[string]Marshaler
 	// Events 按逻辑 topic 配置事件级选项：Subscribe 时合并为默认选项
-	//（显式 SubscribeOption 优先），Publish/消费按 LogMessage 输出日志，
-	// Retry 覆盖 Broker 级重试。NewFromConfig 从配置 pubsub.events 段加载。
+	//（显式 SubscribeOption 优先），收发日志/重试按事件覆盖全局配置。
+	// NewFromConfig 从配置 pubsub.events 段加载。
 	Events map[string]EventOptions
 }
 
@@ -255,7 +273,13 @@ func (b *broker) Init(ctx lynx.AppContext) error {
 	if ctx != nil {
 		b.logger = ctx.Logger("service", "pubsub")
 	}
-	logger := watermill.NewSlogLogger(b.logger)
+	// Debug 关闭（缺省）时把 watermill 核心日志过滤为 info+：订阅接线、
+	// 中间件装载等内部 debug 日志不输出，避免与业务 debug 日志混刷屏。
+	wmLogger := b.logger
+	if !b.options.Debug {
+		wmLogger = slog.New(levelFilterHandler{level: slog.LevelInfo, h: b.logger.Handler()})
+	}
+	logger := watermill.NewSlogLogger(wmLogger)
 
 	router, err := message.NewRouter(message.RouterConfig{}, logger)
 	if err != nil {
@@ -436,6 +460,29 @@ func (b *broker) Subscribe(ctx context.Context, topic, handlerName string, h Han
 	return nil
 }
 
+// levelFilterHandler 丢弃低于 level 的日志记录，其余委托给 h。
+// 用于把 watermill 核心日志过滤为 info+（Options.Debug 关闭时）。
+type levelFilterHandler struct {
+	level slog.Level
+	h     slog.Handler
+}
+
+func (f levelFilterHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return l >= f.level && f.h.Enabled(ctx, l)
+}
+
+func (f levelFilterHandler) Handle(ctx context.Context, r slog.Record) error {
+	return f.h.Handle(ctx, r)
+}
+
+func (f levelFilterHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return levelFilterHandler{f.level, f.h.WithAttrs(attrs)}
+}
+
+func (f levelFilterHandler) WithGroup(name string) slog.Handler {
+	return levelFilterHandler{f.level, f.h.WithGroup(name)}
+}
+
 // eventOptions 返回 topic 的事件级选项（未配置时返回零值）。
 func (b *broker) eventOptions(topic string) EventOptions {
 	if ev, ok := b.options.Events[topic]; ok {
@@ -444,14 +491,25 @@ func (b *broker) eventOptions(topic string) EventOptions {
 	return EventOptions{}
 }
 
+// logMessageFor 解析 topic 的收发日志配置：事件级整体覆盖 > 全局默认 > 关闭。
+func (b *broker) logMessageFor(topic string) LogMessageOptions {
+	if ev, ok := b.options.Events[topic]; ok && ev.LogMessage != nil {
+		return *ev.LogMessage
+	}
+	if b.options.LogMessage != nil {
+		return *b.options.LogMessage
+	}
+	return LogMessageOptions{}
+}
+
 // wrapHandler 包装用户 handler：注入消息 ID/key 上下文，按事件配置输出
 // 收发日志，统一 Ack 语义。重试由 per-handler 中间件负责（Start 期挂载）。
 func (b *broker) wrapHandler(topic string, h HandlerFunc, o SubscribeOptions) message.NoPublishHandlerFunc {
-	ev := b.eventOptions(topic)
+	lm := b.logMessageFor(topic)
 	handler := func(msg *message.Message) error {
 		ctx := ContextWithMessageID(msg.Context(), msg.UUID)
 		ctx = ContextWithMessageKey(ctx, msg.Metadata.Get(MessageKeyKey.String()))
-		if ev.LogMessage {
+		if lm.Subscribe {
 			b.logger.DebugContext(ctx, "received message", "topic", topic,
 				"message", string(msg.Payload), "x-message-id", msg.UUID)
 		}
@@ -556,7 +614,7 @@ func (b *broker) Publish(ctx context.Context, topic string, payload any, opts ..
 	if err != nil {
 		return err
 	}
-	if ev, ok := b.options.Events[topic]; ok && ev.LogMessage {
+	if lm := b.logMessageFor(topic); lm.Publish {
 		b.logger.DebugContext(ctx, "publishing message", "topic", topic,
 			"message", string(m.Payload), "key", m.Key)
 	}

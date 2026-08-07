@@ -4,6 +4,8 @@
 状态：已批准（2026-08-06 修订：移除 Bundle，transports 一律显式——见"方案取舍记录"与修订记录）
 修订记录：
 - 2026-08-07：**pubsub 段 schema 改为 `events` 模式**——`routes`（逻辑 topic → {transport, key}）改为 `events`（逻辑 topic → 事件配置，`route` 子键承载 {transport, key}），route 同级新增事件级选项：`log_message`（该事件发布/消费 debug 日志）、`auto_ack`/`continue_on_error`/`group`/`instances`（Subscribe 默认选项，显式 SubscribeOption 优先）、`retry`（按事件覆盖重试）；段顶层新增 `retry`（全局重试默认值）。原 `routes` 键废弃。重试由全局 watermill Retry 中间件改为按 handler 挂载（`Handler.AddMiddleware`，watermill v1.5.2 无 AddMiddlewareToHandler，`AddConsumerHandler` 返回的 `*Handler` 提供 handler 级中间件），缺省行为等价。原"不改 config.yaml schema"的 YAGNI 项作废（按需再扩的触发）。
+- 2026-08-07（同日第二次）：**`log_message` 拆为 publish/subscribe 两侧**——事件级与段级均为 `log_message: {publish, subscribe}` 映射（原布尔弃用），段级 `pubsub.log_message` 提供全局默认，事件级整体覆盖（非逐字段合并）。kafka 层收发日志保持 `consumer.log_message`/`producer.log_message` 现状（transport 边界，与 broker 边界各管一层）。
+- 2026-08-07（同日第三次）：**新增 `pubsub.debug`**——控制 watermill 核心（router）debug 日志输出，缺省 false（levelFilterHandler 过滤为 info+），true 时按应用日志级别输出；不作用于 transport 自己的日志。
 
 ## 背景与目标
 

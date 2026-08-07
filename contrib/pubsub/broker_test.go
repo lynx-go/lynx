@@ -1,6 +1,7 @@
 package pubsub
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -25,6 +26,16 @@ func newFakeApp() *fakeApp {
 	return &fakeApp{
 		ctx:    context.Background(),
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+}
+
+// newFakeAppWithBuffer 返回写入 buffer 的 fakeApp（验证日志行为用）。
+func newFakeAppWithBuffer(buf *bytes.Buffer) *fakeApp {
+	return &fakeApp{
+		ctx: context.Background(),
+		logger: slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
 	}
 }
 
@@ -842,5 +853,52 @@ func TestBrokerEventRetryOverride(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("handler called %d times, want exactly 2 (event retry must override global)", got)
+	}
+}
+
+// TestBrokerWatermillDebugLog 验证 Options.Debug 控制 watermill 核心（router）
+// debug 日志：关闭（缺省）时过滤为 info+，订阅接线等内部 debug 日志不输出；
+// 开启时按应用日志级别输出。
+func TestBrokerWatermillDebugLog(t *testing.T) {
+	run := func(debug bool) string {
+		var buf bytes.Buffer
+		b := NewBroker(Options{DefaultTransport: NewMemoryTransport(), Debug: debug})
+		if err := b.Init(newFakeAppWithBuffer(&buf)); err != nil {
+			t.Fatalf("Init (debug=%v): %v", debug, err)
+		}
+		if err := b.Subscribe(context.Background(), "test.event", "test-handler", func(ctx context.Context, msg *Message) error {
+			return nil
+		}); err != nil {
+			t.Fatalf("Subscribe (debug=%v): %v", debug, err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- b.Start(ctx) }()
+		if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return b.CheckHealth() == nil }) {
+			cancel()
+			t.Fatalf("broker did not become healthy (debug=%v)", debug)
+		}
+		time.Sleep(300 * time.Millisecond) // 等待订阅接线（router debug 日志在此输出）
+		cancel()
+		_ = b.Stop(context.Background())
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("broker did not stop (debug=%v)", debug)
+		}
+		return buf.String()
+	}
+
+	off := run(false)
+	if strings.Contains(off, "Subscribing to topic") {
+		t.Errorf("watermill debug log leaked with Debug=false:\n%s", off)
+	}
+	if !strings.Contains(off, "Running router handlers") {
+		t.Errorf("watermill info log should pass through with Debug=false:\n%s", off)
+	}
+
+	on := run(true)
+	if !strings.Contains(on, "Subscribing to topic") {
+		t.Errorf("watermill debug log should show with Debug=true:\n%s", on)
 	}
 }
