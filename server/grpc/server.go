@@ -4,6 +4,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -17,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
@@ -43,6 +45,9 @@ type Options struct {
 	// 轮询并同步到 grpc health 服务（依赖服务不健康时探测返回 NOT_SERVING）。
 	HealthCheck       lynx.HealthCheckersFunc
 	HealthCheckPeriod time.Duration
+	// TLSConfig 非 nil 时启用 TLS 传输（credentials.NewTLS），与 HTTP 侧
+	// WithTLSConfig 语义对齐。
+	TLSConfig *tls.Config
 }
 
 // Option 用于配置 gRPC 服务 Options 的选项函数。
@@ -105,6 +110,16 @@ func WithHealthCheckPeriod(period time.Duration) Option {
 func WithServerOptions(options ...grpc.ServerOption) Option {
 	return func(o *Options) {
 		o.ServerOptions = append(o.ServerOptions, options...)
+	}
+}
+
+// WithTLSConfig 启用 TLS 传输，cfg 须已装配证书（tls.LoadX509KeyPair 等）。
+// 与 WithServerOptions(grpc.Creds(...)) 同时使用时 TLSConfig 优先：grpc 对
+// 重复 Creds 取最后应用者（实测确认），TLSConfig 的 Creds 装配在 ServerOptions
+// 之后，因此覆盖后者。两者同传属误用，仅以 TLSConfig 为准。
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(o *Options) {
+		o.TLSConfig = cfg
 	}
 }
 
@@ -175,6 +190,11 @@ func NewServer(opts ...Option) *Server {
 		grpc.ChainStreamInterceptor(streamInterceptors...),
 	}
 	grpcOpts = append(grpcOpts, options.ServerOptions...)
+	// TLSConfig 非 nil 时启用 TLS 传输。装配在 ServerOptions 之后：
+	// grpc 对重复 Creds 取最后应用者，保证 TLSConfig 优先（见 WithTLSConfig）。
+	if options.TLSConfig != nil {
+		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(options.TLSConfig)))
+	}
 
 	s.server = grpc.NewServer(grpcOpts...)
 

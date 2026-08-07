@@ -108,7 +108,8 @@ func NewServer(opts ...Option) *Server
 - `WithTimeout(timeout time.Duration)`：优雅关闭的超时时间，默认 60 秒。注意它**不是**请求处理超时——gRPC 服务器本身没有读/写超时选项，该值只在 `Stop` 时生效：它是 `GracefulStop` 等待时长的**上限**（调用方 Context 已有更早的 deadline 时取较小者），超时后强制 `Stop()`。
 - `WithLogger(l *slog.Logger)`：内置 Logging 拦截器使用的日志器。
 - `WithInterceptors(interceptors ...grpc.UnaryServerInterceptor)`：追加自定义一元拦截器，链序见下文。
-- `WithServerOptions(options ...grpc.ServerOption)`：透传原生 `grpc.ServerOption`（TLS 凭据、消息大小限制、keepalive、最大并发流等），在内部选项之后应用到 `grpc.NewServer`。例如启用 TLS：`grpc.WithServerOptions(grpc.Creds(creds))`。
+- `WithServerOptions(options ...grpc.ServerOption)`：透传原生 `grpc.ServerOption`（TLS 凭据、消息大小限制、keepalive、最大并发流等），在内部选项之后应用到 `grpc.NewServer`。
+- `WithTLSConfig(cfg *tls.Config)`：启用 TLS 传输（一等选项，与 HTTP 侧同名同义），`cfg` 须已装配证书（`tls.LoadX509KeyPair` 等）。与 `WithServerOptions(grpc.Creds(...))` 同时使用时 `TLSConfig` 优先——grpc 对重复 `Creds` 取最后应用者（实测确认），`TLSConfig` 的 Creds 装配在 `ServerOptions` 之后覆盖后者；两者同传属误用，仅以 `TLSConfig` 为准。
 - `WithTracerProvider(tp trace.TracerProvider)` / `WithMeterProvider(mp metric.MeterProvider)`：otel provider，传给 `otelgrpc.NewServerHandler` 的 stats handler。为 nil 时使用全局 provider，生命周期归调用方（同 5.3.2 节）。
 
 与 HTTP 服务器相比有两点差异：
@@ -116,9 +117,28 @@ func NewServer(opts ...Option) *Server
 - gRPC 服务器没有 `WithPropagator`——otelgrpc 固定使用全局 propagator，需要时通过 `otel.SetTextMapPropagator(...)` 设置；
 - gRPC 服务器健康检查内置（标准 health 服务，见下文），可选的 app 级检查器通过 `WithHealthCheckers` 接入。
 
-此外，gRPC 服务器**没有**针对 TLS、keepalive、消息压缩等的一等选项——这些均由
-`WithServerOptions` 透传原生 `grpc.ServerOption` 配置（`grpc.Creds`、
-`grpc.KeepaliveParams`、`grpc.RPCCompressor` 等），详见上面的选项说明。
+此外，gRPC 服务器**没有**针对 keepalive、消息压缩等的一等选项——这些均由
+`WithServerOptions` 透传原生 `grpc.ServerOption` 配置（`grpc.KeepaliveParams`、
+`grpc.RPCCompressor` 等），详见上面的选项说明。TLS 例外：v1.1 起提供
+`WithTLSConfig` 一等选项（见下文）。
+
+#### 启用 TLS
+
+```go
+cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
+if err != nil {
+    // 处理加载证书失败
+}
+
+srv := grpc.NewServer(
+    grpc.WithAddr(":9090"),
+    grpc.WithTLSConfig(&tls.Config{
+        Certificates: []tls.Certificate{cert},
+    }),
+)
+```
+
+客户端侧配套使用 `credentials.NewTLS`（如 `grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))`）；生产环境 `tlsCfg` 应包含服务端 CA 与 `ServerName`，`InsecureSkipVerify` 仅限测试环境。
 
 ### 拦截器
 

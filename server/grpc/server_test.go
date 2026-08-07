@@ -2,9 +2,16 @@ package grpc
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"runtime"
 	"strings"
@@ -18,6 +25,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -495,5 +503,146 @@ func TestStopBeforeStart(t *testing.T) {
 	s := NewServer()
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop before Start: %v", err)
+	}
+}
+
+// testTLSConfig 生成仅用于测试的自签证书（ecdsa + x509，IP 127.0.0.1），
+// 参考 crypto/x509 CreateCertificate 标准库示例，不提交证书文件。
+func testTLSConfig(t *testing.T) *tls.Config {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate() error = %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey() error = %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("X509KeyPair() error = %v", err)
+	}
+	return &tls.Config{Certificates: []tls.Certificate{cert}}
+}
+
+// TestTLSServer 验证 WithTLSConfig 启用 TLS 传输：客户端
+// credentials.NewTLS（InsecureSkipVerify）调用 health check 成功。
+func TestTLSServer(t *testing.T) {
+	addr := freeAddr(t)
+	s := NewServer(WithAddr(addr), WithTLSConfig(testTLSConfig(t)))
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start(context.Background()) }()
+	defer func() {
+		_ = s.Stop(context.Background())
+		select {
+		case <-startErr:
+		case <-time.After(5 * time.Second):
+			t.Error("Start() did not return after Stop()")
+		}
+	}()
+	waitRunning(t, s)
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := grpc_health_v1.NewHealthClient(conn).Check(ctx, &grpc_health_v1.HealthCheckRequest{})
+	if err != nil {
+		t.Fatalf("Check over TLS: %v", err)
+	}
+	if resp.Status != grpc_health_v1.HealthCheckResponse_SERVING {
+		t.Errorf("status = %v, want SERVING", resp.Status)
+	}
+}
+
+// TestTLSRejectsPlaintext 验证同一 TLS 服务上明文调用失败（TLS 强制）。
+func TestTLSRejectsPlaintext(t *testing.T) {
+	addr := freeAddr(t)
+	s := NewServer(WithAddr(addr), WithTLSConfig(testTLSConfig(t)))
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start(context.Background()) }()
+	defer func() {
+		_ = s.Stop(context.Background())
+		select {
+		case <-startErr:
+		case <-time.After(5 * time.Second):
+			t.Error("Start() did not return after Stop()")
+		}
+	}()
+	waitRunning(t, s)
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := grpc_health_v1.NewHealthClient(conn).Check(ctx, &grpc_health_v1.HealthCheckRequest{}); err == nil {
+		t.Fatal("plaintext Check over TLS server succeeded, want error")
+	}
+}
+
+// TestTLSPriorityOverServerOptionsCreds 实测 grpc 对重复 Creds 的行为：
+// WithServerOptions(grpc.Creds(...)) 与 WithTLSConfig 同传时（误用路径），
+// TLSConfig 的 Creds 取最后应用者而胜出——TLS 客户端成功、明文客户端失败。
+func TestTLSPriorityOverServerOptionsCreds(t *testing.T) {
+	addr := freeAddr(t)
+	s := NewServer(
+		WithAddr(addr),
+		WithServerOptions(grpc.Creds(insecure.NewCredentials())),
+		WithTLSConfig(testTLSConfig(t)),
+	)
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start(context.Background()) }()
+	defer func() {
+		_ = s.Stop(context.Background())
+		select {
+		case <-startErr:
+		case <-time.After(5 * time.Second):
+			t.Error("Start() did not return after Stop()")
+		}
+	}()
+	waitRunning(t, s)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tlsConn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})))
+	if err != nil {
+		t.Fatalf("NewClient(TLS) error = %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+	if _, err := grpc_health_v1.NewHealthClient(tlsConn).Check(ctx, &grpc_health_v1.HealthCheckRequest{}); err != nil {
+		t.Fatalf("TLS client over dual-Creds server failed: %v", err)
+	}
+
+	plainConn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient(plaintext) error = %v", err)
+	}
+	defer func() { _ = plainConn.Close() }()
+	if _, err := grpc_health_v1.NewHealthClient(plainConn).Check(ctx, &grpc_health_v1.HealthCheckRequest{}); err == nil {
+		t.Fatal("plaintext client over dual-Creds server succeeded, want TLSConfig to win")
 	}
 }
