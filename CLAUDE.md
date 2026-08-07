@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lynx is a lightweight Go microservice framework built on Go 1.25+ that provides application lifecycle management, a component-based architecture, and integrations for HTTP servers, messaging (Kafka/PubSub), scheduling, and configuration management.
+Lynx is a lightweight Go microservice framework built on Go 1.26+ that provides application lifecycle management, a service-based architecture, and integrations for HTTP servers, messaging (Kafka/PubSub), scheduling, and configuration management.
 
 ## Development Commands
 
@@ -51,7 +51,7 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./_examples` - Example applications
 - `./contrib/zap` - Zap logger integration
 - `./contrib/pubsub` - PubSub abstraction layer (uses Watermill)
-- `./contrib/kafka` - Kafka Transport component (watermill-kafka/v3)
+- `./contrib/kafka` - Kafka Transport service (watermill-kafka/v3)
 - `./contrib/telemetry` - OpenTelemetry lifecycle management (trace/metrics providers)
 - `./contrib/schedule` - Cron scheduler
 
@@ -108,7 +108,7 @@ Lifecycle hooks and services are registered via direct methods on the `App` inte
 - `app.Command(cmd CommandFunc)` - Register a one-shot CLI command
 
 **Application Lifecycle**
-The main run loop (lynx.go:466-533) uses `oklog/run` to manage concurrent goroutines:
+The main run loop (lynx.go:497-572) uses `oklog/run` to manage concurrent goroutines:
 1. Executes OnStart hooks
 2. Runs all services (each service gets its own goroutine)
 3. Listens for shutdown signals (SIGTERM, SIGQUIT, SIGINT)
@@ -142,7 +142,7 @@ Default flags (see `DefaultSetFlagsFunc` in lynx.go):
 - `--config-dir` - Config directory
 - `--log-level` - Log level
 
-App metadata keys: `service.name`/`service.id`/`service.version` take priority, legacy top-level `name`/`id`/`version` keys fall back (deprecated transition). Log level keys: `logging.level` → `log-level` → `log_level` (`lynx.LogLevelFromConfig`).
+App metadata keys: `service.name`/`service.id`/`service.version` (the legacy top-level `name`/`id`/`version` fallback was removed in v1.0). Log level keys: `logging.level` → `log-level` → `log_level` (`lynx.LogLevelFromConfig`).
 
 ### Boot/Bootstrap Pattern
 
@@ -204,7 +204,7 @@ The `lynx.NewBuilder()` function creates a `*Builder` instance with two run meth
 - Uses EditorConfig: Go files use tabs, 4-space indent
 - Unit tests exist for core packages and most contrib modules; run `go test -race ./...` per module
 - Uses slog for structured logging (Go 1.24+)
-- Uses local `pkg/errors` package with panic-based `Fatal()` helper
+- Uses root-level `errors.go`: `ShutdownErrors` shutdown-error aggregator and sentinel errors (`ErrNotInitialized`/`ErrBuildFuncNil`)
 - Services obtain loggers via `ctx.Logger(...)` in `Init`; no external logging package
 
 ## Common Patterns

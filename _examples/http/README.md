@@ -17,10 +17,10 @@ flag：`-c/--config`（配置文件路径，默认 `./config.yaml`）、`--addr`
 
 ## 关键代码点
 
-- `main.go:36`：注册 `telemetry.New()`（`contrib/telemetry`）——以**组件**形式托管 OTel（Init 创建 provider 并设为全局，Stop 自动 flush；默认 trace 为 noop，需要本地调试时加 `telemetry.WithStdoutTrace()`）。
+- `main.go:36`：注册 `telemetry.New()`（`contrib/telemetry`）——以**服务**形式托管 OTel（Init 创建 provider 并设为全局，Stop 自动 flush；默认 trace 为 noop，需要本地调试时加 `telemetry.WithStdoutTrace()`）。
 - `metrics.go` 的 `initMetrics`：创建业务指标（Counter + Histogram），挂在全局 MeterProvider 上。
 - `main.go:53`：`/` 处理器中 `helloRequestsCounter.Add` 计数、`helloRequestDuration.Record` 记录耗时。
 - `main.go:73`：`/metrics` 暴露 Prometheus 指标（演示用，挂在主路由上）——自定义指标与运行时指标一起导出。
-- `main.go:75`：`http.NewServer` 注册 HTTP 服务；otel provider 走全局（OTel 组件设置），无需逐项传入。
+- `main.go:75`：`http.NewServer` 注册 HTTP 服务；otel provider 走全局（OTel 服务设置），无需逐项传入。
 - `main.go:89-105`：自定义 flag 与 `WithBindConfigFunc`，启用 `LYNX_` 环境变量前缀并绑定 `LYNX_ADDR`。
 - `main.go:111 latencyMiddleware`：记录请求耗时的自定义中间件示例。

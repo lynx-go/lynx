@@ -39,9 +39,9 @@ v1.0 发布前完成了大规模 API 重构（breaking changes 无需向后兼�
   `NewOptions` 改为 `&Options{}` + `EnsureDefaults()` + 应用选项（补齐
   Name/StopTimeout 双轨默认值）；删除 `lynx.Option()` 死方法；`errorf`
   包装类型改用 `errors.New`。
-- **核心—配置键命名空间**：name/id/version 读取顺序改为
-  `service.name`/`service.id`/`service.version` 优先，顶层旧键回退
-  （过渡期，deprecated）。
+- **核心—配置键命名空间**：应用元信息仅从
+  `service.name`/`service.id`/`service.version` 读取（配置值覆盖
+  Options 对应值）；旧顶层 `name`/`id`/`version` 键回退已移除。
 - **核心—Register 防御**：注册 plain nil 服务返回明确错误
   （`cannot register nil service`）而非运行时 panic。
 - **HTTP**：删除 `http.NewRouter()`（`http.NewServeMux()` 纯别名，直接使用
@@ -67,6 +67,18 @@ v1.0 发布前完成了大规模 API 重构（breaking changes 无需向后兼�
 - `pubsub.NewBroker` 返回 `Broker` 接口而非未导出类型
 - 删除遗留 Deprecated API：`SetMessageKey` / `GetMessageKey` / `SetMessageID` / `GetMessageID`
 - `command` 重试耗尽错误文案调整为 `timed out waiting for dependencies to be healthy`
+- **核心—超时常量更名**：`MinShutdownTimeout`/`MaxShutdownTimeout` →
+  `MinTimeout`/`MaxTimeout`（两者是 ShutdownTimeout 与 StopTimeout 共用的
+  校验区间，原名误导）
+- **核心—NewTraceHandler 迁移**：`lynx.NewTraceHandler` 移入新增 `logging`
+  子包（`logging.NewTraceHandler`），根包不再提供日志装饰器
+- **Kafka—XDGSCRAMClient 内部化**：SCRAM 客户端实现类型改为未导出
+  （`xdgSCRAMClient`），经 `sasl.mechanism` 配置启用，用户无需直接引用
+- **PubSub—配置 schema**：`pubsub` 段由 `routes` 改为 `events`（逻辑
+  topic → 事件配置：`route: {transport, key}` + 事件级选项
+  `log_message`/`auto_ack`/`continue_on_error`/`group`/`instances`/
+  `retry`）；重试中间件由全局改为 per-handler 挂载，事件级重试配置
+  生效；`log_message` 改为 publish/subscribe 两侧独立的映射形态
 
 ### 修复
 
@@ -104,6 +116,11 @@ v1.0 发布前完成了大规模 API 重构（breaking changes 无需向后兼�
   最外层；新增流式拦截器入口
 - **Metrics**：重复注册报错；支持注入 OTel Resource
 - **Zap**：`NewLogger`/`NewSyncableLogger` 去重；级别键与框架统一
+- **核心—--log-level 默认值**：默认 flag 由 "info" 改为空——未显式传入时
+  不再遮蔽配置文件的 `logging.level`/`log_level` 键；`DefaultBindConfigFunc`
+  同时把工作目录加入配置搜索路径（viper v1.17+ 不再隐式搜索 "."）
+- **Kafka—Subscriber Unmarshaler**：显式装配 `DefaultMarshaler`
+  （watermill-kafka v3.1.x 缺省报 "missing unmarshaler"）
 
 ### 新增
 
@@ -114,9 +131,24 @@ v1.0 发布前完成了大规模 API 重构（breaking changes 无需向后兼�
   `pubsub.Handler`（`EventName`/`HandlerName`/`NewEvent`/`Handle`），
   `NewEvent()` 声明式解码 + `MessageDecoder` 免反射泛型擦除，Pub/Sub 两侧
   Marshaler 解析对称
+- **全链路日志**：新增 `logging` 子包（`NewTraceHandler`/`NewAttrsHandler`
+  装饰器、`WithAttrs`/`AttrsFrom` 请求级属性传播、`FieldRequestID`/
+  `FieldUserID` 标准键）；`http.WithRequestID()` 中间件生成/透传
+  `X-Request-Id` 并写入请求 ctx；请求日志 `Entry.RequestID` 与业务日志
+  关联；pubsub 跨请求传播（`Options.PropagateAttrs` 白名单，缺省
+  request_id/user_id，Publish 写入消息头、Subscribe 还原进 ctx）
+- **PubSub 配置驱动装配**：新增导出类型 `EventOptions`/`LogMessageOptions`；
+  新增配置键 `pubsub.debug`（watermill 核心 debug 日志开关，缺省关闭）、
+  `pubsub.events`、`pubsub.log_message`（全局收发日志默认值）
 
 ### 其他
 
+- Go 最低版本升至 1.26.5（7 模块 go.mod 与 go.work、CI）：修复
+  govulncheck 在 Go 1.25.0 报出的 23 个标准库已调用漏洞
+- CI 矩阵修复：`contrib/metrics` → `contrib/telemetry`（模块更名未同步，
+  telemetry 此前无 CI 覆盖）
+- 行为说明：contrib/zap 日志字段对齐 `service.name`/`service.id`/
+  `service.version`
 - 各 contrib 模块独立 LICENSE
 - 发布流程：`task release-all --Version=v1.0.0`（见 RELEASE.md）
 - 仓库卫生：`_examples` 清理编译产物（cli.exe/cli.out/pubsub.exe/schedule.exe

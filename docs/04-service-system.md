@@ -127,7 +127,7 @@ func main() {
 		app.RegisterFactories(NewWorkerFactory("worker", 2))
 		return nil
 	},
-		lynx.WithName("custom-component"),
+		lynx.WithName("custom-service"),
 	)
 	cli.Run()
 }
@@ -178,7 +178,7 @@ func (f *workerFactory) Options() lynx.FactoryOptions {
 var _ lynx.ServiceFactory = (*workerFactory)(nil)
 ```
 
-运行后通过日志可以看到两个 worker 实例各自经历了 `initializing component` → `starting component`；按 `Ctrl+C` 后各自收到 `Stop`。由于内嵌了 `HealthChecker`，两个实例都会被收集为就绪检查项。
+运行后通过日志可以看到两个 worker 实例各自经历了 `initializing service` → `starting service`；按 `Ctrl+C` 后各自收到 `Stop`。由于内嵌了 `HealthChecker`，两个实例都会被收集为就绪检查项。
 
 ## 4.5 contrib 模块概览
 
@@ -233,6 +233,8 @@ pubsub:
 ```
 
 kafka 层的收发日志独立配置：`kafka.<topic>.consumer.log_message`（订阅侧）/ `kafka.<topic>.producer.log_message`（发布侧），与 pubsub 核心的 `log_message` 各管一层（transport 边界 vs broker 边界）。
+
+> ⚠ 开启 `log_message` 后，完整消息 payload 会以 debug 级写入日志；生产环境启用前请确认 payload 不含敏感数据（PII、令牌等）。
 
 Handler 的类型化工厂（对齐 `_examples/pubsub/handlers.go` 的写法）：
 
@@ -347,6 +349,47 @@ kafkaT, err := kafka.NewTransport(kafka.Options{
 ```
 
 `ConsumerOptions.GroupID` / `Instances` 是订阅的默认值，可用 `pubsub.WithGroup` / `pubsub.WithInstances` 在代码中覆盖（显式值优先）；两者皆空时 `Subscribe` 报错。`ConsumerOptions.Instances` 是该 topic 同消费组的并发消费者成员数，上例即为 `hello` 事件启动 3 个并发 consumer。
+
+`kafka` 段完整配置键参考（未列出的键保持 sarama/watermill 默认值）：
+
+| 键 | 类型 | 说明 |
+| --- | --- | --- |
+| `brokers` | []string | Kafka 集群地址，必填 |
+| `topics` | []string | 订阅的物理 topic 列表 |
+| `consumer` | object | 消费侧配置；省略表示该 topic 只发布 |
+| `producer` | object | 发布侧配置；省略表示该 topic 只订阅 |
+| `sasl.enabled` | bool | 启用 SASL 认证 |
+| `sasl.user` / `sasl.password` | string | SASL 凭据 |
+| `sasl.mechanism` | string | `PLAIN`（缺省）/ `SCRAM-SHA-256` / `SCRAM-SHA-512` |
+| `tls.enabled` | bool | 启用 TLS |
+| `tls.insecure_skip_verify` | bool | 跳过证书校验（仅限测试环境） |
+| `tls.ca_file` | string | 自签 CA 证书路径；为空使用系统信任库 |
+| `tls.server_name` | string | 覆盖 TLS 校验的主机名；为空使用 broker 地址 |
+| `consumer.group_id` | string | 消费组 ID（`pubsub.WithGroup` 可在代码覆盖） |
+| `consumer.instances` | int | 同消费组并发 consumer 成员数（`pubsub.WithInstances` 可覆盖） |
+| `consumer.commit_interval` | duration | offset 自动提交间隔；`auto_commit_enabled: false` 时无效 |
+| `consumer.auto_commit_enabled` | bool | 省略 = sarama 默认 true；false = 每条消息 Ack 时显式提交 |
+| `consumer.initial_offset` | string | 首次消费位置：`oldest` / `newest`（缺省） |
+| `consumer.log_message` | bool | 订阅侧收到消息时输出 debug 日志 |
+| `consumer.nack_resend_sleep` | duration | Nack 后消息重投的等待时长 |
+| `consumer.reconnect_retry_sleep` | duration | 重连失败后的下次重试间隔 |
+| `consumer.session_timeout` | duration | 消费组会话超时 |
+| `consumer.heartbeat_interval` | duration | 消费组心跳间隔 |
+| `consumer.fetch_min_bytes` / `fetch_max_bytes` | int | 单次 fetch 的最小/最大字节数 |
+| `consumer.fetch_max_wait` | duration | broker 凑满 `fetch_min_bytes` 的最长等待 |
+| `consumer.client_id` | string | 客户端标识 |
+| `producer.topic` | string | 发布物理 topic；缺省取 `topics[0]` |
+| `producer.log_message` | bool | 发布侧发送消息时输出 debug 日志 |
+| `producer.batch_size` | int | 攒够多少条后批量发送 |
+| `producer.required_acks` | int | broker 应答级别：`0`=无应答 / `1`=本地写入 / `-1`=全部副本（0 视为未设置） |
+| `producer.retry_max` | int | 发送失败最大重试次数 |
+| `producer.timeout` | duration | broker 等待应答的最长时长 |
+| `producer.flush_bytes` | int | 攒够多少字节后批量发送 |
+| `producer.flush_frequency` | duration | 批量消息的最长滞留时长 |
+| `producer.compression` | string | 压缩算法：`none` / `gzip` / `snappy` / `lz4` / `zstd` |
+| `producer.client_id` | string | 客户端标识 |
+
+`sasl`/`tls` 是**集群级**配置：客户端按 `brokers` 分组共享，同一集群多个逻辑 topic 的认证配置必须一致（先构建者生效）。
 
 ### schedule：定时任务（Scheduler/Task）
 

@@ -105,6 +105,10 @@ opts := lynx.NewOptions(
 )
 ```
 
+> 注意：上例通过 `WithSetFlagsFunc` 完全自定义了命令行参数（如 `log_level`/`-l`）。
+> 若不覆盖，框架默认启用内置 flags（`-c/--config`、`--config-type`、`--config-dir`、
+> `--log-level`，见 `DefaultSetFlagsFunc`），两者键名不同，混用时以实际注册的为准。
+
 在 `setup` 回调中读取配置：
 
 ```go
@@ -184,7 +188,7 @@ type myService struct {
 	*lynx.HealthChecker
 }
 
-func (c *myService) Name() string             { return "my-component" }
+func (c *myService) Name() string             { return "my-service" }
 func (c *myService) Init(ctx lynx.AppContext) error { c.SetHealthy(true); return nil }
 func (c *myService) Start(ctx context.Context) error {
 	<-ctx.Done()

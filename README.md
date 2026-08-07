@@ -114,7 +114,7 @@ err := broker.Publish(ctx, "user.created", map[string]string{"user": "alice"},
     pubsub.WithMessageKey("alice"))
 
 // 订阅：自动反序列化到指定类型
-err := pubsub.Subscribe(ctx, broker, "user.created", "notify",
+err := pubsub.Subscribe(broker, ctx, "user.created", "notify",
     func(ctx context.Context, event *pubsub.TypedMessage[User]) error {
         // event.Payload 已是 User 结构
         return nil
@@ -283,7 +283,7 @@ Lynx 使用 Viper 进行配置管理，支持多种配置来源：
 -c, --config string      配置文件路径
 --config-type string     配置文件类型 (默认 "yaml")
 --config-dir string      配置文件目录
---log-level string       日志级别 (默认 "info")
+--log-level string       日志级别 (默认空，回退配置键，缺省 info)
 ```
 
 ## 扩展模块
@@ -314,7 +314,7 @@ github.com/lynx-go/lynx/contrib/zap
 
 ## 依赖要求
 
-- Go 1.25 或更高版本
+- Go 1.26.5 或更高版本
 
 ## License
 

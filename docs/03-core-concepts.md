@@ -89,7 +89,7 @@ return nil
 `Options.Validate()` 定义了两条校验规则（相关常量与错误均定义在 `options.go`）：
 
 - 名称长度不能超过 63 个字符，否则返回 `ErrNameTooLong`。
-- `ShutdownTimeout` 大于 0 时，必须在 `[MinShutdownTimeout, MaxShutdownTimeout]` 区间内，即不小于 1 秒（否则 `ErrShutdownTimeoutTooSmall`）、不大于 5 分钟（否则 `ErrShutdownTimeoutTooLarge`）。`ShutdownTimeout` 为 0 视为合法，表示"使用默认值"。`StopTimeout` 的校验区间相同（`ErrStopTimeoutTooSmall`/`ErrStopTimeoutTooLarge`）。
+- `ShutdownTimeout` 大于 0 时，必须在 `[MinTimeout, MaxTimeout]` 区间内（该区间为 ShutdownTimeout 与 StopTimeout 共用），即不小于 1 秒（否则 `ErrShutdownTimeoutTooSmall`）、不大于 5 分钟（否则 `ErrShutdownTimeoutTooLarge`）。`ShutdownTimeout` 为 0 视为合法，表示"使用默认值"。`StopTimeout` 的校验区间相同（`ErrStopTimeoutTooSmall`/`ErrStopTimeoutTooLarge`）。
 
 `lynx.NewBuilder` 在调用 `EnsureDefaults()` 补齐默认值后会自动调用 `Validate()`，校验失败会让 `Run()`/`RunE()` 返回对应错误。如果需要在创建应用之前单独校验配置（例如来自外部输入），也可以显式调用：
 
@@ -154,7 +154,7 @@ lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
 
 `SetEnvPrefix` 加 `AutomaticEnv` 让 Viper 自动读取带前缀的环境变量；`BindEnv` 则把指定配置键精确绑定到某个环境变量。配置来源的优先级遵循 Viper 的规则：命令行参数、环境变量、配置文件可以组合使用。
 
-另外，应用名称、ID、版本这三个元信息也参与配置合并：配置中的 `service.name`、`service.id`、`service.version` 键优先，覆盖 `Options` 中的对应值；旧顶层键 `name`、`id`、`version` 作为过渡期回退（deprecated），最终注入应用 Context 的是合并后的结果。
+另外，应用名称、ID、版本这三个元信息也参与配置合并：配置中的 `service.name`、`service.id`、`service.version` 键优先，覆盖 `Options` 中的对应值；旧顶层键 `name`、`id`、`version` 的回退已于 v1.0 移除，不再参与合并。最终注入应用 Context 的是合并后的结果。
 
 ### 配置接口
 
@@ -272,7 +272,7 @@ func main() {
 
 type myService struct{}
 
-func (c *myService) Name() string { return "my-component" }
+func (c *myService) Name() string { return "my-service" }
 
 func (c *myService) Init(ctx lynx.AppContext) error { return nil }
 
@@ -286,4 +286,4 @@ func (c *myService) Stop(ctx context.Context) error { return nil }
 
 ## 3.9 下一步
 
-- [第 4 章：服务系统](./04-component-system.md) - 深入理解 `Service` 接口契约、`ServiceFactory` 与自定义服务编写
+- [第 4 章：服务系统](./04-service-system.md) - 深入理解 `Service` 接口契约、`ServiceFactory` 与自定义服务编写
