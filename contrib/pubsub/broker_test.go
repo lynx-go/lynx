@@ -14,6 +14,7 @@ import (
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/logging"
 )
 
 // fakeApp is a minimal lynx.AppContext implementation for tests.
@@ -900,5 +901,200 @@ func TestBrokerWatermillDebugLog(t *testing.T) {
 	on := run(true)
 	if !strings.Contains(on, "Subscribing to topic") {
 		t.Errorf("watermill debug log should show with Debug=true:\n%s", on)
+	}
+}
+
+// TestBrokerPropagatesLogAttrs 验证 Publish 自动将 ctx 日志属性白名单
+// （默认 {request_id, user_id}）写入消息头；白名单外的属性不传播。
+func TestBrokerPropagatesLogAttrs(t *testing.T) {
+	ft := newFakeTransport("test.event")
+	b := NewBroker(Options{Transports: []Transport{ft}, DefaultTransport: ft})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx := logging.WithAttrs(context.Background(),
+		slog.String(logging.FieldRequestID, "rid-1"),
+		slog.String(logging.FieldUserID, "u1"),
+		slog.String("secret", "x"),
+	)
+	if err := b.Publish(ctx, "test.event", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	msgs := ft.publishedMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("published %d messages, want 1", len(msgs))
+	}
+	m := msgs[0]
+	if got := m.Metadata.Get(logging.FieldRequestID); got != "rid-1" {
+		t.Errorf("request_id header = %q, want rid-1", got)
+	}
+	if got := m.Metadata.Get(logging.FieldUserID); got != "u1" {
+		t.Errorf("user_id header = %q, want u1", got)
+	}
+	if _, ok := m.Metadata["secret"]; ok {
+		t.Error("non-whitelisted attr leaked into message metadata")
+	}
+}
+
+// TestBrokerPropagateCustomAndDisabled 验证 PropagateAttrs 自定义白名单与
+// 非 nil 空切片关闭传播。
+func TestBrokerPropagateCustomAndDisabled(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		keys []string
+		want map[string]string
+	}{
+		{name: "custom", keys: []string{logging.FieldRequestID}, want: map[string]string{logging.FieldRequestID: "rid-1"}},
+		{name: "disabled", keys: []string{}, want: map[string]string{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ft := newFakeTransport("test.event")
+			b := NewBroker(Options{
+				Transports:       []Transport{ft},
+				DefaultTransport: ft,
+				PropagateAttrs:   tt.keys,
+			})
+			if err := b.Init(newFakeApp()); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			ctx := logging.WithAttrs(context.Background(),
+				slog.String(logging.FieldRequestID, "rid-1"),
+				slog.String(logging.FieldUserID, "u1"),
+			)
+			if err := b.Publish(ctx, "test.event", MustJSONMessage(nil)); err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+			msgs := ft.publishedMessages()
+			if len(msgs) != 1 {
+				t.Fatalf("published %d messages, want 1", len(msgs))
+			}
+			got := map[string]string{}
+			for k, v := range msgs[0].Metadata {
+				got[k] = v
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("metadata = %v, want %v", got, tt.want)
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("metadata[%s] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+// TestBrokerPropagateDoesNotOverrideMessageHeader 验证 *Message 载荷自身
+// 已设置的 header 不被 ctx 日志属性覆盖。
+func TestBrokerPropagateDoesNotOverrideMessageHeader(t *testing.T) {
+	ft := newFakeTransport("test.event")
+	b := NewBroker(Options{Transports: []Transport{ft}, DefaultTransport: ft})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	msg := MustJSONMessage(nil)
+	msg.Headers = map[string]string{logging.FieldRequestID: "explicit"}
+	ctx := logging.WithAttrs(context.Background(), slog.String(logging.FieldRequestID, "auto"))
+	if err := b.Publish(ctx, "test.event", msg); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	msgs := ft.publishedMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("published %d messages, want 1", len(msgs))
+	}
+	if got := msgs[0].Metadata.Get(logging.FieldRequestID); got != "explicit" {
+		t.Errorf("request_id header = %q, want explicit (message header wins)", got)
+	}
+}
+
+// TestBrokerRestoresLogAttrsOnSubscribe 验证 Subscribe 侧从消息头还原
+// 白名单字段到 handler ctx（本地已存在的 key 不被覆盖）。
+func TestBrokerRestoresLogAttrsOnSubscribe(t *testing.T) {
+	ft := newFakeTransport("test.event")
+	received := make(chan context.Context, 1)
+	startBrokerWithEvents(t, Options{
+		Transports:       []Transport{ft},
+		DefaultTransport: ft,
+	}, "test.event", "test-handler", func(ctx context.Context, msg *Message) error {
+		received <- ctx
+		return nil
+	})
+
+	wm := message.NewMessage("m1", []byte("x"))
+	wm.Metadata.Set(logging.FieldRequestID, "rid-1")
+	wm.Metadata.Set(logging.FieldUserID, "u1")
+	ft.inject(wm)
+
+	select {
+	case ctx := <-received:
+		attrs := map[string]string{}
+		for _, a := range logging.AttrsFrom(ctx) {
+			attrs[a.Key] = a.Value.String()
+		}
+		if attrs[logging.FieldRequestID] != "rid-1" {
+			t.Errorf("request_id restored = %q, want rid-1", attrs[logging.FieldRequestID])
+		}
+		if attrs[logging.FieldUserID] != "u1" {
+			t.Errorf("user_id restored = %q, want u1", attrs[logging.FieldUserID])
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not receive message within 3s")
+	}
+}
+
+// TestBrokerLogAttrsRoundTrip 端到端验证：Publish ctx 属性 → 消息头 →
+// 消费 handler ctx 还原，且 InfoContext 日志携带 request_id。
+func TestBrokerLogAttrsRoundTrip(t *testing.T) {
+	received := make(chan context.Context, 1)
+	b, _ := startBroker(t, func(ctx context.Context, msg *Message) error {
+		received <- ctx
+		return nil
+	})
+
+	ctx := logging.WithAttrs(context.Background(), slog.String(logging.FieldRequestID, "rid-1"))
+	if err := b.Publish(ctx, "test.event", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	select {
+	case rctx := <-received:
+		got := ""
+		for _, a := range logging.AttrsFrom(rctx) {
+			if a.Key == logging.FieldRequestID {
+				got = a.Value.String()
+			}
+		}
+		if got != "rid-1" {
+			t.Errorf("request_id restored = %q, want rid-1", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("did not receive message within 5s")
+	}
+}
+
+// TestBrokerLogAttrsFlowIntoLogs 验证消费侧 handler 的 InfoContext 日志
+// 在 NewAttrsHandler 包装下自动携带还原的 request_id（全链路日志闭环）。
+func TestBrokerLogAttrsFlowIntoLogs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(logging.NewAttrsHandler(slog.NewJSONHandler(&buf, nil)))
+
+	received := make(chan struct{}, 1)
+	b, _ := startBroker(t, func(ctx context.Context, msg *Message) error {
+		logger.InfoContext(ctx, "handling message")
+		received <- struct{}{}
+		return nil
+	})
+
+	ctx := logging.WithAttrs(context.Background(), slog.String(logging.FieldRequestID, "rid-1"))
+	if err := b.Publish(ctx, "test.event", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not receive message within 5s")
+	}
+	if !strings.Contains(buf.String(), `"request_id":"rid-1"`) {
+		t.Errorf("handler log missing request_id, got: %s", buf.String())
 	}
 }

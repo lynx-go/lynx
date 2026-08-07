@@ -15,6 +15,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	"github.com/ThreeDotsLabs/watermill/message/router/plugin"
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/logging"
 )
 
 // Broker 是消息代理门面服务：按 topic 路由到 Transport，统一发布订阅。
@@ -109,6 +110,12 @@ type Options struct {
 	//（显式 SubscribeOption 优先），收发日志/重试按事件覆盖全局配置。
 	// NewFromConfig 从配置 pubsub.events 段加载。
 	Events map[string]EventOptions
+	// PropagateAttrs 是跨请求传播的日志属性 key 白名单：Publish 时从 ctx
+	// 日志属性（logging.AttrsFrom）提取同名 key 写入消息头，Subscribe
+	// 时从消息头取出还原进 ctx，使消费侧日志自动携带同一组字段
+	//（如 request_id/user_id，全链路关联）。nil 时使用默认
+	// {request_id, user_id}；非 nil 空切片表示完全关闭。
+	PropagateAttrs []string
 }
 
 // NewBroker 创建消息代理门面。
@@ -502,13 +509,38 @@ func (b *broker) logMessageFor(topic string) LogMessageOptions {
 	return LogMessageOptions{}
 }
 
-// wrapHandler 包装用户 handler：注入消息 ID/key 上下文，按事件配置输出
-// 收发日志，统一 Ack 语义。重试由 per-handler 中间件负责（Start 期挂载）。
+// propagateKeys 返回跨请求传播的日志属性 key 白名单：nil 时使用默认
+// {request_id, user_id}；非 nil 空切片表示完全关闭。
+func (b *broker) propagateKeys() []string {
+	if b.options.PropagateAttrs != nil {
+		return b.options.PropagateAttrs
+	}
+	return []string{logging.FieldRequestID, logging.FieldUserID}
+}
+
+// wrapHandler 包装用户 handler：注入消息 ID/key 上下文、还原传播的日志
+// 属性（PropagateAttrs 白名单），按事件配置输出收发日志，统一 Ack 语义。
+// 重试由 per-handler 中间件负责（Start 期挂载）。
 func (b *broker) wrapHandler(topic string, h HandlerFunc, o SubscribeOptions) message.NoPublishHandlerFunc {
 	lm := b.logMessageFor(topic)
 	handler := func(msg *message.Message) error {
 		ctx := ContextWithMessageID(msg.Context(), msg.UUID)
 		ctx = ContextWithMessageKey(ctx, msg.Metadata.Get(MessageKeyKey.String()))
+		// 还原发布侧传播的日志属性（本地 ctx 已存在的 key 不被覆盖）。
+		existing := make(map[string]struct{}, 4)
+		for _, a := range logging.AttrsFrom(ctx) {
+			existing[a.Key] = struct{}{}
+		}
+		var attrs []slog.Attr
+		for _, k := range b.propagateKeys() {
+			if _, ok := existing[k]; ok {
+				continue
+			}
+			if v := msg.Metadata.Get(k); v != "" {
+				attrs = append(attrs, slog.String(k, v))
+			}
+		}
+		ctx = logging.WithAttrs(ctx, attrs...)
 		if lm.Subscribe {
 			b.logger.DebugContext(ctx, "received message", "topic", topic,
 				"message", string(msg.Payload), "x-message-id", msg.UUID)
@@ -603,6 +635,19 @@ func (b *broker) Publish(ctx context.Context, topic string, payload any, opts ..
 	m = cloneMessage(m)
 	if o.MessageKey != "" {
 		m.Key = o.MessageKey
+	}
+	// 自动传播 ctx 日志属性（PropagateAttrs 白名单）：消息自身已设置的
+	// header 优先，不覆盖；显式 WithMetadata 在其后合并，同样优先。
+	for _, k := range b.propagateKeys() {
+		if _, ok := m.Headers[k]; ok {
+			continue
+		}
+		for _, a := range logging.AttrsFrom(ctx) {
+			if a.Key == k {
+				m.Headers[k] = a.Value.String()
+				break
+			}
+		}
 	}
 	for k, v := range o.Metadata {
 		if m.Headers == nil {

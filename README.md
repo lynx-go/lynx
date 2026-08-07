@@ -254,7 +254,7 @@ lynx/
 ├── errors.go       # 错误聚合
 ├── health.go       # 健康检查工具
 ├── hooks.go        # Hooks 机制
-├── logging.go      # trace 日志注入
+├── logging/        # 日志机制（trace/attrs 注入）
 ├── options.go      # 配置选项
 ├── server/         # 服务器实现
 │   ├── grpc/       # gRPC 服务器

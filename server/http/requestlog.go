@@ -20,7 +20,7 @@ type Logger interface {
 }
 
 // NewHandler 包装 h，为每个请求生成一条访问日志
-//（替代 gocloud.dev/server/requestlog.NewHandler）。
+// （替代 gocloud.dev/server/requestlog.NewHandler）。
 func NewHandler(log Logger, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -56,6 +56,9 @@ func NewHandler(log Logger, h http.Handler) http.Handler {
 			ent.Status = http.StatusOK
 		}
 		ent.ResponseHeaderSize, ent.ResponseBodySize = w2.size()
+		// request_id 由中间件写入响应头（如 WithRequestID），这里在请求
+		// 完成后读取，保证 request log 与业务日志携带同一 request_id。
+		ent.RequestID = w2.Header().Get(RequestIDHeader)
 		log.Log(ent)
 	})
 }
@@ -67,7 +70,7 @@ func cloneRequestWithoutBody(r *http.Request) *http.Request {
 }
 
 // Entry 记录一次已完成的 HTTP 请求的信息
-//（替代 gocloud.dev/server/requestlog.Entry）。
+// （替代 gocloud.dev/server/requestlog.Entry）。
 type Entry struct {
 	// Request 是已完成的请求。
 	//
@@ -89,6 +92,8 @@ type Entry struct {
 	RequestHeaderSize int64
 	UserAgent         string
 	RemoteIP          string
+	// RequestID 是请求级关联 ID（WithRequestID 中间件生成/透传）。
+	RequestID string
 }
 
 func ipFromHostPort(hp string) string {
@@ -240,8 +245,9 @@ func (l *RequestLogger) log(ent *Entry) error {
 			Seconds int64 `json:"seconds"`
 			Nanos   int   `json:"nanos"`
 		} `json:"timestamp"`
-		TraceID string `json:"logging.googleapis.com/trace"`
-		SpanID  string `json:"logging.googleapis.com/spanId"`
+		TraceID   string `json:"logging.googleapis.com/trace"`
+		SpanID    string `json:"logging.googleapis.com/spanId"`
+		RequestID string `json:"requestId"`
 	}
 	r.HTTPRequest.RequestMethod = ent.Request.Method
 	r.HTTPRequest.RequestURL = ent.Request.URL.String()
@@ -260,6 +266,7 @@ func (l *RequestLogger) log(ent *Entry) error {
 	r.Timestamp.Nanos = t.Nanosecond()
 	r.TraceID = ent.TraceID.String()
 	r.SpanID = ent.SpanID.String()
+	r.RequestID = ent.RequestID
 	l.logger.Debug("requestlog", "request", r)
 	return nil
 }

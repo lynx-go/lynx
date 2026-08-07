@@ -1,6 +1,6 @@
 # 5. 服务器与可观测性
 
-Lynx 在 `server/http` 与 `server/grpc` 两个包中提供了开箱即用的服务器服务，它们都实现了第 4 章介绍的 `Service` 接口，可以直接通过 `app.Register` 注册进应用。本章先逐一介绍两个服务器的全部配置项，再讲解可观测性接入：OpenTelemetry trace/metrics 的开箱即用（`contrib/telemetry`）与手动接入、Prometheus 指标暴露、HTTP 中间件链序，以及日志与链路的关联（`lynx.NewTraceHandler`）。
+Lynx 在 `server/http` 与 `server/grpc` 两个包中提供了开箱即用的服务器服务，它们都实现了第 4 章介绍的 `Service` 接口，可以直接通过 `app.Register` 注册进应用。本章先逐一介绍两个服务器的全部配置项，再讲解可观测性接入：OpenTelemetry trace/metrics 的开箱即用（`contrib/telemetry`）与手动接入、Prometheus 指标暴露、HTTP 中间件链序，以及日志与链路的关联（`logging.NewTraceHandler`）。
 
 ## 5.1 HTTP 服务器
 
@@ -418,9 +418,9 @@ otel instrumentation → request log → WithMiddleware 中间件（声明序）
 
 因此：在自定义中间件和业务 handler 里，`r.Context()` 已经携带了 otel 提取/新建的 SpanContext——这正是 5.3.6 节日志注入 trace_id 的前提；而访问日志（request log）记录的延迟包含自定义中间件的耗时。
 
-### 5.3.6 日志与链路关联：lynx.NewTraceHandler
+### 5.3.6 日志与链路关联：logging.NewTraceHandler
 
-链路有了，还需要让日志带上 `trace_id`/`span_id` 才能在日志系统里按链路检索。根模块 `logging.go` 提供了一个 slog Handler 装饰器：
+链路有了，还需要让日志带上 `trace_id`/`span_id` 才能在日志系统里按链路检索。`lynx/logging` 子包提供了一个 slog Handler 装饰器：
 
 ```go
 func NewTraceHandler(h slog.Handler) slog.Handler
@@ -436,7 +436,7 @@ func NewTraceHandler(h slog.Handler) slog.Handler
 ```go
 // newSlogLogger 纯 slog 路线：在任意 slog.Handler 外包一层 NewTraceHandler。
 func newSlogLogger() *slog.Logger {
-	return slog.New(lynx.NewTraceHandler(slog.NewJSONHandler(os.Stdout, nil)))
+	return slog.New(logging.NewTraceHandler(slog.NewJSONHandler(os.Stdout, nil)))
 }
 ```
 
@@ -450,11 +450,45 @@ func newZapLogger() (*slog.Logger, error) {
 		return nil, err
 	}
 	handler := slogzap.Option{Level: slog.LevelDebug, Logger: zapLogger}.NewZapHandler()
-	return slog.New(lynx.NewTraceHandler(handler)), nil
+	return slog.New(logging.NewTraceHandler(handler)), nil
 }
 ```
 
-其中 `lynxzap` 是 `github.com/lynx-go/lynx/contrib/zap` 的别名，`slogzap` 是 `github.com/samber/slog-zap/v2`。组装出的 logger 传给 `app.SetLogger(...)` 后，服务内所有 `InfoContext` 日志都会携带链路字段；再把它传给 `http.WithLogger`，访问日志（含 `trace`/`spanId` 字段，见 5.1 节 `WithRequestLog`）也走同一条管线。
+其中 `logging` 是 `github.com/lynx-go/lynx/logging` 的别名，`lynxzap` 是 `github.com/lynx-go/lynx/contrib/zap` 的别名，`slogzap` 是 `github.com/samber/slog-zap/v2`。组装出的 logger 传给 `app.SetLogger(...)` 后，服务内所有 `InfoContext` 日志都会携带链路字段；再把它传给 `http.WithLogger`，访问日志（含 `trace`/`spanId` 字段，见 5.1 节 `WithRequestLog`）也走同一条管线。
+
+### 5.3.7 请求级日志字段：request_id/user_id 全链路传播
+
+`trace_id` 关联的是"一次分布式调用"，而 `request_id`/`user_id` 等请求级字段关联的是"一次业务请求"——同一请求在 HTTP 处理、异步任务、消息消费中的全部日志共享同一组字段，日志系统按 `request_id` 检索即可还原一次请求的完整生命周期。`lynx/logging` 提供两个配套机制：
+
+1. **上下文日志属性**：`logging.WithAttrs(ctx, slog.String("request_id", rid))` 把请求级属性写入 ctx；日志调用必须用带 Context 的方法（`InfoContext` 等），并让应用 logger 的 handler 包一层 `logging.NewAttrsHandler`：
+
+```go
+// newSlogLogger 同时注入 trace 与请求级字段：
+// logging.NewAttrsHandler(logging.NewTraceHandler(base))
+```
+
+2. **HTTP 中间件**：`http.WithRequestID()` 为每个请求生成/透传 `request_id`（沿用 `X-Request-Id` 请求头，无则生成 UUID），回写响应头，并通过 `WithAttrs` 写入请求 ctx：
+
+```go
+srv := http.NewServer(router,
+	http.WithAddr(addr),
+	http.WithMiddleware(http.WithRequestID()), // 第一个中间件，其余中间件与 handler 均可见
+	http.WithLogger(app.Logger("logger", "http-requestlog")),
+)
+```
+
+此后请求链内所有 `logger.InfoContext(r.Context(), ...)` 自动携带 `request_id`（`logging.NewAttrsHandler` 注入）；访问日志同样带 `requestId` 字段（从响应头读取，见 5.1 节）。业务代码可用 `http.RequestIDFrom(r.Context())` 取当前值。`user_id` 同理：认证中间件确定身份后执行 `r = r.WithContext(logging.WithAttrs(r.Context(), slog.String(logging.FieldUserID, uid)))` 即可。
+
+3. **消息跨服务传播**：`contrib/pubsub` 的 Broker 在 Publish 时自动把 ctx 日志属性白名单写入消息头，Subscribe 时还原进 handler ctx——`request_id`/`user_id` 随消息跨服务流转，消费侧日志自动携带同一组字段（Kafka 侧为 record headers，内存 transport 为进程内 metadata）。白名单默认 `{request_id, user_id}`，可用 `Options.PropagateAttrs` 自定义（非 nil 空切片完全关闭）：
+
+```go
+broker := pubsub.NewBroker(pubsub.Options{
+	DefaultTransport: kafkaTransport,
+	PropagateAttrs:   []string{logging.FieldRequestID, logging.FieldUserID},
+})
+```
+
+注意：消息头传播的字段是"日志关联"级别的；发布侧的 ctx 属性优先级最低，消息自身 `Headers` 与 `WithMetadata` 显式设置的值不被覆盖。
 
 ## 5.4 延伸阅读
 
