@@ -1,6 +1,6 @@
 module github.com/lynx-go/lynx/contrib/telemetry
 
-go 1.25.0
+go 1.26.5
 
 replace github.com/lynx-go/lynx => ../../
 

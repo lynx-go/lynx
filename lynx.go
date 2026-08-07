@@ -189,7 +189,7 @@ func (app *lynx) recordInitError(err error) {
 
 // errRunStarted 由 addServices 在持锁登记事务中发现 Run 已开始时返回，
 // 调用方（Register/RegisterFactories/Command）翻译为各自的明确错误/panic
-//（所有注册必须先于 Run）。
+// （所有注册必须先于 Run）。
 var errRunStarted = errors.New("lynx: registration after Run() has started")
 
 // SetLogger 设置 logger，并同步 slog.SetDefault 使全局默认 logger 与应用
@@ -239,25 +239,15 @@ func (app *lynx) init() error {
 
 	name := app.c.GetString("service.name")
 	if name == "" {
-		// 旧顶层键回退（过渡期，deprecated）。
-		name = app.c.GetString("name")
-	}
-	if name == "" {
 		name = app.o.Name
 	}
 	app.ctx = context.WithValue(app.ctx, keyName, name)
 	id := app.c.GetString("service.id")
 	if id == "" {
-		id = app.c.GetString("id")
-	}
-	if id == "" {
 		id = app.o.ID
 	}
 	app.ctx = context.WithValue(app.ctx, keyId, id)
 	version := app.c.GetString("service.version")
-	if version == "" {
-		version = app.c.GetString("version")
-	}
 	if version == "" {
 		version = app.o.Version
 	}

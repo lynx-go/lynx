@@ -1,6 +1,6 @@
 module github.com/lynx-go/lynx
 
-go 1.25.0
+go 1.26.5
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3

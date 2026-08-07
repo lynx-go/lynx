@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.25"
+  GO_VERSION: "1.26.5"
 
 jobs:
   test:
@@ -22,7 +22,7 @@ jobs:
           - { module: ., flag: core }
           - { module: _examples, flag: examples }
           - { module: contrib/kafka, flag: kafka }
-          - { module: contrib/metrics, flag: metrics }
+          - { module: contrib/telemetry, flag: telemetry }
           - { module: contrib/pubsub, flag: pubsub }
           - { module: contrib/schedule, flag: schedule }
           - { module: contrib/zap, flag: zap }
@@ -69,7 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [., _examples, contrib/kafka, contrib/metrics, contrib/pubsub, contrib/schedule, contrib/zap]
+        module: [., _examples, contrib/kafka, contrib/telemetry, contrib/pubsub, contrib/schedule, contrib/zap]
     steps:
       - uses: actions/checkout@v4
 

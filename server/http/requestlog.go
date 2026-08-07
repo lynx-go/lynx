@@ -251,10 +251,10 @@ func (l *RequestLogger) log(ent *Entry) error {
 	}
 	r.HTTPRequest.RequestMethod = ent.Request.Method
 	r.HTTPRequest.RequestURL = ent.Request.URL.String()
-	// TODO(light): determine whether this is the formula LogEntry expects.
+	// 请求/响应尺寸取 header 与 body 之和（沿用 gocloud.dev/server/requestlog
+	// 的既有算法；LogEntry 规范未精确定义该字段，此处保持与其一致以便迁移）。
 	r.HTTPRequest.RequestSize = ent.RequestHeaderSize + ent.RequestBodySize
 	r.HTTPRequest.Status = ent.Status
-	// TODO(light): determine whether this is the formula LogEntry expects.
 	r.HTTPRequest.ResponseSize = ent.ResponseHeaderSize + ent.ResponseBodySize
 	r.HTTPRequest.UserAgent = ent.UserAgent
 	r.HTTPRequest.RemoteIP = ent.RemoteIP

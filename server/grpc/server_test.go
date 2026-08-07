@@ -446,7 +446,7 @@ func TestHealthCheckDefaultPeriodNotPanic(t *testing.T) {
 // 执行到 startHealthPoller 时（healthCancel 为 nil），poller 启动必须在
 // 同锁段内发现 stopped 并取消自身——不得留下永不取消的轮询 goroutine。
 // 直接调用 startHealthPoller 是确定性的：修复前 healthCancel 非 nil
-//（goroutine 已启动），修复后保持 nil。
+// （goroutine 已启动），修复后保持 nil。
 func TestHealthPollerNotLeakedWhenStoppedBeforeStart(t *testing.T) {
 	checker := &flipChecker{}
 	checker.healthy.Store(true)
@@ -486,5 +486,14 @@ func TestWithStreamInterceptors(t *testing.T) {
 	}
 	if called.Load() != 0 {
 		t.Fatal("interceptor should not run before serving")
+	}
+}
+
+// TestStopBeforeStart 回归：Stop 在 Start 之前调用必须安全返回
+// （生命周期容忍契约：Stop 容忍在 Start 之前被调用）。
+func TestStopBeforeStart(t *testing.T) {
+	s := NewServer()
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop before Start: %v", err)
 	}
 }

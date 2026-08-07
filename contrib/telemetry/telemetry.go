@@ -17,7 +17,7 @@
 // /metrics（如 promhttp.Handler()），其使用默认注册表，与默认 reader 兼容。
 //
 // Init 在 ctx 非 nil 且未显式 WithResource 时，自动以应用名
-//（NameFromContext(ctx.Context())）构建 service.name 资源属性，
+// （NameFromContext(ctx.Context())）构建 service.name 资源属性，
 // 服务名零配置进入 trace/metrics。
 package telemetry
 
@@ -31,10 +31,10 @@ import (
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 )
 
 // Options 是 telemetry 服务的配置项。

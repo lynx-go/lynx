@@ -31,18 +31,18 @@ const (
 
 // Options 是 gRPC 服务服务的配置项。
 type Options struct {
-	Addr                string
-	Timeout             time.Duration
-	Logger              *slog.Logger
-	Interceptors        []grpc.UnaryServerInterceptor
-	StreamInterceptors  []grpc.StreamServerInterceptor
-	ServerOptions       []grpc.ServerOption
-	TracerProvider      trace.TracerProvider
-	MeterProvider       metric.MeterProvider
+	Addr               string
+	Timeout            time.Duration
+	Logger             *slog.Logger
+	Interceptors       []grpc.UnaryServerInterceptor
+	StreamInterceptors []grpc.StreamServerInterceptor
+	ServerOptions      []grpc.ServerOption
+	TracerProvider     trace.TracerProvider
+	MeterProvider      metric.MeterProvider
 	// HealthCheck 提供 app 级健康检查器；非 nil 时按 HealthCheckPeriod
 	// 轮询并同步到 grpc health 服务（依赖服务不健康时探测返回 NOT_SERVING）。
-	HealthCheck         lynx.HealthCheckersFunc
-	HealthCheckPeriod   time.Duration
+	HealthCheck       lynx.HealthCheckersFunc
+	HealthCheckPeriod time.Duration
 }
 
 // Option 用于配置 gRPC 服务 Options 的选项函数。

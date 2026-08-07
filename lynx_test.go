@@ -971,7 +971,7 @@ func TestOnStopHookBlockingBoundedByTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
-	// 白盒收紧超时，避免 Options.Validate 的 MinShutdownTimeout 限制。
+	// 白盒收紧超时，避免 Options.Validate 的 MinTimeout 限制。
 	app.(*lynx).o.ShutdownTimeout = 100 * time.Millisecond
 
 	app.OnStop(func(ctx context.Context) error {
@@ -1098,16 +1098,42 @@ func TestLogLevelFromConfigPriority(t *testing.T) {
 	}
 }
 
+// TestLogLevelConfigNotShadowedByUnchangedFlag 回归：--log-level 未显式传入
+// 时，配置文件的日志级别键必须生效（flag 默认值为空，不得遮蔽配置键）。
+func TestLogLevelConfigNotShadowedByUnchangedFlag(t *testing.T) {
+	v := viper.New()
+	v.Set("log_level", "debug")
+
+	f := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	DefaultSetFlagsFunc(f) // 未 Parse 任何参数：所有 flag 均未 Changed
+	if err := v.BindPFlags(f); err != nil {
+		t.Fatalf("BindPFlags: %v", err)
+	}
+	if got := LogLevelFromConfig(NewViperConfig(v)); got != "debug" {
+		t.Errorf("LogLevelFromConfig() = %q, want debug（未传的 --log-level 不应遮蔽配置文件）", got)
+	}
+
+	// 显式传入时 flag 优先于配置键。
+	f2 := pflag.NewFlagSet("test2", pflag.ContinueOnError)
+	DefaultSetFlagsFunc(f2)
+	if err := f2.Parse([]string{"--log-level=warn"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if err := v.BindPFlags(f2); err != nil {
+		t.Fatalf("BindPFlags: %v", err)
+	}
+	if got := LogLevelFromConfig(NewViperConfig(v)); got != "warn" {
+		t.Errorf("LogLevelFromConfig() = %q, want warn（显式 flag 优先）", got)
+	}
+}
+
 // TestAppContextCarriesServiceConfigKeys 验证 service.name/service.id/
-// service.version 配置键优先于旧顶层键。
+// service.version 配置键写入应用上下文。
 func TestAppContextCarriesServiceConfigKeys(t *testing.T) {
 	v := viper.New()
 	v.Set("service.name", "svc-new")
 	v.Set("service.id", "id-new")
 	v.Set("service.version", "v-new")
-	v.Set("name", "svc-old")
-	v.Set("id", "id-old")
-	v.Set("version", "v-old")
 	c := NewViperConfig(v)
 
 	app, err := newLynxWithConfig(c)
@@ -1126,8 +1152,9 @@ func TestAppContextCarriesServiceConfigKeys(t *testing.T) {
 	}
 }
 
-// TestAppContextFallsBackToLegacyConfigKeys 验证旧顶层键作为回退仍生效。
-func TestAppContextFallsBackToLegacyConfigKeys(t *testing.T) {
+// TestAppContextIgnoresLegacyTopLevelKeys 验证旧顶层 name/id/version 键
+// 自 v1.0 起不再生效（已移除回退），元数据一律取 service.* 键或 Options。
+func TestAppContextIgnoresLegacyTopLevelKeys(t *testing.T) {
 	v := viper.New()
 	v.Set("name", "svc-old")
 	v.Set("id", "id-old")
@@ -1139,14 +1166,14 @@ func TestAppContextFallsBackToLegacyConfigKeys(t *testing.T) {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 	ctx := app.Context()
-	if got := NameFromContext(ctx); got != "svc-old" {
-		t.Errorf("NameFromContext() = %q, want %q", got, "svc-old")
+	if got := NameFromContext(ctx); got != DefaultName {
+		t.Errorf("NameFromContext() = %q, want Options 默认值 %q（旧键已失效）", got, DefaultName)
 	}
-	if got := IDFromContext(ctx); got != "id-old" {
-		t.Errorf("IDFromContext() = %q, want %q", got, "id-old")
+	if got := IDFromContext(ctx); got == "id-old" {
+		t.Errorf("IDFromContext() = %q, 旧顶层键不应生效", got)
 	}
-	if got := VersionFromContext(ctx); got != "v-old" {
-		t.Errorf("VersionFromContext() = %q, want %q", got, "v-old")
+	if got := VersionFromContext(ctx); got == "v-old" {
+		t.Errorf("VersionFromContext() = %q, 旧顶层键不应生效", got)
 	}
 }
 

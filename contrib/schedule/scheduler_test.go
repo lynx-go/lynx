@@ -415,7 +415,7 @@ func TestStopBeforeStartNoHang(t *testing.T) {
 // TestStopRacingStartNoHang 回归：Stop 与 Start 并发交错时不得挂死。
 // 复现窗口：Start 通过 stopping 检查 → Stop 读到 started==false 提前返回
 // → Start 启动 cron 后阻塞在 <-ctx.Done()。新语义下 Start 尊重传入的 ctx
-//（框架在 Stop 返回后取消服务 ctx），测试以 cancel 解除等待；stopping
+// （框架在 Stop 返回后取消服务 ctx），测试以 cancel 解除等待；stopping
 // 标志的握手不得在任何交错过挂死。10 万次交错中任一次挂死即失败。
 func TestStopRacingStartNoHang(t *testing.T) {
 	for i := 0; i < 100_000; i++ {
@@ -471,5 +471,42 @@ func TestErrorHandlerInvoked(t *testing.T) {
 	_ = s.Stop(context.Background())
 	if name, _ := gotName.Load().(string); name != "failing" {
 		t.Fatalf("error handler task name = %q, want failing", name)
+	}
+}
+
+// TestStartRespectsCtx 回归：Start 必须阻塞在传入 ctx 上，ctx 取消即返回
+// （run.Group actor 语义）。
+func TestStartRespectsCtx(t *testing.T) {
+	var count atomic.Int32
+	s, err := NewScheduler(
+		[]Task{newCountingTask("t1", "@every 1h", &count)},
+		WithLogger(discardLogger()),
+	)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	if err := s.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Start(ctx) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Start returned prematurely: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start after ctx cancel: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after ctx cancel")
 	}
 }

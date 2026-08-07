@@ -8,22 +8,29 @@ import (
 	"time"
 )
 
-// Default values for Options.
+// Options 的默认值与校验区间。
 const (
 	DefaultName            = "lynx-app"
 	DefaultShutdownTimeout = 5 * time.Second
 	DefaultStopTimeout     = 5 * time.Second
-	MinShutdownTimeout     = 1 * time.Second
-	MaxShutdownTimeout     = 5 * time.Minute
+	// MinTimeout 与 MaxTimeout 是 ShutdownTimeout 与 StopTimeout 共用的
+	// 校验区间（1 秒 ~ 5 分钟）。
+	MinTimeout = 1 * time.Second
+	MaxTimeout = 5 * time.Minute
 )
 
-// Validation errors for Options.
+// Options 校验错误。
 var (
-	ErrNameTooLong            = errors.New("name must be at most 63 characters")
+	// ErrNameTooLong 表示应用名超过 63 字符上限。
+	ErrNameTooLong = errors.New("name must be at most 63 characters")
+	// ErrShutdownTimeoutTooSmall 表示 ShutdownTimeout 非零但小于 MinTimeout。
 	ErrShutdownTimeoutTooSmall = errors.New("shutdown timeout must be at least 1 second")
+	// ErrShutdownTimeoutTooLarge 表示 ShutdownTimeout 大于 MaxTimeout。
 	ErrShutdownTimeoutTooLarge = errors.New("shutdown timeout must be at most 5 minutes")
-	ErrStopTimeoutTooSmall     = errors.New("stop timeout must be at least 1 second")
-	ErrStopTimeoutTooLarge     = errors.New("stop timeout must be at most 5 minutes")
+	// ErrStopTimeoutTooSmall 表示 StopTimeout 非零但小于 MinTimeout。
+	ErrStopTimeoutTooSmall = errors.New("stop timeout must be at least 1 second")
+	// ErrStopTimeoutTooLarge 表示 StopTimeout 大于 MaxTimeout。
+	ErrStopTimeoutTooLarge = errors.New("stop timeout must be at most 5 minutes")
 )
 
 // Options 是 App 应用的核心配置项。
@@ -44,10 +51,10 @@ type Options struct {
 	disableConfigFlags bool
 }
 
+// String 返回 Options 的 JSON 字符串表示（函数类字段不参与序列化）。
 func (o *Options) String() string {
 	bs, _ := json.Marshal(o)
 	return string(bs)
-
 }
 
 // Validate checks if the Options values are valid.
@@ -56,18 +63,18 @@ func (o *Options) Validate() error {
 		return ErrNameTooLong
 	}
 	if o.ShutdownTimeout > 0 {
-		if o.ShutdownTimeout < MinShutdownTimeout {
+		if o.ShutdownTimeout < MinTimeout {
 			return ErrShutdownTimeoutTooSmall
 		}
-		if o.ShutdownTimeout > MaxShutdownTimeout {
+		if o.ShutdownTimeout > MaxTimeout {
 			return ErrShutdownTimeoutTooLarge
 		}
 	}
 	if o.StopTimeout > 0 {
-		if o.StopTimeout < MinShutdownTimeout {
+		if o.StopTimeout < MinTimeout {
 			return ErrStopTimeoutTooSmall
 		}
-		if o.StopTimeout > MaxShutdownTimeout {
+		if o.StopTimeout > MaxTimeout {
 			return ErrStopTimeoutTooLarge
 		}
 	}

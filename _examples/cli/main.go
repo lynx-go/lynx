@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"fmt"
+	"log/slog"
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/pubsub"

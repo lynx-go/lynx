@@ -41,7 +41,7 @@ func TestNewZapLogger(t *testing.T) {
 }
 
 // TestNewZapLoggerToFileViaOutputs 验证文件输出经 outputs 参数实现
-//（原 NewZapLoggerToFile 的能力合并进 NewZapLogger）。
+// （原 NewZapLoggerToFile 的能力合并进 NewZapLogger）。
 func TestNewZapLoggerToFileViaOutputs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
@@ -111,7 +111,7 @@ func TestNewLoggerInvalidLevelError(t *testing.T) {
 }
 
 // TestLogLevelFromConfigKeys 验证级别键来自框架统一解析
-//（logging.level 优先，log-level/log_level 为兼容回退），zap 不再
+// （logging.level 优先，log-level/log_level 为兼容回退），zap 不再
 // 维护独立的键优先级实现。
 func TestLogLevelFromConfigKeys(t *testing.T) {
 	ctx := newFakeCtx(t)

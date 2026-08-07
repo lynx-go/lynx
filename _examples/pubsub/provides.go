@@ -72,7 +72,6 @@ func NewRouter(broker pubsub.Broker, handlers []pubsub.Handler) *pubsub.Router {
 func NewHttpServer(broker pubsub.Broker) *http.Server {
 	mux := gohttp.NewServeMux()
 	mux.HandleFunc("/hello", func(writer gohttp.ResponseWriter, request *gohttp.Request) {
-
 		ctx := request.Context()
 		slog.DebugContext(ctx, "Handling /hello request")
 		if err := broker.Publish(request.Context(), "hello",

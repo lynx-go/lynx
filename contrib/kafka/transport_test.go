@@ -291,7 +291,7 @@ func TestBuildSaramaConfigMappings(t *testing.T) {
 	}, cap)
 
 	// 发布侧：Publish 触发 publisherFor → buildSaramaConfig(brokers, nil, producer)。
-	if err := tr.Publish(context.Background(),"notify", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(), "notify", message.NewMessage("id", nil)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	producerCfg := cap.lastCfg.Load().(*sarama.Config)
@@ -367,7 +367,7 @@ func TestCompressionInvalid(t *testing.T) {
 			},
 		},
 	}, cap)
-	if err := tr.Publish(context.Background(),"orders", message.NewMessage("id", nil)); err == nil {
+	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err == nil {
 		t.Fatal("expected Publish error for invalid compression")
 	}
 }
@@ -419,7 +419,7 @@ func TestTransportPublishResolvesPhysicalTopic(t *testing.T) {
 		},
 	}, pub)
 
-	if err := tr.Publish(context.Background(),"orders", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := pub.publishTopics(); len(got) != 1 || got[0] != "t2" {
@@ -435,7 +435,7 @@ func TestTransportPublishDefaultPhysicalTopic(t *testing.T) {
 		},
 	}, pub)
 
-	if err := tr.Publish(context.Background(),"orders", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := pub.publishTopics(); len(got) != 1 || got[0] != "t1" {
@@ -451,7 +451,7 @@ func TestTransportPublishNoProducerConfig(t *testing.T) {
 		},
 	}, pub)
 
-	if err := tr.Publish(context.Background(),"orders", message.NewMessage("id", nil)); err == nil {
+	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err == nil {
 		t.Fatal("expected Publish error without producer config")
 	}
 }
@@ -459,7 +459,7 @@ func TestTransportPublishNoProducerConfig(t *testing.T) {
 func TestTransportPublishUnknownTopic(t *testing.T) {
 	pub := newFakePubSub()
 	tr := newTestTransport(Options{Topics: map[string]TopicOptions{}}, pub)
-	if err := tr.Publish(context.Background(),"nope", message.NewMessage("id", nil)); err == nil {
+	if err := tr.Publish(context.Background(), "nope", message.NewMessage("id", nil)); err == nil {
 		t.Fatal("expected Publish error for unknown topic")
 	}
 }
@@ -655,7 +655,7 @@ func TestTransportStartRespectsCtx(t *testing.T) {
 }
 
 // TestTransportStopBeforeStart 回归 P1-5：Stop 必须先于 Start 调用被容忍
-//（Init 成功但 Start 未执行的失败清理路径）——不 panic、不挂死，
+// （Init 成功但 Start 未执行的失败清理路径）——不 panic、不挂死，
 // 且 Stop 后健康检查保持失败。
 func TestTransportStopBeforeStart(t *testing.T) {
 	tests := []struct {
@@ -729,7 +729,7 @@ func TestTransportPublishLogMessageWithoutInit(t *testing.T) {
 			},
 		},
 	}, pub)
-	if err := tr.Publish(context.Background(),"orders", message.NewMessage("id", []byte("hello"))); err != nil {
+	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", []byte("hello"))); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := pub.publishTopics(); len(got) != 1 || got[0] != "t1" {
@@ -879,10 +879,10 @@ type fakeApp struct{}
 
 func newFakeApp() *fakeApp { return &fakeApp{} }
 
-func (a *fakeApp) Context() context.Context                  { return context.Background() }
-func (a *fakeApp) Config() lynx.Config                       { return lynx.NewViperConfig(viper.New()) }
-func (a *fakeApp) HealthCheckers() []lynx.Checker            { return nil }
-func (a *fakeApp) Close()                                    {}
+func (a *fakeApp) Context() context.Context       { return context.Background() }
+func (a *fakeApp) Config() lynx.Config            { return lynx.NewViperConfig(viper.New()) }
+func (a *fakeApp) HealthCheckers() []lynx.Checker { return nil }
+func (a *fakeApp) Close()                         {}
 func (a *fakeApp) Logger(_ ...any) *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

@@ -59,8 +59,8 @@ type SASLOptions struct {
 
 // TLSOptions 配置 Kafka 客户端 TLS。
 type TLSOptions struct {
-	Enabled           bool   `mapstructure:"enabled"`
-	InsecureSkipVerify bool  `mapstructure:"insecure_skip_verify"`
+	Enabled            bool `mapstructure:"enabled"`
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"`
 	// CAFile 是自签 CA 证书路径；为空时使用系统信任库。
 	CAFile string `mapstructure:"ca_file"`
 	// ServerName 覆盖 TLS 校验的主机名；为空时使用 broker 地址。
@@ -188,9 +188,9 @@ func NewTransport(opts Options) (*Transport, error) {
 				OverwriteSaramaConfig: p.sarama,
 				// Unmarshaler 必填：v3.1.x 的 setDefaults 不补默认值，
 				// 缺省时 NewSubscriber 直接报 "missing unmarshaler"。
-				Unmarshaler:           watermillkafka.DefaultMarshaler{},
-				NackResendSleep:       p.nackResendSleep,
-				ReconnectRetrySleep:   p.reconnectRetrySleep,
+				Unmarshaler:         watermillkafka.DefaultMarshaler{},
+				NackResendSleep:     p.nackResendSleep,
+				ReconnectRetrySleep: p.reconnectRetrySleep,
 			}
 			return watermillkafka.NewSubscriber(subCfg, logger)
 		},
