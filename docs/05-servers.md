@@ -88,6 +88,40 @@ func latencyMiddleware(next gohttp.Handler) gohttp.Handler {
 
 运行后访问 `http://localhost:8080/` 返回 `hello lynx`，`http://localhost:8080/healthz/liveness` 与 `/healthz/readiness` 返回健康检查结果。
 
+### 错误处理约定
+
+`server/http/errors.go` 为业务 handler 的错误响应提供最小闭环约定：状态码映射 + 统一 JSON 错误体（克制范围：不做错误码体系）。
+
+- `HandleFunc`：带错误返回的 handler 签名 `func(ctx context.Context, w http.ResponseWriter, r *http.Request) error`。
+- `StatusError`：业务错误类型实现 `StatusCode() int` 即可声明对应的 HTTP 状态码；未实现该接口的错误一律 500（支持 `errors.As`，被包装的错误同样生效）。
+- `DefaultErrorHandler`：默认错误处理——`StatusError` → 其状态码，其余 500；响应体统一 `{"error":{"message":<err.Error()>}}`（`application/json`）。仅 5xx 记一条 `Error` 日志（`slog.ErrorContext`，日志器 `slog.Default()`），字段 `method`/`path`/`status`/`error`；ctx 中经 `logging.WithAttrs` 写入的 `request_id` 等请求级属性（经 `logging.NewAttrsHandler` 装饰的日志器）自动带上。
+- `NewErrorHandler(h, fn)`：把返回错误的 handler 包装成标准 `http.Handler`。`fn` 返回 nil 表示已自行写好响应；返回错误时调用 `h`（传 nil 时用 `DefaultErrorHandler`）。
+
+```go
+// 业务错误：声明 404
+type notFoundError struct{ msg string }
+
+func (e *notFoundError) Error() string   { return e.msg }
+func (e *notFoundError) StatusCode() int { return http.StatusNotFound }
+
+// lynxhttp 为 github.com/lynx-go/lynx/server/http
+mux := http.NewServeMux()
+mux.Handle("/users/", lynxhttp.NewErrorHandler(nil, func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+	user, ok := findUser(r.URL.Path)
+	if !ok {
+		return &notFoundError{"user not found"}
+	}
+	_ = json.NewEncoder(w).Encode(user)
+	return nil
+}))
+```
+
+**"写了一半再报错"的语义**：传给 `fn` 的 `w` 是包装 writer（记录响应是否已开始，并保留 Flusher/Hijacker 能力）。若 `fn` 已写过响应头/体后再返回错误，`DefaultErrorHandler` 检测到响应已开始，**只记 Error 日志、不再改写响应**——不会触发 `superfluous WriteHeader`，也不会把错误 JSON 追加进已发出的响应体。业务代码应避免该用法（先完成校验再开始写响应）。
+
+**与 Recovery 中间件的分工**：`NewErrorHandler` 只处理"返回错误"，**不捕获 panic**——panic 的恢复由专门的 Recovery 中间件负责（v1.1 后续提供，挂载方式见 5.4.5 节），两者各司其职：业务错误走 `ErrorHandler`，崩溃保护走 Recovery。
+
+服务器级默认 `ErrorHandler`（`WithErrorHandler` 选项，使 `NewErrorHandler` 传 nil 时取服务器级默认而非包级默认）定位在 v1.2，当前 `NewErrorHandler(nil, ...)` 一律使用包级 `DefaultErrorHandler`。
+
 ## 5.2 gRPC 服务器
 
 ### 创建服务器
