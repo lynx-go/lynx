@@ -6,6 +6,7 @@
 
 - [6.1 HTTP 客户端](#61-http-客户端clienthttp)
 - [6.2 传播闭环](#62-传播闭环)
+- [6.3 gRPC 客户端](#63-grpc-客户端clientgrpc)
 
 ## 6.1 HTTP 客户端（client/http）
 
@@ -95,4 +96,54 @@ HTTP 链路（client/http → server/http）的完整时序：
 
 ## 6.3 gRPC 客户端（client/grpc）
 
-本节的 gRPC 客户端在 F5b（v1.1 第二阶段）合并后补充。
+`client/grpc` 提供框架的 gRPC 客户端：otel 插装（otelgrpc client stats
+handler）、trace 与日志属性传播（写入 outgoing metadata）、默认调用
+超时。
+
+```go
+import clientgrpc "github.com/lynx-go/lynx/client/grpc"
+
+conn, err := clientgrpc.Dial("user-service:9090")
+if err != nil { ... }
+defer conn.Close()
+
+// 惰性连接：Dial 不发起连接，首次 RPC 时才建立，返回 nil error
+// 不代表对端可达。
+
+// ctx 预置日志属性 → 自动写入 outgoing metadata（key 同日志字段名）：
+// request_id / user_id。
+ctx := logging.WithAttrs(context.Background(), slog.String(logging.FieldRequestID, rid))
+resp, err := client.NewUserClient(conn).GetUser(ctx, &GetUserRequest{Id: 1})
+```
+
+### Dial 的默认装配
+
+- **传播**：unary/stream 拦截器把 ctx 的日志属性（`request_id`/`user_id`）
+  写入 outgoing metadata，key 与日志字段同名；**已存在的 metadata key
+  不被覆盖**（显式设置优先）。otelgrpc stats handler 同时注入 trace
+  传播上下文。
+- **超时**：`WithTimeout` 设置默认调用超时（per-RPC context deadline，
+  缺省 30s），在 RPC 发起时注入 ctx deadline；调用方 ctx 已带 deadline
+  时不叠加。流式 RPC 的定时器在流结束时释放。
+- **传输**：未配置 TLS 时使用明文凭据；`WithTLSConfig(cfg)` 启用 TLS，
+  与 server/grpc 侧同名同义（TLSConfig 与
+  `WithDialOptions(grpc.WithTransportCredentials(...))` 同传时 TLSConfig
+  优先）。
+
+```go
+conn, err := clientgrpc.Dial("user-service:9090",
+    clientgrpc.WithTimeout(5*time.Second),
+    clientgrpc.WithTLSConfig(tlsCfg),
+)
+```
+
+`WithDialOptions(opts ...grpc.DialOption)` 是逃生口，透传额外的
+`grpc.DialOption`（消息大小限制、keepalive 等）。
+
+### 传播边界（gRPC）
+
+**当前边界**：服务端（`server/grpc`）暂不把 incoming metadata 中的
+`request_id`/`user_id` 还原为日志属性——gRPC 链路只做客户端写入，
+**未形成** HTTP 侧的 request_id 闭环（对端服务内部可自行从
+`metadata.FromIncomingContext(ctx)` 读取）。服务端还原入 v1.2 backlog
+（届时 client → server 全链路日志同 id）。HTTP 链路（6.2 节）已闭环。
