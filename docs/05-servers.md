@@ -114,7 +114,7 @@ func NewServer(opts ...Option) *Server
 与 HTTP 服务器相比有两点差异：
 
 - gRPC 服务器没有 `WithPropagator`——otelgrpc 固定使用全局 propagator，需要时通过 `otel.SetTextMapPropagator(...)` 设置；
-- gRPC 服务器没有 `WithHealthCheck`——标准健康检查服务是内置的（见下文）。
+- gRPC 服务器健康检查内置（标准 health 服务，见下文），可选的 app 级检查器通过 `WithHealthCheckers` 接入。
 
 此外，gRPC 服务器**没有**针对 TLS、keepalive、消息压缩等的一等选项——这些均由
 `WithServerOptions` 透传原生 `grpc.ServerOption` 配置（`grpc.Creds`、
@@ -138,7 +138,7 @@ Recovery 置于最外层：链内任意一环（含用户拦截器）的 panic �
 ### 健康检查与反射
 
 - **健康检查**：`NewServer` 时自动注册 `grpc.health.v1` 标准健康检查服务；`Start` 时将服务名 `"grpc"` 与标准的空服务名 `""`（大多数 gRPC 健康探针使用）置为 `SERVING`，`Stop` 时均置为 `NOT_SERVING`。负载均衡器/k8s 可以直接使用标准 gRPC 健康检查协议探测。
-- **反射**：`Start` 时自动注册 reflection 服务，因此可以直接用 `grpcurl localhost:9090 list` 之类的工具调试，无需额外配置。
+- **反射**：`NewServer` 时自动注册 reflection 服务，因此可以直接用 `grpcurl localhost:9090 list` 之类的工具调试，无需额外配置。
 
 ### 完整示例
 

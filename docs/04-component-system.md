@@ -198,10 +198,38 @@ go get github.com/lynx-go/lynx/contrib/zap
 
 - `Broker`：事件总线门面，本身是 `Service` 服务，提供 `Publish`/`Subscribe`/`Route`。内部维护一张 topic → Transport 路由表：`Options.Transports` 中每个 Transport 通过 `Topics()` 声明自己承接的逻辑 topic，`Init` 时自动建表；`Route(topic, t)` 可显式覆盖自动路由；`RouteKey(topic, t, key)` 在覆盖的同时把 transport 侧主题名改为 `key`（业务逻辑名与后端主题名解耦，如 kafka 时 `key` 对应 kafka 段配置的逻辑 key，发布与订阅两侧都会按 `key` 调用 transport）；未命中的 topic 回退到 `DefaultTransport`（两者皆无则返回错误）。
 - `Transport`：消息后端服务（kafka/内存），topic 参数一律是逻辑名，物理名解析在实现内部，见下文的 kafka 模块。
-- `Router`：把一组 `Handler` 在 `Init` 期缓冲订阅到 Broker 的服务，无时序依赖。`Handler` 接口由 `EventName()`、`HandlerName()`、`HandlerFunc()` 三个方法组成，公共 API 使用自有 `pubsub.Message` 类型（`ID`/`Key`/`Headers`/`Payload`），与底层 Watermill 解耦。
+- `Router`：把一组 `Handler` 在 `Init` 期缓冲订阅到 Broker 的服务，无时序依赖。`Handler` 接口由 `EventName()`、`HandlerName()`、`NewEvent()`、`Handle(ctx, event)` 四个方法组成，公共 API 使用自有 `pubsub.Message` 类型（`ID`/`Key`/`Headers`/`Payload`），与底层 Watermill 解耦。绝大多数场景无需手动实现该接口——用 `NewHandler`/`NewRawHandler` 工厂构造（见下文）。
 - `NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载显式路由并逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），非 nil 的传入 transports 参与自动路由，`memory` 标识（提供时）兼作默认回退；不创建任何 transport，返回 `Broker`，transports 由调用方创建并注册。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用）——**返回 nil 时不得 Register**（框架对 nil 服务注册返回明确错误）。
 
-用法（取自 `_examples/pubsub/main.go`）：
+Handler 的类型化工厂（对齐 `_examples/pubsub/handlers.go` 的写法）：
+
+```go
+// HelloEvent 是 hello 逻辑 topic 的业务事件类型。
+type HelloEvent struct {
+	Message string `json:"message"`
+}
+
+// helloHandler 通过 NewHandler 构造类型化 handler：payload 经 topic 的
+// Marshaler 自动反序列化为 HelloEvent，元数据经 TypedMessage 信封可见。
+func helloHandler() pubsub.Handler {
+	return pubsub.NewHandler("hello", "helloHandler", func(ctx context.Context, event *pubsub.TypedMessage[HelloEvent]) error {
+		slog.InfoContext(ctx, "hello event", "message", event.Payload.Message, "key", event.Key)
+		return nil
+	})
+}
+
+// notifyHandler 用 NewRawHandler 处理原始字节：payload 不被序列化器处理。
+func notifyHandler() pubsub.Handler {
+	return pubsub.NewRawHandler("notify", "notifyHandler", func(ctx context.Context, event *pubsub.Message) error {
+		slog.InfoContext(ctx, "notify event", "payload", string(event.Payload))
+		return nil
+	})
+}
+```
+
+`NewHandler[T]` 是免反射的泛型擦除惯用法：类型参数 `T` 只在构造期使用，运行期经 `NewEvent()` 返回的 `*TypedMessage[T]` 信封声明解码目标（实现 `MessageDecoder`），`Init` 时按 topic 解析一次 Marshaler（`MarshalerFor`），消息到达时零额外开销地解码；`T` 为 `[]byte` 时是恒等解码，语义等价 raw。需要自定义解码或按需构造事件时再手动实现 `Handler` 接口（`NewEvent` 返回 nil 表示原始消息语义）。
+
+手工装配与注册（`_examples/pubsub/provides.go` 以 Wire 组合同一组构造函数）：
 
 ```go
 kafkaT, err := kafka.NewFromConfig(app.Config()) // nil = kafka 段缺失，未启用
@@ -222,34 +250,18 @@ if kafkaT != nil {
 	app.Register(kafkaT)
 }
 app.Register(broker)
-app.Register(pubsub.NewRouter(broker, []pubsub.Handler{&helloHandler{}}))
+app.Register(pubsub.NewRouter(broker, []pubsub.Handler{helloHandler(), notifyHandler()}))
 ```
 
-Handler 的实现：
+发布事件（类型化 payload 自动 JSON 序列化）：
 
 ```go
-type helloHandler struct{}
-
-func (h *helloHandler) EventName() string   { return "hello" }
-func (h *helloHandler) HandlerName() string { return "helloHandler" }
-func (h *helloHandler) HandlerFunc() pubsub.HandlerFunc {
-	return func(ctx context.Context, event *pubsub.Message) error {
-		log.InfoContext(ctx, "hello event", "payload", string(event.Payload))
-		return nil
-	}
-}
-
-var _ pubsub.Handler = new(helloHandler)
-```
-
-发布事件：
-
-```go
-_ = broker.Publish(ctx, "hello",
-	pubsub.MustJSONMessage(map[string]any{"message": "hello"}),
+_ = broker.Publish(ctx, "hello", HelloEvent{Message: "hello"},
 	pubsub.WithMessageKey(uuid.NewString()),
 )
 ```
+
+需要原始字节时用 `pubsub.MustJSONMessage(...)` 预构建 `*Message` 发布，与 `NewRawHandler` 订阅对称。
 
 ### kafka：Kafka 传输（Transport）
 
@@ -325,7 +337,7 @@ func (t *task) Name() string { return "TaskExample" }
 func (t *task) Cron() string { return "@every 5s" }
 func (t *task) HandlerFunc() schedule.HandlerFunc {
 	return func(ctx context.Context) error {
-		log.InfoContext(ctx, "task triggered")
+		slog.InfoContext(ctx, "task triggered")
 		return nil
 	}
 }

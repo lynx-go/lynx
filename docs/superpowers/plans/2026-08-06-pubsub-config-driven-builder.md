@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把 `_examples/pubsub/main.go` 的约 46 行装配样板（kafka 配置加载、broker 创建、路由表应用、组件注册）内化到框架：新增 `kafka.NewFromConfig` 与 `pubsub.NewFromConfig`/`Bundle`，配置驱动、开箱即用、Wire 适配。
+**Goal:** 把 `_examples/pubsub/main.go` 的约 46 行装配样板（kafka 配置加载、broker 创建、路由表应用、服务注册）内化到框架：新增 `kafka.NewFromConfig` 与 `pubsub.NewFromConfig`/`Bundle`，配置驱动、开箱即用、Wire 适配。
 
 **Architecture:** kafka 包新增配置加载构造函数（段缺失/为空返回 `(nil, nil)` 表示未启用）；pubsub 包新增 `Bundle`（Broker + 待注册 Transports）与 `NewFromConfig`（读 `pubsub.routes` 应用显式路由、非 nil transports 自动路由、内置内存 Transport 兜底）。现有 API 全部保留。
 
@@ -154,7 +154,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Consumes: `lynx.Config`、`lynx.NewViperConfig`；本包已有 `Broker`/`Transport`/`NewBroker`/`NewMemoryTransport`/`RouteKey`；测试复用 `broker_test.go` 的 `newFakeTransport`（同包）
 - Produces:
   - `type Bundle struct { Broker Broker; Transports []Transport }`
-  - `func (b *Bundle) Components() []lynx.Component` —— 顺序：Transports 全部在前、Broker 最后
+  - `func (b *Bundle) Services() []lynx.Service` —— 顺序：Transports 全部在前、Broker 最后
   - `func NewFromConfig(cfg lynx.Config, transports map[string]Transport) (*Bundle, error)`
 
 - [ ] **Step 1: 写失败测试**
@@ -290,25 +290,25 @@ func TestNewFromConfigNilEntrySkipped(t *testing.T) {
 	}
 }
 
-// TestNewFromConfigComponentsOrder 验证 Components() 顺序稳定（transports 前、broker 后）。
-func TestNewFromConfigComponentsOrder(t *testing.T) {
+// TestNewFromConfigServicesOrder 验证 Services() 顺序稳定（transports 前、broker 后）。
+func TestNewFromConfigServicesOrder(t *testing.T) {
 	kafkaT := newFakeTransport("hello")
 	b, err := NewFromConfig(builderTestConfig(t, "addr: \":9090\"\n"),
 		map[string]Transport{"kafka": kafkaT})
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
-	comps := b.Components()
+	comps := b.Services()
 	if len(comps) != len(b.Transports)+1 {
-		t.Fatalf("Components len %d, want %d", len(comps), len(b.Transports)+1)
+		t.Fatalf("Services len %d, want %d", len(comps), len(b.Transports)+1)
 	}
 	for i, tr := range b.Transports {
 		if comps[i] != tr {
-			t.Fatalf("Components[%d] = %v, want transport %v", i, comps[i], tr)
+			t.Fatalf("Services[%d] = %v, want transport %v", i, comps[i], tr)
 		}
 	}
 	if comps[len(comps)-1] != b.Broker {
-		t.Fatalf("last component = %v, want broker", comps[len(comps)-1])
+		t.Fatalf("last Service = %v, want broker", comps[len(comps)-1])
 	}
 }
 ```
@@ -339,16 +339,16 @@ type Bundle struct {
 	Transports []Transport
 }
 
-// Components 返回应注册的全部组件（Transports + Broker），供 app.Register 使用。
-func (b *Bundle) Components() []lynx.Component {
-	comps := make([]lynx.Component, 0, len(b.Transports)+1)
+// Services 返回应注册的全部服务（Transports + Broker），供 app.Register 使用。
+func (b *Bundle) Services() []lynx.Service {
+	comps := make([]lynx.Service, 0, len(b.Transports)+1)
 	for _, t := range b.Transports {
 		comps = append(comps, t)
 	}
 	return append(comps, b.Broker)
 }
 
-// NewFromConfig 从配置装配消息组件：
+// NewFromConfig 从配置装配消息服务：
 //   - "pubsub" 段 routes（逻辑 topic → {transport, key}）逐条应用 RouteKey，
 //     引用未提供的 transport 标识时报错；
 //   - 传入 transports 的非 nil 值参与自动路由；
@@ -441,7 +441,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Modify: `_examples/pubsub/README.md:19-28`（关键代码点）
 
 **Interfaces:**
-- Consumes: Task 1 `kafka.NewFromConfig`、Task 2 `pubsub.NewFromConfig`/`Bundle.Components()`
+- Consumes: Task 1 `kafka.NewFromConfig`、Task 2 `pubsub.NewFromConfig`/`Bundle.Services()`
 
 - [ ] **Step 1: 替换 main.go 装配段**
 
@@ -466,7 +466,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 	if err != nil {
 		return err
 	}
-	app.Register(bundle.Components()...)
+	app.Register(bundle.Services()...)
 	app.Register(pubsub.NewRouter(bundle.Broker, []pubsub.Handler{&helloHandler{}, &notifyHandler{}}))
 ```
 
@@ -487,8 +487,8 @@ Expected: 编译成功，无错误
 - `config.yaml` `kafka` 段：逻辑 topic `hello` 的 brokers、物理 topics `[topic_hello]`、consumer（group `consumer_hello`，3 实例）与 producer 配置。
 - `config.yaml` `pubsub` 段：显式路由表——逻辑 topic（业务事件名）→ `{transport, key}`，覆盖自动路由。`transport` 为后端标识（`kafka`/`memory`）；`key` 是调用 transport 时的主题名，对 kafka 即 kafka 段配置的逻辑 key（如 `hello→hello`），可与逻辑名不同（如 `notify→user_notify`）。未在此列出的 topic 按自动路由/默认回退处理。
 - `main.go` `kafka.NewFromConfig`：从 `app.Config()` 的 `kafka` 段加载配置创建 Kafka Transport（订阅按消费组 × 物理 topic × 实例数展开）；段缺失/为空时返回 nil，Kafka 未启用。
-- `main.go` `pubsub.NewFromConfig`：装配消息组件——加载 `pubsub` 段路由表并逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错）；传入 transports 自动路由；未提供 `memory` 时内置创建内存 Transport 作为默认回退。
-- `main.go` `bundle.Components()`：一次性注册全部消息组件（transports + broker）。
+- `main.go` `pubsub.NewFromConfig`：装配消息服务——加载 `pubsub` 段路由表并逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错）；传入 transports 自动路由；未提供 `memory` 时内置创建内存 Transport 作为默认回退。
+- `main.go` `bundle.Services()`：一次性注册全部消息服务（transports + broker）。
 - `main.go` `pubsub.NewRouter`：将 `helloHandler`、`notifyHandler` 缓冲订阅到 Broker。
 - `main.go` `/hello`、`/notify` HTTP 端点（`:7071`）分别发布 JSON 事件，带 UUID message key。
 - `main.go` `helloHandler`/`notifyHandler`：实现 `pubsub.Handler`，分别消费 `hello`（Kafka）与 `notify`（内存）事件并记录 payload。
@@ -511,7 +511,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Modify: `docs/04-component-system.md:197-297`（pubsub 与 kafka 两节）
 
 **Interfaces:**
-- Consumes: Task 1/2/3 的最终 API 形态（`kafka.NewFromConfig`、`pubsub.NewFromConfig`、`Bundle`、`bundle.Components()`）
+- Consumes: Task 1/2/3 的最终 API 形态（`kafka.NewFromConfig`、`pubsub.NewFromConfig`、`Bundle`、`bundle.Services()`）
 - 注意：该文件工作区已有未提交修改，编辑须基于当前工作区内容（先 `git diff` 确认现状），只改动下述两处
 
 - [ ] **Step 1: 更新 pubsub 节用法示例**
@@ -531,7 +531,7 @@ b, err := pubsub.NewFromConfig(app.Config(), transports)
 if err != nil {
 	return err
 }
-app.Register(b.Components()...)
+app.Register(b.Services()...)
 app.Register(pubsub.NewRouter(b.Broker, []pubsub.Handler{&helloHandler{}}))
 ```
 
@@ -540,7 +540,7 @@ app.Register(pubsub.NewRouter(b.Broker, []pubsub.Handler{&helloHandler{}}))
 在 `Router` 条目之后插入：
 
 ```markdown
-- `Bundle`/`NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载显式路由并逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），非 nil 的传入 transports 参与自动路由；未提供 `memory` 标识时内置创建一个内存 Transport 作为默认回退。返回 `*Bundle`（`Broker` + 待注册 `Transports`），`bundle.Components()` 一次性返回应注册的全部组件。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用），调用方过滤后再放入 transports 表。
+- `Bundle`/`NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载显式路由并逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），非 nil 的传入 transports 参与自动路由；未提供 `memory` 标识时内置创建一个内存 Transport 作为默认回退。返回 `*Bundle`（`Broker` + 待注册 `Transports`），`bundle.Services()` 一次性返回应注册的全部服务。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用），调用方过滤后再放入 transports 表。
 ```
 
 - [ ] **Step 3: 更新 kafka 节"加载与注册"示例**
@@ -568,7 +568,7 @@ Expected: 无输出（旧加载模式示例已全部移除；如仍有残留则�
 
 ```bash
 git add docs/04-component-system.md
-git commit -m "docs: 组件系统文档更新 pubsub/kafka 配置驱动装配用法
+git commit -m "docs: 服务系统文档更新 pubsub/kafka 配置驱动装配用法
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
@@ -607,7 +607,7 @@ Expected: 应用启动，健康检查 `/healthz/readiness` 正常；无 Kafka �
 - Modify: `_examples/pubsub/README.md`（运行说明加 wire 生成步骤；关键代码点改为 provider 视角）
 
 **Interfaces:**
-- Consumes: `kafka.NewFromConfig(cfg lynx.Config) (*Transport, error)`（nil=未启用）、`pubsub.NewFromConfig(cfg lynx.Config, transports map[string]Transport) (*Bundle, error)`、`Bundle.Broker`、`Bundle.Components()`、`pubsub.NewRouter`、`boot.New`/`Bootstrap.Bind`、`lynx.NewBuilder`、`zap.MustNewLogger`
+- Consumes: `kafka.NewFromConfig(cfg lynx.Config) (*Transport, error)`（nil=未启用）、`pubsub.NewFromConfig(cfg lynx.Config, transports map[string]Transport) (*Bundle, error)`、`Bundle.Broker`、`Bundle.Services()`、`pubsub.NewRouter`、`boot.New`/`Bootstrap.Bind`、`lynx.NewBuilder`、`zap.MustNewLogger`
 - Produces: `wireBootstrap(app lynx.App) (*boot.Bootstrap, func(), error)` 注入器；`ProviderSet`（provides.go）；wire_gen.go
 
 - [ ] **Step 1: 重写 main.go**
@@ -631,7 +631,7 @@ func main() {
 		app.SetLogger(zap.MustNewLogger(app))
 
 		// Wire 依赖注入生成 bootstrap（provides.go 的 ProviderSet 定义
-		// kafka/pubsub/http 各组件 provider，配置全部来自 config.yaml）。
+		// kafka/pubsub/http 各服务 provider，配置全部来自 config.yaml）。
 		bootstrap, cleanup, err := wireBootstrap(app)
 		if err != nil {
 			return err
@@ -683,7 +683,7 @@ var ProviderSet = wire.NewSet(
 	ProvideHandlers,
 	ProvideRouter,
 	NewHttpServer,
-	NewComponents,
+	NewServices,
 	NewOnStarts,
 	NewOnStops,
 )
@@ -703,7 +703,7 @@ func ProvideKafkaTransport(cfg lynx.Config) (*kafka.Transport, error) {
 	return t, err
 }
 
-// ProvideBundle 装配消息组件：pubsub.NewFromConfig 从配置 pubsub 段加载
+// ProvideBundle 装配消息服务：pubsub.NewFromConfig 从配置 pubsub 段加载
 // 显式路由，内置内存 Transport 兜底；kafka 未启用时过滤。
 func ProvideBundle(cfg lynx.Config, kafkaT *kafka.Transport) (*pubsub.Bundle, error) {
 	transports := map[string]pubsub.Transport{}
@@ -751,9 +751,9 @@ func NewHttpServer(bundle *pubsub.Bundle) *http.Server {
 	return http.NewServer(mux, http.WithAddr(":7071"))
 }
 
-// NewComponents 聚合全部组件供 bootstrap 注册。
-func NewComponents(bundle *pubsub.Bundle, router *pubsub.Router, hs *http.Server) []lynx.Component {
-	return append(bundle.Components(), router, hs)
+// NewServices 聚合全部服务供 bootstrap 注册。
+func NewServices(bundle *pubsub.Bundle, router *pubsub.Router, hs *http.Server) []lynx.Service {
+	return append(bundle.Services(), router, hs)
 }
 
 func NewOnStarts() boot.OnStartHooks { return nil }
@@ -791,42 +791,33 @@ package main
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/lynx-go/lynx/contrib/pubsub"
-	"github.com/lynx-go/x/log"
 )
 
-// helloHandler 消费 hello 逻辑 topic（config.yaml 的 pubsub.routes 显式
-// 路由到 kafka transport）。
-type helloHandler struct{}
-
-func (h *helloHandler) EventName() string   { return "hello" }
-func (h *helloHandler) HandlerName() string { return "helloHandler" }
-
-func (h *helloHandler) HandlerFunc() pubsub.HandlerFunc {
-	return func(ctx context.Context, event *pubsub.Message) error {
-		log.InfoContext(ctx, "hello event", "payload", string(event.Payload))
-		return nil
-	}
+// HelloEvent 是 hello 逻辑 topic 的业务事件类型。
+type HelloEvent struct {
+	Message string `json:"message"`
 }
 
-var _ pubsub.Handler = new(helloHandler)
+// helloHandler 消费 hello 逻辑 topic（config.yaml 的 pubsub.routes 显式
+// 路由到 kafka transport），payload 自动反序列化为 HelloEvent。
+func helloHandler() pubsub.Handler {
+	return pubsub.NewHandler("hello", "helloHandler", func(ctx context.Context, event *pubsub.TypedMessage[HelloEvent]) error {
+		slog.InfoContext(ctx, "hello event", "message", event.Payload.Message, "key", event.Key)
+		return nil
+	})
+}
 
 // notifyHandler 订阅 notify 逻辑 topic（config.yaml 的 pubsub.routes 显式
-// 路由到内存 transport，不经过 Kafka）。
-type notifyHandler struct{}
-
-func (h *notifyHandler) EventName() string   { return "notify" }
-func (h *notifyHandler) HandlerName() string { return "notifyHandler" }
-
-func (h *notifyHandler) HandlerFunc() pubsub.HandlerFunc {
-	return func(ctx context.Context, event *pubsub.Message) error {
-		log.InfoContext(ctx, "notify event", "payload", string(event.Payload))
+// 路由到内存 transport，不经过 Kafka），直接处理原始消息。
+func notifyHandler() pubsub.Handler {
+	return pubsub.NewRawHandler("notify", "notifyHandler", func(ctx context.Context, event *pubsub.Message) error {
+		slog.InfoContext(ctx, "notify event", "payload", string(event.Payload))
 		return nil
-	}
+	})
 }
-
-var _ pubsub.Handler = new(notifyHandler)
 ```
 
 - [ ] **Step 5: 生成 wire 代码并构建验证**
@@ -859,8 +850,8 @@ curl http://127.0.0.1:7071/notify
 
 - `provides.go` `ProviderSet`：Wire 依赖集合——`kafka.NewFromConfig`/`pubsub.NewFromConfig` 等配置驱动构造函数直接作为 provider。
 - `provides.go` `ProvideKafkaTransport`：从 `app.Config()` 的 `kafka` 段加载配置创建 Kafka Transport（订阅按消费组 × 物理 topic × 实例数展开）；段缺失/为空时返回 nil，Wire 注入 nil 指针、`ProvideBundle` 过滤，kafka 未启用。
-- `provides.go` `ProvideBundle`：装配消息组件——加载 `pubsub` 段路由表逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错）；内置内存 Transport 作为默认回退。
-- `provides.go` `NewComponents`：聚合 `bundle.Components()`（transports + broker）、Router、HTTP Server 供 `boot.Bootstrap.Bind` 注册。
+- `provides.go` `ProvideBundle`：装配消息服务——加载 `pubsub` 段路由表逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错）；内置内存 Transport 作为默认回退。
+- `provides.go` `NewServices`：聚合 `bundle.Services()`（transports + broker）、Router、HTTP Server 供 `boot.Bootstrap.Bind` 注册。
 - `wire.go`：`//go:build wireinject` 注入器 stub，`go generate` 生成 `wire_gen.go`。
 - `handlers.go` `helloHandler`/`notifyHandler`：实现 `pubsub.Handler`，分别消费 `hello`（Kafka）与 `notify`（内存）事件并记录 payload。
 - `main.go` `/hello`、`/notify` HTTP 端点（`:7071`）分别发布 JSON 事件，带 UUID message key。
@@ -881,7 +872,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `contrib/pubsub/builder.go`（按名字排序遍历 transports，注册顺序确定性）
-- Test: `contrib/pubsub/builder_test.go`（route.Key 缺省测试、显式路由→内置 memory 测试、ComponentsOrder 精确断言）
+- Test: `contrib/pubsub/builder_test.go`（route.Key 缺省测试、显式路由→内置 memory 测试、ServicesOrder 精确断言）
 - Test: `contrib/kafka/fromconfig_test.go`（UnmarshalKey 失败错误路径测试）
 
 **Interfaces:**
@@ -889,7 +880,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 - [ ] **Step 1: 写失败测试**
 
-在 `contrib/pubsub/builder_test.go` 末尾追加两个测试，并更新 ComponentsOrder：
+在 `contrib/pubsub/builder_test.go` 末尾追加两个测试，并更新 ServicesOrder：
 
 ```go
 // TestNewFromConfigRouteKeyDefaultsToTopic 验证路由未指定 key 时缺省为逻辑 topic 名。
@@ -930,26 +921,26 @@ pubsub:
 }
 ```
 
-把现有 `TestNewFromConfigComponentsOrder` 更新为精确顺序断言（确定性排序后：名字排序 kafka 在前、内置 memory 在后、broker 最后）：
+把现有 `TestNewFromConfigServicesOrder` 更新为精确顺序断言（确定性排序后：名字排序 kafka 在前、内置 memory 在后、broker 最后）：
 
 ```go
-// TestNewFromConfigComponentsOrder 验证 Components() 顺序确定性：按名字
+// TestNewFromConfigServicesOrder 验证 Services() 顺序确定性：按名字
 // 排序的 transports（内置 memory 最后）在前、Broker 最后。
-func TestNewFromConfigComponentsOrder(t *testing.T) {
+func TestNewFromConfigServicesOrder(t *testing.T) {
 	kafkaT := newFakeTransport("hello")
 	b, err := NewFromConfig(builderTestConfig(t, "addr: \":9090\"\n"),
 		map[string]Transport{"kafka": kafkaT})
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
-	want := []lynx.Component{kafkaT, b.Transports[1], b.Broker}
-	comps := b.Components()
+	want := []lynx.Service{kafkaT, b.Transports[1], b.Broker}
+	comps := b.Services()
 	if len(comps) != 3 {
-		t.Fatalf("Components len %d, want 3", len(comps))
+		t.Fatalf("Services len %d, want 3", len(comps))
 	}
 	for i, w := range want {
 		if comps[i] != w {
-			t.Fatalf("Components[%d] = %v, want %v", i, comps[i], w)
+			t.Fatalf("Services[%d] = %v, want %v", i, comps[i], w)
 		}
 	}
 }
@@ -976,8 +967,8 @@ kafka:
 
 - [ ] **Step 2: 跑测试确认新测试失败**
 
-Run: `cd contrib/pubsub && go test -run 'TestNewFromConfigRouteKeyDefaultsToTopic|TestNewFromConfigRouteToBuiltinMemory|TestNewFromConfigComponentsOrder' -v . && cd ../kafka && go test -run TestNewFromConfigInvalidSection -v .`
-Expected: RouteKeyDefaultsToTopic 失败（当前无 key 缺省：route key 为空字符串 → resolve 时 key=="" → 回退 topic 名——若实现已缺省正确则此测试通过，需要确认缺省行为是否已被 route.Key=="" 分支覆盖；RouteToBuiltinMemory 失败（当前 resolve 表无 memory → 报未知标识）；ComponentsOrder 断言长度不符失败；InvalidSection 通过或失败取决于 UnmarshalKey 行为，如实记录）
+Run: `cd contrib/pubsub && go test -run 'TestNewFromConfigRouteKeyDefaultsToTopic|TestNewFromConfigRouteToBuiltinMemory|TestNewFromConfigServicesOrder' -v . && cd ../kafka && go test -run TestNewFromConfigInvalidSection -v .`
+Expected: RouteKeyDefaultsToTopic 失败（当前无 key 缺省：route key 为空字符串 → resolve 时 key=="" → 回退 topic 名——若实现已缺省正确则此测试通过，需要确认缺省行为是否已被 route.Key=="" 分支覆盖；RouteToBuiltinMemory 失败（当前 resolve 表无 memory → 报未知标识）；ServicesOrder 断言长度不符失败；InvalidSection 通过或失败取决于 UnmarshalKey 行为，如实记录）
 说明：若个别新测试首跑即通过（如 RouteKeyDefaultsToTopic——builder.go 已有 `if route.Key == "" { route.Key = topic }` 分支），如实记录为"已通过（覆盖既有实现）"，不强行制造失败。
 
 - [ ] **Step 3: 实现确定性排序**
@@ -987,7 +978,7 @@ Expected: RouteKeyDefaultsToTopic 失败（当前无 key 缺省：route key 为�
 ```go
 	// 自动路由 transports 与注册列表；字面 nil 防御性跳过；memory 仅作
 	// 默认回退（Topics() 为 nil），不重复进入自动路由表。按名字排序遍历，
-	// 保证注册顺序确定（组件启动顺序可复现）。
+	// 保证注册顺序确定（服务启动顺序可复现）。
 	names := make([]string, 0, len(transports))
 	for name := range transports {
 		names = append(names, name)
@@ -1032,9 +1023,9 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 用户决策（2026-08-06）：pubsub 概念过多，移除 `Bundle`。设计依据（见 spec 修订记录）：Bundle 的必要性完全源于"隐式内置 memory"——改为显式后 `NewFromConfig` 返回 `Broker` 单值（Wire 天然友好），kafka 与 memory 对称。`transports["memory"]`（提供且非 nil 时）兼作默认回退的文档约定**保留**；不再内置创建任何 transport。
 
 **Files:**
-- Rewrite: `contrib/pubsub/builder.go`（删 Bundle/Components，NewFromConfig → `(Broker, error)`）
+- Rewrite: `contrib/pubsub/builder.go`（删 Bundle/Services，NewFromConfig → `(Broker, error)`）
 - Rewrite: `contrib/pubsub/builder_test.go`（按 spec 测试计划更新）
-- Modify: `_examples/pubsub/provides.go`（NewBundle → NewMemoryTransport + NewBroker；Router/HttpServer/Components 改收 `pubsub.Broker`）
+- Modify: `_examples/pubsub/provides.go`（NewBundle → NewMemoryTransport + NewBroker；Router/HttpServer/Services 改收 `pubsub.Broker`）
 - Regenerate: `_examples/pubsub/wire_gen.go`（wire 工具）
 - Modify: `_examples/pubsub/README.md`、`docs/04-component-system.md`（Bundle 提及同步）
 
@@ -1044,7 +1035,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 - [ ] **Step 1: 重写 builder.go（TDD：先写测试）**
 
-`contrib/pubsub/builder.go` 整体替换为（删除 Bundle/Components，`"sort"` import 保留用于确定序）：
+`contrib/pubsub/builder.go` 整体替换为（删除 Bundle/Services，`"sort"` import 保留用于确定序）：
 
 ```go
 package pubsub
@@ -1260,7 +1251,7 @@ func TestNewFromConfigNoMemoryNoFallback(t *testing.T) {
 }
 ```
 
-删除的旧测试：`TestNewFromConfigDefaultMemory`、`TestNewFromConfigProvidedMemory`、`TestNewFromConfigRouteToBuiltinMemory`、`TestNewFromConfigComponentsOrder`、`TestNewFromConfigComponentsOrderMulti`。
+删除的旧测试：`TestNewFromConfigDefaultMemory`、`TestNewFromConfigProvidedMemory`、`TestNewFromConfigRouteToBuiltinMemory`、`TestNewFromConfigServicesOrder`、`TestNewFromConfigServicesOrderMulti`。
 
 - [ ] **Step 3: 跑测试确认通过**
 
@@ -1274,7 +1265,7 @@ Expected: 7 个测试全部 PASS（TDD 说明：本任务先实现后测试不�
 - 删 `NewBundle` 函数；新增 `NewMemoryTransport`；`NewBroker` 接收 `cfg lynx.Config, kafkaT *kafka.Transport, memT *pubsub.MemoryTransport` 返回 `(pubsub.Broker, error)`
 - `NewRouter` 改收 `broker pubsub.Broker`（不再收 `*pubsub.Bundle`）
 - `NewHttpServer` 改收 `broker pubsub.Broker`，内部 `bundle.Broker.Publish` → `broker.Publish`
-- `NewComponents` 改收 `memT *pubsub.MemoryTransport, kafkaT *kafka.Transport, broker pubsub.Broker, router *pubsub.Router, hs *http.Server`
+- `NewServices` 改收 `memT *pubsub.MemoryTransport, kafkaT *kafka.Transport, broker pubsub.Broker, router *pubsub.Router, hs *http.Server`
 
 替换后的相关函数：
 
@@ -1288,8 +1279,8 @@ var ProviderSet = wire.NewSet(
 	NewHandlers,
 	NewRouter,
 	NewHttpServer,
-	NewComponents,
-	NewComponentBuilders,
+	NewServices,
+	NewServiceBuilders,
 	NewOnStarts,
 	NewOnStops,
 )
@@ -1299,7 +1290,7 @@ func NewMemoryTransport() *pubsub.MemoryTransport {
 	return pubsub.NewMemoryTransport()
 }
 
-// NewBroker 装配消息组件：pubsub.NewFromConfig 从配置 pubsub 段加载
+// NewBroker 装配消息服务：pubsub.NewFromConfig 从配置 pubsub 段加载
 // 显式路由，memory 兼作默认回退；kafka 未启用时过滤。
 func NewBroker(cfg lynx.Config, kafkaT *kafka.Transport, memT *pubsub.MemoryTransport) (pubsub.Broker, error) {
 	transports := map[string]pubsub.Transport{"memory": memT}
@@ -1342,10 +1333,10 @@ func NewHttpServer(broker pubsub.Broker) *http.Server {
 	return http.NewServer(mux, http.WithAddr(":7071"))
 }
 
-// NewComponents 聚合全部组件供 bootstrap 注册。
-func NewComponents(memT *pubsub.MemoryTransport, kafkaT *kafka.Transport,
-	broker pubsub.Broker, router *pubsub.Router, hs *http.Server) []lynx.Component {
-	comps := []lynx.Component{memT}
+// NewServices 聚合全部服务供 bootstrap 注册。
+func NewServices(memT *pubsub.MemoryTransport, kafkaT *kafka.Transport,
+	broker pubsub.Broker, router *pubsub.Router, hs *http.Server) []lynx.Service {
+	comps := []lynx.Service{memT}
 	if kafkaT != nil {
 		comps = append(comps, kafkaT)
 	}
@@ -1356,19 +1347,19 @@ func NewComponents(memT *pubsub.MemoryTransport, kafkaT *kafka.Transport,
 - [ ] **Step 5: 重新生成 wire 并构建验证**
 
 Run: `cd _examples/pubsub && wire && cd ../.. && cd _examples && go build ./... && go vet ./...`
-Expected: wire 生成新 `wire_gen.go`（调用 NewBroker/NewMemoryTransport，broker 以 `pubsub.Broker` 注入 Router/HttpServer/Components）；build/vet 通过
+Expected: wire 生成新 `wire_gen.go`（调用 NewBroker/NewMemoryTransport，broker 以 `pubsub.Broker` 注入 Router/HttpServer/Services）；build/vet 通过
 
 - [ ] **Step 6: 更新 README 与 docs/04**
 
 `_examples/pubsub/README.md` `## 关键代码点` 中：
-- `- `provides.go` `NewBundle`：装配消息组件——...` 改为 `- `provides.go` `NewBroker`：经 `pubsub.NewFromConfig` 装配——加载 `pubsub` 段路由表逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错）；`memory` 标识兼作默认回退。`
+- `- `provides.go` `NewBundle`：装配消息服务——...` 改为 `- `provides.go` `NewBroker`：经 `pubsub.NewFromConfig` 装配——加载 `pubsub` 段路由表逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错）；`memory` 标识兼作默认回退。`
 - 新增一条：`- `provides.go` `NewMemoryTransport`：显式创建内存 Transport（kafka 与 memory 对称，均由调用方创建并注册）。`
-- `- `provides.go` `NewComponents`：聚合 `bundle.Components()`（transports + broker）、Router、HTTP Server 供 `boot.Bootstrap.Bind` 注册。` 改为 `- `provides.go` `NewComponents`：聚合 memT/kafkaT、Broker、Router、HTTP Server 供 `boot.Bootstrap.Bind` 注册。`
+- `- `provides.go` `NewServices`：聚合 `bundle.Services()`（transports + broker）、Router、HTTP Server 供 `boot.Bootstrap.Bind` 注册。` 改为 `- `provides.go` `NewServices`：聚合 memT/kafkaT、Broker、Router、HTTP Server 供 `boot.Bootstrap.Bind` 注册。`
 
 `docs/04-component-system.md` pubsub 节：
 - 概念列表的 `Bundle`/`NewFromConfig` 条目改为：
   `- `NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载显式路由并逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），非 nil 的传入 transports 参与自动路由，`memory` 标识（提供时）兼作默认回退；不创建任何 transport，返回 `Broker`，transports 由调用方创建并注册。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用），调用方过滤后再放入 transports 表。`
-- 用法示例代码块中 `b, err := pubsub.NewFromConfig(app.Config(), transports)` / `app.Register(b.Components()...)` / `pubsub.NewRouter(b.Broker, ...)` 改为显式 memory 形态（与 spec"示例更新"小节一致）：
+- 用法示例代码块中 `b, err := pubsub.NewFromConfig(app.Config(), transports)` / `app.Register(b.Services()...)` / `pubsub.NewRouter(b.Broker, ...)` 改为显式 memory 形态（与 spec"示例更新"小节一致）：
   ```go
   kafkaT, err := kafka.NewFromConfig(app.Config()) // nil = kafka 段缺失，未启用
   if err != nil {

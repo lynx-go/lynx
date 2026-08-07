@@ -122,13 +122,16 @@ err := pubsub.Subscribe(ctx, broker, "user.created", "notify",
 ```
 
 需要原始字节时保留字节级语义（payload 传 `*pubsub.Message` 不序列化，
-或直接用 `pubsub.MustJSONMessage` 预构建）：
+或直接用 `pubsub.MustJSONMessage` 预构建）；订阅侧用 `NewRawHandler` 构造
+原始字节 handler（`NewHandler[[]byte]` 的恒等解码语义一致）：
 
 ```go
-handler := pubsub.HandlerFunc(func(ctx context.Context, msg *pubsub.Message) error {
-    // msg.ID / msg.Key / msg.Headers / msg.Payload
-    return nil
-})
+app.Register(pubsub.NewRouter(broker, []pubsub.Handler{
+    pubsub.NewRawHandler("user.created", "notify", func(ctx context.Context, msg *pubsub.Message) error {
+        // msg.ID / msg.Key / msg.Headers / msg.Payload
+        return nil
+    }),
+}))
 
 msg := pubsub.MustJSONMessage(map[string]string{"user": "alice"})
 err := broker.Publish(ctx, "user.created", msg, pubsub.WithMessageKey("alice"))
