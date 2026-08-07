@@ -1,5 +1,67 @@
 # Changelog
 
+## v1.1.0 (2026-08-07)
+
+v1.0 发布后的第一个特性版本：补齐 gRPC TLS 一等选项、HTTP 错误约定与防御性
+中间件、pprof 运维诊断服务、关停排水（Drain）语义，以及 HTTP/gRPC 客户端组件。
+API 冻结（v1.0 导出符号只增不改），全部功能遵循既有生命周期契约（注册先于 Run、
+Stop-before-Start 容忍、Start 尊重传入 ctx、Stop 有界超时）。
+
+### 新增
+
+- **gRPC—TLS 一等选项**：`server/grpc.WithTLSConfig(cfg *tls.Config)` 启用
+  TLS 传输，与 HTTP 侧同名同义；与 `WithServerOptions(grpc.Creds(...))` 同传
+  时 TLSConfig 优先（grpc 对重复 Creds 取最后应用者，实测确认）。
+- **HTTP—统一错误约定**：`server/http` 新增
+  `ErrorHandler`/`StatusError`/`DefaultErrorHandler`/`HandleFunc`/
+  `NewErrorHandler`——业务错误实现 `StatusError` 声明状态码（支持 `errors.As`
+  包装查找，被包装错误同样生效），响应体统一
+  `{"error":{"message":...}}`（application/json），仅 5xx 记 Error 日志
+  （method/path/status/error 四字段）；fn 已写响应头后再报错不二次改写
+  （trackedWriter 守卫，无 superfluous WriteHeader）；服务器级默认
+  ErrorHandler 定位 v1.2。
+- **HTTP—Recovery 中间件**：`http.Recovery()` 捕获链内任意一环（含其余中间件
+  与业务 handler）抛出的 panic，记 Error 日志（字段 panic + 完整 stack），
+  经 ErrorHandler 写响应（缺省 500 + JSON 错误体）；恢复后连接保持可用，
+  后续请求不受影响；建议声明在 `WithMiddleware` 第一个参数（最外层）。
+- **HTTP—RateLimit 中间件**：`http.RateLimit(rps)` 服务器级令牌桶限流
+  （`golang.org/x/time/rate`），超限写 429 + 统一 JSON 错误体；
+  `WithBurst`/`WithRateLimitHandler` 可调；rps ≤ 0 构造期直接 panic
+  （配置错误启动阶段暴露）；按路由/IP/用户维度限流定位 v1.2。
+- **debug—pprof 运维诊断服务**：新包 `debug`，注册即挂载 `/debug/pprof/*`
+  全部标准端点（index/cmdline/profile/symbol/trace + 命名 profiles，自建
+  mux 无 `net/http/pprof` 的 DefaultServeMux 副作用）与 `/healthz` 探活；
+  缺省仅监听本机回环 `127.0.0.1:6060`（安全警示见包注释与 docs 5.3 节）；
+  `Addr()` 返回实际监听地址（随机端口测试可用）；实现 `lynx.Checker`，
+  启动成功后才健康；Stop-before-Start 容忍。
+- **核心—关停排水（Drain）**：`WithDrainTimeout(d)` 设置排水窗口：关停信号
+  到达先置位框架内部 `drainChecker` 使 readiness 聚合（`app.HealthCheckers()`）
+  立即失败（LB 摘流），窗口结束才执行真实关停，在途请求收尾不再被截断；
+  liveness 端点不消费检查器聚合、排水期间仍 200；与 ShutdownTimeout 是两段
+  独立预算，总关停时长上界 = DrainTimeout + ShutdownTimeout + 各服务
+  StopTimeout 叠加的既有上界；默认 0 = 不启用，关停行为与 v1.0 完全一致。
+- **client/http—HTTP 客户端**：新包 `client/http`——otelhttp 插装（
+  `http.DefaultTransport` 浅克隆，不修改进程全局）、`request_id`/`user_id`
+  经 `X-Request-Id`/`X-User-Id` 请求头传播（已存在的同名头不覆盖，与
+  server/http `WithRequestID` 还原形成全链路闭环）、整体超时 30s、
+  `WithRetry` 指数退避重试（传输层错误或 429/502/503/504，429/503 遵守
+  Retry-After；`req.GetBody` 可重放才重试带 body 请求）；Do 不读不关响应体。
+- **client/grpc—gRPC 客户端**：新包 `client/grpc`，`Dial` 包装
+  `grpc.NewClient`（惰性连接，不发起握手）——otelgrpc client stats handler
+  插装、unary/stream 拦截器把日志属性（request_id/user_id）写入 outgoing
+  metadata（已有 key 不覆盖）、per-RPC 默认调用超时 30s、`WithTLSConfig`
+  与 server 侧 F1 同名同义；服务端 metadata 还原入 v1.2 backlog（边界已在
+  GoDoc 写明）。
+
+### 其他
+
+- 文档：新增 `docs/06-clients.md`（HTTP/gRPC 客户端两节 + 传播闭环时序说明）；
+  docs/05 新增错误处理约定、防御性中间件（5.4.8）、debug 运维服务（5.3）节，
+  gRPC 配置节补 `WithTLSConfig` 并删除"无 TLS 一等选项，仅逃生口"旧表述；
+  docs/03 生命周期节补 drain 时序（文字版）；README 功能清单与目录树更新。
+- 新依赖：`golang.org/x/time`（RateLimit 令牌桶，准标准库）。
+- 仓库卫生：移除 v1.1 实施计划交接文档（发布卫生约束）。
+
 ## v1.0.0 (2026-08-05)
 
 Lynx 首个稳定版本。核心生命周期、服务系统、配置系统 API 冻结，此后保持向后兼容。
