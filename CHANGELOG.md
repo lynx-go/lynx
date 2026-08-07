@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.2.0 (2026-08-07)
+
+应用入口类型与其职责一致化的命名修正版本：`Builder` 更名 `Runner`，
+初始化回调签名简化，`Build()` 收敛为内部实现。
+
+### 破坏性变更
+
+- **核心—Builder 更名 Runner**：命令行入口类型 `lynx.Builder` →
+  `lynx.Runner`，`lynx.NewBuilder` → `lynx.NewRunner`；`BuildFunc` →
+  `SetupFunc` 且签名由 `func(ctx, app) error` 简化为
+  `func(app App) error`（原 ctx 参数与 `app.Context()` 等价，回调内按需
+  取用）；`Runner.Build()` 不再对外暴露，收敛为私有 `setupApp()`
+  （幂等语义不变）；`ErrBuildFuncNil` → `ErrSetupFuncNil`（消息同步为
+  "setup func is nil"）；源文件名 `builder.go` → `runner.go`。
+
+### 其他
+
+- 文档与示例同步：README、docs 01–05 全部代码块改用
+  `NewRunner`/`func(app App) error`；示例与测试变量 `builder`/`cli` →
+  `runner`；CLAUDE.md 入口节与错误哨兵清单更新。
+
 ## v1.1.0 (2026-08-07)
 
 v1.0 发布后的第一个特性版本：补齐 gRPC TLS 一等选项、HTTP 错误约定与防御性
