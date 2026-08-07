@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	builder := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	runner := lynx.NewRunner(func(app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 
 		// Wire 依赖注入生成 bootstrap（provides.go 的 ProviderSet 定义
@@ -29,5 +29,5 @@ func main() {
 		lynx.WithID(lo.Must1(os.Hostname())),
 		lynx.WithName("pubsub"),
 	)
-	builder.Run()
+	runner.Run()
 }

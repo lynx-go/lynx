@@ -46,7 +46,7 @@ import (
 )
 
 func main() {
-    cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+    cli := lynx.NewRunner(func(app lynx.App) error {
         // 创建 HTTP 路由
         router := gohttp.NewServeMux()
         router.HandleFunc("/", func(w gohttp.ResponseWriter, r *gohttp.Request) {
@@ -244,7 +244,7 @@ func InitializeApp() (*Bootstrap, error) {
 ```
 lynx/
 ├── boot/           # 应用引导和依赖注入
-├── builder.go      # Builder 入口（NewBuilder）
+├── runner.go      # Runner 入口（NewRunner）
 ├── client/         # HTTP/gRPC 客户端
 │   ├── grpc/       # gRPC 客户端
 │   └── http/       # HTTP 客户端

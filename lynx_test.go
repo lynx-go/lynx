@@ -241,14 +241,14 @@ func (c *drainProbe) Stop(ctx context.Context) error {
 }
 
 func TestInitCanCallAppMethods(t *testing.T) {
-	cli := NewBuilder(func(ctx context.Context, app App) error {
+	runner := NewRunner(func(app App) error {
 		app.Register(&initAppAccessorService{})
 		return nil
 	})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = cli.Build()
+		_, _ = runner.setupApp()
 	}()
 	select {
 	case <-done:
@@ -261,11 +261,11 @@ func TestInitFailureStopsPreviouslyInitializedServices(t *testing.T) {
 	stopped := make(chan string, 10)
 	good := &stopRecorder{name: "good", stopped: stopped}
 	bad := &failInitService{name: "bad", err: errors.New("init boom")}
-	cli := NewBuilder(func(ctx context.Context, app App) error {
+	runner := NewRunner(func(app App) error {
 		app.Register(good, bad)
 		return nil
 	})
-	if err := cli.RunE(); err == nil {
+	if err := runner.RunE(); err == nil {
 		t.Fatal("expected init error")
 	}
 	select {
@@ -281,12 +281,12 @@ func TestInitFailureStopsPreviouslyInitializedServices(t *testing.T) {
 func TestOnStartHookErrorStopsInitializedServices(t *testing.T) {
 	stopped := make(chan string, 10)
 	comp := &stopRecorder{name: "comp", stopped: stopped}
-	cli := NewBuilder(func(ctx context.Context, app App) error {
+	runner := NewRunner(func(app App) error {
 		app.Register(comp)
 		app.OnStart(func(ctx context.Context) error { return errors.New("hook boom") })
 		return nil
 	})
-	if err := cli.RunE(); err == nil {
+	if err := runner.RunE(); err == nil {
 		t.Fatal("expected on-start hook error")
 	}
 	select {
@@ -300,40 +300,40 @@ func TestOnStartHookErrorStopsInitializedServices(t *testing.T) {
 }
 
 func TestRunReturnsOnStopHookErrors(t *testing.T) {
-	cli := NewBuilder(func(ctx context.Context, app App) error {
+	runner := NewRunner(func(app App) error {
 		app.Register(&blockingService{name: "c"})
 		app.OnStop(func(ctx context.Context) error { return errors.New("drain failed") })
 		return nil
 	})
-	app, err := cli.Build()
+	app, err := runner.setupApp()
 	if err != nil {
-		t.Fatalf("Build() error = %v", err)
+		t.Fatalf("setupApp() error = %v", err)
 	}
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		app.Close()
 	}()
-	err = cli.RunE()
+	err = runner.RunE()
 	if err == nil || !strings.Contains(err.Error(), "drain failed") {
 		t.Fatalf("Run() error = %v, want drain failed", err)
 	}
 }
 
 func TestServiceStopBoundedByTimeout(t *testing.T) {
-	cli := NewBuilder(func(ctx context.Context, app App) error {
+	runner := NewRunner(func(app App) error {
 		app.Register(&hangStopService{name: "hang"})
 		return nil
 	}, WithStopTimeout(time.Second))
-	app, err := cli.Build()
+	app, err := runner.setupApp()
 	if err != nil {
-		t.Fatalf("Build() error = %v", err)
+		t.Fatalf("setupApp() error = %v", err)
 	}
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		app.Close()
 	}()
 	start := time.Now()
-	err = cli.RunE()
+	err = runner.RunE()
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("shutdown hung: elapsed %v, want bounded by StopTimeout", elapsed)
 	}
@@ -369,30 +369,30 @@ func TestServiceStopErrorSurfacesAtRun(t *testing.T) {
 	}
 }
 
-func TestBuilderNilBuildFunc(t *testing.T) {
-	b := NewBuilder(nil)
-	if app, err := b.Build(); app != nil || !errors.Is(err, ErrBuildFuncNil) {
-		t.Fatalf("Build() = %v, %v; want nil, ErrBuildFuncNil", app, err)
+func TestRunnerNilSetupFunc(t *testing.T) {
+	b := NewRunner(nil)
+	if app, err := b.setupApp(); app != nil || !errors.Is(err, ErrSetupFuncNil) {
+		t.Fatalf("setupApp() = %v, %v; want nil, ErrSetupFuncNil", app, err)
 	}
-	if err := b.RunE(); !errors.Is(err, ErrBuildFuncNil) {
-		t.Fatalf("RunE() error = %v, want ErrBuildFuncNil", err)
+	if err := b.RunE(); !errors.Is(err, ErrSetupFuncNil) {
+		t.Fatalf("RunE() error = %v, want ErrSetupFuncNil", err)
 	}
 }
 
-func TestBuilderBuildReturnsNilAfterCallbackFailure(t *testing.T) {
+func TestRunnerSetupReturnsNilAfterCallbackFailure(t *testing.T) {
 	calls := 0
-	b := NewBuilder(func(ctx context.Context, app App) error {
+	b := NewRunner(func(app App) error {
 		calls++
-		return errors.New("build boom")
+		return errors.New("setup boom")
 	})
-	if app, err := b.Build(); app != nil || err == nil {
-		t.Fatalf("first Build() = %v, %v; want nil, error", app, err)
+	if app, err := b.setupApp(); app != nil || err == nil {
+		t.Fatalf("first setupApp() = %v, %v; want nil, error", app, err)
 	}
-	if app, err := b.Build(); app != nil || err == nil {
-		t.Fatalf("second Build() = %v, %v; want nil, error (consistent contract after failure)", app, err)
+	if app, err := b.setupApp(); app != nil || err == nil {
+		t.Fatalf("second setupApp() = %v, %v; want nil, error (consistent contract after failure)", app, err)
 	}
 	if calls != 1 {
-		t.Fatalf("build called %d times, want 1", calls)
+		t.Fatalf("setup called %d times, want 1", calls)
 	}
 }
 
@@ -1145,38 +1145,38 @@ func TestOnStopHookBlockingBoundedByTimeout(t *testing.T) {
 	}
 }
 
-// TestBuilderBuildIsIdempotent 验证 Build() 只运行一次构建回调。
-func TestBuilderBuildIsIdempotent(t *testing.T) {
+// TestRunnerSetupIsIdempotent 验证 setupApp() 只运行一次构建回调。
+func TestRunnerSetupIsIdempotent(t *testing.T) {
 	var calls atomic.Int32
-	builder := NewBuilder(func(ctx context.Context, app App) error {
+	runner := NewRunner(func(app App) error {
 		calls.Add(1)
 		return nil
 	})
-	b, err := builder.Build()
+	b, err := runner.setupApp()
 	if err != nil {
-		t.Fatal("Build() returned error")
+		t.Fatal("setupApp() returned error")
 	}
 	if b == nil {
-		t.Fatal("Build() returned nil")
+		t.Fatal("setupApp() returned nil")
 	}
-	b2, err := builder.Build()
+	b2, err := runner.setupApp()
 	if err != nil {
-		t.Fatal("second Build() returned error")
+		t.Fatal("second setupApp() returned error")
 	}
 	if b2 != b {
-		t.Error("Build() should return the same app on subsequent calls")
+		t.Error("setupApp() should return the same app on subsequent calls")
 	}
 	if got := calls.Load(); got != 1 {
-		t.Errorf("build callback called %d times, want 1", got)
+		t.Errorf("setup callback called %d times, want 1", got)
 	}
 }
 
-// TestBuilderRunEReturnsInitError 验证 newLynx 初始化失败（如 Options 校验）
+// TestRunnerRunEReturnsInitError 验证 newLynx 初始化失败（如 Options 校验）
 // 通过 RunE 返回而非直接退出进程。
-func TestBuilderRunEReturnsInitError(t *testing.T) {
-	builder := NewBuilder(func(ctx context.Context, app App) error { return nil },
+func TestRunnerRunEReturnsInitError(t *testing.T) {
+	runner := NewRunner(func(app App) error { return nil },
 		WithName(strings.Repeat("a", 64))) // 触发 ErrNameTooLong
-	if err := builder.RunE(); !errors.Is(err, ErrNameTooLong) {
+	if err := runner.RunE(); !errors.Is(err, ErrNameTooLong) {
 		t.Fatalf("RunE() error = %v, want ErrNameTooLong", err)
 	}
 }

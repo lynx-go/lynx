@@ -57,6 +57,6 @@ func (e *ShutdownErrors) Errors() []error {
 var (
 	// ErrNotInitialized 表示服务在 Init 之前被使用（如 Command 在未注册时直接 Start）。
 	ErrNotInitialized = errors.New("service not initialized")
-	// ErrBuildFuncNil 表示 NewBuilder 未提供初始化回调。
-	ErrBuildFuncNil = errors.New("build func is nil")
+	// ErrSetupFuncNil 表示 NewRunner 未提供初始化回调。
+	ErrSetupFuncNil = errors.New("setup func is nil")
 )

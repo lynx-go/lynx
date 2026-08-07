@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	builder := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	runner := lynx.NewRunner(func(app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 		boot, cleanup, err := wireBootstrap(app, app.Logger())
 		if err != nil {
@@ -37,7 +37,7 @@ func main() {
 			return nil
 		}),
 	)
-	builder.Run()
+	runner.Run()
 }
 
 func NewHttpServer(app lynx.App) *http.Server {

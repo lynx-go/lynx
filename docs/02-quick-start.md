@@ -27,7 +27,7 @@ import (
 )
 
 func main() {
-	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewRunner(func(app lynx.App) error {
 		router := gohttp.NewServeMux()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			name := lynx.NameFromContext(app.Context())
@@ -68,7 +68,7 @@ go run main.go
 代码要点：
 
 - `lynx.NewOptions` 通过 `WithName`、`WithVersion` 等选项配置应用元信息。
-- `lynx.NewBuilder(setup, opts...)` 创建应用实例，`setup` 回调中通过 `app.Register(...)` 注册服务。
+- `lynx.NewRunner(setup, opts...)` 创建应用实例，`setup` 回调中通过 `app.Register(...)` 注册服务。
 - `http.NewServer` 创建一个 HTTP 服务器服务，`WithAddr` 指定监听地址，`WithHealthCheckers` 开启健康检查（见 2.5 节）。
 - `cli.Run()` 启动应用并阻塞，直到收到退出信号后优雅关闭。
 
@@ -145,7 +145,7 @@ import (
 )
 
 func main() {
-	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewRunner(func(app lynx.App) error {
 		return app.Command(func(ctx context.Context) error {
 			fmt.Println("hello cli")
 			return nil

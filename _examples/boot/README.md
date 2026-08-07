@@ -18,5 +18,5 @@ flag：`-c/--config`（配置文件路径）、`--addr`（HTTP 监听地址，�
 - `main.go:43 NewHttpServer`：构建路由并按 `addr` 配置创建 `server/http.Server`，附带健康检查。
 - `config.go AppConfig`：应用配置结构体；`provides.go:24 NewConfig` 通过 `app.Config().Unmarshal(c)` 填充。
 - `provides.go:14 ProviderSet`：wire ProviderSet，`wire_gen.go` 由 `//go:generate wire` 生成。
-- `main.go:16`：`lynx.NewBuilder` 回调中执行 `wireBootstrap` 并 `boot.Bind(app)`，由 Bootstrap 统一注册服务与生命周期钩子。
+- `main.go:16`：`lynx.NewRunner` 回调中执行 `wireBootstrap` 并 `boot.Bind(app)`，由 Bootstrap 统一注册服务与生命周期钩子。
 - `provides.go:40 NewOnStarts` / `provides.go:49 NewOnStops`：启动 / 停止钩子示例。

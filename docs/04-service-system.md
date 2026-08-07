@@ -123,7 +123,7 @@ import (
 )
 
 func main() {
-	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewRunner(func(app lynx.App) error {
 		app.RegisterFactories(NewWorkerFactory("worker", 2))
 		return nil
 	},

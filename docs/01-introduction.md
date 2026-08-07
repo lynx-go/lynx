@@ -148,7 +148,7 @@ func main() {
         w.Write([]byte("Hello, Lynx!"))
     })
 
-    cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+    cli := lynx.NewRunner(func(app lynx.App) error {
         app.Register(http.NewServer(router, http.WithAddr(":8080")))
         return nil
     },

@@ -80,7 +80,7 @@ func TestCommonErrors(t *testing.T) {
 	if got := ErrNotInitialized.Error(); got != "service not initialized" {
 		t.Errorf("ErrNotInitialized = %q", got)
 	}
-	if got := ErrBuildFuncNil.Error(); got != "build func is nil" {
-		t.Errorf("ErrBuildFuncNil = %q", got)
+	if got := ErrSetupFuncNil.Error(); got != "setup func is nil" {
+		t.Errorf("ErrSetupFuncNil = %q", got)
 	}
 }

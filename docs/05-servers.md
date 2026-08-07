@@ -56,7 +56,7 @@ import (
 )
 
 func main() {
-	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewRunner(func(app lynx.App) error {
 		router := gohttp.NewServeMux()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 			_, _ = rw.Write([]byte("hello lynx"))
@@ -213,7 +213,7 @@ import (
 )
 
 func main() {
-	cli := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	cli := lynx.NewRunner(func(app lynx.App) error {
 		srv := grpc.NewServer(
 			grpc.WithAddr(":9090"),
 			grpc.WithLogger(app.Logger()),

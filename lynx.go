@@ -347,7 +347,7 @@ func (app *lynx) initConfigure() error {
 		if err := app.f.Parse(os.Args[1:]); err != nil {
 			if errors.Is(err, pflag.ErrHelp) {
 				// --help：usage 已由 pflag 输出，作为初始化错误返回，
-				// 由 Builder.Run 以非零状态码退出。
+				// 由 Runner.Run 以非零状态码退出。
 				return err
 			}
 			return fmt.Errorf("failed to parse flags: %w", err)

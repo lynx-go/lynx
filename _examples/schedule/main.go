@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	builder := lynx.NewBuilder(func(ctx context.Context, app lynx.App) error {
+	runner := lynx.NewRunner(func(app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 		task1 := &task{}
 		app.OnStart(func(ctx context.Context) error {
@@ -32,7 +32,7 @@ func main() {
 		lynx.WithID(lo.Must1(os.Hostname())),
 		lynx.WithName("schedule-example"),
 	)
-	builder.Run()
+	runner.Run()
 }
 
 type task struct {

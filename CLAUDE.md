@@ -136,7 +136,7 @@ Configuration flow:
 2. `BindConfigFunc` - Bind flags to the app ConfigSource, set config file paths
 3. Flags are parsed, config file is read, env vars are bound
 
-Default flags are enabled by default (`Options.EnsureDefaults` sets `DefaultSetFlagsFunc`/`DefaultBindConfigFunc`); opt out with `WithDisableConfigFlags()`. Unknown flags are ignored (test binaries' `-test.*` args). `--help` returns an init error handled by `Builder.Run` exit code.
+Default flags are enabled by default (`Options.EnsureDefaults` sets `DefaultSetFlagsFunc`/`DefaultBindConfigFunc`); opt out with `WithDisableConfigFlags()`. Unknown flags are ignored (test binaries' `-test.*` args). `--help` returns an init error handled by `Runner.Run` exit code.
 
 Default flags (see `DefaultSetFlagsFunc` in lynx.go):
 - `--config/-c` - Config file path
@@ -197,7 +197,7 @@ Services implementing `lynx.Checker` interface are automatically registered in t
 
 ### Application Entry Point
 
-The `lynx.NewBuilder()` function creates a `*Builder` instance with two run methods:
+The `lynx.NewRunner()` function creates a `*Runner` instance with two run methods:
 - `cli.Run()` - Panics on error
 - `cli.RunE()` - Returns error for handling
 
@@ -206,7 +206,7 @@ The `lynx.NewBuilder()` function creates a `*Builder` instance with two run meth
 - Uses EditorConfig: Go files use tabs, 4-space indent
 - Unit tests exist for core packages and most contrib modules; run `go test -race ./...` per module
 - Uses slog for structured logging (Go 1.24+)
-- Uses root-level `errors.go`: `ShutdownErrors` shutdown-error aggregator and sentinel errors (`ErrNotInitialized`/`ErrBuildFuncNil`)
+- Uses root-level `errors.go`: `ShutdownErrors` shutdown-error aggregator and sentinel errors (`ErrNotInitialized`/`ErrSetupFuncNil`)
 - Services obtain loggers via `ctx.Logger(...)` in `Init`; no external logging package
 
 ## Common Patterns
