@@ -12,6 +12,7 @@ Lynx 是一个轻量级的 Go 微服务框架，提供了开箱即用的应用�
 - **HTTP 服务器** - 内置 HTTP 服务器，支持健康检查和请求日志
 - **调试服务** - 开箱即用的 pprof 诊断端点（默认仅监听本机回环）
 - **HTTP 客户端** - 内置客户端，otel 插装、日志属性传播（request_id/user_id）、超时与重试
+- **gRPC 客户端** - 内置客户端，otel 插装、日志属性传播（metadata）、调用超时与 TLS
 - **健康检查** - 集成健康检查机制，便于监控和服务发现
 - **可观测性** - 集成 OpenTelemetry tracing/metrics 与 Prometheus
 - **配置管理** - 基于 Viper 的灵活配置系统，支持多来源配置
@@ -245,6 +246,7 @@ lynx/
 ├── boot/           # 应用引导和依赖注入
 ├── builder.go      # Builder 入口（NewBuilder）
 ├── client/         # HTTP/gRPC 客户端
+│   ├── grpc/       # gRPC 客户端
 │   └── http/       # HTTP 客户端
 ├── command.go      # CLI 命令服务
 ├── service.go      # 服务接口定义
