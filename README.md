@@ -10,6 +10,7 @@ Lynx 是一个轻量级的 Go 微服务框架，提供了开箱即用的应用�
 - **应用生命周期管理** - 简洁的启动/停止流程，支持优雅关闭
 - **服务系统** - 基于 `Service` 接口的插件化架构
 - **HTTP 服务器** - 内置 HTTP 服务器，支持健康检查和请求日志
+- **调试服务** - 开箱即用的 pprof 诊断端点（默认仅监听本机回环）
 - **健康检查** - 集成健康检查机制，便于监控和服务发现
 - **可观测性** - 集成 OpenTelemetry tracing/metrics 与 Prometheus
 - **配置管理** - 基于 Viper 的灵活配置系统，支持多来源配置
@@ -250,6 +251,7 @@ lynx/
 │   ├── schedule/   # 定时任务
 │   ├── telemetry/  # OpenTelemetry 生命周期托管
 │   └── zap/        # Zap 日志集成
+├── debug/          # pprof 运维诊断服务
 ├── docs/           # 文档
 ├── errors.go       # 错误聚合
 ├── health.go       # 健康检查工具

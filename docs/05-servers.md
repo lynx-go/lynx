@@ -1,6 +1,6 @@
 # 5. 服务器与可观测性
 
-Lynx 在 `server/http` 与 `server/grpc` 两个包中提供了开箱即用的服务器服务，它们都实现了第 4 章介绍的 `Service` 接口，可以直接通过 `app.Register` 注册进应用。本章先逐一介绍两个服务器的全部配置项，再讲解可观测性接入：OpenTelemetry trace/metrics 的开箱即用（`contrib/telemetry`）与手动接入、Prometheus 指标暴露、HTTP 中间件链序，以及日志与链路的关联（`logging.NewTraceHandler`）。
+Lynx 在 `server/http` 与 `server/grpc` 两个包中提供了开箱即用的服务器服务，它们都实现了第 4 章介绍的 `Service` 接口，可以直接通过 `app.Register` 注册进应用；`debug` 包另提供 pprof 运维诊断服务（见 5.3 节）。本章先逐一介绍服务器的全部配置项，再讲解可观测性接入：OpenTelemetry trace/metrics 的开箱即用（`contrib/telemetry`）与手动接入、Prometheus 指标暴露、HTTP 中间件链序，以及日志与链路的关联（`logging.NewTraceHandler`）。
 
 ## 5.1 HTTP 服务器
 
@@ -33,14 +33,14 @@ func NewServer(handler http.Handler, opts ...Option) *Server
 - `WithHealthCheckers(hc lynx.HealthCheckersFunc)`：健康检查器取值函数。传入后服务器自动暴露两个端点：`/healthz/liveness` 恒返回 200，`/healthz/readiness` 依次调用所有收集到的检查器，任一失败返回 503 + 错误正文。通常直接传方法值 `app.HealthCheckers`，收集规则见 2.5 节与 4.3 节。两个端点始终注册；不传该 Option 只是就绪检查列表为空，此时 `/healthz/readiness` 恒返回 200。
 - `WithLogger(l *slog.Logger)`：请求日志使用的日志器，默认 `slog.Default()`。
 - `WithRequestLog(requestLog bool)`：是否记录访问日志，默认 `false`。开启后每个请求以 Stackdriver 兼容的 JSON 格式输出一条 `Debug` 级别日志（`server/http/requestlog.go`），字段包含方法、URL、状态码、耗时、remote IP 以及 `trace`/`spanId`——注意需要日志器级别为 debug 才能看到。
-- `WithMiddleware(middlewares ...Middleware)`：注册自定义中间件，可多次调用叠加。链序见 5.3.5 节。
-- `WithTracerProvider(tp trace.TracerProvider)`：OpenTelemetry TracerProvider，用于服务器 instrumentation。为 nil 时使用全局（默认 noop）provider。**provider 的初始化与关闭是调用方的职责**（见 5.3.1 节）。
+- `WithMiddleware(middlewares ...Middleware)`：注册自定义中间件，可多次调用叠加。链序见 5.4.5 节。
+- `WithTracerProvider(tp trace.TracerProvider)`：OpenTelemetry TracerProvider，用于服务器 instrumentation。为 nil 时使用全局（默认 noop）provider。**provider 的初始化与关闭是调用方的职责**（见 5.4.1 节）。
 - `WithMeterProvider(mp metric.MeterProvider)`：OpenTelemetry MeterProvider，为 nil 时使用全局 provider。生命周期同样归调用方。
 - `WithPropagator(p propagation.TextMapPropagator)`：从入站请求提取 trace context 使用的 propagator，为 nil 时使用全局 propagator。
 
 ### 完整示例
 
-下面的示例最小改自 `_examples/http/main.go`，演示了常用 Options 的组合（otel 选项见 5.3 节）：
+下面的示例最小改自 `_examples/http/main.go`，演示了常用 Options 的组合（otel 选项见 5.4 节）：
 
 ```go
 package main
@@ -110,7 +110,7 @@ func NewServer(opts ...Option) *Server
 - `WithInterceptors(interceptors ...grpc.UnaryServerInterceptor)`：追加自定义一元拦截器，链序见下文。
 - `WithServerOptions(options ...grpc.ServerOption)`：透传原生 `grpc.ServerOption`（TLS 凭据、消息大小限制、keepalive、最大并发流等），在内部选项之后应用到 `grpc.NewServer`。
 - `WithTLSConfig(cfg *tls.Config)`：启用 TLS 传输（一等选项，与 HTTP 侧同名同义），`cfg` 须已装配证书（`tls.LoadX509KeyPair` 等）。与 `WithServerOptions(grpc.Creds(...))` 同时使用时 `TLSConfig` 优先——grpc 对重复 `Creds` 取最后应用者（实测确认），`TLSConfig` 的 Creds 装配在 `ServerOptions` 之后覆盖后者；两者同传属误用，仅以 `TLSConfig` 为准。
-- `WithTracerProvider(tp trace.TracerProvider)` / `WithMeterProvider(mp metric.MeterProvider)`：otel provider，传给 `otelgrpc.NewServerHandler` 的 stats handler。为 nil 时使用全局 provider，生命周期归调用方（同 5.3.2 节）。
+- `WithTracerProvider(tp trace.TracerProvider)` / `WithMeterProvider(mp metric.MeterProvider)`：otel provider，传给 `otelgrpc.NewServerHandler` 的 stats handler。为 nil 时使用全局 provider，生命周期归调用方（同 5.4.2 节）。
 
 与 HTTP 服务器相比有两点差异：
 
@@ -247,9 +247,53 @@ var echoServiceDesc = gogrpc.ServiceDesc{
 
 运行后可用 `grpcurl -plaintext localhost:9090 list` 查看服务列表（包含 `demo.Echo`、`grpc.health.v1.Health` 与 `grpc.reflection.v1.ServerReflection`）。
 
-## 5.3 可观测性接入
+## 5.3 debug 运维服务（pprof）
 
-### 5.3.1 开箱即用：contrib/telemetry（框架托管）
+生产排障离不开 pprof 性能剖析。Lynx 在根模块 `debug` 包提供开箱即用的运维诊断服务——一个可选的 `Service`，注册即挂载 pprof 端点：
+
+```go
+import "github.com/lynx-go/lynx/debug"
+
+app.Register(debug.NewService())
+```
+
+返回的 `*Service` 实现了 `lynx.Service`（`Name()` 为 `"debug"`），并实现 `CheckHealth() error`（见 4.3 节）：启动成功后返回 nil，其余返回错误——因此它会被自动收集进应用的健康检查列表。
+
+### 端点清单
+
+服务自建 mux 显式挂载 pprof handlers（不依赖 `net/http/pprof` 注册到 `DefaultServeMux` 的全局副作用）：
+
+- `/debug/pprof/`：profiles 索引页（"Types of profiles available"）
+- `/debug/pprof/cmdline`、`/debug/pprof/profile`、`/debug/pprof/symbol`、`/debug/pprof/trace`：四个标准端点
+- `/debug/pprof/heap`、`/debug/pprof/goroutine`、`/debug/pprof/allocs`、`/debug/pprof/block`、`/debug/pprof/mutex`、`/debug/pprof/threadcreate`：命名 profiles（`pprof.Handler` 按名提供）
+- `/healthz`：恒 200，便于探活
+
+### Options 一览
+
+- `WithAddr(addr string)`：监听地址，默认 `127.0.0.1:6060`（`debug.DefaultAddr`）。测试可用 `"127.0.0.1:0"` 取随机端口，`Start` 后经 `Addr()` 拿到实际监听地址。
+- `WithLogger(l *slog.Logger)`：日志实例，默认 `Init` 时取 `ctx.Logger`，再缺省 `slog.Default()`。
+
+### 安全警示（重要）
+
+pprof 端点会暴露进程的内存快照（heap/goroutine/block 等 profile 原始数据）、源码路径、环境变量与二进制符号信息——任何能访问该端口的人都可以对进程做完整剖析。这是**诊断能力，不是监控接口**：
+
+- 默认仅监听本机回环 `127.0.0.1:6060`，请勿改为 `:6060` 之类的通配地址；生产环境**不得**将 pprof 端口暴露到公网或集群外部网络。
+- 如需远程诊断，请使用 SSH 端口转发：`ssh -L 6060:127.0.0.1:6060 user@host`，随后访问 `http://127.0.0.1:6060/debug/pprof/`。
+- `/healthz` 探活端点同理，只建议本地（或容器内 localhost）探测。
+
+### 使用示例
+
+```go
+app.Register(debug.NewService(
+    debug.WithAddr("127.0.0.1:6060"),
+))
+```
+
+启动后即可用 `go tool pprof http://127.0.0.1:6060/debug/pprof/heap` 直接拉取 heap profile 分析（索引页内各 profile 链接同理）。
+
+## 5.4 可观测性接入
+
+### 5.4.1 开箱即用：contrib/telemetry（框架托管）
 
 可观测性托管在独立 contrib 模块 `github.com/lynx-go/lynx/contrib/telemetry`，以\*\*服务\*\*形式注册，provider 的创建、全局注册与优雅关闭 flush 全部由框架处理：
 
@@ -268,13 +312,13 @@ app.Register(telemetry.New())
 
 > 注意：服务的 `Init` 在注册时同步执行，因此业务指标（`otel.Meter` 创建的 instrument）必须在 `telemetry.New()` 注册**之后**创建，否则拿到的是 noop meter。
 
-Prometheus 指标仍需自行挂载 `/metrics`（见 5.3.4 节）；默认 reader 使用 Prometheus 默认注册表，与 `promhttp.Handler()` 直接兼容。
+Prometheus 指标仍需自行挂载 `/metrics`（见 5.4.4 节）；默认 reader 使用 Prometheus 默认注册表，与 `promhttp.Handler()` 直接兼容。
 
 自定义导出目标通过 `Option` 替换：
 
 ```go
 telemetry.New(
-    telemetry.WithTraceExporter(otlpTraceExporter), // 替换默认 noop（示例见 5.3.3 节）
+    telemetry.WithTraceExporter(otlpTraceExporter), // 替换默认 noop（示例见 5.4.3 节）
     telemetry.WithMetricReader(otlpMetricReader),   // 替换默认 Prometheus
     telemetry.WithPropagator(customPropagator),     // 替换默认 TraceContext+Baggage
 )
@@ -285,9 +329,9 @@ telemetry.New(
 - `WithMetricReader(reader sdkmetric.Reader)`：自定义 metric reader（OTLP 等后端 exporter 均实现 `Reader` 接口）；
 - `WithPropagator(p propagation.TextMapPropagator)`：自定义传播器。
 
-需要完全掌控 provider（共享实例、精细调参、自定义关闭时机）时，可不使用该服务，走手动路径，见 5.3.2 节。
+需要完全掌控 provider（共享实例、精细调参、自定义关闭时机）时，可不使用该服务，走手动路径，见 5.4.2 节。
 
-### 5.3.2 高阶自定义：手动创建 provider
+### 5.4.2 高阶自定义：手动创建 provider
 
 不使用 `contrib/telemetry` 服务时，exporter 与 provider 的初始化、shutdown **都是调用方的职责**——典型的做法是在应用初始化函数里创建 provider，并通过服务器 `WithTracerProvider`/`WithMeterProvider`/`WithPropagator` 传入、把 shutdown 注册进 `OnStop` 钩子：
 
@@ -301,9 +345,9 @@ app.OnStop(func(ctx context.Context) error {
 })
 ```
 
-一个需要留意的副作用（v1.0 已消除）：HTTP 服务器底层不再使用 gocloud.dev/server 的实现，改为标准库 `http.Server` + otelhttp，传入的 provider 仅用于当前服务器，**不会**被设置为 otel 全局 provider——全局 provider 只能通过 `otel.SetTracerProvider` 等显式设置（或使用 5.3.1 节的托管路径）。
+一个需要留意的副作用（v1.0 已消除）：HTTP 服务器底层不再使用 gocloud.dev/server 的实现，改为标准库 `http.Server` + otelhttp，传入的 provider 仅用于当前服务器，**不会**被设置为 otel 全局 provider——全局 provider 只能通过 `otel.SetTracerProvider` 等显式设置（或使用 5.4.1 节的托管路径）。
 
-开发调试最方便的是把 span 打到 stdout。下面是一个完整的 `setupOTel` 模板，同时初始化 stdout trace exporter、Prometheus metrics exporter 与 W3C propagator（需要的依赖：`go.opentelemetry.io/otel/exporters/stdout/stdouttrace`、`go.opentelemetry.io/otel/exporters/prometheus`、`go.opentelemetry.io/otel/sdk` 与 `go.opentelemetry.io/otel/sdk/metric`；使用 5.3.1 托管路径时这些依赖框架已内置，无需单独引入）：
+开发调试最方便的是把 span 打到 stdout。下面是一个完整的 `setupOTel` 模板，同时初始化 stdout trace exporter、Prometheus metrics exporter 与 W3C propagator（需要的依赖：`go.opentelemetry.io/otel/exporters/stdout/stdouttrace`、`go.opentelemetry.io/otel/exporters/prometheus`、`go.opentelemetry.io/otel/sdk` 与 `go.opentelemetry.io/otel/sdk/metric`；使用 5.4.1 托管路径时这些依赖框架已内置，无需单独引入）：
 
 ```go
 func setupOTel() (shutdown func(context.Context) error, tp *sdktrace.TracerProvider, mp *sdkmetric.MeterProvider, propagator propagation.TextMapPropagator, err error) {
@@ -329,7 +373,7 @@ func setupOTel() (shutdown func(context.Context) error, tp *sdktrace.TracerProvi
 }
 ```
 
-### 5.3.3 生产环境：OTLP Exporter
+### 5.4.3 生产环境：OTLP Exporter
 
 生产环境通常把 span 推给 OTLP collector（Jaeger、Tempo、厂商 APM 等）。框架内置的默认 exporter 不含 OTLP，需要额外引入：
 
@@ -337,7 +381,7 @@ func setupOTel() (shutdown func(context.Context) error, tp *sdktrace.TracerProvi
 go get go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc
 ```
 
-初始化 exporter（注意：这里创建的是 **exporter** 而不是 TracerProvider，可以直接交给 5.3.1 的 `telemetry.WithTraceExporter` 由服务托管；手动路径则自行包成 provider）：
+初始化 exporter（注意：这里创建的是 **exporter** 而不是 TracerProvider，可以直接交给 5.4.1 的 `telemetry.WithTraceExporter` 由服务托管；手动路径则自行包成 provider）：
 
 ```go
 // setupOTLPExporter 初始化 OTLP gRPC trace exporter。
@@ -359,9 +403,9 @@ telemetry.New(
 
 如果 collector 只暴露 HTTP 端口，把 `otlptracegrpc` 换成 `otlptracehttp`，API 形状一致。endpoint 也支持通过环境变量 `OTEL_EXPORTER_OTLP_ENDPOINT` 配置（不传 `WithEndpoint` 时生效）。metrics 侧同理：`go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc` 的 exporter 实现了 `sdkmetric.Reader`，交给 `telemetry.WithMetricReader` 即可。
 
-### 5.3.4 Prometheus 指标与 /metrics
+### 5.4.4 Prometheus 指标与 /metrics
 
-metrics 一侧的关键点：`go.opentelemetry.io/otel/exporters/prometheus` 的 exporter 本身就是一个 Prometheus registry，把它作为 `Reader` 装进 `MeterProvider`（5.3.1 托管路径的默认 reader 就是它；手动路径见 5.3.2 节模板），再把标准库 `promhttp.Handler()` 挂到路由上即可暴露指标（取自 `_examples/http/main.go`）：
+metrics 一侧的关键点：`go.opentelemetry.io/otel/exporters/prometheus` 的 exporter 本身就是一个 Prometheus registry，把它作为 `Reader` 装进 `MeterProvider`（5.4.1 托管路径的默认 reader 就是它；手动路径见 5.4.2 节模板），再把标准库 `promhttp.Handler()` 挂到路由上即可暴露指标（取自 `_examples/http/main.go`）：
 
 ```go
 // Note: /metrics is served on the main router for demo simplicity, so
@@ -416,7 +460,7 @@ router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
 
 抓取 `/metrics` 即可看到 `hello_requests_total` 与 `hello_request_duration_seconds`（含 `otel_scope_name` 等标签）。
 
-### 5.3.5 HTTP 中间件链序
+### 5.4.5 HTTP 中间件链序
 
 `WithMiddleware` 注册的中间件按**声明顺序**应用，先声明的在最外层（`server/http/middleware.go` 的 `chain`）：
 
@@ -436,9 +480,9 @@ func chain(h http.Handler, middlewares []Middleware) http.Handler {
 otel instrumentation → request log → WithMiddleware 中间件（声明序） → 业务 handler
 ```
 
-因此：在自定义中间件和业务 handler 里，`r.Context()` 已经携带了 otel 提取/新建的 SpanContext——这正是 5.3.6 节日志注入 trace_id 的前提；而访问日志（request log）记录的延迟包含自定义中间件的耗时。
+因此：在自定义中间件和业务 handler 里，`r.Context()` 已经携带了 otel 提取/新建的 SpanContext——这正是 5.4.6 节日志注入 trace_id 的前提；而访问日志（request log）记录的延迟包含自定义中间件的耗时。
 
-### 5.3.6 日志与链路关联：logging.NewTraceHandler
+### 5.4.6 日志与链路关联：logging.NewTraceHandler
 
 链路有了，还需要让日志带上 `trace_id`/`span_id` 才能在日志系统里按链路检索。`lynx/logging` 子包提供了一个 slog Handler 装饰器：
 
@@ -449,7 +493,7 @@ func NewTraceHandler(h slog.Handler) slog.Handler
 它包装任意 `slog.Handler`，当 log 调用的 Context 携带有效的 OpenTelemetry SpanContext 时，自动为记录追加 `trace_id` 与 `span_id` 两个字段。两个使用前提：
 
 1. 打日志必须用带 Context 的方法（`InfoContext`/`ErrorContext` 等），否则装饰器拿不到 SpanContext；
-2. Context 里要有有效的 span——HTTP handler 与 gRPC 拦截器链内天然满足（见 5.3.5 节），应用初始化阶段的日志则没有 span，不加字段。
+2. Context 里要有有效的 span——HTTP handler 与 gRPC 拦截器链内天然满足（见 5.4.5 节），应用初始化阶段的日志则没有 span，不加字段。
 
 **slog 路线**：直接包装标准库 handler，再 `SetLogger` 给应用：
 
@@ -476,7 +520,7 @@ func newZapLogger() (*slog.Logger, error) {
 
 其中 `logging` 是 `github.com/lynx-go/lynx/logging` 的别名，`lynxzap` 是 `github.com/lynx-go/lynx/contrib/zap` 的别名，`slogzap` 是 `github.com/samber/slog-zap/v2`。组装出的 logger 传给 `app.SetLogger(...)` 后，服务内所有 `InfoContext` 日志都会携带链路字段；再把它传给 `http.WithLogger`，访问日志（含 `trace`/`spanId` 字段，见 5.1 节 `WithRequestLog`）也走同一条管线。
 
-### 5.3.7 请求级日志字段：request_id/user_id 全链路传播
+### 5.4.7 请求级日志字段：request_id/user_id 全链路传播
 
 `trace_id` 关联的是"一次分布式调用"，而 `request_id`/`user_id` 等请求级字段关联的是"一次业务请求"——同一请求在 HTTP 处理、异步任务、消息消费中的全部日志共享同一组字段，日志系统按 `request_id` 检索即可还原一次请求的完整生命周期。`lynx/logging` 提供两个配套机制：
 
@@ -510,7 +554,7 @@ broker := pubsub.NewBroker(pubsub.Options{
 
 注意：消息头传播的字段是"日志关联"级别的；发布侧的 ctx 属性优先级最低，消息自身 `Headers` 与 `WithMetadata` 显式设置的值不被覆盖。
 
-## 5.4 延伸阅读
+## 5.5 延伸阅读
 
 本章是教程的最后一章。更多内容可以参考：
 
