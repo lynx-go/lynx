@@ -48,6 +48,25 @@ type RetryOptions struct {
 	Backoff time.Duration
 }
 
+// EventOptions 是单事件（逻辑 topic）的选项。Subscribe 时合并为默认订阅
+// 选项（显式传入的 SubscribeOption 优先）；LogMessage 控制该事件的发布/消费
+// debug 日志；Retry 覆盖 Broker 级重试（nil = 沿用全局）。NewFromConfig
+// 从配置 pubsub.events 段加载；直接使用 NewBroker 的用户也可手动配置。
+type EventOptions struct {
+	// LogMessage 对该事件的发布与消费输出 debug 日志。
+	LogMessage bool
+	// AutoAck 作为 Subscribe 默认选项：消息到达即 Ack，处理失败不影响确认。
+	AutoAck bool
+	// ContinueOnError 作为 Subscribe 默认选项：处理失败时仍确认消息。
+	ContinueOnError bool
+	// Group 作为 Subscribe 默认消费组，覆盖 Transport 配置的默认组。
+	Group string
+	// Instances 作为 Subscribe 默认同组消费者成员数，0 = 沿用 Transport 默认。
+	Instances int
+	// Retry 覆盖 Broker 级重试；nil = 沿用 Options.Retry（缺省 {MaxRetries: 3}）。
+	Retry *RetryOptions
+}
+
 // Options 是 Broker 的配置项。
 type Options struct {
 	// Transports 参与自动路由：每个 Transport.Topics() 声明的 topic
@@ -55,7 +74,8 @@ type Options struct {
 	Transports []Transport
 	// DefaultTransport 承接路由表未命中的 topic。
 	DefaultTransport Transport
-	// Retry 配置 handler 失败重试；nil 时使用默认 {MaxRetries: 3}。
+	// Retry 配置 handler 失败重试（所有事件的默认值）；nil 时使用默认
+	// {MaxRetries: 3}。事件可通过 Events[topic].Retry 覆盖。
 	// 注意：重试耗尽后消息不确认，依赖 at-least-once 语义的 Transport
 	// （如 Kafka 关闭自动提交）会重投；开启自动提交时 offset 已被提交，
 	// 消息可能静默丢失，需自行权衡。
@@ -67,6 +87,10 @@ type Options struct {
 	// Marshaler（或 JSON 默认）。同一 topic 的发布与消费必须使用
 	// 同一种格式，跨服务部署时需对齐配置。
 	TopicMarshalers map[string]Marshaler
+	// Events 按逻辑 topic 配置事件级选项：Subscribe 时合并为默认选项
+	//（显式 SubscribeOption 优先），Publish/消费按 LogMessage 输出日志，
+	// Retry 覆盖 Broker 级重试。NewFromConfig 从配置 pubsub.events 段加载。
+	Events map[string]EventOptions
 }
 
 // NewBroker 创建消息代理门面。
@@ -237,18 +261,12 @@ func (b *broker) Init(ctx lynx.AppContext) error {
 	if err != nil {
 		return err
 	}
-	retry := middleware.Retry{MaxRetries: 3}
-	if b.options.Retry != nil {
-		retry.MaxRetries = b.options.Retry.MaxRetries
-		if b.options.Retry.Backoff > 0 {
-			retry.InitialInterval = b.options.Retry.Backoff
-			retry.MaxInterval = b.options.Retry.Backoff
-		}
-	}
+	// 重试不再挂全局中间件：改按 handler 挂载（Start 期 Handler.AddMiddleware），
+	// 事件级重试配置（事件配置 > Options.Retry > 默认 {3, 0}）才能生效，
+	// 缺省行为与全局 Retry 等价。
 	router.AddMiddleware(
 		middleware.Recoverer,
 		middleware.CorrelationID,
-		retry.Middleware,
 	)
 	router.AddPlugin(plugin.SignalsHandler)
 	b.router = router
@@ -335,13 +353,18 @@ func (b *broker) Start(ctx context.Context) error {
 				t:    t,
 				opts: SubscriptionOptions{Group: p.opts.Group, Instances: p.opts.Instances},
 			},
-			handler: b.wrapHandler(p.handler, p.opts),
+			handler: b.wrapHandler(p.topic, p.handler, p.opts),
 		})
 	}
 	// 阶段 2：注册。AddConsumerHandler 不返回错误（重名直接 panic），
 	// 阶段 1 的预校验已排除该路径，注册在此不可失败。
+	// 重试中间件按 handler 挂载（watermill 的 Handler.AddMiddleware），
+	// 事件级配置生效；不再使用全局 Retry 中间件。
 	for _, r := range registrations {
-		b.router.AddConsumerHandler(r.handlerName, r.topic, r.adapter, r.handler)
+		h := b.router.AddConsumerHandler(r.handlerName, r.topic, r.adapter, r.handler)
+		if retry, ok := b.retryMiddleware(r.topic); ok {
+			h.AddMiddleware(retry)
+		}
 	}
 	b.started = true
 	b.pending = nil
@@ -372,10 +395,24 @@ func (b *broker) Stop(ctx context.Context) error {
 
 // Subscribe 缓冲注册订阅；Start 后调用返回错误。handlerName 在缓冲期内
 // 必须唯一（watermill 的 AddConsumerHandler 对重名直接 panic，这里提前报错）。
+// 事件级选项（Options.Events[topic]）合并为默认值，显式 SubscribeOption 优先。
 func (b *broker) Subscribe(ctx context.Context, topic, handlerName string, h HandlerFunc, opts ...SubscribeOption) error {
 	o := &SubscribeOptions{}
 	for _, opt := range opts {
 		opt(o)
+	}
+	ev := b.eventOptions(topic)
+	if !o.AutoAck {
+		o.AutoAck = ev.AutoAck
+	}
+	if !o.ContinueOnError {
+		o.ContinueOnError = ev.ContinueOnError
+	}
+	if o.Group == "" {
+		o.Group = ev.Group
+	}
+	if o.Instances == 0 {
+		o.Instances = ev.Instances
 	}
 	if handlerName == "" {
 		return errors.New("handler name is required")
@@ -399,11 +436,25 @@ func (b *broker) Subscribe(ctx context.Context, topic, handlerName string, h Han
 	return nil
 }
 
-// wrapHandler 包装用户 handler：注入消息 ID/key 上下文，统一 Ack 语义。
-func (b *broker) wrapHandler(h HandlerFunc, o SubscribeOptions) message.NoPublishHandlerFunc {
+// eventOptions 返回 topic 的事件级选项（未配置时返回零值）。
+func (b *broker) eventOptions(topic string) EventOptions {
+	if ev, ok := b.options.Events[topic]; ok {
+		return ev
+	}
+	return EventOptions{}
+}
+
+// wrapHandler 包装用户 handler：注入消息 ID/key 上下文，按事件配置输出
+// 收发日志，统一 Ack 语义。重试由 per-handler 中间件负责（Start 期挂载）。
+func (b *broker) wrapHandler(topic string, h HandlerFunc, o SubscribeOptions) message.NoPublishHandlerFunc {
+	ev := b.eventOptions(topic)
 	handler := func(msg *message.Message) error {
 		ctx := ContextWithMessageID(msg.Context(), msg.UUID)
 		ctx = ContextWithMessageKey(ctx, msg.Metadata.Get(MessageKeyKey.String()))
+		if ev.LogMessage {
+			b.logger.DebugContext(ctx, "received message", "topic", topic,
+				"message", string(msg.Payload), "x-message-id", msg.UUID)
+		}
 
 		if err := h(ctx, fromWatermill(msg)); err != nil {
 			b.logger.ErrorContext(ctx, "error handling message", "error", err, "x-message-id", msg.UUID)
@@ -418,7 +469,7 @@ func (b *broker) wrapHandler(h HandlerFunc, o SubscribeOptions) message.NoPublis
 	}
 	if o.AutoAck {
 		// AutoAck 语义：先确认再执行，最多执行一次。handler 出错仅记日志
-		// （wrapHandler 内已记录），返回 nil 以免触发 Retry 中间件重试。
+		// （handler 内已记录），返回 nil 以免触发重试中间件。
 		return func(msg *message.Message) error {
 			msg.Ack()
 			_ = handler(msg)
@@ -426,6 +477,34 @@ func (b *broker) wrapHandler(h HandlerFunc, o SubscribeOptions) message.NoPublis
 		}
 	}
 	return handler
+}
+
+// retryMiddleware 返回 topic 的重试中间件：事件级 Retry > Options.Retry >
+// 默认 {MaxRetries: 3}；MaxRetries <= 0 表示不重试（不挂中间件）。
+// 重试耗尽后消息不确认，依赖 at-least-once 语义的 Transport（如 Kafka 关闭
+// 自动提交）会重投；开启自动提交时 offset 已被提交，消息可能静默丢失。
+func (b *broker) retryMiddleware(topic string) (message.HandlerMiddleware, bool) {
+	r := b.retryFor(topic)
+	if r.MaxRetries <= 0 {
+		return nil, false
+	}
+	retry := middleware.Retry{MaxRetries: r.MaxRetries}
+	if r.Backoff > 0 {
+		retry.InitialInterval = r.Backoff
+		retry.MaxInterval = r.Backoff
+	}
+	return retry.Middleware, true
+}
+
+// retryFor 解析 topic 的重试配置：事件级 > Options.Retry > 默认 {3, 0}。
+func (b *broker) retryFor(topic string) RetryOptions {
+	if ev, ok := b.options.Events[topic]; ok && ev.Retry != nil {
+		return *ev.Retry
+	}
+	if b.options.Retry != nil {
+		return *b.options.Retry
+	}
+	return RetryOptions{MaxRetries: 3}
 }
 
 // cloneMessage 浅拷贝 Message 并深拷贝 Headers，发布时只修改克隆体，
@@ -476,6 +555,10 @@ func (b *broker) Publish(ctx context.Context, topic string, payload any, opts ..
 	t, key, err := b.resolve(topic)
 	if err != nil {
 		return err
+	}
+	if ev, ok := b.options.Events[topic]; ok && ev.LogMessage {
+		b.logger.DebugContext(ctx, "publishing message", "topic", topic,
+			"message", string(m.Payload), "key", m.Key)
 	}
 	// 以 transport 侧主题名调用 transport（RouteKey 别名）；缺省与逻辑 topic 同名。
 	return t.Publish(ctx, key, toWatermill(m))

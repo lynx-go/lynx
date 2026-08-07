@@ -186,6 +186,9 @@ func NewTransport(opts Options) (*Transport, error) {
 				Brokers:               p.brokers,
 				ConsumerGroup:         p.group,
 				OverwriteSaramaConfig: p.sarama,
+				// Unmarshaler 必填：v3.1.x 的 setDefaults 不补默认值，
+				// 缺省时 NewSubscriber 直接报 "missing unmarshaler"。
+				Unmarshaler:           watermillkafka.DefaultMarshaler{},
 				NackResendSleep:       p.nackResendSleep,
 				ReconnectRetrySleep:   p.reconnectRetrySleep,
 			}

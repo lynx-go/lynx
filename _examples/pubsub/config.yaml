@@ -5,22 +5,28 @@ kafka:
     consumer:
       group_id: consumer_hello
       instances: 3
-      log_message: true
       session_timeout: 45s
     producer:
-      log_message: true
       required_acks: -1
 
-# 显式 pubsub 路由：逻辑 topic（业务事件名）→ {transport, key}。
-# transport：后端标识（示例中 kafka=Kafka Transport、memory=内存 Transport）。
-# key：调用 transport 时使用的主题名——对 kafka 而言必须是 kafka 段配置的
-# 逻辑 key（本例 hello→hello）；key 可与逻辑名不同（如 notify→user_notify），
-# 用于业务名与后端主题名的解耦。未在此列出的 topic 按自动路由/默认回退处理。
+# pubsub 段：events 按逻辑 topic（业务事件名）配置路由与事件级选项。
+# route：显式路由 {transport, key}——transport 是后端标识（示例中 kafka=Kafka
+# Transport、memory=内存 Transport）；key 是调用 transport 时使用的主题名，
+# 对 kafka 而言必须是 kafka 段配置的逻辑 key（本例 hello→hello）；key 可与
+# 逻辑名不同（如 notify→user_notify），用于业务名与后端主题名的解耦。
+# route 缺省的事件走自动路由/默认回退。route 同级可继续扩展其他 pubsub 核心
+# 配置（log_message/auto_ack/continue_on_error/group/instances/retry）。
 pubsub:
-  routes:
+  events:
     hello:
-      transport: kafka
-      key: hello
+      route:
+        transport: kafka
+        key: hello
+      log_message: true
     notify:
-      transport: memory
-      key: user_notify
+      route:
+        transport: memory
+        key: user_notify
+      log_message: true
+
+log_level: debug

@@ -53,6 +53,7 @@ type fakeTransport struct {
 	topics        []string
 	published     []string
 	publishedMsgs []*message.Message
+	subOpts       []SubscriptionOptions
 	subCh         chan *message.Message
 }
 
@@ -61,7 +62,7 @@ func newFakeTransport(topics ...string) *fakeTransport {
 }
 
 func (f *fakeTransport) Name() string                { return "fake-transport" }
-func (f *fakeTransport) Init(lynx.AppContext) error { return nil }
+func (f *fakeTransport) Init(lynx.AppContext) error  { return nil }
 func (f *fakeTransport) Start(context.Context) error { return nil }
 func (f *fakeTransport) Stop(context.Context) error  { return nil }
 func (f *fakeTransport) CheckHealth() error          { return nil }
@@ -76,6 +77,9 @@ func (f *fakeTransport) Publish(ctx context.Context, topic string, msgs ...*mess
 }
 
 func (f *fakeTransport) Subscribe(ctx context.Context, topic string, opts SubscriptionOptions) (<-chan *message.Message, error) {
+	f.mu.Lock()
+	f.subOpts = append(f.subOpts, opts)
+	f.mu.Unlock()
 	out := make(chan *message.Message)
 	go func() {
 		defer close(out)
@@ -215,7 +219,7 @@ func TestBrokerStop(t *testing.T) {
 }
 
 // TestBrokerStopBeforeStart 回归 P1-5：Stop 必须先于 Start 调用被容忍
-//（Init 成功但 Start 未执行的失败清理路径）——不 panic，且随后正常
+// （Init 成功但 Start 未执行的失败清理路径）——不 panic，且随后正常
 // Start/Stop 流程不受影响。
 func TestBrokerStopBeforeStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -353,7 +357,7 @@ func TestBrokerRouteKeyTranslatesTopic(t *testing.T) {
 }
 
 // TestBrokerRouteKeyOverridesAutoRoute 验证 RouteKey 同样覆盖自动路由
-//（显式路由语义与 Route 一致）。
+// （显式路由语义与 Route 一致）。
 func TestBrokerRouteKeyOverridesAutoRoute(t *testing.T) {
 	memT := NewMemoryTransport()
 	conflictT := newFakeTransport("auto")
@@ -688,5 +692,155 @@ func TestBrokerPublishDoesNotMutateMessage(t *testing.T) {
 	}
 	if msg.Headers["k"] != "v" {
 		t.Errorf("original header lost: %v", msg.Headers)
+	}
+}
+
+func (f *fakeTransport) publishedSubOptions() []SubscriptionOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]SubscriptionOptions(nil), f.subOpts...)
+}
+
+// startBrokerWithEvents 创建指定 Options 的 Broker（测试事件级选项），
+// 注册订阅并启动。
+func startBrokerWithEvents(t *testing.T, opts Options, topic, handlerName string, h HandlerFunc, subOpts ...SubscribeOption) (Broker, chan error) {
+	t.Helper()
+	b := NewBroker(opts)
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := b.Subscribe(context.Background(), topic, handlerName, h, subOpts...); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- b.Start(ctx) }()
+
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return b.CheckHealth() == nil }) {
+		cancel()
+		t.Fatalf("broker did not become healthy")
+	}
+	time.Sleep(200 * time.Millisecond) // 等待订阅接线完成
+
+	t.Cleanup(func() {
+		cancel()
+		_ = b.Stop(context.Background())
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Errorf("broker did not stop within 3s")
+		}
+	})
+	return b, done
+}
+
+// TestBrokerEventOptionsSubscribeDefaults 验证事件级选项作为 Subscribe 默认值：
+// group/instances 透传到 transport，auto_ack 使失败 handler 不重试。
+func TestBrokerEventOptionsSubscribeDefaults(t *testing.T) {
+	ft := newFakeTransport("test.event")
+	startBrokerWithEvents(t, Options{
+		Transports:       []Transport{ft},
+		DefaultTransport: ft,
+		Events: map[string]EventOptions{"test.event": {
+			AutoAck: true, Group: "orders-group", Instances: 2,
+		}},
+	}, "test.event", "test-handler", func(ctx context.Context, msg *Message) error {
+		return errors.New("handler failed")
+	})
+	if got := ft.publishedSubOptions(); len(got) != 1 {
+		t.Fatalf("expected 1 subscription, got %d", len(got))
+	} else if got[0].Group != "orders-group" || got[0].Instances != 2 {
+		t.Fatalf("subscription options = %+v, want group=orders-group instances=2", got[0])
+	}
+
+	var calls atomic.Int32
+	b2, _ := startBrokerWithEvents(t, Options{
+		DefaultTransport: NewMemoryTransport(),
+		Events:           map[string]EventOptions{"test.event": {AutoAck: true}},
+	}, "test.event", "test-handler2", func(ctx context.Context, msg *Message) error {
+		calls.Add(1)
+		return errors.New("handler failed")
+	})
+	if err := b2.Publish(context.Background(), "test.event", MustJSONMessage(nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return calls.Load() >= 1 }) {
+		t.Fatal("first message was not processed")
+	}
+	time.Sleep(500 * time.Millisecond) // 给重试留出触发窗口
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler called %d times, want 1 (event AutoAck must not trigger retry)", got)
+	}
+}
+
+// TestBrokerEventRetryNoRetry 验证事件级 retry {max_retries: 0} 不重试：
+// 失败 handler 仅执行一次（fake transport 不重投，消息 Nack 后丢弃）。
+func TestBrokerEventRetryNoRetry(t *testing.T) {
+	var calls atomic.Int32
+	zero := 0
+	ft := newFakeTransport("test.event")
+	startBrokerWithEvents(t, Options{
+		Transports:       []Transport{ft},
+		DefaultTransport: ft,
+		Events:           map[string]EventOptions{"test.event": {Retry: &RetryOptions{MaxRetries: zero}}},
+	}, "test.event", "test-handler", func(ctx context.Context, msg *Message) error {
+		calls.Add(1)
+		return errors.New("handler failed")
+	})
+	ft.inject(message.NewMessage("m1", []byte("x")))
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return calls.Load() >= 1 }) {
+		t.Fatal("message was not processed")
+	}
+	time.Sleep(500 * time.Millisecond) // 给重试留出触发窗口
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler called %d times, want 1 (event retry 0 must not retry)", got)
+	}
+}
+
+// TestBrokerDefaultRetryCount 验证缺省重试（无事件配置，{MaxRetries: 3}）：
+// 失败 handler 共执行 4 次（1 次初始 + 3 次重试）。
+func TestBrokerDefaultRetryCount(t *testing.T) {
+	var calls atomic.Int32
+	ft := newFakeTransport("test.event")
+	startBrokerWithEvents(t, Options{
+		Transports:       []Transport{ft},
+		DefaultTransport: ft,
+	}, "test.event", "test-handler", func(ctx context.Context, msg *Message) error {
+		calls.Add(1)
+		return errors.New("handler failed")
+	})
+	ft.inject(message.NewMessage("m1", []byte("x")))
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return calls.Load() >= 4 }) {
+		t.Fatalf("handler called %d times, want 4 (1 initial + 3 default retries)", calls.Load())
+	}
+	time.Sleep(500 * time.Millisecond)
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("handler called %d times, want exactly 4", got)
+	}
+}
+
+// TestBrokerEventRetryOverride 验证事件级 retry 覆盖全局 Options.Retry
+// （max_retries: 1 → 失败 handler 共执行 2 次）。
+func TestBrokerEventRetryOverride(t *testing.T) {
+	var calls atomic.Int32
+	one := 1
+	ft := newFakeTransport("test.event")
+	startBrokerWithEvents(t, Options{
+		Transports:       []Transport{ft},
+		DefaultTransport: ft,
+		Retry:            &RetryOptions{MaxRetries: 5},
+		Events:           map[string]EventOptions{"test.event": {Retry: &RetryOptions{MaxRetries: one}}},
+	}, "test.event", "test-handler", func(ctx context.Context, msg *Message) error {
+		calls.Add(1)
+		return errors.New("handler failed")
+	})
+	ft.inject(message.NewMessage("m1", []byte("x")))
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return calls.Load() >= 2 }) {
+		t.Fatalf("handler called %d times, want 2 (1 initial + 1 event retry)", calls.Load())
+	}
+	time.Sleep(500 * time.Millisecond)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("handler called %d times, want exactly 2 (event retry must override global)", got)
 	}
 }

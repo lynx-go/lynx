@@ -319,13 +319,24 @@ func DefaultSetFlagsFunc(f *pflag.FlagSet) {
 	f.StringP("config", "c", "", "config file path")
 	f.String("config-type", "yaml", "config file type, default yaml")
 	f.String("config-dir", "", "config file path")
-	f.String("log-level", "info", "log level, default info")
+	// 默认值为空而非 "info"：BindPFlags 会把未显式传入的 flag 默认值绑进
+	// viper，若默认 "info"，LogLevelFromConfig 的优先级链（logging.level →
+	// log-level → log_level）会永久短路在 log-level，配置文件里的
+	// logging.level/log_level 永远不生效（回归：config.yaml 设 log_level
+	// 无效）。空默认时未传 flag 即回退配置文件键，缺省仍为 info。
+	f.String("log-level", "", "log level, default info")
 }
 
 // DefaultBindConfigFunc 将默认 flags 中的配置文件路径、目录与类型绑定到应用配置源。
 func DefaultBindConfigFunc(f *pflag.FlagSet, c ConfigSource) error {
 	if cf, _ := f.GetString("config"); cf != "" {
 		c.SetFile(cf)
+	} else if cd, _ := f.GetString("config-dir"); cd == "" {
+		// 未显式指定配置文件或搜索目录时，把工作目录加入搜索路径。
+		// viper v1.17+ 不再隐式搜索 "."（曾有的默认行为），不加则
+		// 运行目录下的 config.yaml 不会被发现（回归：无参运行时
+		// kafka 等配置段加载不到，Transport 不启用、路由静默回退）。
+		c.AddSearchPath(".")
 	}
 	if cd, _ := f.GetString("config-dir"); cd != "" {
 		c.AddSearchPath(cd)

@@ -2,6 +2,8 @@
 
 日期：2026-08-06
 状态：已批准（2026-08-06 修订：移除 Bundle，transports 一律显式——见"方案取舍记录"与修订记录）
+修订记录：
+- 2026-08-07：**pubsub 段 schema 改为 `events` 模式**——`routes`（逻辑 topic → {transport, key}）改为 `events`（逻辑 topic → 事件配置，`route` 子键承载 {transport, key}），route 同级新增事件级选项：`log_message`（该事件发布/消费 debug 日志）、`auto_ack`/`continue_on_error`/`group`/`instances`（Subscribe 默认选项，显式 SubscribeOption 优先）、`retry`（按事件覆盖重试）；段顶层新增 `retry`（全局重试默认值）。原 `routes` 键废弃。重试由全局 watermill Retry 中间件改为按 handler 挂载（`Handler.AddMiddleware`，watermill v1.5.2 无 AddMiddlewareToHandler，`AddConsumerHandler` 返回的 `*Handler` 提供 handler 级中间件），缺省行为等价。原"不改 config.yaml schema"的 YAGNI 项作废（按需再扩的触发）。
 
 ## 背景与目标
 
@@ -157,7 +159,7 @@ app.Register(pubsub.NewRouter(broker, []pubsub.Handler{&helloHandler{}, &notifyH
 
 ## 不做的事（YAGNI）
 
-- 不改 config.yaml schema（`kafka`/`pubsub` 段保持现状）
+- 不改 config.yaml schema（`kafka`/`pubsub` 段保持现状）——**2026-08-07 修订作废**：pubsub 段改为 `events` 模式并新增事件级选项，见修订记录
 - 不把 handler 注册配置化（handlers 是代码，`NewRouter` 保持显式）
 - 不给 `Transport`/`Broker` 接口加方法
 - 不加"全自动"装配器服务（与 Wire 冲突，见方案取舍记录）

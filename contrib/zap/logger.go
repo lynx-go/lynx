@@ -42,9 +42,9 @@ func buildLogger(ctx lynx.AppContext) (*zap.Logger, *slog.Logger, error) {
 		return nil, nil, err
 	}
 	return zapLogger, slogger.With(
-		"service_id", lynx.IDFromContext(ctx.Context()),
-		"service_name", lynx.NameFromContext(ctx.Context()),
-		"version", lynx.VersionFromContext(ctx.Context()),
+		"service.id", lynx.IDFromContext(ctx.Context()),
+		"service.name", lynx.NameFromContext(ctx.Context()),
+		"service.version", lynx.VersionFromContext(ctx.Context()),
 	), nil
 }
 
