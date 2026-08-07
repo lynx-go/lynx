@@ -31,6 +31,8 @@ var (
 	ErrStopTimeoutTooSmall = errors.New("stop timeout must be at least 1 second")
 	// ErrStopTimeoutTooLarge 表示 StopTimeout 大于 MaxTimeout。
 	ErrStopTimeoutTooLarge = errors.New("stop timeout must be at most 5 minutes")
+	// ErrDrainTimeoutInvalid 表示 DrainTimeout 为负值（排水窗口不允许负值）。
+	ErrDrainTimeoutInvalid = errors.New("drain timeout must not be negative")
 )
 
 // Options 是 App 应用的核心配置项。
@@ -45,6 +47,13 @@ type Options struct {
 	// StopTimeout 是单个服务 Stop 的最长等待时长，超过后跳过并记录错误，
 	// 防止挂死的服务阻塞整个关停流程。
 	StopTimeout time.Duration `json:"stop_timeout"`
+	// DrainTimeout 是关停排水（drain）窗口时长：0 表示不启用排水（默认，
+	// 向后兼容，关停行为与 v1.0 完全一致）。启用后，关停流程先让
+	// readiness 失败（LB 摘流），等待该窗口结束后才执行后续关停。
+	// DrainTimeout 与 ShutdownTimeout 是两段独立预算，总关停时长上界 =
+	// DrainTimeout + ShutdownTimeout + 各服务 StopTimeout 叠加的既有上界。
+	// 取值任意 ≥0，无下限约束（1ms 等小值合法）。
+	DrainTimeout time.Duration `json:"drain_timeout"`
 	// disableConfigFlags 标记用户显式关闭默认 flags（WithDisableConfigFlags）。
 	// EnsureDefaults 在 NewOptions 与 newLynx 间可能被多次调用，需要该
 	// 标记保持关闭语义不被默认值覆盖。
@@ -77,6 +86,9 @@ func (o *Options) Validate() error {
 		if o.StopTimeout > MaxTimeout {
 			return ErrStopTimeoutTooLarge
 		}
+	}
+	if o.DrainTimeout < 0 {
+		return ErrDrainTimeoutInvalid
 	}
 	return nil
 }
@@ -187,6 +199,17 @@ func WithShutdownTimeout(timeout time.Duration) Option {
 func WithStopTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.StopTimeout = timeout
+	}
+}
+
+// WithDrainTimeout 设置关停排水（drain）窗口时长：关停信号到达后先让
+// readiness 失败（LB 摘流），等待该窗口结束后才真正关停。0（默认）表示
+// 不启用排水，关停行为与 v1.0 完全一致。DrainTimeout 与 ShutdownTimeout
+// 是两段独立预算：总关停时长上界 = DrainTimeout + ShutdownTimeout + 各服务
+// StopTimeout 叠加的既有上界。取值任意 ≥0，无下限约束。
+func WithDrainTimeout(timeout time.Duration) Option {
+	return func(o *Options) {
+		o.DrainTimeout = timeout
 	}
 }
 

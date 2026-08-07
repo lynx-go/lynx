@@ -169,8 +169,8 @@ go run main.go
 
 为 HTTP 服务器传入 `http.WithHealthCheckers(app.HealthCheckers)` 后，服务器会自动暴露两个健康检查端点：
 
-- `/healthz/liveness`：存活检查，进程存活即返回 200，用于探活。
-- `/healthz/readiness`：就绪检查，依次调用所有注册的健康检查器，全部通过才返回 200，任一失败返回 503 + 错误正文。
+- `/healthz/liveness`：存活检查，进程存活即返回 200，用于探活。**不消费**检查器聚合——配置关停排水（`WithDrainTimeout`，见 3.7 节）时，排水期间 liveness 仍返回 200。
+- `/healthz/readiness`：就绪检查，依次调用所有注册的健康检查器，全部通过才返回 200，任一失败返回 503 + 错误正文。配置 `WithDrainTimeout` 后，排水期间框架内部的 `drainChecker` 使该端点返回 503（LB 摘流）。
 
 验证方式：
 

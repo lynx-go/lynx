@@ -117,6 +117,10 @@ type lynx struct {
 
 	onStarts []HookFunc
 	onStops  []HookFunc
+	// drain 是框架内部的排水检查器（见 drain.go）：DrainTimeout > 0 时由
+	// newLynx 注册进 healthCheckers，关停时置位让 readiness 立即失败。
+	// 手构的 lynx 实例（如测试辅助）可能为 nil，shutdown 路径需判空。
+	drain *drainChecker
 	// initErr 记录注册阶段产生的首个错误，由 Run() 统一返回。
 	initErr error
 	// shutdownErrors 聚合服务 Stop 返回的错误与超时错误，由 Run() 统一上抛。
@@ -535,6 +539,21 @@ func (app *lynx) Run() error {
 	)
 	shutdown := func() {
 		app.Logger().Info("shutting down")
+		// Step 0: 排水窗口。置位 drainChecker 使 readiness 聚合立即失败
+		//（LB 摘流），等待 DrainTimeout 窗口结束后才执行后续关停。
+		// DrainTimeout 与 ShutdownTimeout 是两段独立预算：总关停时长上界 =
+		// DrainTimeout + ShutdownTimeout + 各服务 StopTimeout 叠加的既有上界。
+		// 所有关停入口（信号/中断/Close）都经过本函数，排水窗口统一生效。
+		if app.drain != nil {
+			app.drain.SetDraining(true)
+		}
+		if app.o.DrainTimeout > 0 {
+			app.Logger().Info("draining: readiness marked unhealthy, waiting for drain window",
+				"drain_timeout", app.o.DrainTimeout.String())
+			// 窗口不可被 ctx 取消打断：排水语义要求服务在窗口内保持运行，
+			// 供在途请求收尾；DrainTimeout=0 时跳过（与 v1.0 一致）。
+			time.Sleep(app.o.DrainTimeout)
+		}
 		// Step 1: 取消应用上下文，通知服务开始收尾。
 		app.cancelCtx()
 		// Step 2: 在 ShutdownTimeout 内执行 OnStop hooks。
@@ -642,6 +661,13 @@ func newLynx(o *Options) (App, error) {
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
 	app.services = []Service{}
+	// drainChecker 仅当 DrainTimeout > 0 时注册进健康检查聚合：
+	// DrainTimeout=0 时 healthCheckers 保持 nil，HealthCheckers() 快照
+	// 内容与 v1.0 逐字节一致（回归红线）。
+	app.drain = &drainChecker{}
+	if o.DrainTimeout > 0 {
+		app.healthCheckers = []Checker{app.drain}
+	}
 	if err := app.init(); err != nil {
 		return nil, err
 	}
