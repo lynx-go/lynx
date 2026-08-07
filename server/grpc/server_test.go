@@ -23,6 +23,18 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
+// TestReflectionRegisteredAtNewServer 回归：反射服务在 NewServer 时即注册
+// （P0-2），而不是留到 Start 中（Serve 之后注册服务会 panic）。
+func TestReflectionRegisteredAtNewServer(t *testing.T) {
+	s := NewServer()
+	info := s.server.GetServiceInfo()
+	for _, name := range []string{"grpc.reflection.v1.ServerReflection", "grpc.reflection.v1alpha.ServerReflection"} {
+		if _, ok := info[name]; !ok {
+			t.Errorf("reflection service %q not registered after NewServer", name)
+		}
+	}
+}
+
 func TestNewServerDefaults(t *testing.T) {
 	s := NewServer()
 	if s.o.Addr != DefaultGRPCAddr {
@@ -341,7 +353,7 @@ func TestHealthStatusFollowsCheckers(t *testing.T) {
 	checker.healthy.Store(true)
 	s := NewServer(
 		WithAddr("127.0.0.1:0"),
-		WithHealthCheck(func() []lynx.Checker { return []lynx.Checker{checker} }),
+		WithHealthCheckers(func() []lynx.Checker { return []lynx.Checker{checker} }),
 		WithHealthCheckPeriod(20*time.Millisecond),
 	)
 	startErr := make(chan error, 1)
@@ -399,7 +411,7 @@ func TestHealthStatusFollowsCheckers(t *testing.T) {
 	t.Fatal("health status did not flip to NOT_SERVING after checker failed")
 }
 
-// TestHealthCheckDefaultPeriodNotPanic 回归：WithHealthCheck 未设置
+// TestHealthCheckDefaultPeriodNotPanic 回归：WithHealthCheckers 未设置
 // Period 时，NewServer 必须回退 DefaultHealthCheckPeriod，轮询 goroutine
 // 不得用零值 Ticker 触发 time.NewTicker(0) panic。
 func TestHealthCheckDefaultPeriodNotPanic(t *testing.T) {
@@ -407,7 +419,7 @@ func TestHealthCheckDefaultPeriodNotPanic(t *testing.T) {
 	checker.healthy.Store(true)
 	s := NewServer(
 		WithAddr(freeAddr(t)),
-		WithHealthCheck(func() []lynx.Checker { return []lynx.Checker{checker} }),
+		WithHealthCheckers(func() []lynx.Checker { return []lynx.Checker{checker} }),
 	)
 	if s.o.HealthCheckPeriod != DefaultHealthCheckPeriod {
 		t.Fatalf("HealthCheckPeriod = %v, want default %v", s.o.HealthCheckPeriod, DefaultHealthCheckPeriod)
@@ -439,7 +451,7 @@ func TestHealthPollerNotLeakedWhenStoppedBeforeStart(t *testing.T) {
 	checker := &flipChecker{}
 	checker.healthy.Store(true)
 	s := NewServer(
-		WithHealthCheck(func() []lynx.Checker { return []lynx.Checker{checker} }),
+		WithHealthCheckers(func() []lynx.Checker { return []lynx.Checker{checker} }),
 		WithHealthCheckPeriod(20*time.Millisecond),
 	)
 	// Stop 先于 Start 执行到 poller 启动点：healthCancel 尚无值。

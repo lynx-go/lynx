@@ -1,4 +1,4 @@
-// Package grpc 提供 gRPC 服务器组件，内置日志/恢复拦截器、
+// Package grpc 提供 gRPC 服务器服务，内置日志/恢复拦截器、
 // 健康检查与反射服务，支持 OpenTelemetry 插装。
 package grpc
 
@@ -29,7 +29,7 @@ const (
 	DefaultHealthCheckPeriod = 10 * time.Second
 )
 
-// Options 是 gRPC 服务组件的配置项。
+// Options 是 gRPC 服务服务的配置项。
 type Options struct {
 	Addr                string
 	Timeout             time.Duration
@@ -40,7 +40,7 @@ type Options struct {
 	TracerProvider      trace.TracerProvider
 	MeterProvider       metric.MeterProvider
 	// HealthCheck 提供 app 级健康检查器；非 nil 时按 HealthCheckPeriod
-	// 轮询并同步到 grpc health 服务（依赖组件不健康时探测返回 NOT_SERVING）。
+	// 轮询并同步到 grpc health 服务（依赖服务不健康时探测返回 NOT_SERVING）。
 	HealthCheck         lynx.HealthCheckersFunc
 	HealthCheckPeriod   time.Duration
 }
@@ -85,8 +85,9 @@ func WithStreamInterceptors(interceptors ...grpc.StreamServerInterceptor) Option
 	}
 }
 
-// WithHealthCheck 设置 app 级健康检查函数，轮询结果同步到 grpc health 服务。
-func WithHealthCheck(hc lynx.HealthCheckersFunc) Option {
+// WithHealthCheckers 设置 app 级健康检查函数，轮询结果同步到 grpc health
+// 服务（与 HTTP 侧 WithHealthCheckers 命名对齐）。
+func WithHealthCheckers(hc lynx.HealthCheckersFunc) Option {
 	return func(o *Options) {
 		o.HealthCheck = hc
 	}
@@ -124,7 +125,7 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 	}
 }
 
-// NewServer 创建 gRPC 服务组件，内置日志、恢复拦截器与 OpenTelemetry stats handler，
+// NewServer 创建 gRPC 服务服务，内置日志、恢复拦截器与 OpenTelemetry stats handler，
 // 并注册 gRPC 健康检查服务。
 func NewServer(opts ...Option) *Server {
 	options := Options{
@@ -180,6 +181,10 @@ func NewServer(opts ...Option) *Server {
 	// Register health check service
 	s.health = health.NewServer()
 	grpc_health_v1.RegisterHealthServer(s.server, s.health)
+	// Register reflection service：注册必须在 Serve 之前完成（Serve 后
+	// 注册服务会 panic）；放在 NewServer 中保证一次创建即注册，Start 可
+	// 安全重入。
+	reflection.Register(s.server)
 	return s
 }
 
@@ -210,12 +215,12 @@ func (s *Server) CheckHealth() error {
 	return nil
 }
 
-// Name 返回组件名称 "grpc"。
+// Name 返回服务名称 "grpc"。
 func (s *Server) Name() string {
 	return "grpc"
 }
 
-// Init 初始化组件，gRPC 服务无需在初始化阶段做额外工作。
+// Init 初始化服务，gRPC 服务无需在初始化阶段做额外工作。
 func (s *Server) Init(ctx lynx.AppContext) error {
 	return nil
 }
@@ -237,9 +242,6 @@ func (s *Server) Start(ctx context.Context) error {
 	s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_SERVING)
 	s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
-	// Register reflection service
-	reflection.Register(s.server)
-
 	s.running.Store(true)
 	// Serve 返回（监听失败/优雅停止）后复位运行标志，CheckHealth 不再报健康。
 	defer s.running.Store(false)
@@ -251,7 +253,7 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // startHealthPoller 按 HealthCheckPeriod 轮询 app 级健康检查器并同步到
-// grpc health 服务：任一依赖组件不健康时探测返回 NOT_SERVING。
+// grpc health 服务：任一依赖服务不健康时探测返回 NOT_SERVING。
 // Stop 若已先于 Start 执行（healthCancel 为 nil 未被取走），此处在同一
 // 持锁段内发现 stopped 即取消并返回，不启动轮询 goroutine（无泄漏）。
 func (s *Server) startHealthPoller() {
@@ -314,7 +316,9 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.listener = nil
 	s.mu.Unlock()
 	if lis != nil {
-		_ = lis.Close()
+		if err := lis.Close(); err != nil {
+			s.logger.ErrorContext(ctx, "error closing gRPC listener", "error", err)
+		}
 	}
 
 	if s.server == nil {

@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -414,6 +415,66 @@ func TestStopForcesCloseAfterTimeout(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("Start() did not return after Stop()")
+	}
+}
+
+// TestStopReturnsTimeoutErrorOnShutdownDeadline is a regression test for the
+// HTTP Stop timeout race (P0-1): when Shutdown hits its deadline, Stop must
+// ALWAYS return a timeout error and force-close the server — it must never
+// return nil with lingering connections. Stop selects between `done` and
+// `ctx.Done()`, and either side may win per run; the test repeats the full
+// lifecycle (with -race) so both branches are exercised.
+func TestStopReturnsTimeoutErrorOnShutdownDeadline(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		t.Run(fmt.Sprintf("run%d", i), func(t *testing.T) {
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("Listen() error = %v", err)
+			}
+			addr := l.Addr().String()
+			_ = l.Close()
+
+			entered := make(chan struct{})
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case <-entered:
+				default:
+					close(entered)
+				}
+				<-r.Context().Done() // never return; block until forced close
+			})
+			srv := NewServer(handler, WithAddr(addr), WithShutdownTimeout(50*time.Millisecond))
+
+			startErr := make(chan error, 1)
+			go func() { startErr <- srv.Start(context.Background()) }()
+			waitForDial(t, addr)
+
+			go func() {
+				_, _ = http.Get("http://" + addr + "/")
+			}()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("handler was not entered")
+			}
+
+			stopErr := srv.Stop(context.Background())
+			if stopErr == nil {
+				t.Fatal("Stop() = nil, want timeout error (deadline must force-close and report)")
+			}
+			if !errors.Is(stopErr, context.DeadlineExceeded) {
+				t.Errorf("Stop() error = %v, want context.DeadlineExceeded in chain", stopErr)
+			}
+
+			select {
+			case err := <-startErr:
+				if err != nil && !errors.Is(err, http.ErrServerClosed) {
+					t.Errorf("Start() error = %v, want nil or http.ErrServerClosed", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Error("Start() did not return after Stop()")
+			}
+		})
 	}
 }
 

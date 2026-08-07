@@ -633,6 +633,27 @@ func TestTransportLifecycle(t *testing.T) {
 	}
 }
 
+// TestTransportStartRespectsCtx 回归 P1-3：Start 必须阻塞在**传入的** ctx
+// 上——直接取消 Start 的 ctx（不调用 Stop）即应返回，与 schedule/telemetry
+// 的服务契约一致，不能只依赖 Stop 取消的内部 ctx。
+func TestTransportStartRespectsCtx(t *testing.T) {
+	tr := newTestTransport(Options{}, newFakePubSub())
+	startCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- tr.Start(startCtx) }()
+
+	// 不调用 Stop，仅取消 Start 的 ctx。
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start() error = %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after its ctx was cancelled")
+	}
+}
+
 // TestTransportStopBeforeStart 回归 P1-5：Stop 必须先于 Start 调用被容忍
 //（Init 成功但 Start 未执行的失败清理路径）——不 panic、不挂死，
 // 且 Stop 后健康检查保持失败。
@@ -852,7 +873,7 @@ func TestTransportEndToEndWithRouter(t *testing.T) {
 	}
 }
 
-// --- fakeApp：最小 lynx.AppContext（组件 Init 只依赖 AppContext，无需实现完整 App） ---
+// --- fakeApp：最小 lynx.AppContext（服务 Init 只依赖 AppContext，无需实现完整 App） ---
 
 type fakeApp struct{}
 

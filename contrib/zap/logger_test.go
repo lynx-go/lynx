@@ -12,14 +12,14 @@ import (
 
 // fakeCtx implements lynx.AppContext minimally for tests.
 type fakeCtx struct {
-	lynx.AppContext
 	cfg lynx.Config
 }
 
-func (f *fakeCtx) Config() lynx.Config       { return f.cfg }
-func (f *fakeCtx) Context() context.Context  { return context.Background() }
-func (f *fakeCtx) Logger(...any) *slog.Logger { return slog.Default() }
+func (f *fakeCtx) Config() lynx.Config            { return f.cfg }
+func (f *fakeCtx) Context() context.Context       { return context.Background() }
+func (f *fakeCtx) Logger(...any) *slog.Logger     { return slog.Default() }
 func (f *fakeCtx) HealthCheckers() []lynx.Checker { return nil }
+func (f *fakeCtx) Close()                         {}
 
 func newFakeCtx(t *testing.T) *fakeCtx {
 	t.Helper()

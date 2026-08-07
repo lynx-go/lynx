@@ -168,7 +168,7 @@ func (a subscriberAdapter) Close() error { return nil }
 // Broker 是 Broker 接口的具体实现。
 type broker struct {
 	options Options
-	// logger 是组件日志实例：Init(ctx) 时从 ctx.Logger 取，未 Init 时
+	// logger 是服务日志实例：Init(ctx) 时从 ctx.Logger 取，未 Init 时
 	// 回落 slog.Default()。
 	logger *slog.Logger
 	router *message.Router
@@ -182,6 +182,11 @@ type broker struct {
 	mu      sync.Mutex
 	pending []pendingSubscription
 	started bool
+	// stopped 标记真实运行（Start 已置位 started）后的 Stop：此时生命周期
+	// 已结束，Subscribe/Start 返回明确的 stopped 错误而非误导的 started
+	// 文案。Stop-before-Start（失败清理路径）不置位，不破坏后续正常
+	// Start/Stop 流程（回归 TestBrokerStopBeforeStart）。
+	stopped bool
 }
 
 // routeEntry 是路由表的一项：逻辑 topic → (Transport, transport 侧主题名)。
@@ -191,7 +196,7 @@ type routeEntry struct {
 	key string
 }
 
-// Name 返回组件名称 "pubsub-broker"。
+// Name 返回服务名称 "pubsub-broker"。
 func (b *broker) Name() string { return "pubsub-broker" }
 
 // Route 显式将 topic 路由到指定 Transport，覆盖自动路由；须在 Start 前调用。
@@ -290,6 +295,10 @@ func (b *broker) resolve(topic string) (Transport, string, error) {
 // Start 安全，也不会触发 watermill 的 DuplicateHandlerNameError panic。
 func (b *broker) Start(ctx context.Context) error {
 	b.mu.Lock()
+	if b.stopped {
+		b.mu.Unlock()
+		return errors.New("broker already stopped")
+	}
 	if b.started {
 		b.mu.Unlock()
 		return errors.New("broker already started")
@@ -345,6 +354,13 @@ func (b *broker) Start(ctx context.Context) error {
 
 // Stop 关闭 watermill router；关闭错误返回。
 func (b *broker) Stop(ctx context.Context) error {
+	b.mu.Lock()
+	// 仅真实运行后的 Stop 标记 stopped（生命周期终结）；Stop-before-Start
+	// 是失败清理路径，必须容忍且不改变后续 Start/Stop 语义。
+	if b.started {
+		b.stopped = true
+	}
+	b.mu.Unlock()
 	if b.router != nil {
 		if err := b.router.Close(); err != nil {
 			b.logger.ErrorContext(ctx, "error closing router", "error", err)
@@ -366,6 +382,9 @@ func (b *broker) Subscribe(ctx context.Context, topic, handlerName string, h Han
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.stopped {
+		return errors.New("cannot subscribe to a stopped broker")
+	}
 	if b.started {
 		return errors.New("cannot subscribe to a started broker")
 	}

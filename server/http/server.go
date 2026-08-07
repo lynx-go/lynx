@@ -1,4 +1,4 @@
-// Package http 提供 HTTP 服务器组件，内置健康检查端点、请求日志、
+// Package http 提供 HTTP 服务器服务，内置健康检查端点、请求日志、
 // 中间件与 OpenTelemetry 插装（显式注入 provider，无进程全局副作用）。
 package http
 
@@ -27,7 +27,7 @@ const (
 	DefaultShutdownTimeout = 10 * time.Second
 )
 
-// Options 是 HTTP 服务组件的配置项。
+// Options 是 HTTP 服务服务的配置项。
 type Options struct {
 	Addr            string
 	Timeout         time.Duration
@@ -143,7 +143,7 @@ func WithPropagator(p propagation.TextMapPropagator) Option {
 	}
 }
 
-// NewServer 创建 HTTP 服务组件，使用给定的 handler 与配置项。
+// NewServer 创建 HTTP 服务服务，使用给定的 handler 与配置项。
 func NewServer(handler http.Handler, opts ...Option) *Server {
 	options := Options{
 		Addr:            DefaultHTTPAddr,
@@ -176,12 +176,12 @@ type Server struct {
 	handler    http.Handler
 }
 
-// Name 返回组件名称 "http"。
+// Name 返回服务名称 "http"。
 func (s *Server) Name() string {
 	return "http"
 }
 
-// Init 初始化组件，HTTP 服务无需在初始化阶段做额外工作。
+// Init 初始化服务，HTTP 服务无需在初始化阶段做额外工作。
 func (s *Server) Init(ctx lynx.AppContext) error {
 	return nil
 }
@@ -297,19 +297,31 @@ func (s *Server) Stop(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		if shutdownErr != nil &&
-			!errors.Is(shutdownErr, http.ErrServerClosed) &&
-			!errors.Is(shutdownErr, context.Canceled) &&
-			!errors.Is(shutdownErr, context.DeadlineExceeded) {
+		switch {
+		case shutdownErr == nil, errors.Is(shutdownErr, http.ErrServerClosed):
+			// 正常优雅关停。
+			return nil
+		case errors.Is(shutdownErr, context.Canceled), errors.Is(shutdownErr, context.DeadlineExceeded):
+			// Shutdown 因超时/取消返回：与 ctx.Done() 分支同样归入超时
+			// 路径，强制关闭活动连接并以错误返回——不得放行未完成的连接。
+			s.logger.ErrorContext(ctx, "graceful HTTP shutdown timed out, forcing close", "error", shutdownErr)
+			if err := hs.Close(); err != nil {
+				s.logger.ErrorContext(ctx, "failed to force-close http server after shutdown timeout", "error", err)
+			}
+			return fmt.Errorf("http server graceful shutdown timed out: %w", shutdownErr)
+		default:
 			s.logger.ErrorContext(ctx, "failed to shutdown http server", "error", shutdownErr)
 			return shutdownErr
 		}
-		return nil
 	case <-ctx.Done():
-		s.logger.ErrorContext(ctx, "graceful HTTP shutdown timed out, forcing close", "error", context.DeadlineExceeded)
-		_ = hs.Close()
+		// ctx 已结束，Shutdown 必然很快返回；先等它退出再强制关闭，
+		// 避免与 Shutdown 内部的连接清理交错。
 		<-done
-		return fmt.Errorf("http server graceful shutdown timed out")
+		s.logger.ErrorContext(ctx, "graceful HTTP shutdown timed out, forcing close", "error", ctx.Err())
+		if err := hs.Close(); err != nil {
+			s.logger.ErrorContext(ctx, "failed to force-close http server after shutdown timeout", "error", err)
+		}
+		return fmt.Errorf("http server graceful shutdown timed out: %w", ctx.Err())
 	}
 }
 

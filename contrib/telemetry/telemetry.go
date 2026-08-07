@@ -1,4 +1,4 @@
-// Package telemetry 以组件形式托管 OpenTelemetry 的生命周期：创建
+// Package telemetry 以服务形式托管 OpenTelemetry 的生命周期：创建
 // TracerProvider 与 MeterProvider、设置为 otel 全局值，并在应用停止时
 // 自动 flush 与关闭。
 //
@@ -8,7 +8,7 @@
 // otel.SetMeterProvider / otel.SetTextMapPropagator），此后业务代码与
 // server 包（其 provider 参数为 nil 时）都会使用这些全局 provider。
 // 这与 server 包"显式注入 provider，不修改全局"的策略互补：server 需要
-// 显式传 provider（或从 otel.GetTracerProvider() 自取），本组件则负责
+// 显式传 provider（或从 otel.GetTracerProvider() 自取），本服务则负责
 // 创建并托管全局 provider 的生命周期。重复注册（重复 Init）返回错误。
 //
 // 默认导出：noop trace exporter（span 直接丢弃——生产环境忘配 exporter
@@ -24,6 +24,7 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 
 	"github.com/lynx-go/lynx"
 	"go.opentelemetry.io/otel"
@@ -36,7 +37,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// Options 是 telemetry 组件的配置项。
+// Options 是 telemetry 服务的配置项。
 type Options struct {
 	traceExporter sdktrace.SpanExporter
 	metricReader  sdkmetric.Reader
@@ -48,7 +49,7 @@ type Options struct {
 	stdoutTrace bool
 }
 
-// Option 用于配置 telemetry 组件。
+// Option 用于配置 telemetry 服务。
 type Option func(*Options)
 
 // WithTraceExporter 设置自定义 trace exporter（默认 noop）。
@@ -107,10 +108,11 @@ type otelService struct {
 	options *Options
 	tp      *sdktrace.TracerProvider
 	mp      *sdkmetric.MeterProvider
-	inited  bool
+	// inited 标记 Init 已成功执行；多 goroutine 并发 Init 时读操作安全。
+	inited atomic.Bool
 }
 
-// Name 返回组件名称 "otel"。
+// Name 返回服务名称 "otel"。
 func (c *otelService) Name() string {
 	return "otel"
 }
@@ -118,12 +120,12 @@ func (c *otelService) Name() string {
 // Init 创建 provider 并设置为 otel 全局值。重复 Init 返回错误：
 // 多次注册会覆盖 otel 全局且首个 provider 永不 Shutdown（泄漏）。
 func (c *otelService) Init(ctx lynx.AppContext) error {
-	if c.inited {
+	if c.inited.Load() {
 		return errors.New("telemetry service already initialized (register once)")
 	}
 	options := *c.options
 	if ctx != nil && options.res == nil {
-		// DX 提升：服务名零配置进入 trace/metrics（应用名取自组件环境）。
+		// DX 提升：服务名零配置进入 trace/metrics（应用名取自服务环境）。
 		options.res = resource.NewWithAttributes(
 			semconv.SchemaURL,
 			semconv.ServiceName(lynx.NameFromContext(ctx.Context())),
@@ -135,13 +137,13 @@ func (c *otelService) Init(ctx lynx.AppContext) error {
 	}
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
-	otel.SetTextMapPropagator(c.options.propagator)
+	otel.SetTextMapPropagator(options.propagator)
 	c.tp, c.mp = tp, mp
-	c.inited = true
+	c.inited.Store(true)
 	return nil
 }
 
-// Start 阻塞至应用关闭（组件 actor 语义）。
+// Start 阻塞至应用关闭（服务 actor 语义）。
 func (c *otelService) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil

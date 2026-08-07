@@ -245,6 +245,41 @@ func TestBrokerStopBeforeStart(t *testing.T) {
 	}
 }
 
+// TestBrokerStopAfterStartBlocksSubscribe 回归 P3-3：真实 Start→Stop 后
+// 生命周期终结，Subscribe 必须返回明确的 stopped 错误（此前 started 仍为
+// true，报 "cannot subscribe to a started broker" 误导文案）；Start 同样
+// 报 stopped 而非 started。
+func TestBrokerStopAfterStartBlocksSubscribe(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b := NewBroker(Options{DefaultTransport: NewMemoryTransport()})
+	if err := b.Init(newFakeApp()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- b.Start(ctx) }()
+	if !pollUntil(5*time.Second, 10*time.Millisecond, func() bool { return b.CheckHealth() == nil }) {
+		t.Fatal("broker did not start")
+	}
+	cancel()
+	_ = b.Stop(context.Background())
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after Stop")
+	}
+
+	err := b.Subscribe(ctx, "late.event", "late-handler", func(ctx context.Context, msg *Message) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("Subscribe after Stop error = %v, want stopped-broker error", err)
+	}
+	if err := b.Start(ctx); err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("Start after Stop error = %v, want stopped-broker error", err)
+	}
+}
+
 // TestBrokerPublishTypedNilMessage 回归 P2-5：类型断言的 typed nil *Message
 // payload 必须返回明确错误，不得在 cloneMessage 中解引用 panic。
 func TestBrokerPublishTypedNilMessage(t *testing.T) {

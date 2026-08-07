@@ -1,9 +1,9 @@
-// Package kafka 提供 Kafka Transport 组件：按逻辑 topic 配置集群、
+// Package kafka 提供 Kafka Transport 服务：按逻辑 topic 配置集群、
 // 物理主题与消费/发布参数，接入 pubsub.Broker。
 //
 // 配置驱动：NewFromConfig 从配置 "kafka" 段加载 Options 并创建 Transport；
 // 段缺失或为空时返回 (nil, nil) 表示 Kafka 未启用——**返回 nil 时不得
-// Register**（框架对 plain nil 组件注册会返回明确错误）。
+// Register**（框架对 plain nil 服务注册会返回明确错误）。
 package kafka
 
 import (
@@ -122,11 +122,11 @@ type ProducerOptions struct {
 	ClientID string `mapstructure:"client_id"`
 }
 
-// Transport 是 Kafka 后端组件：内部按 brokers 分组客户端，
+// Transport 是 Kafka 后端服务：内部按 brokers 分组客户端，
 // 订阅按（消费组 × 物理 topic × 实例数）展开后 fan-in。
 type Transport struct {
 	opts Options
-	// logger 是组件日志实例：Init(ctx) 时从 ctx.Logger 取，未 Init
+	// logger 是服务日志实例：Init(ctx) 时从 ctx.Logger 取，未 Init
 	//（脱离框架单用）时回落 slog.Default()。
 	logger *slog.Logger
 
@@ -196,7 +196,7 @@ func NewTransport(opts Options) (*Transport, error) {
 	return t, nil
 }
 
-// Name 返回组件名称 "kafka-transport"。
+// Name 返回服务名称 "kafka-transport"。
 func (t *Transport) Name() string { return "kafka-transport" }
 
 // Init 校验配置并记录日志实例。
@@ -215,15 +215,20 @@ func (t *Transport) Init(ctx lynx.AppContext) error {
 	return nil
 }
 
-// Start 标记运行并阻塞至组件停止。
+// Start 标记运行并阻塞至停止：双监听传入 ctx 与内部 ctx（Stop 取消），
+// 对齐全库"Start 尊重调用方 ctx"的契约——框架中断时取消传入 ctx 即可
+// 使 Start 返回；内部订阅/fan-in goroutine 对 t.ctx 的依赖保持不变。
 func (t *Transport) Start(ctx context.Context) error {
 	t.running.Store(true)
-	<-t.ctx.Done()
+	select {
+	case <-ctx.Done():
+	case <-t.ctx.Done():
+	}
 	t.running.Store(false)
 	return nil
 }
 
-// Stop 关闭全部客户端并取消组件上下文；关闭错误聚合返回。
+// Stop 关闭全部客户端并取消服务上下文；关闭错误聚合返回。
 func (t *Transport) Stop(ctx context.Context) error {
 	t.stopped.Store(true)
 	t.mu.Lock()
