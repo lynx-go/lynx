@@ -1,6 +1,6 @@
 # Lynx 路线图
 
-> 最后更新：2026-08-05
+> 最后更新：2026-08-07
 
 ## 定位与目标
 
@@ -75,6 +75,37 @@ v1.0 发布前全量审查（功能缺失/设计缺陷/实现缺陷）的修复�
 - [x] **gRPC**：app 级健康检查同步；Recovery 最外层；流式拦截器入口
 - [x] **发布卫生**：contrib go.mod bump、各模块 LICENSE、CHANGELOG、
       内部文档清理
+
+## Phase E — v1.0 后的能力补全（v1.1+）
+
+目标：围绕"服务间调用、流量治理、运维诊断"补齐生产通用能力。
+v1.0 API 已冻结并保持向后兼容，本阶段只做增量（来源：2026-08-07
+封版评审的缺口分析，参照 kratos/go-zero 等成熟框架的能力面）。
+
+### E1 生产通用刚需（v1.1~v1.2，按优先级排序）
+
+- [ ] Debug/pprof 管理服务：可选 Service，挂载 `/debug/pprof/*` 与
+      运行时日志级别调整，绑定内网地址/独立端口
+- [ ] HTTP/gRPC client 组件：otel 插装、trace 与 `request_id`/日志属性
+      传播（复用 `logging` 包）、超时/重试/错误映射默认值
+- [ ] gRPC TLS 一等选项（`grpc.WithTLS`，与 HTTP 侧对齐；当前仅
+      `WithServerOptions` 逃生口）
+- [ ] 统一错误约定：可选 HTTP 错误响应规范 + 状态码映射 handler
+- [ ] 流量治理中间件：HTTP 侧 recovery、基础限流；熔断按需
+
+### E2 运维增强（v1.x 中后期）
+
+- [ ] 配置热更新（viper WatchConfig）与运行时日志级别调整
+- [ ] Go runtime metrics 开箱接入（goroutine/GC/内存）
+- [ ] 关停排水语义显式化（readiness 先变 not-ready → 等 LB 摘流 →
+      再关监听）
+
+### E3 定位选择（按需评估，默认不做）
+
+- 服务注册发现：k8s 环境以 DNS/Service 为主，必要时 contrib 形式提供
+- 数据层（DB/Redis）：保持"不碰数据层"定位，docs 明确说明
+- 配置中心（apollo/nacos）：按团队需要以 contrib 提供
+- 脚手架 CLI（kratos-cli 类）：属开源推广工具，非框架组件
 
 ## 原则
 
