@@ -30,11 +30,13 @@ Uses Task (taskfile) for releases:
 
 ```bash
 # Release all modules at once (tags main repo and all contrib modules)
-task release-all
+task release-all Version=v1.2.0 Comment="release v1.2.0"
 
 # Individual module releases
-task release-tag --Version=v0.5.8 --Comment="release message"
+task release-tag Version=v0.5.8 Comment="release message"
 ```
+
+Note: Task ≥3.9 passes CLI variables as `VAR=value` args; the older `--Version=v0.5.8` flag form is no longer supported.
 
 The project uses a multi-module release strategy. When releasing, you must tag:
 - Main repo: `v{version}`
