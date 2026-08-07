@@ -42,7 +42,7 @@ func main() {
 		broker := pubsub.NewBroker(pubsub.Options{DefaultTransport: pubsub.NewMemoryTransport()})
 		app.Register(broker)
 		router := pubsub.NewRouter(broker, []pubsub.Handler{
-			pubsub.NewRawHandler("hello", "helloHandler", func(ctx context.Context, event *pubsub.Message) error {
+			pubsub.NewHandler("hello", "helloHandler", func(ctx context.Context, event *pubsub.Message) error {
 				slog.InfoContext(ctx, "recv hello event", "payload", string(event.Payload))
 				return nil
 			}),

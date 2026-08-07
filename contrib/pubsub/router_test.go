@@ -11,7 +11,7 @@ import (
 func TestRouterInitNilAppContext(t *testing.T) {
 	b := NewBroker(Options{DefaultTransport: NewMemoryTransport()})
 	r := NewRouter(b, []Handler{
-		NewHandler("orders", "orderHandler", func(ctx context.Context, event *TypedMessage[string]) error {
+		NewTypedHandler("orders", "orderHandler", func(ctx context.Context, event *TypedMessage[string]) error {
 			return nil
 		}),
 	})

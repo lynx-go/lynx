@@ -17,4 +17,4 @@ go run . -c config.yaml
 - `main.go:24`：`zap.NewZapLogger(logLevel, "cli.out")` 将日志写入 `cli.out`，并包装为 slog。
 - `main.go:42-53`：`pubsub.NewBroker` + `pubsub.NewRouter` 注册 `helloHandler`，挂为应用服务。
 - `main.go:54 app.Command`：命令入口，发布 `hello` 事件后结束。
-- `main.go:45`：`pubsub.NewRawHandler` 构造原始字节 handler 消费 `hello` 事件。
+- `main.go:45`：`pubsub.NewHandler` 构造原始字节 handler 消费 `hello` 事件。

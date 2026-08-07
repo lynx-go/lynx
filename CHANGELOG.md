@@ -110,7 +110,7 @@ v1.0 发布前完成了大规模 API 重构（breaking changes 无需向后兼�
 - **PubSub 透明序列化**：`Publish` 直接接受业务对象自动序列化（默认 JSON，
   可注入自定义 `Marshaler`）；`pubsub.Subscribe[T]` 类型化订阅自动反序列化；
   字节级 `*Message` 语义保留
-- **PubSub 类型化 Handler**：`NewHandler[T]`/`NewRawHandler` 工厂构造
+- **PubSub 类型化 Handler**：`NewTypedHandler[T]`/`NewHandler` 工厂构造
   `pubsub.Handler`（`EventName`/`HandlerName`/`NewEvent`/`Handle`），
   `NewEvent()` 声明式解码 + `MessageDecoder` 免反射泛型擦除，Pub/Sub 两侧
   Marshaler 解析对称

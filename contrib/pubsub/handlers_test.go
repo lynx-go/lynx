@@ -52,7 +52,7 @@ func TestRouterTypedHandler(t *testing.T) {
 	}
 	var got atomic.Value // *TypedMessage[Order]
 	b, _ := startRouter(t, []Handler{
-		NewHandler("orders", "orderHandler", func(ctx context.Context, event *TypedMessage[Order]) error {
+		NewTypedHandler("orders", "orderHandler", func(ctx context.Context, event *TypedMessage[Order]) error {
 			got.Store(event)
 			return nil
 		}),
@@ -85,7 +85,7 @@ func TestRouterTypedHandler(t *testing.T) {
 func TestRouterRawHandler(t *testing.T) {
 	var got atomic.Value // *Message
 	b, _ := startRouter(t, []Handler{
-		NewRawHandler("raw", "rawHandler", func(ctx context.Context, event *Message) error {
+		NewHandler("raw", "rawHandler", func(ctx context.Context, event *Message) error {
 			got.Store(event)
 			return nil
 		}),
@@ -115,11 +115,11 @@ func TestRouterMixedHandlers(t *testing.T) {
 	var typed atomic.Value // *TypedMessage[Greeting]
 	var raw atomic.Value   // *Message
 	b, _ := startRouter(t, []Handler{
-		NewHandler("greet", "typedHandler", func(ctx context.Context, event *TypedMessage[Greeting]) error {
+		NewTypedHandler("greet", "typedHandler", func(ctx context.Context, event *TypedMessage[Greeting]) error {
 			typed.Store(event)
 			return nil
 		}),
-		NewRawHandler("raw", "rawHandler", func(ctx context.Context, event *Message) error {
+		NewHandler("raw", "rawHandler", func(ctx context.Context, event *Message) error {
 			raw.Store(event)
 			return nil
 		}),
@@ -147,7 +147,7 @@ func TestRouterMixedHandlers(t *testing.T) {
 func TestRouterTypedUnmarshalError(t *testing.T) {
 	var calls atomic.Int32
 	b, _ := startRouter(t, []Handler{
-		NewHandler("orders", "orderHandler", func(ctx context.Context, event *TypedMessage[string]) error {
+		NewTypedHandler("orders", "orderHandler", func(ctx context.Context, event *TypedMessage[string]) error {
 			calls.Add(1)
 			return nil
 		}),
@@ -167,7 +167,7 @@ func TestRouterTypedUnmarshalError(t *testing.T) {
 func TestRouterHandlerOptionsApplied(t *testing.T) {
 	var calls atomic.Int32
 	b, _ := startRouter(t, []Handler{
-		NewRawHandler("raw", "rawHandler", func(ctx context.Context, event *Message) error {
+		NewHandler("raw", "rawHandler", func(ctx context.Context, event *Message) error {
 			calls.Add(1)
 			return errors.New("boom")
 		}, WithAutoAck()),

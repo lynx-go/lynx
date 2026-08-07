@@ -30,7 +30,7 @@ func (JSONMarshaler) Unmarshal(data []byte, out any) error {
 }
 
 // TypedMessage 是类型化消息信封：元数据（ID/Key/Headers）与原始 Message
-// 一致，Payload 为业务对象。类型化 handler（NewHandler[T]）与直接订阅
+// 一致，Payload 为业务对象。类型化 handler（NewTypedHandler[T]）与直接订阅
 // （Subscribe[T]）都以它为处理入参。
 type TypedMessage[T any] struct {
 	ID      string

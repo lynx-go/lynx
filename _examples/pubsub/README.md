@@ -25,5 +25,5 @@ curl http://127.0.0.1:7071/notify
 - `provides.go` `NewMemoryTransport`：显式创建内存 Transport（kafka 与 memory 对称，均由调用方创建并注册）。
 - `provides.go` `NewServices`：聚合 memT/kafkaT、Broker、Router、HTTP Server 供 `boot.Bootstrap.Bind` 注册。
 - `wire.go`：`//go:build wireinject` 注入器 stub，`go generate` 生成 `wire_gen.go`。
-- `handlers.go` `helloHandler`/`notifyHandler`：通过 `pubsub.NewHandler`（类型化，payload 自动反序列化为 `HelloEvent`）/`pubsub.NewRawHandler`（原始字节）构造，分别消费 `hello`（Kafka）与 `notify`（内存）事件并记录日志。
+- `handlers.go` `helloHandler`/`notifyHandler`：通过 `pubsub.NewTypedHandler`（类型化，payload 自动反序列化为 `HelloEvent`）/`pubsub.NewHandler`（原始字节）构造，分别消费 `hello`（Kafka）与 `notify`（内存）事件并记录日志。
 - `main.go` `/hello`、`/notify` HTTP 端点（`:7071`）分别发布 JSON 事件，带 UUID message key。
