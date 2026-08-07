@@ -4,7 +4,10 @@ package zap
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"os"
+	"syscall"
 
 	"github.com/lynx-go/lynx"
 	"github.com/samber/lo"
@@ -92,8 +95,19 @@ type SyncableLogger struct {
 }
 
 // Sync flushes any buffered log entries. Should be called before application exit.
+// 标准流同步时的 EINVAL 错误被忽略：Linux 上 fsync(/dev/stdout) 恒失败
+// （zap 已知问题 uber-go/zap#328），不过滤会让 SyncOnStop 钩子在 Linux
+// 上每次关停都报错。文件类输出不受影响。
 func (l *SyncableLogger) Sync() error {
-	return l.zapLogger.Sync()
+	err := l.zapLogger.Sync()
+	if err == nil {
+		return nil
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && errors.Is(pathErr.Err, syscall.EINVAL) {
+		return nil
+	}
+	return err
 }
 
 // SyncOnStop 返回一个 OnStop 钩子，在应用关闭前刷新缓冲的 zap 日志，

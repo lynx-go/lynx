@@ -3,7 +3,9 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/ThreeDotsLabs/watermill"
@@ -40,6 +42,14 @@ func TestPublisherConfigReturnSuccesses(t *testing.T) {
 // 真实 watermill-kafka 工厂在补上 Marshaler 后不再报 "missing marshaler"。
 // 无需真实 broker：sarama 配置校验先于网络连接。
 func TestRealPublisherFactoryNoMissingMarshaler(t *testing.T) {
+	// NewPublisher 会尝试连接 broker：无 broker 的环境（如 CI）跳过，
+	// 本地集成验证自行启动 127.0.0.1:19092。
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:19092", time.Second)
+	if err != nil {
+		t.Skipf("kafka broker not reachable at 127.0.0.1:19092: %v", err)
+	}
+	_ = conn.Close()
+
 	cfg := sarama.NewConfig()
 	cfg.Producer.Return.Successes = true
 	cfg.Producer.Return.Errors = true

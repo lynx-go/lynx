@@ -121,6 +121,9 @@ v1.0 发布前完成了大规模 API 重构（breaking changes 无需向后兼�
   同时把工作目录加入配置搜索路径（viper v1.17+ 不再隐式搜索 "."）
 - **Kafka—Subscriber Unmarshaler**：显式装配 `DefaultMarshaler`
   （watermill-kafka v3.1.x 缺省报 "missing unmarshaler"）
+- **Zap—Linux 标准流 Sync**：`Sync`/`SyncOnStop` 忽略 stdout/stderr 的
+  fsync EINVAL（Linux 上 `fsync(/dev/stdout)` 恒失败，zap 已知问题
+  uber-go/zap#328）；修复前 Linux 应用每次关停 OnStop 钩子都会报错
 
 ### 新增
 
