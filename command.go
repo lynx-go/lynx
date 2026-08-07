@@ -9,7 +9,7 @@ import (
 	"github.com/cenkalti/backoff/v5"
 )
 
-// CommandFunc 是命令组件执行的业务函数，返回错误时视为命令失败。
+// CommandFunc 是命令服务执行的业务函数，返回错误时视为命令失败。
 type CommandFunc func(ctx context.Context) error
 
 // CommandOptions configures the command service behavior.
@@ -92,8 +92,8 @@ func (cmd *command) Start(ctx context.Context) error {
 	expBackoff.InitialInterval = cmd.options.InitialBackoff
 	expBackoff.MaxInterval = cmd.options.MaxBackoff
 	if _, err := backoff.Retry(ctx, func() (any, error) {
-		// 每轮重试重新获取健康检查快照：注册先于 Run 的组件在启动过程中
-		// 陆续变健康，快照按轮刷新可纳入等待范围（组件必须全部注册在
+		// 每轮重试重新获取健康检查快照：注册先于 Run 的服务在启动过程中
+		// 陆续变健康，快照按轮刷新可纳入等待范围（服务必须全部注册在
 		// Run 之前，见 App 接口注释）。
 		for _, checker := range cmd.appctx.HealthCheckers() {
 			if err := checker.CheckHealth(); err != nil {

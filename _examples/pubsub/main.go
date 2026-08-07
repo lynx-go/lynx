@@ -14,7 +14,7 @@ func main() {
 		app.SetLogger(zap.MustNewLogger(app))
 
 		// Wire 依赖注入生成 bootstrap（provides.go 的 ProviderSet 定义
-		// kafka/pubsub/http 各组件 provider，配置全部来自 config.yaml）。
+		// kafka/pubsub/http 各服务 provider，配置全部来自 config.yaml）。
 		bootstrap, cleanup, err := wireBootstrap(app)
 		if err != nil {
 			return err

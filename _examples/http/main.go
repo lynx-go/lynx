@@ -31,7 +31,7 @@ func main() {
 		logger := app.Logger()
 		logger.Info("parsed config", "config", config)
 
-		// OTel 组件须先注册：Init 同步创建 provider 并设为全局，
+		// OTel 服务须先注册：Init 同步创建 provider 并设为全局，
 		// 后续 initMetrics 创建的 instrument 才会挂到真实 MeterProvider 上。
 		app.Register(telemetry.New())
 		if err := initMetrics(); err != nil {

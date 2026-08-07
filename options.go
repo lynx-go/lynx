@@ -35,8 +35,8 @@ type Options struct {
 	BindConfigFunc  BindConfigFunc `json:"-"`
 	ExitSignals     []os.Signal    `json:"-"`
 	ShutdownTimeout time.Duration  `json:"shutdown_timeout"`
-	// StopTimeout 是单个组件 Stop 的最长等待时长，超过后跳过并记录错误，
-	// 防止挂死的组件阻塞整个关停流程。
+	// StopTimeout 是单个服务 Stop 的最长等待时长，超过后跳过并记录错误，
+	// 防止挂死的服务阻塞整个关停流程。
 	StopTimeout time.Duration `json:"stop_timeout"`
 	// disableConfigFlags 标记用户显式关闭默认 flags（WithDisableConfigFlags）。
 	// EnsureDefaults 在 NewOptions 与 newLynx 间可能被多次调用，需要该
@@ -176,7 +176,7 @@ func WithShutdownTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithStopTimeout 设置单个组件 Stop 的最长等待时长，超过后跳过并记录错误。
+// WithStopTimeout 设置单个服务 Stop 的最长等待时长，超过后跳过并记录错误。
 func WithStopTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.StopTimeout = timeout

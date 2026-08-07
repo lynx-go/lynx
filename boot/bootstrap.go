@@ -1,5 +1,5 @@
 // Package boot 提供基于 Wire 依赖注入的应用引导，把依赖图中的
-// 组件与 hooks 批量注册进应用。
+// 服务与 hooks 批量注册进应用。
 package boot
 
 import (

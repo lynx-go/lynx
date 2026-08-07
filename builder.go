@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// BuildFunc 是应用初始化回调，在 Builder 运行前执行，用于注册组件与 hooks。
+// BuildFunc 是应用初始化回调，在 Builder 运行前执行，用于注册服务与 hooks。
 type BuildFunc func(ctx context.Context, app App) error
 
 // Builder 是 App 应用的命令行入口，封装应用实例与初始化回调。

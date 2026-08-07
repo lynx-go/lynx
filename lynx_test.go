@@ -161,7 +161,7 @@ func (c *initAppAccessorService) Init(ctx AppContext) error {
 func (c *initAppAccessorService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
 func (c *initAppAccessorService) Stop(ctx context.Context) error  { return nil }
 
-// stopRecorder 在 Stop 时向缓冲 chan 发送组件名，用于失败清理断言。
+// stopRecorder 在 Stop 时向缓冲 chan 发送服务名，用于失败清理断言。
 type stopRecorder struct {
 	name    string
 	stopped chan string
@@ -314,13 +314,13 @@ func TestServiceStopBoundedByTimeout(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("shutdown hung: elapsed %v, want bounded by StopTimeout", elapsed)
 	}
-	// 挂死组件的超时错误随 Run() 上抛（关停错误对称上抛）。
+	// 挂死服务的超时错误随 Run() 上抛（关停错误对称上抛）。
 	if err == nil || !strings.Contains(err.Error(), "stop timed out") {
 		t.Fatalf("Run() error = %v, want stop timed out error", err)
 	}
 }
 
-// TestServiceStopErrorSurfacesAtRun 验证组件 Stop 返回的错误随 Run()
+// TestServiceStopErrorSurfacesAtRun 验证服务 Stop 返回的错误随 Run()
 // 统一上抛（关停错误对称上抛）。
 func TestServiceStopErrorSurfacesAtRun(t *testing.T) {
 	app, err := newLynx(NewOptions())
@@ -689,7 +689,7 @@ func TestCLICommandRunsAndClosesApp(t *testing.T) {
 
 // TestRegisterAfterRunRejected 回归：Run 开始后注册为禁止操作——
 // Register/RegisterFactories panic 报明确错误，Command 返回错误；
-// 晚到的注册不得触碰 run.Group 的 actors（此前为 data race 且组件
+// 晚到的注册不得触碰 run.Group 的 actors（此前为 data race 且服务
 // 永不 Start 却被 Stop）。
 func TestRegisterAfterRunRejected(t *testing.T) {
 	app, err := newLynx(NewOptions())
@@ -730,7 +730,7 @@ func TestRegisterAfterRunRejected(t *testing.T) {
 	}
 }
 
-// TestRunJoinsOnStopErrorsWithStartFailure 回归：组件 Start 先失败时，
+// TestRunJoinsOnStopErrorsWithStartFailure 回归：服务 Start 先失败时，
 // oklog/run 只返回首个 actor 错误，OnStop 钩子错误必须与之一并上抛，
 // 不得只落日志。
 func TestRunJoinsOnStopErrorsWithStartFailure(t *testing.T) {
@@ -752,7 +752,7 @@ func TestRunJoinsOnStopErrorsWithStartFailure(t *testing.T) {
 }
 
 // TestRunRejectedTwice 回归：Run 不可重复调用——二次调用返回明确
-// 错误，组件不会被二次 Start/Stop。
+// 错误，服务不会被二次 Start/Stop。
 func TestRunRejectedTwice(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
@@ -782,7 +782,7 @@ func TestRunRejectedTwice(t *testing.T) {
 
 // TestRegisterRacingRunLeavesNoOrphan 回归 Register/Run 并发裁决：Register
 // 与 Run 并发时，迟到的注册必须在持锁登记事务内被裁决为 panic——不得留下
-// "Init 成功、计入 healthCheckers、永不 Start/Stop" 的孤儿组件，也不得与
+// "Init 成功、计入 healthCheckers、永不 Start/Stop" 的孤儿服务，也不得与
 // run.Group 的 actors 产生 data race（-race 下运行）。
 // 交错是确定性的：slow 的 Init 阻塞期间 Run 先置位 running，随后才放行。
 func TestRegisterRacingRunLeavesNoOrphan(t *testing.T) {
@@ -923,7 +923,7 @@ func TestDefaultFlagsDisabled(t *testing.T) {
 	}
 }
 
-// TestOnStartRunsBeforeServicesStart 验证 OnStart hooks 在组件启动前顺序执行。
+// TestOnStartRunsBeforeServicesStart 验证 OnStart hooks 在服务启动前顺序执行。
 func TestOnStartRunsBeforeServicesStart(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {

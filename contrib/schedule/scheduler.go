@@ -1,4 +1,4 @@
-// Package schedule 提供基于 robfig/cron 的定时任务调度组件。
+// Package schedule 提供基于 robfig/cron 的定时任务调度服务。
 package schedule
 
 import (
@@ -37,7 +37,7 @@ type Scheduler struct {
 	doneOnce sync.Once
 }
 
-// Options 是调度器组件的配置项。
+// Options 是调度器服务的配置项。
 type Options struct {
 	Cron         *cron.Cron
 	Logger       *slog.Logger
@@ -59,7 +59,7 @@ func (s *Scheduler) CheckHealth() error {
 	return nil
 }
 
-// Name 返回组件名称 "cron-scheduler"。
+// Name 返回服务名称 "cron-scheduler"。
 func (s *Scheduler) Name() string {
 	return "cron-scheduler"
 }
@@ -76,7 +76,7 @@ func (s *Scheduler) Init(ctx lynx.AppContext) error {
 }
 
 // Start 启动 cron 调度器并开始按调度执行任务，阻塞至传入 ctx 取消。
-// 竞态安全：Stop 先于本方法调用时（组件启动失败引发的提前中断），
+// 竞态安全：Stop 先于本方法调用时（服务启动失败引发的提前中断），
 // 不启动 cron 并立即返回，保证 run.Group 不会因停不掉的 cron 循环挂死。
 func (s *Scheduler) Start(ctx context.Context) error {
 	if s.stopping.Load() {
@@ -100,7 +100,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		return errors.New("scheduler stopped before start")
 	}
 	// 对齐 run.Group actor 语义：等待传入的 ctx 取消（框架在 Stop 返回后
-	// 取消组件 ctx）。任务执行的取消由 taskCtx（ctx.Context）在应用关闭时
+	// 取消服务 ctx）。任务执行的取消由 taskCtx（ctx.Context）在应用关闭时
 	// 触发，与 Start 的等待相互独立。
 	<-ctx.Done()
 	s.started.Store(false)
@@ -196,7 +196,7 @@ func WithErrorHandler(fn func(ctx context.Context, task Task, err error)) Option
 	}
 }
 
-// NewScheduler 创建调度器组件并注册所有定时任务，cron 表达式非法时返回错误。
+// NewScheduler 创建调度器服务并注册所有定时任务，cron 表达式非法时返回错误。
 func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	o := &Options{
 		Logger: slog.Default(),

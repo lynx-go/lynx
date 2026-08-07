@@ -31,7 +31,7 @@ func NewMemoryTransport() *MemoryTransport {
 	}
 }
 
-// Name 返回组件名称 "pubsub-memory"。
+// Name 返回服务名称 "pubsub-memory"。
 func (t *MemoryTransport) Name() string { return "pubsub-memory" }
 
 // Init 无额外初始化工作。

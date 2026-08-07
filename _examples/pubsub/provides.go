@@ -48,7 +48,7 @@ func NewMemoryTransport() *pubsub.MemoryTransport {
 	return pubsub.NewMemoryTransport()
 }
 
-// NewBroker 装配消息组件：pubsub.NewFromConfig 从配置 pubsub 段加载
+// NewBroker 装配消息服务：pubsub.NewFromConfig 从配置 pubsub 段加载
 // 显式路由，memory 兼作默认回退；kafka 未启用时过滤。
 func NewBroker(cfg lynx.Config, kafkaT *kafka.Transport, memT *pubsub.MemoryTransport) (pubsub.Broker, error) {
 	transports := map[string]pubsub.Transport{"memory": memT}

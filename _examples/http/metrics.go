@@ -5,8 +5,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// 业务指标：注册在全局 MeterProvider 上（由 contrib/telemetry 组件设置），
-// 经 /metrics（Prometheus）导出。initMetrics 必须在 telemetry.New 组件注册
+// 业务指标：注册在全局 MeterProvider 上（由 contrib/telemetry 服务设置），
+// 经 /metrics（Prometheus）导出。initMetrics 必须在 telemetry.New 服务注册
 // 之后调用，否则拿到的是 noop meter。
 var (
 	helloRequestsCounter metric.Int64Counter
