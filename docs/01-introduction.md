@@ -33,6 +33,8 @@ Lynx 遵循"简单即美"的设计哲学，提供最小化的核心 API，开发
 ### 服务器支持
 - **HTTP 服务器**：内置 HTTP 服务器，支持健康检查、请求日志
 - **gRPC 服务器**：内置 gRPC 服务器，支持拦截器、健康检查、反射服务
+- **HTTP/gRPC 客户端**：内置客户端组件，支持 otel 插装、trace/日志属性
+  传播（request_id/user_id）、超时与重试默认值
 
 ### 健康检查
 - 内置 `lynx.Checker` 健康检查机制（`CheckHealth() error`）
@@ -103,6 +105,8 @@ Lynx 构建于以下优秀的开源项目之上：
 ```
 lynx/
 ├── boot/           # 应用引导和依赖注入
+├── client/         # HTTP/gRPC 客户端
+│   └── http/       # HTTP 客户端
 ├── contrib/        # 扩展服务
 │   ├── kafka/      # Kafka 支持
 │   ├── pubsub/     # 消息发布订阅
@@ -168,4 +172,5 @@ go run main.go
 - [第 3 章：核心概念](./03-core-concepts.md) - 了解 Lynx 的核心设计理念
 - [第 4 章：服务系统](./04-service-system.md) - 深入理解服务化架构
 - [第 5 章：服务器](./05-servers.md) - 学习 HTTP 和 gRPC 服务器使用
+- [第 6 章：客户端](./06-clients.md) - 学习 HTTP/gRPC 客户端与传播闭环
 - [示例代码](../_examples/) - 查看更多实际应用示例
