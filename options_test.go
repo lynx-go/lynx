@@ -57,6 +57,21 @@ func TestOptionsValidate(t *testing.T) {
 			options: Options{ShutdownTimeout: MaxTimeout + time.Millisecond},
 			wantErr: ErrShutdownTimeoutTooLarge,
 		},
+		{
+			name:    "drain timeout zero is allowed",
+			options: Options{DrainTimeout: 0},
+			wantErr: nil,
+		},
+		{
+			name:    "drain timeout small positive is allowed",
+			options: Options{DrainTimeout: time.Millisecond},
+			wantErr: nil,
+		},
+		{
+			name:    "drain timeout negative",
+			options: Options{DrainTimeout: -time.Millisecond},
+			wantErr: ErrDrainTimeoutInvalid,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,6 +96,10 @@ func TestOptionsEnsureDefaults(t *testing.T) {
 	}
 	if o.ShutdownTimeout != DefaultShutdownTimeout {
 		t.Errorf("ShutdownTimeout = %v, want %v", o.ShutdownTimeout, DefaultShutdownTimeout)
+	}
+	// DrainTimeout 无默认值：0 = 不启用排水（与 v1.0 行为一致的回归红线）。
+	if o.DrainTimeout != 0 {
+		t.Errorf("DrainTimeout = %v, want 0 (no default)", o.DrainTimeout)
 	}
 	if len(o.ExitSignals) == 0 {
 		t.Error("ExitSignals should not be empty")
@@ -130,6 +149,7 @@ func TestOptionFuncs(t *testing.T) {
 		WithVersion("v1.2.3"),
 		WithShutdownTimeout(3*time.Second),
 		WithExitSignals(syscall.SIGTERM),
+		WithDrainTimeout(2*time.Second),
 	)
 	if o.ID != "id-1" {
 		t.Errorf("ID = %q, want %q", o.ID, "id-1")
@@ -142,6 +162,9 @@ func TestOptionFuncs(t *testing.T) {
 	}
 	if o.ShutdownTimeout != 3*time.Second {
 		t.Errorf("ShutdownTimeout = %v, want %v", o.ShutdownTimeout, 3*time.Second)
+	}
+	if o.DrainTimeout != 2*time.Second {
+		t.Errorf("DrainTimeout = %v, want %v", o.DrainTimeout, 2*time.Second)
 	}
 	if len(o.ExitSignals) != 1 {
 		t.Errorf("ExitSignals = %v, want 1 entry", o.ExitSignals)

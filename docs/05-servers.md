@@ -30,7 +30,7 @@ func NewServer(handler http.Handler, opts ...Option) *Server
 - `WithAddr(addr string)`：监听地址，默认 `:8080`。
 - `WithTimeout(timeout time.Duration)`：请求读写超时，默认 60 秒。该值会同时设置为底层 `http.Server` 的 `ReadHeaderTimeout`、`ReadTimeout` 和 `WriteTimeout`；传入 0 或负数则不设置（保持底层默认值）。
 - `WithShutdownTimeout(timeout time.Duration)`：优雅关闭超时，默认 10 秒。调用方 Context 无 deadline 时生效：`Stop` 以它为上限等待 `Shutdown` 排空连接，超时后强制 `Close()` 活动连接，避免长轮询/流式 handler 让关闭无限挂起。
-- `WithHealthCheckers(hc lynx.HealthCheckersFunc)`：健康检查器取值函数。传入后服务器自动暴露两个端点：`/healthz/liveness` 恒返回 200，`/healthz/readiness` 依次调用所有收集到的检查器，任一失败返回 503 + 错误正文。通常直接传方法值 `app.HealthCheckers`，收集规则见 2.5 节与 4.3 节。两个端点始终注册；不传该 Option 只是就绪检查列表为空，此时 `/healthz/readiness` 恒返回 200。
+- `WithHealthCheckers(hc lynx.HealthCheckersFunc)`：健康检查器取值函数。传入后服务器自动暴露两个端点：`/healthz/liveness` 恒返回 200（进程存活即健康，**不消费**检查器聚合），`/healthz/readiness` 依次调用所有收集到的检查器，任一失败返回 503 + 错误正文。通常直接传方法值 `app.HealthCheckers`，收集规则见 2.5 节与 4.3 节。两个端点始终注册；不传该 Option 只是就绪检查列表为空，此时 `/healthz/readiness` 恒返回 200。**与关停排水（drain，见 3.7 节）的关系**：配置 `WithDrainTimeout` 后，排水期间框架内部的 `drainChecker` 进入聚合，`/healthz/readiness` 返回 503（LB 摘流），`/healthz/liveness` 不受影响仍返回 200。
 - `WithLogger(l *slog.Logger)`：请求日志使用的日志器，默认 `slog.Default()`。
 - `WithRequestLog(requestLog bool)`：是否记录访问日志，默认 `false`。开启后每个请求以 Stackdriver 兼容的 JSON 格式输出一条 `Debug` 级别日志（`server/http/requestlog.go`），字段包含方法、URL、状态码、耗时、remote IP 以及 `trace`/`spanId`——注意需要日志器级别为 debug 才能看到。
 - `WithMiddleware(middlewares ...Middleware)`：注册自定义中间件，可多次调用叠加。链序见 5.4.5 节。
@@ -191,7 +191,7 @@ Recovery 置于最外层：链内任意一环（含用户拦截器）的 panic �
 
 ### 健康检查与反射
 
-- **健康检查**：`NewServer` 时自动注册 `grpc.health.v1` 标准健康检查服务；`Start` 时将服务名 `"grpc"` 与标准的空服务名 `""`（大多数 gRPC 健康探针使用）置为 `SERVING`，`Stop` 时均置为 `NOT_SERVING`。负载均衡器/k8s 可以直接使用标准 gRPC 健康检查协议探测。
+- **健康检查**：`NewServer` 时自动注册 `grpc.health.v1` 标准健康检查服务；`Start` 时将服务名 `"grpc"` 与标准的空服务名 `""`（大多数 gRPC 健康探针使用）置为 `SERVING`，`Stop` 时均置为 `NOT_SERVING`。负载均衡器/k8s 可以直接使用标准 gRPC 健康检查协议探测。接入 app 级检查器（`WithHealthCheckers`）后，按 `HealthCheckPeriod`（默认 10 秒）轮询聚合并同步：任一依赖不健康即置 `NOT_SERVING`。配置 `WithDrainTimeout` 时，排水窗口内 `drainChecker` 进入聚合，探测在下一个轮询周期内转为 `NOT_SERVING`（摘流延迟受 `HealthCheckPeriod` 约束，需要更快摘流可调小周期）。
 - **反射**：`NewServer` 时自动注册 reflection 服务，因此可以直接用 `grpcurl localhost:9090 list` 之类的工具调试，无需额外配置。
 
 ### 完整示例

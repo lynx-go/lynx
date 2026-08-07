@@ -114,6 +114,8 @@ The main run loop (lynx.go:497-572) uses `oklog/run` to manage concurrent gorout
 3. Listens for shutdown signals (SIGTERM, SIGQUIT, SIGINT)
 4. On shutdown: runs OnStop hooks with timeout, stops all services
 
+Optional drain window (`Options.DrainTimeout`, default 0 = disabled): on shutdown, an internal `drainChecker` is set so readiness aggregation (`app.HealthCheckers()`) fails immediately (LB 摘流), then the app sleeps `DrainTimeout` before cancelling the context and proceeding with the v1.0 shutdown sequence. DrainTimeout is a separate budget from ShutdownTimeout: total shutdown upper bound = DrainTimeout + ShutdownTimeout + StopTimeout stack. Drain only affects readiness (HTTP `/healthz/liveness` never consumes checkers).
+
 **Context Values**
 The application context carries standard values (lynx.go:65-105):
 - `NameFromContext(ctx)` - Application name

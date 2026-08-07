@@ -217,6 +217,29 @@ func (c *slowInitService) Start(ctx context.Context) error {
 
 func (c *slowInitService) Stop(ctx context.Context) error { c.stopped.Store(true); return nil }
 
+// drainProbe 记录 Start 进入与返回的时刻，用于断言服务在排水窗口内保持运行。
+type drainProbe struct {
+	name        string
+	started     atomic.Bool
+	startReturn atomic.Int64 // unix nano
+	stopped     atomic.Bool
+}
+
+func (c *drainProbe) Name() string { return c.name }
+func (c *drainProbe) Init(ctx AppContext) error {
+	return nil
+}
+func (c *drainProbe) Start(ctx context.Context) error {
+	c.started.Store(true)
+	<-ctx.Done()
+	c.startReturn.Store(time.Now().UnixNano())
+	return nil
+}
+func (c *drainProbe) Stop(ctx context.Context) error {
+	c.stopped.Store(true)
+	return nil
+}
+
 func TestInitCanCallAppMethods(t *testing.T) {
 	cli := NewBuilder(func(ctx context.Context, app App) error {
 		app.Register(&initAppAccessorService{})
@@ -839,6 +862,126 @@ func TestRegisterRacingRunLeavesNoOrphan(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run() did not return after Close()")
+	}
+}
+
+// TestDrainChecker 验证框架内部排水检查器的状态语义。
+func TestDrainChecker(t *testing.T) {
+	var d drainChecker
+	if err := d.CheckHealth(); err != nil {
+		t.Fatalf("CheckHealth() = %v, want nil before draining", err)
+	}
+	d.SetDraining(true)
+	if err := d.CheckHealth(); err == nil {
+		t.Fatal("CheckHealth() = nil, want error while draining")
+	}
+	d.SetDraining(false)
+	if err := d.CheckHealth(); err != nil {
+		t.Fatalf("CheckHealth() = %v, want nil after draining cleared", err)
+	}
+}
+
+// TestDrainTimeoutMarksReadinessUnhealthyBeforeShutdown 验证排水窗口语义：
+// 关停信号（Close，与系统信号共用同一 shutdown 闭包）到达后，drainChecker
+// 立即让 readiness 聚合（HealthCheckers()）失败，服务在 DrainTimeout
+// 窗口内保持运行，窗口结束后才真正关停。
+func TestDrainTimeoutMarksReadinessUnhealthyBeforeShutdown(t *testing.T) {
+	const drain = 200 * time.Millisecond
+	app, err := newLynx(NewOptions(WithDrainTimeout(drain)))
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	probe := &drainProbe{name: "probe"}
+	app.Register(probe)
+
+	// 启用排水时，框架内部 drainChecker 进入聚合：即使未注册任何 Checker
+	// 服务，HealthCheckers() 也包含 1 个检查器，且平时健康。
+	if got := len(app.HealthCheckers()); got != 1 {
+		t.Fatalf("health checkers = %d, want 1 (drain checker registered)", got)
+	}
+	for _, c := range app.HealthCheckers() {
+		if err := c.CheckHealth(); err != nil {
+			t.Fatalf("readiness unhealthy before shutdown: %v", err)
+		}
+	}
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- app.Run() }()
+	waitFor(t, 2*time.Second, func() bool { return probe.started.Load() }, "probe to start")
+
+	closeAt := time.Now()
+	app.Close()
+
+	// 1) 排水窗口内：readiness 聚合立即不健康（LB 摘流生效）。
+	waitFor(t, drain/2, func() bool {
+		for _, c := range app.HealthCheckers() {
+			if c.CheckHealth() != nil {
+				return true
+			}
+		}
+		return false
+	}, "readiness to become unhealthy after Close")
+
+	// 2) 同一时刻服务仍在运行：Start 尚未返回、Stop 尚未被调用。
+	if probe.startReturn.Load() != 0 {
+		t.Fatal("service Start returned before drain window elapsed")
+	}
+	if probe.stopped.Load() {
+		t.Fatal("service stopped before drain window elapsed")
+	}
+
+	// 3) Run 返回发生在排水窗口之后：总关停时长 >= DrainTimeout。
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after drain window")
+	}
+	if elapsed := time.Since(closeAt); elapsed < drain {
+		t.Errorf("shutdown elapsed %v, want >= drain timeout %v", elapsed, drain)
+	}
+	if probe.startReturn.Load() == 0 {
+		t.Fatal("service Start never returned after shutdown")
+	}
+}
+
+// TestDrainTimeoutZeroSkipsDrainWindow 回归：DrainTimeout=0（默认）时
+// 关停路径与 v1.0 完全一致——不注册 drainChecker（HealthCheckers() 快照
+// 内容一致），关停无排水延迟。快照内容的逐项断言另见
+// TestHealthCheckersRegistered（默认选项下运行，即为 v1.0 回归证明）。
+func TestDrainTimeoutZeroSkipsDrainWindow(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	if got := len(app.HealthCheckers()); got != 0 {
+		t.Fatalf("health checkers = %d, want 0 (no drain checker when DrainTimeout=0)", got)
+	}
+	probe := &drainProbe{name: "probe"}
+	app.Register(probe)
+	if got := len(app.HealthCheckers()); got != 0 {
+		t.Fatalf("health checkers = %d, want 0 (non-checker service must not be collected)", got)
+	}
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- app.Run() }()
+	waitFor(t, 2*time.Second, func() bool { return probe.started.Load() }, "probe to start")
+
+	closeAt := time.Now()
+	app.Close()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after Close()")
+	}
+	// 无排水窗口：关停立即执行。若误加入 200ms 排水，此处必然失败。
+	if elapsed := time.Since(closeAt); elapsed >= 200*time.Millisecond {
+		t.Errorf("shutdown elapsed %v, want no drain delay (DrainTimeout=0)", elapsed)
 	}
 }
 
