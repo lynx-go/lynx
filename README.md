@@ -52,7 +52,7 @@ func main() {
         router.HandleFunc("/", func(w gohttp.ResponseWriter, r *gohttp.Request) {
             json.NewEncoder(w).Encode(map[string]string{
                 "hello": "world",
-                "app":   lynx.NameFromContext(app.Context()),
+                "app":   lynx.Meta(app.Context()).Name,
             })
         })
 

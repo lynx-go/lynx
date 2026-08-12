@@ -44,10 +44,11 @@ func buildLogger(ctx lynx.AppContext) (*zap.Logger, *slog.Logger, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	meta := lynx.Meta(ctx.Context())
 	return zapLogger, slogger.With(
-		"service.id", lynx.IDFromContext(ctx.Context()),
-		"service.name", lynx.NameFromContext(ctx.Context()),
-		"service.version", lynx.VersionFromContext(ctx.Context()),
+		"service.id", meta.ID,
+		"service.name", meta.Name,
+		"service.version", meta.Version,
 	), nil
 }
 

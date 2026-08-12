@@ -54,49 +54,30 @@ type App interface {
 	SetLogger(logger *slog.Logger)
 }
 
-type nameCtx struct{}
+type metaCtx struct{}
 
-var keyName = nameCtx{}
+var keyMeta = metaCtx{}
 
-type idCtx struct{}
-
-var keyId = idCtx{}
-
-type versionCtx struct{}
-
-var keyVersion = versionCtx{}
-
-// IDFromContext returns the instance ID from the context.
-// Returns an empty string if the ID is not set or has wrong type.
-func IDFromContext(ctx context.Context) string {
-	if v := ctx.Value(keyId); v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
+// Metadata describes the application metadata carried in the context:
+// name, instance ID and version.
+type Metadata struct {
+	// Name is the application name.
+	Name string
+	// ID is the instance ID (hostname by default).
+	ID string
+	// Version is the application version.
+	Version string
 }
 
-// VersionFromContext returns the application version from the context.
-// Returns an empty string if the version is not set or has wrong type.
-func VersionFromContext(ctx context.Context) string {
-	if v := ctx.Value(keyVersion); v != nil {
-		if s, ok := v.(string); ok {
-			return s
+// Meta returns the application metadata from the context.
+// Fields are empty strings if not set or of wrong type.
+func Meta(ctx context.Context) Metadata {
+	if v := ctx.Value(keyMeta); v != nil {
+		if m, ok := v.(Metadata); ok {
+			return m
 		}
 	}
-	return ""
-}
-
-// NameFromContext returns the application name from the context.
-// Returns an empty string if the name is not set or has wrong type.
-func NameFromContext(ctx context.Context) string {
-	if v := ctx.Value(keyName); v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
+	return Metadata{}
 }
 
 type lynx struct {
@@ -241,21 +222,21 @@ func (app *lynx) init() error {
 		return err
 	}
 
-	name := app.c.GetString("service.name")
-	if name == "" {
-		name = app.o.Name
+	meta := Metadata{
+		Name:    app.c.GetString("service.name"),
+		ID:      app.c.GetString("service.id"),
+		Version: app.c.GetString("service.version"),
 	}
-	app.ctx = context.WithValue(app.ctx, keyName, name)
-	id := app.c.GetString("service.id")
-	if id == "" {
-		id = app.o.ID
+	if meta.Name == "" {
+		meta.Name = app.o.Name
 	}
-	app.ctx = context.WithValue(app.ctx, keyId, id)
-	version := app.c.GetString("service.version")
-	if version == "" {
-		version = app.o.Version
+	if meta.ID == "" {
+		meta.ID = app.o.ID
 	}
-	app.ctx = context.WithValue(app.ctx, keyVersion, version)
+	if meta.Version == "" {
+		meta.Version = app.o.Version
+	}
+	app.ctx = context.WithValue(app.ctx, keyMeta, meta)
 
 	app.applyLogLevel()
 	return nil

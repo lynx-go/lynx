@@ -54,12 +54,11 @@ func main() {
 			defer func() {
 				helloRequestDuration.Record(r.Context(), time.Since(start).Seconds())
 			}()
-			name := lynx.NameFromContext(app.Context())
-			id := lynx.IDFromContext(app.Context())
+			meta := lynx.Meta(app.Context())
 			out, _ := json.Marshal(map[string]any{
 				"hello": "world",
-				"from":  name,
-				"id":    id,
+				"from":  meta.Name,
+				"id":    meta.ID,
 			})
 			_, _ = rw.Write(out)
 		})

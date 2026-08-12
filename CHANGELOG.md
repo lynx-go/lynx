@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.3.0 (2026-08-12)
+
+Context 元数据取值收敛：三个取值函数合并为单入口结构体返回。
+
+### 破坏性变更
+
+- **核心—Context 元数据收敛**：`lynx.NameFromContext(ctx)` /
+  `lynx.IDFromContext(ctx)` / `lynx.VersionFromContext(ctx)` 移除，收敛为
+  `lynx.Meta(ctx)` 单入口，返回 `lynx.Metadata{Name, ID, Version}` 结构体
+  （字段未设置或类型不符时为零值字符串）；内部 context 值由三个独立 key
+  合并为单个 `keyMeta`（一次 `WithValue` 写入）。调用方迁移：
+  `lynx.NameFromContext(ctx)` → `lynx.Meta(ctx).Name`，余者类推。
+
+### 其他
+
+- 调用点同步：contrib/zap 与 contrib/telemetry 的服务标识字段、_examples/http
+  改为 `lynx.Meta(...)`；README、docs 02/03、CLAUDE.md 文档与测试更新。
+
 ## v1.2.0 (2026-08-07)
 
 应用入口类型与其职责一致化的命名修正版本：`Builder` 更名 `Runner`，

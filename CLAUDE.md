@@ -119,10 +119,9 @@ The main run loop (lynx.go:497-572) uses `oklog/run` to manage concurrent gorout
 Optional drain window (`Options.DrainTimeout`, default 0 = disabled): on shutdown, an internal `drainChecker` is set so readiness aggregation (`app.HealthCheckers()`) fails immediately (LB 摘流), then the app sleeps `DrainTimeout` before cancelling the context and proceeding with the v1.0 shutdown sequence. DrainTimeout is a separate budget from ShutdownTimeout: total shutdown upper bound = DrainTimeout + ShutdownTimeout + StopTimeout stack. Drain only affects readiness (HTTP `/healthz/liveness` never consumes checkers).
 
 **Context Values**
-The application context carries standard values (lynx.go:65-105):
-- `NameFromContext(ctx)` - Application name
-- `IDFromContext(ctx)` - Instance ID (hostname by default)
-- `VersionFromContext(ctx)` - Application version
+The application context carries standard values (lynx.go):
+- `Meta(ctx)` returns a `Metadata{Name, ID, Version}` struct from the context
+- Fields map to `service.name` / `service.id` (hostname by default) / `service.version`
 
 ### Configuration System
 
@@ -239,7 +238,5 @@ value := app.Config().GetString("key")
 ```
 
 **Context Utilities**
-The framework provides context helpers to access app metadata:
-- `lynx.NameFromContext(ctx)` - Get app name
-- `lynx.IDFromContext(ctx)` - Get instance ID
-- `lynx.VersionFromContext(ctx)` - Get app version
+The framework provides a context helper to access app metadata:
+- `lynx.Meta(ctx)` returns `lynx.Metadata{Name, ID, Version}` (empty fields when unset)

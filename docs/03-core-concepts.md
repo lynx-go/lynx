@@ -167,22 +167,25 @@ lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
 
 ## 3.5 Context 辅助函数
 
-框架在初始化时把应用元信息注入应用 Context（`app.Context()`），并提供三个取值函数（均定义在 `lynx.go`）：
+框架在初始化时把应用元信息注入应用 Context（`app.Context()`），并提供 `lynx.Meta(ctx)` 一次取回（定义在 `lynx.go`）：
 
-- `lynx.IDFromContext(ctx)`：实例 ID
-- `lynx.NameFromContext(ctx)`：应用名称
-- `lynx.VersionFromContext(ctx)`：应用版本
+```go
+type Metadata struct {
+	Name    string // 应用名称
+	ID      string // 实例 ID
+	Version string // 应用版本
+}
+```
 
-三个函数在值不存在或类型不符时返回空字符串。典型用法是在请求处理或日志中读取应用身份（取自 `_examples/http/main.go`）：
+字段未设置或类型不符时为对应的零值字符串。典型用法是在请求处理或日志中读取应用身份（取自 `_examples/http/main.go`）：
 
 ```go
 router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
-	name := lynx.NameFromContext(app.Context())
-	id := lynx.IDFromContext(app.Context())
+	meta := lynx.Meta(app.Context())
 	out, _ := json.Marshal(map[string]any{
 		"hello": "world",
-		"from":  name,
-		"id":    id,
+		"from":  meta.Name,
+		"id":    meta.ID,
 	})
 	_, _ = rw.Write(out)
 })
@@ -266,10 +269,11 @@ import (
 func main() {
 	cli := lynx.NewRunner(func(app lynx.App) error {
 		app.OnStart(func(ctx context.Context) error {
+			meta := lynx.Meta(app.Context())
 			app.Logger().Info("on-start hook",
-				"name", lynx.NameFromContext(app.Context()),
-				"id", lynx.IDFromContext(app.Context()),
-				"version", lynx.VersionFromContext(app.Context()),
+				"name", meta.Name,
+				"id", meta.ID,
+				"version", meta.Version,
 			)
 			return nil
 		})

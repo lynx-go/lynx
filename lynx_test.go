@@ -1284,14 +1284,9 @@ func TestAppContextCarriesServiceConfigKeys(t *testing.T) {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 	ctx := app.Context()
-	if got := NameFromContext(ctx); got != "svc-new" {
-		t.Errorf("NameFromContext() = %q, want %q", got, "svc-new")
-	}
-	if got := IDFromContext(ctx); got != "id-new" {
-		t.Errorf("IDFromContext() = %q, want %q", got, "id-new")
-	}
-	if got := VersionFromContext(ctx); got != "v-new" {
-		t.Errorf("VersionFromContext() = %q, want %q", got, "v-new")
+	want := Metadata{Name: "svc-new", ID: "id-new", Version: "v-new"}
+	if got := Meta(ctx); got != want {
+		t.Errorf("Meta() = %+v, want %+v", got, want)
 	}
 }
 
@@ -1309,14 +1304,15 @@ func TestAppContextIgnoresLegacyTopLevelKeys(t *testing.T) {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 	ctx := app.Context()
-	if got := NameFromContext(ctx); got != DefaultName {
-		t.Errorf("NameFromContext() = %q, want Options 默认值 %q（旧键已失效）", got, DefaultName)
+	got := Meta(ctx)
+	if got.Name != DefaultName {
+		t.Errorf("Meta().Name = %q, want Options 默认值 %q（旧键已失效）", got.Name, DefaultName)
 	}
-	if got := IDFromContext(ctx); got == "id-old" {
-		t.Errorf("IDFromContext() = %q, 旧顶层键不应生效", got)
+	if got.ID == "id-old" {
+		t.Errorf("Meta().ID = %q, 旧顶层键不应生效", got.ID)
 	}
-	if got := VersionFromContext(ctx); got == "v-old" {
-		t.Errorf("VersionFromContext() = %q, 旧顶层键不应生效", got)
+	if got.Version == "v-old" {
+		t.Errorf("Meta().Version = %q, 旧顶层键不应生效", got.Version)
 	}
 }
 

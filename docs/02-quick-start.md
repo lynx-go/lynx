@@ -30,12 +30,11 @@ func main() {
 	cli := lynx.NewRunner(func(app lynx.App) error {
 		router := gohttp.NewServeMux()
 		router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {
-			name := lynx.NameFromContext(app.Context())
-			id := lynx.IDFromContext(app.Context())
+			meta := lynx.Meta(app.Context())
 			out, _ := json.Marshal(map[string]any{
 				"hello": "world",
-				"from":  name,
-				"id":    id,
+				"from":  meta.Name,
+				"id":    meta.ID,
 			})
 			_, _ = rw.Write(out)
 		})

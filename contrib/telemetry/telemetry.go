@@ -17,7 +17,7 @@
 // /metrics（如 promhttp.Handler()），其使用默认注册表，与默认 reader 兼容。
 //
 // Init 在 ctx 非 nil 且未显式 WithResource 时，自动以应用名
-// （NameFromContext(ctx.Context())）构建 service.name 资源属性，
+// （lynx.Meta(ctx.Context()).Name）构建 service.name 资源属性，
 // 服务名零配置进入 trace/metrics。
 package telemetry
 
@@ -128,7 +128,7 @@ func (c *otelService) Init(ctx lynx.AppContext) error {
 		// DX 提升：服务名零配置进入 trace/metrics（应用名取自服务环境）。
 		options.res = resource.NewWithAttributes(
 			semconv.SchemaURL,
-			semconv.ServiceName(lynx.NameFromContext(ctx.Context())),
+			semconv.ServiceName(lynx.Meta(ctx.Context()).Name),
 		)
 	}
 	tp, mp, err := newProviders(&options)
