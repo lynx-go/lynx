@@ -45,6 +45,9 @@ The project uses a multi-module release strategy. When releasing, you must tag:
 - contrib/kafka: `contrib/kafka/{version}`
 - contrib/telemetry: `contrib/telemetry/{version}`
 - contrib/schedule: `contrib/schedule/{version}`
+- contrib/registry: `contrib/registry/{version}`
+- contrib/consul: `contrib/consul/{version}`
+- contrib/consul: `contrib/consul/{version}`
 
 ### Module Structure
 
@@ -56,6 +59,9 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./contrib/kafka` - Kafka Transport service (watermill-kafka/v3)
 - `./contrib/telemetry` - OpenTelemetry lifecycle management (trace/metrics providers)
 - `./contrib/schedule` - Cron scheduler
+- `./contrib/registry` - Service registry/discovery: types, Registrar, Resolver, Pickers, memory/DNS backends, `registry://` HTTP transport & gRPC resolver
+- `./contrib/consul` - Consul registry/discovery backend (implements registry.Registry + registry.Discovery)
+- `./contrib/consul` - Consul registry/discovery backend (`consul.NewFromConfig`)
 
 Server implementations (within main module):
 - `./server/http` - HTTP server using stdlib `net/http` with otelhttp instrumentation
@@ -116,7 +122,7 @@ The main run loop (lynx.go:497-572) uses `oklog/run` to manage concurrent gorout
 3. Listens for shutdown signals (SIGTERM, SIGQUIT, SIGINT)
 4. On shutdown: runs OnStop hooks with timeout, stops all services
 
-Optional drain window (`Options.DrainTimeout`, default 0 = disabled): on shutdown, an internal `drainChecker` is set so readiness aggregation (`app.HealthCheckers()`) fails immediately (LB 摘流), then the app sleeps `DrainTimeout` before cancelling the context and proceeding with the v1.0 shutdown sequence. DrainTimeout is a separate budget from ShutdownTimeout: total shutdown upper bound = DrainTimeout + ShutdownTimeout + StopTimeout stack. Drain only affects readiness (HTTP `/healthz/liveness` never consumes checkers).
+Optional drain window (`Options.DrainTimeout`, default 0 = disabled): on shutdown, an internal `drainChecker` is set so readiness aggregation (`app.HealthCheckers()`) fails immediately (LB 摘流), then the app sleeps `DrainTimeout` before cancelling the context and proceeding with the v1.0 shutdown sequence. During the drain window checkers return the exported `lynx.ErrDraining`. `app.OnDrain(fns...)` hooks (e.g. registry deregistration) run **concurrently** with the drain sleep, bounded by `Options.DrainHookTimeout` (`WithDrainHookTimeout`, default 3s). DrainTimeout is a separate budget from ShutdownTimeout: total shutdown upper bound = max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout + StopTimeout stack when drain hooks are registered (without hooks: DrainTimeout + ShutdownTimeout + StopTimeout). Drain only affects readiness (HTTP `/healthz/liveness` never consumes checkers).
 
 **Context Values**
 The application context carries standard values (lynx.go):

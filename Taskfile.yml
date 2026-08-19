@@ -37,3 +37,11 @@ tasks:
         vars:
           Version: "contrib/schedule/{{.Version}}"
           Comment: "{{.Comment}}"
+      - task: release-tag
+        vars:
+          Version: "contrib/registry/{{.Version}}"
+          Comment: "{{.Comment}}"
+      - task: release-tag
+        vars:
+          Version: "contrib/consul/{{.Version}}"
+          Comment: "{{.Comment}}"

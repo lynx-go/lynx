@@ -26,6 +26,8 @@ jobs:
           - { module: contrib/pubsub, flag: pubsub }
           - { module: contrib/schedule, flag: schedule }
           - { module: contrib/zap, flag: zap }
+          - { module: contrib/registry, flag: registry }
+          - { module: contrib/consul, flag: consul }
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +46,7 @@ jobs:
         working-directory: ${{ matrix.module }}
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
-      # ROADMAP v1.0 标准：CI 强制覆盖率门槛。根与 5 个 contrib 模块统一
+      # ROADMAP v1.0 标准：CI 强制覆盖率门槛。根与 7 个 contrib 模块统一
       # 70% 门槛（实测各模块现状 77%-85%，留有余量），低于则失败。
       - name: Coverage threshold
         working-directory: ${{ matrix.module }}
@@ -69,7 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [., _examples, contrib/kafka, contrib/telemetry, contrib/pubsub, contrib/schedule, contrib/zap]
+        module: [., _examples, contrib/kafka, contrib/telemetry, contrib/pubsub, contrib/schedule, contrib/zap, contrib/registry, contrib/consul]
     steps:
       - uses: actions/checkout@v4
 
