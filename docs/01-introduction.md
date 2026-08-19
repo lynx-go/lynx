@@ -174,4 +174,5 @@ go run main.go
 - [第 4 章：服务系统](./04-service-system.md) - 深入理解服务化架构
 - [第 5 章：服务器](./05-servers.md) - 学习 HTTP 和 gRPC 服务器使用
 - [第 6 章：客户端](./06-clients.md) - 学习 HTTP/gRPC 客户端与传播闭环
+- [第 7 章：服务注册与发现](./07-registry.md) - 可选的注册发现 contrib（memory/DNS/Consul）与排水注销时序
 - [示例代码](../_examples/) - 查看更多实际应用示例

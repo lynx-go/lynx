@@ -6,6 +6,7 @@ replace (
 	github.com/lynx-go/lynx => ../
 	github.com/lynx-go/lynx/contrib/kafka => ../contrib/kafka
 	github.com/lynx-go/lynx/contrib/pubsub => ../contrib/pubsub
+	github.com/lynx-go/lynx/contrib/registry => ../contrib/registry
 	github.com/lynx-go/lynx/contrib/schedule => ../contrib/schedule
 	github.com/lynx-go/lynx/contrib/telemetry => ../contrib/telemetry
 	github.com/lynx-go/lynx/contrib/zap => ../contrib/zap
@@ -17,6 +18,7 @@ require (
 	github.com/lynx-go/lynx v1.0.0
 	github.com/lynx-go/lynx/contrib/kafka v1.0.0
 	github.com/lynx-go/lynx/contrib/pubsub v1.0.0
+	github.com/lynx-go/lynx/contrib/registry v1.0.0
 	github.com/lynx-go/lynx/contrib/schedule v1.0.0
 	github.com/lynx-go/lynx/contrib/telemetry v1.0.0
 	github.com/lynx-go/lynx/contrib/zap v1.0.0
@@ -54,8 +56,12 @@ require (
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.2.0 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
+	google.golang.org/grpc v1.83.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 

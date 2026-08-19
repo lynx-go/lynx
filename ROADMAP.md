@@ -102,7 +102,10 @@ v1.0 API 已冻结并保持向后兼容，本阶段只做增量（来源：2026-
 
 ### E3 定位选择（按需评估，默认不做）
 
-- 服务注册发现：k8s 环境以 DNS/Service 为主，必要时 contrib 形式提供
+- 服务注册发现：contrib 形式已提供（`contrib/registry` 类型/后端/
+  Registrar/Resolver + `contrib/consul` 生产后端，见 docs 第 7 章）；
+  K8s 环境仍推荐 DNS/Service（ClusterIP + DrainTimeout），headless
+  或裸机场景再启用注册发现
 - 数据层（DB/Redis）：保持"不碰数据层"定位，docs 明确说明
 - 配置中心（apollo/nacos）：按团队需要以 contrib 提供
 - 脚手架 CLI（kratos-cli 类）：属开源推广工具，非框架组件

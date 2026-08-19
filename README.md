@@ -20,6 +20,7 @@ Lynx 是一个轻量级的 Go 微服务框架，提供了开箱即用的应用�
 - **Kafka 集成** - 提供 Kafka Transport，简化消息队列的使用
 - **定时任务** - 基于 Cron 的调度器支持
 - **日志集成** - 支持 `slog` 和 `zap` 日志库
+- **服务注册发现** - 可选 `contrib/registry`（Registrar/Resolver/memory/DNS）与 `contrib/consul` 生产后端
 - **CLI 模式** - 支持命令行工具开发
 - **依赖注入** - 支持 Wire 依赖注入
 
@@ -253,6 +254,8 @@ lynx/
 ├── contrib/        # 扩展服务
 │   ├── kafka/      # Kafka 支持
 │   ├── pubsub/     # 消息发布订阅
+│   ├── registry/   # 服务注册发现（Registrar/Resolver/memory/DNS）
+│   ├── consul/     # Consul 注册发现后端
 │   ├── schedule/   # 定时任务
 │   ├── telemetry/  # OpenTelemetry 生命周期托管
 │   └── zap/        # Zap 日志集成
@@ -271,6 +274,7 @@ lynx/
     ├── cli/        # CLI 示例
     ├── http/       # HTTP 服务示例
     ├── pubsub/     # 消息队列示例
+    ├── registry/   # 服务注册发现示例
     └── schedule/   # 定时任务示例
 ```
 
@@ -311,6 +315,12 @@ github.com/lynx-go/lynx/contrib/telemetry
 
 # PubSub 抽象
 github.com/lynx-go/lynx/contrib/pubsub
+
+# 服务注册发现（类型、Registrar/Resolver、memory/DNS 后端）
+github.com/lynx-go/lynx/contrib/registry
+
+# Consul 注册发现生产后端
+github.com/lynx-go/lynx/contrib/consul
 
 # 定时任务
 github.com/lynx-go/lynx/contrib/schedule

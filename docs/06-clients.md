@@ -147,3 +147,7 @@ conn, err := clientgrpc.Dial("user-service:9090",
 **未形成** HTTP 侧的 request_id 闭环（对端服务内部可自行从
 `metadata.FromIncomingContext(ctx)` 读取）。服务端还原入 v1.2 backlog
 （届时 client → server 全链路日志同 id）。HTTP 链路（6.2 节）已闭环。
+
+## 下一步
+
+- [第 7 章：服务注册与发现](./07-registry.md) - 客户端如何用 `registry://` URI 经注册发现寻址

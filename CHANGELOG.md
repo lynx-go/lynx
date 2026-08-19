@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+服务注册与发现：核心补齐排水钩子与宣告地址支持，新增 `contrib/registry`
+与 `contrib/consul` 两个可选模块。设计见 `docs/design-service-registry.md`，
+教程见 `docs/07-registry.md`。
+
+### 新增
+
+- **核心—排水钩子（OnDrain）**：导出 `lynx.ErrDraining`（排水期间
+  检查器返回，`errors.Is` 可匹配，供 contrib 模块在排水边沿做注销等
+  动作）；`App.OnDrain(fns ...HookFunc)` 注册排水钩子，在排水置位之后
+  与排水睡眠**并发**执行；`WithDrainHookTimeout(d)` 设置钩子总预算
+  （默认 3s，无钩子不计入上界）。注册钩子后关停时长上界 =
+  `max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout + Σ StopTimeout`。
+  `boot.Bootstrap` 新增可选 setter `WithDrainHooks`（`New` 签名不变）。
+- **核心—ShutdownErrors.Unwrap**：`ShutdownErrors` 实现
+  `Unwrap() []error`，`errors.Is`/`errors.As` 可穿透聚合的关停错误。
+- **server/http、server/grpc—宣告地址**：`Addr()` 返回实际监听地址
+  （随机端口场景为 Listen 成功后的真实地址）；`WithAdvertiseAddr(hostPort)`
+  显式设置对外宣告地址、`AdvertiseAddr()` 读取，供服务注册使用，不影响
+  实际监听。
+- **contrib/registry（新模块）**：服务注册发现数据模型与接口
+  （`Instance`/`Endpoint`/`Filter`，`Registry`/`Discovery`/`Watcher`/
+  `Advertiser`）；`Registrar` 生命周期服务（Start 注册 + 心跳、Stop/排水
+  幂等注销、readiness 集成可开关）；`Resolver`（进程内缓存 + Watch +
+  stale 上限）与内置 Picker（round-robin/random）；memory 进程内后端、
+  DNS 只读后端（SRV 优先，A/AAAA + 端口表）；`registry://` HTTP
+  Transport（`NewHTTPTransport`）与 gRPC resolver（`NewGRPCBuilder`）；
+  `NewBackendFromConfig`/`NewFromConfig` 配置驱动，`Bind` 一键注册服务
+  并挂排水注销钩子。
+- **contrib/consul（新模块）**：Consul 生产后端；`consul.NewFromConfig`
+  构造同时实现 `Registry` + `Discovery` 的 `Client`（registry 关闭时
+  返回 nil）；支持 ttl/http/grpc 三类 check、blocking Watch（默认
+  consistent）、多 Endpoint 经 Meta `lynx_endpoints` 还原。
+
+### 其他
+
+- 文档与示例：新增 `docs/07-registry.md` 教程、`_examples/registry`
+  可运行示例（memory 后端全闭环）；ROADMAP E3 条目更新为「contrib 已
+  提供，K8s 仍推荐 DNS/Service」。
+
 ## v1.3.0 (2026-08-12)
 
 Context 元数据取值收敛：三个取值函数合并为单入口结构体返回。
