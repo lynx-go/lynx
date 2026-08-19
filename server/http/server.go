@@ -29,7 +29,10 @@ const (
 
 // Options 是 HTTP 服务服务的配置项。
 type Options struct {
-	Addr            string
+	Addr string
+	// AdvertiseAddr 是服务对外宣告的地址（host:port），由
+	// WithAdvertiseAddr 设置，仅原样保存该字符串；为空表示未显式指定。
+	AdvertiseAddr   string
 	Timeout         time.Duration
 	IdleTimeout     time.Duration
 	ShutdownTimeout time.Duration
@@ -55,6 +58,15 @@ type Option func(*Options)
 func WithAddr(addr string) Option {
 	return func(o *Options) {
 		o.Addr = addr
+	}
+}
+
+// WithAdvertiseAddr 设置 HTTP 服务对外宣告的地址（host:port），仅保存该
+// 字符串，供注册发现等场景经 AdvertiseAddr 读取；不影响实际监听地址，
+// 也不参与协议推断。
+func WithAdvertiseAddr(hostPort string) Option {
+	return func(o *Options) {
+		o.AdvertiseAddr = hostPort
 	}
 }
 
@@ -167,10 +179,12 @@ func NewServer(handler http.Handler, opts ...Option) *Server {
 
 // Server 是 HTTP 服务，实现 lynx.Service 接口。
 type Server struct {
-	// mu guards httpServer, which is assigned in Start and read in Stop;
-	// the two may run on different goroutines during shutdown.
+	// mu guards httpServer and listener, which are assigned in Start and
+	// read in Stop/Addr; the two may run on different goroutines during
+	// shutdown.
 	mu         sync.RWMutex
 	httpServer *http.Server
+	listener   net.Listener
 	logger     *slog.Logger
 	o          Options
 	handler    http.Handler
@@ -184,6 +198,24 @@ func (s *Server) Name() string {
 // Init 初始化服务，HTTP 服务无需在初始化阶段做额外工作。
 func (s *Server) Init(ctx lynx.AppContext) error {
 	return nil
+}
+
+// Addr 返回实际监听地址：Start 前（或 Listen 失败时）返回空字符串；
+// 使用随机端口（如 ":0"）时返回 Listen 成功后的实际地址。
+// 语义与 debug.Service.Addr 一致。
+func (s *Server) Addr() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.listener == nil {
+		return ""
+	}
+	return s.listener.Addr().String()
+}
+
+// AdvertiseAddr 返回 WithAdvertiseAddr 设置的宣告地址；未设置时返回
+// 空字符串。
+func (s *Server) AdvertiseAddr() string {
+	return s.o.AdvertiseAddr
 }
 
 // Start 启动 HTTP 服务并开始监听，阻塞至服务退出。
@@ -211,6 +243,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	s.listener = ln
+	s.mu.Unlock()
 	if s.o.TLSConfig != nil {
 		srv.TLSConfig = s.o.TLSConfig
 		return srv.ServeTLS(ln, "", "")

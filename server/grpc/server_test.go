@@ -646,3 +646,66 @@ func TestTLSPriorityOverServerOptionsCreds(t *testing.T) {
 		t.Fatal("plaintext client over dual-Creds server succeeded, want TLSConfig to win")
 	}
 }
+
+func TestServerAddrBeforeStart(t *testing.T) {
+	s := NewServer()
+	if got := s.Addr(); got != "" {
+		t.Errorf("Addr() = %q before Start, want empty", got)
+	}
+}
+
+// TestServerAddrAfterListen 验证 Start 用随机端口 ":0" 启动后 Addr()
+// 返回实际分配的 host:port（语义同 debug.Service.Addr）。
+func TestServerAddrAfterListen(t *testing.T) {
+	s := NewServer(WithAddr("127.0.0.1:0"))
+	if got := s.Addr(); got != "" {
+		t.Errorf("Addr() = %q before Start, want empty", got)
+	}
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start(context.Background()) }()
+
+	// 等待 listener 绑定完成。
+	deadline := time.Now().Add(5 * time.Second)
+	for s.Addr() == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("Addr() is still empty after Start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	addr := s.Addr()
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("Addr() = %q is not a valid host:port: %v", addr, err)
+	}
+	if host != "127.0.0.1" {
+		t.Errorf("Addr() host = %q, want %q", host, "127.0.0.1")
+	}
+	if port == "0" {
+		t.Errorf("Addr() port = %q, want the actual allocated port", port)
+	}
+
+	_ = s.Stop(context.Background())
+	select {
+	case err := <-startErr:
+		// Stop closes the listener before GracefulStop, so Serve returns a
+		// "use of closed network connection" error.
+		if err != nil && !strings.Contains(err.Error(), "closed network connection") {
+			t.Errorf("Start() error = %v, want nil or closed-connection error after stop", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("Start() did not return after Stop()")
+	}
+}
+
+func TestWithAdvertiseAddr(t *testing.T) {
+	s := NewServer()
+	if got := s.AdvertiseAddr(); got != "" {
+		t.Errorf("AdvertiseAddr() = %q, want empty", got)
+	}
+	s = NewServer(WithAdvertiseAddr("10.0.0.1:9090"))
+	if got := s.AdvertiseAddr(); got != "10.0.0.1:9090" {
+		t.Errorf("AdvertiseAddr() = %q, want %q", got, "10.0.0.1:9090")
+	}
+}

@@ -560,3 +560,64 @@ func TestProvidersDoNotMutateGlobals(t *testing.T) {
 		t.Fatal("explicit tracer provider was not used (no spans recorded)")
 	}
 }
+
+func TestServerAddrBeforeStart(t *testing.T) {
+	s := NewServer(http.NewServeMux())
+	if got := s.Addr(); got != "" {
+		t.Errorf("Addr() = %q before Start, want empty", got)
+	}
+}
+
+// TestServerAddrAfterListen 验证 Start 用随机端口 ":0" 启动后 Addr()
+// 返回实际分配的 host:port（语义同 debug.Service.Addr）。
+func TestServerAddrAfterListen(t *testing.T) {
+	srv := NewServer(http.NewServeMux(), WithAddr("127.0.0.1:0"))
+	if got := srv.Addr(); got != "" {
+		t.Errorf("Addr() = %q before Start, want empty", got)
+	}
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start(context.Background()) }()
+
+	// 等待 listener 绑定完成。
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.Addr() == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("Addr() is still empty after Start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	addr := srv.Addr()
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("Addr() = %q is not a valid host:port: %v", addr, err)
+	}
+	if host != "127.0.0.1" {
+		t.Errorf("Addr() host = %q, want %q", host, "127.0.0.1")
+	}
+	if port == "0" {
+		t.Errorf("Addr() port = %q, want the actual allocated port", port)
+	}
+
+	_ = srv.Stop(context.Background())
+	select {
+	case err := <-startErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Start() error = %v, want nil or http.ErrServerClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("Start() did not return after Stop()")
+	}
+}
+
+func TestWithAdvertiseAddr(t *testing.T) {
+	s := NewServer(http.NewServeMux())
+	if got := s.AdvertiseAddr(); got != "" {
+		t.Errorf("AdvertiseAddr() = %q, want empty", got)
+	}
+	s = NewServer(http.NewServeMux(), WithAdvertiseAddr("10.0.0.1:8080"))
+	if got := s.AdvertiseAddr(); got != "10.0.0.1:8080" {
+		t.Errorf("AdvertiseAddr() = %q, want %q", got, "10.0.0.1:8080")
+	}
+}

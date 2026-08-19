@@ -37,6 +37,9 @@ func NewServer(handler http.Handler, opts ...Option) *Server
 - `WithTracerProvider(tp trace.TracerProvider)`：OpenTelemetry TracerProvider，用于服务器 instrumentation。为 nil 时使用全局（默认 noop）provider。**provider 的初始化与关闭是调用方的职责**（见 5.4.1 节）。
 - `WithMeterProvider(mp metric.MeterProvider)`：OpenTelemetry MeterProvider，为 nil 时使用全局 provider。生命周期同样归调用方。
 - `WithPropagator(p propagation.TextMapPropagator)`：从入站请求提取 trace context 使用的 propagator，为 nil 时使用全局 propagator。
+- `WithAdvertiseAddr(hostPort string)`：服务对外宣告的地址（host:port），仅保存字符串，经 `AdvertiseAddr()` 读取，供服务注册发现等场景使用；不影响实际监听地址，也不参与协议推断。
+
+此外，`Server` 提供两个地址访问器：`Addr()` 返回实际监听地址——`Start` 前返回空字符串，使用 `:0` 随机端口时为 Listen 成功后的实际地址（语义与 `debug.Service.Addr()` 一致）；`AdvertiseAddr()` 返回 `WithAdvertiseAddr` 设置的宣告地址，未设置时为空字符串。
 
 ### 完整示例
 
@@ -145,6 +148,9 @@ func NewServer(opts ...Option) *Server
 - `WithServerOptions(options ...grpc.ServerOption)`：透传原生 `grpc.ServerOption`（TLS 凭据、消息大小限制、keepalive、最大并发流等），在内部选项之后应用到 `grpc.NewServer`。
 - `WithTLSConfig(cfg *tls.Config)`：启用 TLS 传输（一等选项，与 HTTP 侧同名同义），`cfg` 须已装配证书（`tls.LoadX509KeyPair` 等）。与 `WithServerOptions(grpc.Creds(...))` 同时使用时 `TLSConfig` 优先——grpc 对重复 `Creds` 取最后应用者（实测确认），`TLSConfig` 的 Creds 装配在 `ServerOptions` 之后覆盖后者；两者同传属误用，仅以 `TLSConfig` 为准。
 - `WithTracerProvider(tp trace.TracerProvider)` / `WithMeterProvider(mp metric.MeterProvider)`：otel provider，传给 `otelgrpc.NewServerHandler` 的 stats handler。为 nil 时使用全局 provider，生命周期归调用方（同 5.4.2 节）。
+- `WithAdvertiseAddr(hostPort string)`：服务对外宣告的地址（host:port），仅保存字符串，经 `AdvertiseAddr()` 读取，供服务注册发现等场景使用；不影响实际监听地址，也不参与协议推断。
+
+与 HTTP 服务器相同，`Addr()`/`AdvertiseAddr()` 两个访问器的语义一致：`Addr()` 在 `Start` 前返回空字符串，Listen 成功后返回实际监听地址（`:0` 随机端口时返回实际分配的 host:port）。
 
 与 HTTP 服务器相比有两点差异：
 
