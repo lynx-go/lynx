@@ -34,6 +34,10 @@ type App interface {
 
 	// OnStart 注册应用启动阶段执行的钩子函数
 	OnStart(fns ...HookFunc)
+	// OnDrain 注册排水阶段执行的钩子函数：关停时 drainChecker 置位后
+	// 与 DrainTimeout 睡眠并发执行（如从服务目录注销），总预算为
+	// DrainHookTimeout（默认 3 秒）。
+	OnDrain(fns ...HookFunc)
 	// OnStop 注册应用停止阶段执行的钩子函数
 	OnStop(fns ...HookFunc)
 	// Register 注册需要由应用托管生命周期的服务实例。
@@ -97,6 +101,9 @@ type lynx struct {
 	running atomic.Bool
 
 	onStarts []HookFunc
+	// onDrains 是排水钩子：SetDraining 之后与 DrainTimeout 睡眠并发执行，
+	// 独立预算 DrainHookTimeout（见 runOnDrainHooks）。
+	onDrains []HookFunc
 	onStops  []HookFunc
 	// drain 是框架内部的排水检查器（见 drain.go）：DrainTimeout > 0 时由
 	// newLynx 注册进 healthCheckers，关停时置位让 readiness 立即失败。
@@ -112,6 +119,12 @@ func (app *lynx) OnStart(fns ...HookFunc) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	app.onStarts = append(app.onStarts, fns...)
+}
+
+func (app *lynx) OnDrain(fns ...HookFunc) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	app.onDrains = append(app.onDrains, fns...)
 }
 
 func (app *lynx) OnStop(fns ...HookFunc) {
@@ -510,23 +523,37 @@ func (app *lynx) Run() error {
 		return err
 	}
 
-	// 关闭 actor：收到退出信号或应用上下文被取消时，先在 actor 内执行
-	// OnStop hooks，返回后 run.Group 才按注册顺序停止服务——保证清理逻辑
-	//（如从服务发现注销）发生在服务仍在服务期间。OnStop 错误随 Run() 上抛，
-	// 让调用方（如 K8s）感知关停失败。
+	// 关闭 actor：收到退出信号或应用上下文被取消时，先在 actor 内执行关停
+	// 流程：置位 drainChecker 后与排水睡眠并发执行 OnDrain hooks（如从服务
+	// 发现注销，DrainHookTimeout 预算），随后执行 OnStop hooks，返回后
+	// run.Group 才按注册顺序停止服务——保证清理逻辑发生在服务仍在服务期间。
+	// OnDrain/OnStop 错误随 Run() 上抛，让调用方（如 K8s）感知关停失败。
 	var (
 		shutdownOnce sync.Once
 		shutdownErr  error
+		drainErr     error
 	)
 	shutdown := func() {
 		app.Logger().Info("shutting down")
 		// Step 0: 排水窗口。置位 drainChecker 使 readiness 聚合立即失败
 		//（LB 摘流），等待 DrainTimeout 窗口结束后才执行后续关停。
-		// DrainTimeout 与 ShutdownTimeout 是两段独立预算：总关停时长上界 =
-		// DrainTimeout + ShutdownTimeout + 各服务 StopTimeout 叠加的既有上界。
+		// DrainTimeout 与 ShutdownTimeout 是两段独立预算。
 		// 所有关停入口（信号/中断/Close）都经过本函数，排水窗口统一生效。
 		if app.drain != nil {
 			app.drain.SetDraining(true)
+		}
+		// OnDrain 钩子（如从服务目录注销）与排水睡眠并发：置位后立即开始，
+		// 独立预算 DrainHookTimeout。注册钩子后关停时长上界 =
+		// max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout + 各服务
+		// StopTimeout；无钩子时整段跳过，不增加任何等待。
+		drainHooksDone := make(chan struct{})
+		if app.hasDrainHooks() {
+			go func() {
+				defer close(drainHooksDone)
+				drainErr = app.runOnDrainHooks()
+			}()
+		} else {
+			close(drainHooksDone)
 		}
 		if app.o.DrainTimeout > 0 {
 			app.Logger().Info("draining: readiness marked unhealthy, waiting for drain window",
@@ -535,6 +562,8 @@ func (app *lynx) Run() error {
 			// 供在途请求收尾；DrainTimeout=0 时跳过（与 v1.0 一致）。
 			time.Sleep(app.o.DrainTimeout)
 		}
+		// 等待 OnDrain 钩子收尾（受 DrainHookTimeout 约束，不会挂死）。
+		<-drainHooksDone
 		// Step 1: 取消应用上下文，通知服务开始收尾。
 		app.cancelCtx()
 		// Step 2: 在 ShutdownTimeout 内执行 OnStop hooks。
@@ -563,12 +592,12 @@ func (app *lynx) Run() error {
 
 	// Step 3: run.Group 在第一个 actor 返回后停止所有服务。
 	// 服务 Start 先失败时 oklog/run 只返回首个 actor 错误；此处把 run group
-	// 错误、OnStop 钩子错误与服务 Stop 错误聚合后一并上抛（nil 安全）。
+	// 错误、OnDrain/OnStop 钩子错误与服务 Stop 错误聚合后一并上抛（nil 安全）。
 	runErr := app.runG.Run()
 	if app.shutdownErrors.HasErrors() {
-		return errors.Join(runErr, shutdownErr, &app.shutdownErrors)
+		return errors.Join(runErr, shutdownErr, drainErr, &app.shutdownErrors)
 	}
-	return errors.Join(runErr, shutdownErr)
+	return errors.Join(runErr, shutdownErr, drainErr)
 }
 
 func (app *lynx) runOnStartHooks() error {
@@ -581,6 +610,53 @@ func (app *lynx) runOnStartHooks() error {
 		if err := fn(app.ctx); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// hasDrainHooks 报告是否注册了 OnDrain 钩子。无钩子时关停路径整段跳过
+// 钩子执行，不增加任何等待（回归红线：默认关停上界与既有版本一致）。
+func (app *lynx) hasDrainHooks() bool {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	return len(app.onDrains) > 0
+}
+
+// runOnDrainHooks 在 DrainHookTimeout 内顺序执行所有 OnDrain hooks。
+// 语义对齐 runOnStopHooks：单个 hook 阻塞不会挂起整个关闭流程，超时
+// 记录错误并继续；钩子错误不打断排水。使用独立的超时 Context（Background
+// 派生），不传没有 deadline 的 app.ctx。
+func (app *lynx) runOnDrainHooks() error {
+	app.mu.Lock()
+	hooks := append([]HookFunc(nil), app.onDrains...)
+	app.mu.Unlock()
+
+	app.Logger().Info("run on-drain hooks")
+	ctx, cancel := context.WithTimeout(context.Background(), app.o.DrainHookTimeout)
+	defer cancel()
+
+	var shutdownErrors ShutdownErrors
+	for _, fn := range hooks {
+		if ctx.Err() != nil {
+			shutdownErrors.Add(errors.New("drain hook timeout exceeded while running on-drain hooks"))
+			break
+		}
+		done := make(chan error, 1)
+		go func() { done <- fn(ctx) }()
+		select {
+		case hookErr := <-done:
+			if hookErr != nil {
+				app.logger.ErrorContext(app.ctx, "on-drain hook called error", "error", hookErr)
+				shutdownErrors.Add(hookErr)
+			}
+		case <-ctx.Done():
+			app.logger.ErrorContext(app.ctx, "on-drain hook did not complete within drain hook timeout")
+			shutdownErrors.Add(errors.New("on-drain hook timed out"))
+		}
+	}
+	if shutdownErrors.HasErrors() {
+		app.logger.ErrorContext(app.ctx, "drain hooks completed with errors", "errors", shutdownErrors.Error())
+		return &shutdownErrors
 	}
 	return nil
 }
@@ -638,6 +714,7 @@ func newLynx(o *Options) (App, error) {
 		runG:     &run.Group{},
 		logger:   slog.Default(),
 		onStarts: []HookFunc{},
+		onDrains: []HookFunc{},
 		onStops:  []HookFunc{},
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())

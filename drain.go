@@ -5,6 +5,11 @@ import (
 	"sync/atomic"
 )
 
+// ErrDraining 是排水窗口内 readiness 聚合返回的错误。排水置位后
+// drainChecker.CheckHealth 返回该错误，调用方可用 errors.Is 匹配
+// （例如 contrib 模块在排水边沿执行从服务目录注销）。
+var ErrDraining = errors.New("draining")
+
 // drainChecker 是框架内部的排水检查器（不导出）：关停流程进入排水窗口时
 // 置位 draining，使 readiness 聚合（app.HealthCheckers()）立即失败，
 // 让负载均衡器在真实关停前完成摘流。仅当 Options.DrainTimeout > 0 时由
@@ -19,10 +24,10 @@ func (d *drainChecker) SetDraining(draining bool) {
 	d.draining.Store(draining)
 }
 
-// CheckHealth 实现 Checker：排水期间返回错误，其余返回 nil。
+// CheckHealth 实现 Checker：排水期间返回 ErrDraining，其余返回 nil。
 func (d *drainChecker) CheckHealth() error {
 	if d.draining.Load() {
-		return errors.New("draining")
+		return ErrDraining
 	}
 	return nil
 }

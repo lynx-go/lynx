@@ -10,12 +10,17 @@ import (
 // 独立命名类型用于 Wire 依赖注入时区分启动钩子与停止钩子。
 type OnStartHooks []lynx.HookFunc
 
+// OnDrainHooks 是一组排水钩子函数：关停时 drainChecker 置位后与
+// DrainTimeout 睡眠并发执行（如从服务目录注销），预算为 DrainHookTimeout。
+type OnDrainHooks []lynx.HookFunc
+
 // OnStopHooks 是一组停止钩子函数。
 type OnStopHooks []lynx.HookFunc
 
 // Bootstrap 聚合应用启动所需的钩子函数、服务与服务工厂。
 type Bootstrap struct {
 	StartHooks       OnStartHooks
+	DrainHooks       OnDrainHooks
 	StopHooks        OnStopHooks
 	Services         []lynx.Service
 	ServiceFactories []lynx.ServiceFactory
@@ -36,10 +41,18 @@ func New(
 	}
 }
 
+// WithDrainHooks 设置排水钩子（可选 setter，不改 New 签名以保持
+// 既有 Wire injector 可编译），返回 Bootstrap 自身以便链式调用。
+func (b *Bootstrap) WithDrainHooks(h OnDrainHooks) *Bootstrap {
+	b.DrainHooks = h
+	return b
+}
+
 // Bind 将 Bootstrap 中的钩子函数、服务与服务工厂注册到 Lynx 应用。
 // 注册阶段产生的错误（如服务 Init 失败）由 app.Run() 统一返回。
 func (b *Bootstrap) Bind(app lynx.App) {
 	app.OnStart(b.StartHooks...)
+	app.OnDrain(b.DrainHooks...)
 	app.OnStop(b.StopHooks...)
 	app.Register(b.Services...)
 	app.RegisterFactories(b.ServiceFactories...)

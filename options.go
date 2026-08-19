@@ -13,6 +13,8 @@ const (
 	DefaultName            = "lynx-app"
 	DefaultShutdownTimeout = 5 * time.Second
 	DefaultStopTimeout     = 5 * time.Second
+	// DefaultDrainHookTimeout 是 OnDrain 钩子的默认总预算（3 秒）。
+	DefaultDrainHookTimeout = 3 * time.Second
 	// MinTimeout 与 MaxTimeout 是 ShutdownTimeout 与 StopTimeout 共用的
 	// 校验区间（1 秒 ~ 5 分钟）。
 	MinTimeout = 1 * time.Second
@@ -33,6 +35,8 @@ var (
 	ErrStopTimeoutTooLarge = errors.New("stop timeout must be at most 5 minutes")
 	// ErrDrainTimeoutInvalid 表示 DrainTimeout 为负值（排水窗口不允许负值）。
 	ErrDrainTimeoutInvalid = errors.New("drain timeout must not be negative")
+	// ErrDrainHookTimeoutInvalid 表示 DrainHookTimeout 为负值。
+	ErrDrainHookTimeoutInvalid = errors.New("drain hook timeout must not be negative")
 )
 
 // Options 是 App 应用的核心配置项。
@@ -54,6 +58,11 @@ type Options struct {
 	// DrainTimeout + ShutdownTimeout + 各服务 StopTimeout 叠加的既有上界。
 	// 取值任意 ≥0，无下限约束（1ms 等小值合法）。
 	DrainTimeout time.Duration `json:"drain_timeout"`
+	// DrainHookTimeout 是 OnDrain 钩子的总预算（默认 3 秒）。OnDrain 钩子在
+	// 排水置位后与 DrainTimeout 睡眠并发执行（如从服务目录注销）：有钩子
+	// 时关停时长上界 = max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout
+	// + 各服务 StopTimeout；无钩子（默认）时该项不计入，行为与之前一致。
+	DrainHookTimeout time.Duration `json:"drain_hook_timeout"`
 	// disableConfigFlags 标记用户显式关闭默认 flags（WithDisableConfigFlags）。
 	// EnsureDefaults 在 NewOptions 与 newLynx 间可能被多次调用，需要该
 	// 标记保持关闭语义不被默认值覆盖。
@@ -90,6 +99,9 @@ func (o *Options) Validate() error {
 	if o.DrainTimeout < 0 {
 		return ErrDrainTimeoutInvalid
 	}
+	if o.DrainHookTimeout < 0 {
+		return ErrDrainHookTimeoutInvalid
+	}
 	return nil
 }
 
@@ -110,6 +122,10 @@ func (o *Options) EnsureDefaults() {
 
 	if o.StopTimeout == 0 {
 		o.StopTimeout = DefaultStopTimeout
+	}
+
+	if o.DrainHookTimeout == 0 {
+		o.DrainHookTimeout = DefaultDrainHookTimeout
 	}
 
 	if len(o.ExitSignals) == 0 {
@@ -210,6 +226,16 @@ func WithStopTimeout(timeout time.Duration) Option {
 func WithDrainTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.DrainTimeout = timeout
+	}
+}
+
+// WithDrainHookTimeout 设置 OnDrain 钩子的总预算（默认 3 秒）。钩子在
+// 排水置位后与 DrainTimeout 睡眠并发执行；注册 OnDrain 钩子时，关停
+// 时长上界 = max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout +
+// 各服务 StopTimeout。负值会在 Validate 时报错。
+func WithDrainHookTimeout(timeout time.Duration) Option {
+	return func(o *Options) {
+		o.DrainHookTimeout = timeout
 	}
 }
 

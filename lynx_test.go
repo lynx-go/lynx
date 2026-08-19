@@ -874,6 +874,8 @@ func TestDrainChecker(t *testing.T) {
 	d.SetDraining(true)
 	if err := d.CheckHealth(); err == nil {
 		t.Fatal("CheckHealth() = nil, want error while draining")
+	} else if !errors.Is(err, ErrDraining) {
+		t.Fatalf("CheckHealth() = %v, want errors.Is(err, ErrDraining)", err)
 	}
 	d.SetDraining(false)
 	if err := d.CheckHealth(); err != nil {
@@ -982,6 +984,127 @@ func TestDrainTimeoutZeroSkipsDrainWindow(t *testing.T) {
 	// 无排水窗口：关停立即执行。若误加入 200ms 排水，此处必然失败。
 	if elapsed := time.Since(closeAt); elapsed >= 200*time.Millisecond {
 		t.Errorf("shutdown elapsed %v, want no drain delay (DrainTimeout=0)", elapsed)
+	}
+}
+
+// TestOnDrainHooksRunBeforeOnStopWithinDrainWindow 验证 OnDrain 语义：
+// 钩子在排水置位后与 DrainTimeout 睡眠并发执行，且在 OnStop 之前完成。
+func TestOnDrainHooksRunBeforeOnStopWithinDrainWindow(t *testing.T) {
+	const drain = 300 * time.Millisecond
+	app, err := newLynx(NewOptions(WithDrainTimeout(drain)))
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	probe := &drainProbe{name: "probe"}
+	app.Register(probe)
+
+	drainRan := make(chan struct{})
+	app.OnDrain(func(ctx context.Context) error {
+		close(drainRan)
+		return nil
+	})
+	// OnStop 执行时 OnDrain 必须已完成（shutdown 在 cancelCtx 前等待钩子收尾）。
+	stopSawDrain := atomic.Bool{}
+	app.OnStop(func(ctx context.Context) error {
+		select {
+		case <-drainRan:
+			stopSawDrain.Store(true)
+		default:
+		}
+		return nil
+	})
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- app.Run() }()
+	waitFor(t, 2*time.Second, func() bool { return probe.started.Load() }, "probe to start")
+
+	closeAt := time.Now()
+	app.Close()
+
+	// 钩子与排水睡眠并发：排水窗口远未结束时钩子已经执行。
+	select {
+	case <-drainRan:
+	case <-time.After(drain / 2):
+		t.Fatal("on-drain hook did not run concurrently with drain window")
+	}
+	// 排水窗口本身仍然完整生效。
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after Close()")
+	}
+	if elapsed := time.Since(closeAt); elapsed < drain {
+		t.Errorf("shutdown elapsed %v, want >= drain timeout %v", elapsed, drain)
+	}
+	if !stopSawDrain.Load() {
+		t.Error("on-stop hook ran before on-drain hook completed")
+	}
+}
+
+// TestOnDrainHookTimeoutDoesNotHangShutdown 验证阻塞的 OnDrain 钩子不会
+// 挂死关停：超过 DrainHookTimeout 后记录错误并继续，Run 按时返回。
+func TestOnDrainHookTimeoutDoesNotHangShutdown(t *testing.T) {
+	const hookTimeout = 150 * time.Millisecond
+	app, err := newLynx(NewOptions(WithDrainHookTimeout(hookTimeout)))
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	probe := &drainProbe{name: "probe"}
+	app.Register(probe)
+
+	// 忽略 ctx 的阻塞钩子：模拟挂死的注销逻辑。
+	app.OnDrain(func(ctx context.Context) error {
+		time.Sleep(10 * time.Second)
+		return nil
+	})
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- app.Run() }()
+	waitFor(t, 2*time.Second, func() bool { return probe.started.Load() }, "probe to start")
+
+	closeAt := time.Now()
+	app.Close()
+	select {
+	case err := <-runErr:
+		if err == nil || !strings.Contains(err.Error(), "on-drain hook timed out") {
+			t.Fatalf("Run() error = %v, want it to contain %q", err, "on-drain hook timed out")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after Close()")
+	}
+	// 上界由 DrainHookTimeout 决定，而非钩子的 10s 阻塞。
+	if elapsed := time.Since(closeAt); elapsed >= 5*time.Second {
+		t.Errorf("shutdown elapsed %v, want bounded by drain hook timeout %v", elapsed, hookTimeout)
+	}
+}
+
+// TestOnDrainHookErrorSurfacesInRun 验证 OnDrain 钩子返回的错误随 Run() 上抛。
+func TestOnDrainHookErrorSurfacesInRun(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	probe := &drainProbe{name: "probe"}
+	app.Register(probe)
+
+	wantErr := errors.New("deregister failed")
+	app.OnDrain(func(ctx context.Context) error { return wantErr })
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- app.Run() }()
+	waitFor(t, 2*time.Second, func() bool { return probe.started.Load() }, "probe to start")
+
+	app.Close()
+	select {
+	case err := <-runErr:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("Run() error = %v, want errors.Is(err, %v)", err, wantErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after Close()")
 	}
 }
 

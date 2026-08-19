@@ -227,7 +227,7 @@ opts := lynx.NewOptions(
 
 关闭按固定步骤执行：
 
-0. **排水窗口（可选）**：配置 `WithDrainTimeout` 后，关停信号到达先置位框架内部的 `drainChecker`，使 readiness 聚合（`app.HealthCheckers()`）立即失败——负载均衡器开始摘流；随后等待 `DrainTimeout` 窗口结束，服务在此期间保持运行供在途请求收尾；
+0. **排水窗口（可选）**：配置 `WithDrainTimeout` 后，关停信号到达先置位框架内部的 `drainChecker`，使 readiness 聚合（`app.HealthCheckers()`）立即失败——负载均衡器开始摘流；排水期间检查器返回导出的 `lynx.ErrDraining`（可用 `errors.Is` 匹配，供 contrib 模块在排水边沿做注销等动作）；随后等待 `DrainTimeout` 窗口结束，服务在此期间保持运行供在途请求收尾。通过 `app.OnDrain` 注册的**排水钩子**与排水睡眠**并发**执行（如从服务目录注销），总预算为 `DrainHookTimeout`（默认 3 秒，`WithDrainHookTimeout` 调整），钩子错误/超时不打断排水；
 1. 取消应用 Context，通知所有监听它的逻辑（包括 OnStart 钩子 actor）退出；
 2. 以 `ShutdownTimeout` 为超时创建新 Context，按注册顺序串行执行所有 `OnStop` 钩子，错误通过 `ShutdownErrors` 聚合；
 3. run group 中断所有服务 actor：对每个服务先调用 `Stop(ctx)`，再取消其 Context（使 `Start` 中的 `<-ctx.Done()` 解除阻塞）。服务 `Stop` 返回的错误与超时错误同样聚合进 `ShutdownErrors`。
@@ -239,6 +239,7 @@ opts := lynx.NewOptions(
   │
   ├─ 置位 drainChecker → readiness 立即失败（LB 摘流）
   ├─ [DrainTimeout] 排水窗口（0 = 跳过，行为与 v1.0 一致）
+  │    ├─ 并发：[DrainHookTimeout] 串行执行 OnDrain 钩子（无钩子则跳过）
   ├─ 取消应用 Context
   ├─ [ShutdownTimeout] 串行执行 OnStop 钩子
   └─ 服务 Stop（单个最长 [StopTimeout]，挂死跳过）
@@ -246,11 +247,11 @@ opts := lynx.NewOptions(
 
 `ShutdownTimeout` 默认 5 秒（`DefaultShutdownTimeout`），可通过 `WithShutdownTimeout` 调整，合法区间为 1 秒到 5 分钟（见 3.3 节校验规则）。它约束的是 `OnStop` 钩子的总执行时间。服务 `Stop` 的单个最长等待由 `Options.StopTimeout`（默认 5 秒）约束：挂死（如等待 `ctx.Done()`）的 `Stop` 超时后跳过并记录错误，不会阻塞整个关停流程。
 
-`DrainTimeout`（`WithDrainTimeout` 设置）是**独立的第二段预算**，默认 0 表示不启用排水（关停行为与 v1.0 完全一致），取值任意 ≥0 无下限约束。所有关停入口（信号、服务中断、`app.Close()`）统一生效。启用后**总关停时长上界 = `DrainTimeout` + `ShutdownTimeout` + 各服务 `StopTimeout` 叠加的既有上界**；例如 `DrainTimeout=30s` + 默认值，一次完整关停最长约 40 秒。K8s 场景下 `terminationGracePeriodSeconds` 需覆盖该上界，否则进程会在排水窗口内被 SIGKILL，服务来不及优雅停止。
+`DrainTimeout`（`WithDrainTimeout` 设置）是**独立的第二段预算**，默认 0 表示不启用排水（关停行为与 v1.0 完全一致），取值任意 ≥0 无下限约束。所有关停入口（信号、服务中断、`app.Close()`）统一生效。**总关停时长上界**：未注册 `OnDrain` 钩子时 = `DrainTimeout` + `ShutdownTimeout` + 各服务 `StopTimeout` 叠加的既有上界（例如 `DrainTimeout=30s` + 默认值约 40 秒）；注册了 `OnDrain` 钩子时 = `max(DrainTimeout, DrainHookTimeout)` + `ShutdownTimeout` + 各服务 `StopTimeout`——钩子与排水睡眠并发，不叠加。K8s 场景下 `terminationGracePeriodSeconds` 需覆盖该上界，否则进程会在排水窗口内被 SIGKILL，服务来不及优雅停止。
 
 排水只影响 **readiness**（HTTP `/healthz/readiness` 与 gRPC health 探测）：HTTP 的 `/healthz/liveness` 恒返回 200、不消费检查器聚合，排水期间存活探针不受影响（见 5.1 节）。
 
-`Run()` 返回时会把三类错误聚合上抛（`errors.Join`）：run group 的首个 actor 错误、OnStop 钩子错误（含超时）、服务 Stop 错误（含超时）——调用方（如 K8s）可以感知关停失败。
+`Run()` 返回时会把关停相关错误聚合上抛（`errors.Join`）：run group 的首个 actor 错误、OnDrain/OnStop 钩子错误（含超时）、服务 Stop 错误（含超时）——调用方（如 K8s）可以感知关停失败。
 
 ## 3.8 综合示例
 

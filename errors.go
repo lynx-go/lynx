@@ -44,6 +44,12 @@ func (e *ShutdownErrors) HasErrors() bool {
 	return len(e.errors) > 0
 }
 
+// Unwrap returns all collected errors, allowing errors.Is / errors.As
+// to match individual hook or service errors inside the collection.
+func (e *ShutdownErrors) Unwrap() []error {
+	return e.Errors()
+}
+
 // Errors returns a copy of all collected errors.
 func (e *ShutdownErrors) Errors() []error {
 	e.mu.Lock()

@@ -72,6 +72,11 @@ func TestOptionsValidate(t *testing.T) {
 			options: Options{DrainTimeout: -time.Millisecond},
 			wantErr: ErrDrainTimeoutInvalid,
 		},
+		{
+			name:    "drain hook timeout negative",
+			options: Options{DrainHookTimeout: -time.Millisecond},
+			wantErr: ErrDrainHookTimeoutInvalid,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -100,6 +105,9 @@ func TestOptionsEnsureDefaults(t *testing.T) {
 	// DrainTimeout 无默认值：0 = 不启用排水（与 v1.0 行为一致的回归红线）。
 	if o.DrainTimeout != 0 {
 		t.Errorf("DrainTimeout = %v, want 0 (no default)", o.DrainTimeout)
+	}
+	if o.DrainHookTimeout != DefaultDrainHookTimeout {
+		t.Errorf("DrainHookTimeout = %v, want %v", o.DrainHookTimeout, DefaultDrainHookTimeout)
 	}
 	if len(o.ExitSignals) == 0 {
 		t.Error("ExitSignals should not be empty")

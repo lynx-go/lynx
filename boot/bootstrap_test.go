@@ -13,12 +13,14 @@ import (
 // fakeLynx is a minimal lynx.App implementation that records registration calls.
 type fakeLynx struct {
 	onStarts  []lynx.HookFunc
+	onDrains  []lynx.HookFunc
 	onStops   []lynx.HookFunc
 	services  []lynx.Service
 	factories []lynx.ServiceFactory
 }
 
 func (f *fakeLynx) OnStart(fns ...lynx.HookFunc) { f.onStarts = append(f.onStarts, fns...) }
+func (f *fakeLynx) OnDrain(fns ...lynx.HookFunc) { f.onDrains = append(f.onDrains, fns...) }
 func (f *fakeLynx) OnStop(fns ...lynx.HookFunc)  { f.onStops = append(f.onStops, fns...) }
 func (f *fakeLynx) Register(cs ...lynx.Service) {
 	f.services = append(f.services, cs...)
@@ -81,4 +83,25 @@ func TestBindNilSlices(t *testing.T) {
 	app := &fakeLynx{}
 
 	b.Bind(app)
+}
+
+// TestWithDrainHooks 验证排水钩子的可选 setter 与 Bind 注册。
+func TestWithDrainHooks(t *testing.T) {
+	var drainRan bool
+	onDrains := boot.OnDrainHooks{func(ctx context.Context) error { drainRan = true; return nil }}
+	b := boot.New(nil, nil, nil, nil).WithDrainHooks(onDrains)
+	if len(b.DrainHooks) != 1 {
+		t.Fatalf("len(DrainHooks) = %d, want 1", len(b.DrainHooks))
+	}
+	app := &fakeLynx{}
+
+	b.Bind(app)
+
+	if len(app.onDrains) != 1 {
+		t.Fatalf("Bind() registered %d drain hooks, want 1", len(app.onDrains))
+	}
+	_ = app.onDrains[0](context.Background())
+	if !drainRan {
+		t.Error("registered drain hook should run")
+	}
 }
