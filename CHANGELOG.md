@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.4.0 (2026-08-20)
 
 服务注册与发现：核心补齐排水钩子与宣告地址支持，新增 `contrib/registry`
 与 `contrib/consul` 两个可选模块。设计见 `docs/design-service-registry.md`，
