@@ -19,11 +19,11 @@ import (
 	"github.com/spf13/viper"
 )
 
+// BindFlagsFunc 定义应用启动时需要绑定的命令行 flags。
+type BindFlagsFunc func(f *pflag.FlagSet)
+
 // BindConfigFunc 将命令行 flags 绑定到应用配置源（ConfigSource 实例）。
 type BindConfigFunc func(f *pflag.FlagSet, c ConfigSource) error
-
-// SetFlagsFunc 定义应用启动时需要注册的命令行 flags。
-type SetFlagsFunc func(f *pflag.FlagSet)
 
 // App 是应用实例的核心接口：在 AppContext 的基础上增加服务注册、
 // 生命周期钩子与运行控制能力。
@@ -302,8 +302,8 @@ func ParseLogLevel(s string) (slog.Level, error) {
 	return slog.LevelInfo, fmt.Errorf("unrecognized log level %q", s)
 }
 
-// DefaultSetFlagsFunc 注册默认的命令行 flags：配置文件路径、类型、目录与日志级别。
-func DefaultSetFlagsFunc(f *pflag.FlagSet) {
+// DefaultBindFlagsFunc 绑定默认的命令行 flags：配置文件路径、类型、目录与日志级别。
+func DefaultBindFlagsFunc(f *pflag.FlagSet) {
 	f.StringP("config", "c", "", "config file path")
 	f.String("config-type", "yaml", "config file type, default yaml")
 	f.String("config-dir", "", "config file path")
@@ -336,8 +336,8 @@ func DefaultBindConfigFunc(f *pflag.FlagSet, c ConfigSource) error {
 }
 
 func (app *lynx) initConfigure() error {
-	if app.o.SetFlagsFunc != nil {
-		app.o.SetFlagsFunc(app.f)
+	if app.o.BindFlagsFunc != nil {
+		app.o.BindFlagsFunc(app.f)
 		if err := app.f.Parse(os.Args[1:]); err != nil {
 			if errors.Is(err, pflag.ErrHelp) {
 				// --help：usage 已由 pflag 输出，作为初始化错误返回，
@@ -364,7 +364,7 @@ func (app *lynx) initConfigure() error {
 		}
 	}
 
-	if app.o.SetFlagsFunc != nil {
+	if app.o.BindFlagsFunc != nil {
 		if err := app.c.BindPFlags(app.f); err != nil {
 			return fmt.Errorf("failed to bind flags: %w", err)
 		}

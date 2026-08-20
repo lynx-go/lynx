@@ -75,14 +75,14 @@ return nil
 | `WithID(id)` | 实例 ID，默认为主机名 |
 | `WithName(name)` | 应用名称，默认 `"lynx-app"` |
 | `WithVersion(v)` | 应用版本 |
-| `WithSetFlagsFunc(f)` | 自定义命令行参数声明（见 3.4 节） |
+| `WithBindFlagsFunc(f)` | 自定义命令行参数声明（见 3.4 节） |
 | `WithBindConfigFunc(f)` | 自定义配置绑定逻辑（见 3.4 节） |
 | `WithDisableConfigFlags()` | 关闭默认的命令行参数声明与绑定（默认开启） |
 | `WithExitSignals(signals...)` | 自定义触发优雅关闭的信号列表 |
 | `WithShutdownTimeout(d)` | OnStop 钩子关闭超时，默认 5 秒 |
 | `WithStopTimeout(d)` | 单个服务 Stop 最长等待时长，默认 5 秒 |
 
-`NewOptions` 自身已经填充了部分默认值：`ID` 取 `os.Hostname()`，`Name` 为 `DefaultName`，`ShutdownTimeout` 为 5 秒，`StopTimeout` 为 5 秒，`ExitSignals` 为默认信号列表，并默认启用内置配置 flags（`SetFlagsFunc`/`BindConfigFunc` 默认取 `DefaultSetFlagsFunc`/`DefaultBindConfigFunc`）。
+`NewOptions` 自身已经填充了部分默认值：`ID` 取 `os.Hostname()`，`Name` 为 `DefaultName`，`ShutdownTimeout` 为 5 秒，`StopTimeout` 为 5 秒，`ExitSignals` 为默认信号列表，并默认启用内置配置 flags（`BindFlagsFunc`/`BindConfigFunc` 默认取 `DefaultBindFlagsFunc`/`DefaultBindConfigFunc`）。
 
 ### 校验规则
 
@@ -113,7 +113,7 @@ if err := opts.Validate(); err != nil {
 
 Lynx 的配置体系基于 Viper（读取与合并）加 pflag（命令行参数），在应用初始化阶段按固定顺序执行：
 
-1. 调用 `SetFlagsFunc` 声明参数，并解析 `os.Args[1:]`；
+1. 调用 `BindFlagsFunc` 声明参数，并解析 `os.Args[1:]`；
 2. 调用 `BindConfigFunc` 把参数绑定到应用配置（配置文件路径、环境变量等）；
 3. 调用 `ReadInConfig` 读取配置文件；
 4. 调用 `BindPFlags` 把命令行参数合并进配置。
@@ -122,7 +122,7 @@ Lynx 的配置体系基于 Viper（读取与合并）加 pflag（命令行参数
 
 ### 内置参数
 
-默认启用框架内置的四个参数（`DefaultSetFlagsFunc`）及其绑定逻辑（`DefaultBindConfigFunc`），无需任何选项；不需要命令行参数时可显式关闭（`WithDisableConfigFlags`）：
+默认启用框架内置的四个参数（`DefaultBindFlagsFunc`）及其绑定逻辑（`DefaultBindConfigFunc`），无需任何选项；不需要命令行参数时可显式关闭（`WithDisableConfigFlags`）：
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |

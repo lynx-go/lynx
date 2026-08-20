@@ -93,7 +93,7 @@ log_level: "debug"
 
 ```go
 opts := lynx.NewOptions(
-    lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
+    lynx.WithBindFlagsFunc(func(f *pflag.FlagSet) {
         f.StringP("config", "c", "config.yaml", "config file path")
     }),
     lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {

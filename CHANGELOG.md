@@ -35,6 +35,13 @@
   返回 nil）；支持 ttl/http/grpc 三类 check、blocking Watch（默认
   consistent）、多 Endpoint 经 Meta `lynx_endpoints` 还原。
 
+### 破坏性变更
+
+- **核心—SetFlags 更名 BindFlags**：`SetFlagsFunc` → `BindFlagsFunc`，
+  `WithSetFlagsFunc` → `WithBindFlagsFunc`，`DefaultSetFlagsFunc` →
+  `DefaultBindFlagsFunc`；`Options.SetFlagsFunc` 字段同步更名。与
+  `BindConfigFunc` 命名对齐。调用方迁移：替换标识符即可，签名不变。
+
 ### 其他
 
 - 文档与示例：新增 `docs/07-registry.md` 教程、`_examples/registry`

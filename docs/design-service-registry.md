@@ -734,7 +734,7 @@ registry:
 | `registry.consul.token` | 配置文件，或 `contrib/consul` `os.Getenv("CONSUL_HTTP_TOKEN")` |
 | 其它 `registry.*` | 仅当应用 `BindConfigFunc` 调用了上文片段中的 `BindEnv` |
 
-不新增默认 CLI flag。发现是可选 contrib，不应出现在 `DefaultSetFlagsFunc`。
+不新增默认 CLI flag。发现是可选 contrib，不应出现在 `DefaultBindFlagsFunc`。
 
 ### Consul 后端要点
 

@@ -69,7 +69,7 @@ func main() {
 		})
 		return nil
 	},
-		lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
+		lynx.WithBindFlagsFunc(func(f *pflag.FlagSet) {
 			f.StringP("config", "c", "./config.yaml", "config file path")
 			f.String("addr", "", "http listen address")
 		}),

@@ -179,22 +179,22 @@ func TestOptionFuncs(t *testing.T) {
 	}
 }
 
-func TestWithSetFlagsAndBindConfig(t *testing.T) {
-	flagsSet := false
+func TestWithBindFlagsAndBindConfig(t *testing.T) {
+	flagsBound := false
 	bindCalled := false
 	o := NewOptions(
-		WithSetFlagsFunc(func(f *pflag.FlagSet) { flagsSet = true }),
+		WithBindFlagsFunc(func(f *pflag.FlagSet) { flagsBound = true }),
 		WithBindConfigFunc(func(f *pflag.FlagSet, c ConfigSource) error {
 			bindCalled = true
 			return nil
 		}),
 	)
-	if o.SetFlagsFunc == nil || o.BindConfigFunc == nil {
-		t.Fatal("SetFlagsFunc and BindConfigFunc should be set")
+	if o.BindFlagsFunc == nil || o.BindConfigFunc == nil {
+		t.Fatal("BindFlagsFunc and BindConfigFunc should be set")
 	}
-	o.SetFlagsFunc(nil)
-	if !flagsSet {
-		t.Error("SetFlagsFunc was not the provided function")
+	o.BindFlagsFunc(nil)
+	if !flagsBound {
+		t.Error("BindFlagsFunc was not the provided function")
 	}
 	if err := o.BindConfigFunc(nil, nil); err != nil {
 		t.Fatalf("BindConfigFunc returned error: %v", err)
@@ -205,12 +205,12 @@ func TestWithSetFlagsAndBindConfig(t *testing.T) {
 }
 
 // TestDefaultConfigFlagsEnabled 验证默认 flags 默认开启：未显式设置
-// SetFlagsFunc/BindConfigFunc 时自动使用框架内置实现。
+// BindFlagsFunc/BindConfigFunc 时自动使用框架内置实现。
 func TestDefaultConfigFlagsEnabled(t *testing.T) {
 	o := &Options{}
 	o.EnsureDefaults()
-	if o.SetFlagsFunc == nil {
-		t.Error("SetFlagsFunc should default to DefaultSetFlagsFunc")
+	if o.BindFlagsFunc == nil {
+		t.Error("BindFlagsFunc should default to DefaultBindFlagsFunc")
 	}
 	if o.BindConfigFunc == nil {
 		t.Error("BindConfigFunc should default to DefaultBindConfigFunc")
@@ -218,7 +218,7 @@ func TestDefaultConfigFlagsEnabled(t *testing.T) {
 
 	// NewOptions 路径同样生效。
 	o2 := NewOptions()
-	if o2.SetFlagsFunc == nil || o2.BindConfigFunc == nil {
+	if o2.BindFlagsFunc == nil || o2.BindConfigFunc == nil {
 		t.Error("NewOptions should enable default config flags")
 	}
 	// StopTimeout 与 Name 双轨默认值已消除。
@@ -234,11 +234,11 @@ func TestDefaultConfigFlagsEnabled(t *testing.T) {
 // EnsureDefaults 不再启用它们（含 newLynx 的二次 EnsureDefaults 路径）。
 func TestWithDisableConfigFlags(t *testing.T) {
 	o := NewOptions(WithDisableConfigFlags())
-	if o.SetFlagsFunc != nil || o.BindConfigFunc != nil {
-		t.Fatal("WithDisableConfigFlags should clear SetFlagsFunc and BindConfigFunc")
+	if o.BindFlagsFunc != nil || o.BindConfigFunc != nil {
+		t.Fatal("WithDisableConfigFlags should clear BindFlagsFunc and BindConfigFunc")
 	}
 	o.EnsureDefaults()
-	if o.SetFlagsFunc != nil || o.BindConfigFunc != nil {
+	if o.BindFlagsFunc != nil || o.BindConfigFunc != nil {
 		t.Fatal("EnsureDefaults must not re-enable disabled config flags")
 	}
 }

@@ -25,7 +25,7 @@ func main() {
 		boot.Bind(app)
 		return nil
 	},
-		lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
+		lynx.WithBindFlagsFunc(func(f *pflag.FlagSet) {
 			f.String("addr", ":8080", "http listen address")
 			f.StringP("loglevel", "l", "debug", "log level")
 			f.StringP("config", "c", "", "config file path")

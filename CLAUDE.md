@@ -139,13 +139,13 @@ Configuration is exposed through two generic interfaces, decoupled from the unde
 Other config libraries (e.g. koanf) can be integrated by implementing these two interfaces.
 
 Configuration flow:
-1. `SetFlagsFunc` - Register CLI flags
+1. `BindFlagsFunc` - Bind CLI flags
 2. `BindConfigFunc` - Bind flags to the app ConfigSource, set config file paths
 3. Flags are parsed, config file is read, env vars are bound
 
-Default flags are enabled by default (`Options.EnsureDefaults` sets `DefaultSetFlagsFunc`/`DefaultBindConfigFunc`); opt out with `WithDisableConfigFlags()`. Unknown flags are ignored (test binaries' `-test.*` args). `--help` returns an init error handled by `Runner.Run` exit code.
+Default flags are enabled by default (`Options.EnsureDefaults` sets `DefaultBindFlagsFunc`/`DefaultBindConfigFunc`); opt out with `WithDisableConfigFlags()`. Unknown flags are ignored (test binaries' `-test.*` args). `--help` returns an init error handled by `Runner.Run` exit code.
 
-Default flags (see `DefaultSetFlagsFunc` in lynx.go):
+Default flags (see `DefaultBindFlagsFunc` in lynx.go):
 - `--config/-c` - Config file path
 - `--config-type` - File type (yaml, json, etc.)
 - `--config-dir` - Config directory

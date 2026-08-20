@@ -1181,8 +1181,8 @@ func TestDefaultFlagsDisabled(t *testing.T) {
 	os.Args = []string{"lynx", "-test.timeout=1m"}
 
 	o := NewOptions(WithDisableConfigFlags())
-	if o.SetFlagsFunc != nil || o.BindConfigFunc != nil {
-		t.Fatal("WithDisableConfigFlags should clear SetFlagsFunc and BindConfigFunc")
+	if o.BindFlagsFunc != nil || o.BindConfigFunc != nil {
+		t.Fatal("WithDisableConfigFlags should clear BindFlagsFunc and BindConfigFunc")
 	}
 	if _, err := newLynx(o); err != nil {
 		t.Fatalf("newLynx() error = %v, want nil", err)
@@ -1371,7 +1371,7 @@ func TestLogLevelConfigNotShadowedByUnchangedFlag(t *testing.T) {
 	v.Set("log_level", "debug")
 
 	f := pflag.NewFlagSet("test", pflag.ContinueOnError)
-	DefaultSetFlagsFunc(f) // 未 Parse 任何参数：所有 flag 均未 Changed
+	DefaultBindFlagsFunc(f) // 未 Parse 任何参数：所有 flag 均未 Changed
 	if err := v.BindPFlags(f); err != nil {
 		t.Fatalf("BindPFlags: %v", err)
 	}
@@ -1381,7 +1381,7 @@ func TestLogLevelConfigNotShadowedByUnchangedFlag(t *testing.T) {
 
 	// 显式传入时 flag 优先于配置键。
 	f2 := pflag.NewFlagSet("test2", pflag.ContinueOnError)
-	DefaultSetFlagsFunc(f2)
+	DefaultBindFlagsFunc(f2)
 	if err := f2.Parse([]string{"--log-level=warn"}); err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

@@ -44,7 +44,7 @@ type Options struct {
 	ID              string         `json:"id"`
 	Name            string         `json:"name"`
 	Version         string         `json:"version"`
-	SetFlagsFunc    SetFlagsFunc   `json:"-"`
+	BindFlagsFunc   BindFlagsFunc  `json:"-"`
 	BindConfigFunc  BindConfigFunc `json:"-"`
 	ExitSignals     []os.Signal    `json:"-"`
 	ShutdownTimeout time.Duration  `json:"shutdown_timeout"`
@@ -139,8 +139,8 @@ func (o *Options) EnsureDefaults() {
 	// 也能解析 -c/--log-level 等（修复"静默失效"陷阱）。显式传入自定义
 	// 函数时保留自定义实现；WithDisableConfigFlags 显式关闭。
 	if !o.disableConfigFlags {
-		if o.SetFlagsFunc == nil {
-			o.SetFlagsFunc = DefaultSetFlagsFunc
+		if o.BindFlagsFunc == nil {
+			o.BindFlagsFunc = DefaultBindFlagsFunc
 		}
 		if o.BindConfigFunc == nil {
 			o.BindConfigFunc = DefaultBindConfigFunc
@@ -172,20 +172,20 @@ func WithVersion(v string) Option {
 	}
 }
 
-// WithSetFlagsFunc 设置自定义的命令行 flags 注册函数。
-func WithSetFlagsFunc(f SetFlagsFunc) Option {
+// WithBindFlagsFunc 设置自定义的命令行 flags 绑定函数。
+func WithBindFlagsFunc(f BindFlagsFunc) Option {
 	return func(o *Options) {
-		o.SetFlagsFunc = f
+		o.BindFlagsFunc = f
 	}
 }
 
 // WithDisableConfigFlags 关闭默认的命令行 flags 与配置绑定。
-// 默认行为：未显式设置 SetFlagsFunc/BindConfigFunc 时，框架自动启用内置的
-// 参数声明与绑定（见 DefaultSetFlagsFunc/DefaultBindConfigFunc）。
+// 默认行为：未显式设置 BindFlagsFunc/BindConfigFunc 时，框架自动启用内置的
+// 参数声明与绑定（见 DefaultBindFlagsFunc/DefaultBindConfigFunc）。
 func WithDisableConfigFlags() Option {
 	return func(o *Options) {
 		o.disableConfigFlags = true
-		o.SetFlagsFunc = nil
+		o.BindFlagsFunc = nil
 		o.BindConfigFunc = nil
 	}
 }

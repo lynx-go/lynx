@@ -73,7 +73,7 @@ go run main.go
 
 ## 2.3 使用配置文件
 
-Lynx 基于 Viper 提供配置管理。通过 `WithSetFlagsFunc` 定义命令行参数，通过 `WithBindConfigFunc` 把参数绑定到配置来源。创建 `config.yaml`：
+Lynx 基于 Viper 提供配置管理。通过 `WithBindFlagsFunc` 定义命令行参数，通过 `WithBindConfigFunc` 把参数绑定到配置来源。创建 `config.yaml`：
 
 ```yaml
 addr: ":8080"
@@ -84,7 +84,7 @@ log_level: "debug"
 
 ```go
 opts := lynx.NewOptions(
-	lynx.WithSetFlagsFunc(func(f *pflag.FlagSet) {
+	lynx.WithBindFlagsFunc(func(f *pflag.FlagSet) {
 		f.StringP("config", "c", "./config.yaml", "config file path")
 		f.String("addr", "", "http listen address")
 		f.StringP("log_level", "l", "debug", "log level")
@@ -104,9 +104,9 @@ opts := lynx.NewOptions(
 )
 ```
 
-> 注意：上例通过 `WithSetFlagsFunc` 完全自定义了命令行参数（如 `log_level`/`-l`）。
+> 注意：上例通过 `WithBindFlagsFunc` 完全自定义了命令行参数（如 `log_level`/`-l`）。
 > 若不覆盖，框架默认启用内置 flags（`-c/--config`、`--config-type`、`--config-dir`、
-> `--log-level`，见 `DefaultSetFlagsFunc`），两者键名不同，混用时以实际注册的为准。
+> `--log-level`，见 `DefaultBindFlagsFunc`），两者键名不同，混用时以实际注册的为准。
 
 在 `setup` 回调中读取配置：
 
