@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -200,9 +201,7 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 	if headers == nil {
 		headers = map[string]string{}
 	}
-	for k, v := range o.Metadata {
-		headers[k] = v
-	}
+	maps.Copy(headers, o.Metadata)
 	// 传播日志属性（白名单），已存在的不覆盖
 	for _, k := range b.propagateKeys() {
 		if _, ok := headers[k]; ok {
@@ -387,9 +386,7 @@ func cloneHeaders(h map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	cp := make(map[string]string, len(h))
-	for k, v := range h {
-		cp[k] = v
-	}
+	maps.Copy(cp, h)
 	return cp
 }
 

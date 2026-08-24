@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -215,9 +216,7 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 	if raw.Headers == nil {
 		raw.Headers = map[string]string{}
 	}
-	for k, v := range o.Metadata {
-		raw.Headers[k] = v
-	}
+	maps.Copy(raw.Headers, o.Metadata)
 	// Propagate attrs
 	for _, k := range b.propagateKeys() {
 		if _, ok := raw.Headers[k]; ok {
@@ -433,9 +432,7 @@ func toWatermill(e *eventbus.RawEvent) *message.Message {
 	if e.Key != "" {
 		msg.Metadata.Set("x-message-key", e.Key)
 	}
-	for k, v := range e.Headers {
-		msg.Metadata.Set(k, v)
-	}
+	maps.Copy(msg.Metadata, e.Headers)
 	return msg
 }
 func fromWatermill(msg *message.Message) *eventbus.RawEvent {
@@ -446,21 +443,15 @@ func fromWatermill(msg *message.Message) *eventbus.RawEvent {
 		Payload: msg.Payload,
 		Time:    time.Now(),
 	}
-	for k, v := range msg.Metadata {
-		if k == "x-message-key" {
-			continue
-		}
-		e.Headers[k] = v
-	}
+	maps.Copy(e.Headers, msg.Metadata)
+	delete(e.Headers, "x-message-key")
 	return e
 }
 func cloneRawEvent(e *eventbus.RawEvent) *eventbus.RawEvent {
 	cp := *e
 	if e.Headers != nil {
 		cp.Headers = make(map[string]string, len(e.Headers))
-		for k, v := range e.Headers {
-			cp.Headers[k] = v
-		}
+		maps.Copy(cp.Headers, e.Headers)
 	}
 	if e.Payload != nil {
 		cp.Payload = append([]byte(nil), e.Payload...)

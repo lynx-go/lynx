@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -603,9 +604,7 @@ func cloneMessage(m *Message) *Message {
 	cp := *m
 	if m.Headers != nil {
 		cp.Headers = make(map[string]string, len(m.Headers))
-		for k, v := range m.Headers {
-			cp.Headers[k] = v
-		}
+		maps.Copy(cp.Headers, m.Headers)
 	}
 	return &cp
 }
@@ -649,12 +648,10 @@ func (b *broker) Publish(ctx context.Context, topic string, payload any, opts ..
 			}
 		}
 	}
-	for k, v := range o.Metadata {
-		if m.Headers == nil {
-			m.Headers = map[string]string{}
-		}
-		m.Headers[k] = v
+	if m.Headers == nil {
+		m.Headers = map[string]string{}
 	}
+	maps.Copy(m.Headers, o.Metadata)
 	t, key, err := b.resolve(topic)
 	if err != nil {
 		return err

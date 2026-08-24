@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -972,9 +973,7 @@ func TestBrokerPropagateCustomAndDisabled(t *testing.T) {
 				t.Fatalf("published %d messages, want 1", len(msgs))
 			}
 			got := map[string]string{}
-			for k, v := range msgs[0].Metadata {
-				got[k] = v
-			}
+			maps.Copy(got, msgs[0].Metadata)
 			if len(got) != len(tt.want) {
 				t.Errorf("metadata = %v, want %v", got, tt.want)
 			}

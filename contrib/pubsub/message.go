@@ -3,6 +3,7 @@ package pubsub
 import (
 	"context"
 	"encoding/json"
+	"maps"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/google/uuid"
@@ -36,9 +37,7 @@ func WithHeaders(h map[string]string) MessageOption {
 		if m.Headers == nil {
 			m.Headers = map[string]string{}
 		}
-		for k, v := range h {
-			m.Headers[k] = v
-		}
+		maps.Copy(m.Headers, h)
 	}
 }
 
@@ -103,9 +102,7 @@ func toWatermill(m *Message) *message.Message {
 	if m.Key != "" {
 		wm.Metadata.Set(MessageKeyKey.String(), m.Key)
 	}
-	for k, v := range m.Headers {
-		wm.Metadata.Set(k, v)
-	}
+	maps.Copy(wm.Metadata, m.Headers)
 	return wm
 }
 
@@ -118,12 +115,8 @@ func fromWatermill(wm *message.Message) *Message {
 		Headers: map[string]string{},
 		Payload: wm.Payload,
 	}
-	for k, v := range wm.Metadata {
-		if k == MessageKeyKey.String() {
-			continue
-		}
-		m.Headers[k] = v
-	}
+	maps.Copy(m.Headers, wm.Metadata)
+	delete(m.Headers, MessageKeyKey.String())
 	return m
 }
 
