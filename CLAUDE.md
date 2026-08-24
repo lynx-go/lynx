@@ -190,6 +190,7 @@ This pattern is particularly useful for complex applications with many services.
 - 配置驱动：UnmarshalKey("kafka") 加载 map[逻辑topic] 配置（brokers/topics/consumer/producer）
 - 内部按 brokers 分组客户端，订阅按（组 × 物理 topic × 实例数）展开后 fan-in
 - 基于 watermill-kafka/v3（IBM/sarama）；Kafka record Key = MessageKey / Event.Key
+- `Subscribe` 返回 `eventbus.Delivery`（`Event` + Ack/Nack），Bus 转达到底层消息确认
 
 **Scheduler** (contrib/schedule/scheduler.go)
 - Cron-based task scheduling using robfig/cron

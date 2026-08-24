@@ -5,9 +5,9 @@
 | 标题 | Lynx EventBus（一等消息总线） |
 | 作者 | TBD |
 | 日期 | 2026-08-24 |
-| 状态 | Draft（供审查） |
-| 适用版本 | v1.1+（相对当前 WIP `eventbus` / `contrib/watermill` 的收敛） |
-| 相关讨论 | 消息路径审查、移除 `contrib/pubsub`、生命周期走 Watermill 但锁死内存 Transport（方案 B）、gocloud vs Watermill、Bus 先于 Component 启动、关停时序 |
+| 状态 | **Implemented**（已合入 `master`；实现见 `eventbus/`、`contrib/watermill`、`contrib/watermill-kafka`） |
+| 适用版本 | v1.1+ |
+| 相关讨论 | 消息路径审查、移除 `contrib/pubsub`、生命周期走 Watermill 但锁死内存 Transport（方案 B）、gocloud vs Watermill、Bus 先于 Component 启动、关停时序、Transport `Delivery` Ack/Nack |
 
 ---
 
@@ -37,13 +37,14 @@ Lynx 将 **EventBus** 提升为一等子系统：进程内组件协同与跨进�
 
 ## 2. Background & Motivation
 
-### 2.1 现状
+### 2.1 背景（设计时快照，已落地）
 
-- 核心已有 `eventbus` 包与默认 `NewMemoryBus`；`newLynx` 中 `Bus.Init` 早于 `Register`。
-- `Run` 将 Bus 以 **last-actor** 单独托管（不进 `runG`），保证收尾事件可投递。
-- `contrib/watermill` 提供 Watermill 驱动的 `Bus`；`Subscribe` 在 `started` 后拒绝注册（自加门闩）。
-- `contrib/pubsub`（Broker/Router/Message）与 `contrib/kafka`（实现 `pubsub.Transport`）仍是旧路径；文档与示例双栈并存。目标模块名 **`contrib/watermill-kafka`**（见 §9.5）。
-- 审查发现：出进程时信封字段（`Time`/`Topic`）易丢；`Key` 与 Kafka 分区键语义错接；`Topic.Retry` / `SubscribeMarshaler` 等选项未接线；生命周期事件若打进 Watermill，会在 Register 阶段丢失。
+设计启动时：核心已有 `eventbus` 与默认 `NewMemoryBus`；`contrib/pubsub` + `contrib/kafka` 为旧双栈。**合入后**：仅保留 `eventbus` + `contrib/watermill` + `contrib/watermill-kafka`；见附录 A。
+
+历史问题摘要（均已收敛）：
+- 出进程时信封字段（`Time`/`Topic`）易丢；`Key` 与 Kafka 分区键语义错接。
+- Watermill `Subscribe` 在 started 后拒绝注册；关停 `subscriberAdapter.Close` 空实现。
+- `Transport.Subscribe` 丢 Ack 句柄会导致 Kafka 消费停摆（已改为 `Delivery`）。
 
 ### 2.2 要解决的问题
 
@@ -497,33 +498,33 @@ kafka:
 
 ## 15. 决策摘要（审查核对清单）
 
-- [ ] 对外只有 `Bus` / `Topic[T]` / `Event[T]`；删 `contrib/pubsub`
+- [x] 对外只有 `Bus` / `Topic[T]` / `Event[T]`；删 `contrib/pubsub`
 - [x] **方案 B**：生命周期走同一 Bus；`lynx.*` 强制内存 Transport，禁止出进程
 - [x] **Typed API**：`Topic.Publish/Subscribe`；Bus 解析 = `WithBus` Option → Context → Default；无第二套位置参数重载
-- [ ] Bus 可在 Component Init 前 Start；Init 内 Subscribe 走 `RunHandlers`
-- [ ] 关停 Bus last-actor 不变
-- [ ] Wire 单点映射；Marshaler 对称；Kafka Key = 分区键
-- [ ] 底座 = 自研 API + Watermill 驱动箱；不用 gocloud 做内核
+- [x] Bus 可在 Component Init 前 Start；Init 内 Subscribe 走 `RunHandlers`
+- [x] 关停 Bus last-actor 不变
+- [x] Wire 单点映射；Marshaler 对称；Kafka Key = 分区键
+- [x] 底座 = 自研 API + Watermill 驱动箱；不用 gocloud 做内核
 - [x] **`contrib/kafka` 重命名为 `contrib/watermill-kafka`**
-- [ ] Kafka Transport 改缝保能力，不用瘦实现顶替（含 Delivery Ack → record offset）
+- [x] Kafka Transport 改缝保能力；`Subscribe` → `Delivery`（Ack/Nack 转达底层）
 
 ---
 
-## 附录 A. 与当前代码的差距（快照）
+## 附录 A. 实现落地对照（合入后）
 
-| 项 | 现状 | 目标 |
-| --- | --- | --- |
-| `contrib/watermill.Subscribe` 在 started 后报错 | 有 | 改为 Add + RunHandlers |
-| `lynx.publishEvent` 打同一 `app.bus` | 是 | **保持**；Watermill 下由路由锁保证进内存 Transport |
-| Typed 调用需手传 Bus | 是（PublishTyped/SubscribeTyped） | `Topic` 方法 + Context/Default；逃生用 `eventbus.WithBus` Option |
-| `toWatermill` 丢失 Time | 是 | 写入 `x-event-time` |
-| Kafka DefaultMarshaler 不写 partition key | 是 | 写 record key |
-| `Topic.Retry` 未转发 | 是 | 接线 |
-| `contrib/pubsub` | 仍在 | 删除 |
-| `contrib/kafka` 依赖 pubsub | 是 | 重命名为 `contrib/watermill-kafka`，依赖 `eventbus.Transport` |
+| 项 | 实现 |
+| --- | --- |
+| Watermill 动态订阅 | `AddConsumerHandler` + `RunHandlers`；`subscriberAdapter.Close` 取消订阅 ctx |
+| 生命周期 | 同一 `app.Bus()`；`lynx.*` → 内置 MemoryTransport；非内存 Route/Init 失败 |
+| Typed API | `Topic.Publish/Subscribe`；`WithBus` → Context → `Default`；`newLynx` 注入 |
+| Wire | `EncodeWireMetadata` / `DecodeWireMetadata`（`x-message-key` / `x-event-time` / `x-logical-topic`） |
+| Kafka | `contrib/watermill-kafka`；record key = MessageKey；`Delivery.Ack` → offset |
+| 删除 | `contrib/pubsub`、`_examples/pubsub`、`contrib/watermill/kafka.go` 瘦实现 |
+
+已知可后续跟进（不挡合入）：`Run` 早退路径 Bus 关停收口、`Bus.Stop` 错误进入 `Run` 返回值、`busCancel` 加锁、`newLynx` 就绪等待可配置等。
 
 ## 附录 B. 参考
 
 - Watermill Router： [Adding handler after the router has started](https://watermill.io/docs/messages-router/)（`AddConsumerHandler` + `RunHandlers`）
 - gocloud pubsub：https://pkg.go.dev/gocloud.dev/pubsub（选型对比见 §6）
-- 仓库内相关：`eventbus/`、`contrib/watermill/`、现 `contrib/kafka/`（目标 `contrib/watermill-kafka/`）、`lynx.go` Run/关停、`docs/design-service-registry.md`（OnDrain 协同）
+- 仓库内相关：`eventbus/`、`contrib/watermill/`、`contrib/watermill-kafka/`、`lynx.go` Run/关停、`docs/design-service-registry.md`（OnDrain 协同）

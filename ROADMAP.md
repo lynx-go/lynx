@@ -1,6 +1,6 @@
 # Lynx 路线图
 
-> 最后更新：2026-08-07
+> 最后更新：2026-08-24
 
 ## 定位与目标
 
@@ -84,6 +84,9 @@ v1.0 API 已冻结并保持向后兼容，本阶段只做增量（来源：2026-
 
 ### E1 生产通用刚需（v1.1~v1.2，按优先级排序）
 
+- [x] **EventBus 一等化**（设计见 `docs/design-eventbus.md`）：核心 `eventbus`
+      （Bus/Topic/Event + wire/`Delivery`）；删 `contrib/pubsub`；`contrib/kafka`
+      → `contrib/watermill-kafka`；Watermill Bus 动态订阅 + `lynx.*` 内存路由锁
 - [ ] Debug/pprof 管理服务：可选 Service，挂载 `/debug/pprof/*` 与
       运行时日志级别调整，绑定内网地址/独立端口
 - [ ] HTTP/gRPC client 组件：otel 插装、trace 与 `request_id`/日志属性

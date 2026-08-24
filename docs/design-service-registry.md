@@ -47,7 +47,7 @@ Lynx 当前把进程生命周期、健康检查和关停排水（`DrainTimeout`�
 | 关停排水 | `WithDrainTimeout`：置位内部 `drainChecker` → readiness 立即 503 → 睡眠 → `cancelCtx` → `OnStop` → 各服务 `Stop` | `drain.go`、`lynx.go` `Run()` |
 | 出站调用 | `client/http` 吃绝对 URL；`client/grpc.Dial(target)` 吃静态 target；无 resolver | `client/http/client.go`、`client/grpc/client.go` |
 | 多实例 | `ServiceFactory` 按 `FactoryOptions.Instances` 展开，典型用途是 Kafka 消费组，不是对外服务 | `service.go`、`lynx.go` `addServiceFactories` |
-| 可选服务先例 | `kafka.NewFromConfig` 段缺失返回 `(nil, nil)`，调用方不得 `Register` | `contrib/kafka/fromconfig.go` |
+| 可选服务先例 | `kafka.NewFromConfig`（`contrib/watermill-kafka`）段缺失返回 `(nil, nil)`，调用方不得 `Register` | `contrib/watermill-kafka/fromconfig.go` |
 | 路线图立场 | 「K8s 以 DNS/Service 为主，必要时 contrib」 | `ROADMAP.md` E3 |
 
 今天一个 Lynx 进程要被别的进程找到，只有三条路：
@@ -163,7 +163,7 @@ flowchart TB
     GRPCCli --> Res
 ```
 
-门面/后端切分刻意模仿 `contrib/pubsub.Transport` + `contrib/kafka`：
+门面/后端切分刻意模仿 `eventbus.Transport` + `contrib/watermill-kafka`：
 
 - `contrib/registry`：类型、接口、Registrar、Resolver、Picker、memory、dns、`NewBackendFromConfig`（**仅** memory/dns）。依赖只有根 `lynx` + 标准库，**不** import `contrib/consul`。
 - `contrib/consul`：实现 `registry.Registry` 与 `registry.Discovery`，`replace => ../../`，独立 tag `contrib/consul/vX.Y.Z`。
@@ -301,7 +301,7 @@ type Advertiser interface {
 
 `Registry` 与 `Discovery` 刻意拆开：DNS 后端只实现 `Discovery`。`contrib/consul` 一个类型同时实现两者。
 
-配置驱动的装配：**轻模块只建零依赖后端；Consul 在应用侧构造**，避免 `contrib/registry` → `contrib/consul` → `contrib/registry` 环（与 `contrib/kafka` 依赖 `contrib/pubsub`、反向禁止相同）。
+配置驱动的装配：**轻模块只建零依赖后端；Consul 在应用侧构造**，避免 `contrib/registry` → `contrib/consul` → `contrib/registry` 环（与 `contrib/watermill-kafka` 依赖 `eventbus`、反向禁止相同）。
 
 ```go
 // contrib/registry：只认识 memory / dns。
@@ -471,7 +471,7 @@ K8s `terminationGracePeriodSeconds` 必须覆盖**新公式**。注销从排水�
 
 | 组件 | 要求 |
 | --- | --- |
-| `contrib/registry` `go.mod` | `require github.com/lynx-go/lynx` ≥ 含 `OnDrain`/`ErrDraining` 的根 tag；`replace => ../../` 与 `contrib/kafka/go.mod` 相同 |
+| `contrib/registry` `go.mod` | `require github.com/lynx-go/lynx` ≥ 含 `OnDrain`/`ErrDraining` 的根 tag；`replace => ../../` 与 `contrib/watermill-kafka/go.mod` 相同 |
 | `Bind` | `app.Register(r)` + type-assert `interface{ OnDrain(fns ...lynx.HookFunc) }`。老测试 fake 没有该方法时只 Register，不挂钩 |
 | `watchDrain` | **同一版本**的安全网：用户忘了 `Bind`、只 `Register(reg)`，且 `DrainTimeout > 0`（`drainChecker` 在 `HealthCheckers` 里）时，50ms 轮询 `errors.Is(..., lynx.ErrDraining)` 后注销 |
 | `DrainTimeout=0` | `drainChecker` **不**进聚合（`lynx.go` 645–651 红线）。此时没有 `ErrDraining` 可见，只能靠 `OnDrain` 或 `Stop` |
@@ -1130,8 +1130,8 @@ Trace：Register/Deregister/GetService 作为内部 span（可选，`otel.Tracer
 - `server/http/server.go`、`server/grpc/server.go`：监听、健康端点
 - `debug/debug.go`：`Addr()` 先例
 - `client/http/client.go`、`client/grpc/client.go`、`docs/06-clients.md`
-- `contrib/kafka/fromconfig.go`：可选服务 `(nil, nil)` 约定
-- `contrib/pubsub/transport.go`：后端接口与独立模块模式
+- `contrib/watermill-kafka/fromconfig.go`：可选服务 `(nil, nil)` 约定
+- `eventbus.Transport` / `Delivery`：后端接口与独立模块模式
 - `boot/bootstrap.go`：Wire 聚合
 - `RELEASE.md` / `Taskfile.yml`：多模块 tag
 - 外部：Consul HTTP API (`/v1/agent/service/register`、blocking queries)；gRPC `resolver.Builder`；K8s DNS `{svc}.{ns}.svc.cluster.local`
@@ -1168,7 +1168,7 @@ Trace：Register/Deregister/GetService 作为内部 span（可选，`otel.Tracer
 - **标题**：`contrib/registry: add Instance model, Registry/Discovery, memory backend`
 - **影响**：新模块 `contrib/registry/`（`registry.go`、`memory.go`、`picker.go`、`errors.go`、测试）、`go.work`、`RELEASE.md`（6 contrib 路径 / 7 次 tag）、`Taskfile.yml`、`LICENSE`
 - **依赖**：无
-- **说明**：不含 Registrar/网络。memory 必须原生存多 Endpoint，Resolver 后续单测靠它证明与 Consul Meta 无关。Picker 单测明确 **忽略 Weight**。`go.mod` 形状对齐 `contrib/kafka/go.mod`（`replace => ../../`）。此时根版本尚未含 OnDrain 也可以，本 PR 不引用 `ErrDraining`。
+- **说明**：不含 Registrar/网络。memory 必须原生存多 Endpoint，Resolver 后续单测靠它证明与 Consul Meta 无关。Picker 单测明确 **忽略 Weight**。`go.mod` 形状对齐 `contrib/watermill-kafka/go.mod`（`replace => ../../`）。此时根版本尚未含 OnDrain 也可以，本 PR 不引用 `ErrDraining`。
 
 ### PR5 — Registrar 生命周期
 

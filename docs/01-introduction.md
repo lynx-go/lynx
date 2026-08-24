@@ -48,9 +48,9 @@ Lynx 遵循"简单即美"的设计哲学，提供最小化的核心 API，开发
 - 支持多种配置格式（JSON、YAML、TOML 等）
 
 ### 事件驱动
-- 内置 PubSub 支持
-- 支持异步消息处理
-- 提供 Kafka Transport 简化消息队列使用
+- 一等 EventBus：`Bus` / `Topic[T]` / `Event[T]`（默认内存，开箱即用）
+- 跨进程：`contrib/watermill` Bus + `contrib/watermill-kafka` Transport
+- 类型化 `Topic.Publish` / `Subscribe`；生命周期事件 `lynx.*` 强制进程内内存 Transport
 
 ### 定时任务
 - 基于 Cron 的调度器
