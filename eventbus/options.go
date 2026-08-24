@@ -1,6 +1,7 @@
 package eventbus
 
 import (
+	"context"
 	"time"
 )
 
@@ -54,8 +55,8 @@ type Options struct {
 
 // Transport 是 Bus 可插拔的后端，topic 一律为逻辑名。
 type Transport interface {
-	Publish(ctxTopic string, e *RawEvent) error
-	Subscribe(topic string, opts SubscribeOptions) (<-chan *RawEvent, error)
+	Publish(ctx context.Context, topic string, e *RawEvent) error
+	Subscribe(ctx context.Context, topic string, opts SubscribeOptions) (<-chan *RawEvent, error)
 	Topics() []string
 	Close() error
 }
