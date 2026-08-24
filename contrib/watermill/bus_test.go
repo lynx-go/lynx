@@ -24,7 +24,7 @@ func TestWatermillSubscribeAfterStart(t *testing.T) {
 
 	got := make(chan string, 1)
 	topic := eventbus.NewTopic[map[string]string]("order.created")
-	if err := topic.Subscribe(context.Background(), "after-start", func(ctx context.Context, e *eventbus.Event[map[string]string]) error {
+	if err := topic.Subscribe(context.Background(), func(ctx context.Context, e *eventbus.Event[map[string]string]) error {
 		got <- e.Payload["id"]
 		return nil
 	}, eventbus.WithBus(bus)); err != nil {
@@ -56,7 +56,7 @@ func TestWatermillBusStopAfterSubscribeCompletesQuickly(t *testing.T) {
 	go func() { _ = bus.Start(ctx) }()
 	waitBus(t, bus)
 
-	if err := bus.Subscribe(context.Background(), "order.created", "stop-h", func(ctx context.Context, e *eventbus.RawEvent) error {
+	if err := bus.Subscribe(context.Background(), "order.created", func(ctx context.Context, e *eventbus.RawEvent) error {
 		return nil
 	}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -77,7 +77,7 @@ func TestLifecycleForcedToMemory(t *testing.T) {
 	waitBus(t, bus)
 
 	got := make(chan struct{}, 1)
-	if err := eventbus.AppStartedTopic.Subscribe(context.Background(), "life", func(ctx context.Context, e *eventbus.Event[eventbus.AppEvent]) error {
+	if err := eventbus.AppStartedTopic.Subscribe(context.Background(), func(ctx context.Context, e *eventbus.Event[eventbus.AppEvent]) error {
 		got <- struct{}{}
 		return nil
 	}, eventbus.WithBus(bus)); err != nil {
@@ -143,7 +143,7 @@ func TestWatermillBusForwardsDeliveryAck(t *testing.T) {
 	go func() { _ = bus.Start(ctx) }()
 	waitBus(t, bus)
 
-	if err := bus.Subscribe(context.Background(), "order.created", "ack-h", func(ctx context.Context, e *eventbus.RawEvent) error {
+	if err := bus.Subscribe(context.Background(), "order.created", func(ctx context.Context, e *eventbus.RawEvent) error {
 		return nil
 	}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -178,7 +178,7 @@ func TestWatermillBusForwardsDeliveryNack(t *testing.T) {
 	go func() { _ = bus.Start(ctx) }()
 	waitBus(t, bus)
 
-	if err := bus.Subscribe(context.Background(), "order.fail", "nack-h", func(ctx context.Context, e *eventbus.RawEvent) error {
+	if err := bus.Subscribe(context.Background(), "order.fail", func(ctx context.Context, e *eventbus.RawEvent) error {
 		return errors.New("handler failed")
 	}); err != nil {
 		t.Fatalf("Subscribe: %v", err)

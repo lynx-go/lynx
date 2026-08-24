@@ -16,7 +16,7 @@ type LogMessageOptions struct {
 	Subscribe bool
 }
 
-// TopicConfig 是单主题的完整选项（用于 BusOptions.Topics；Topic[T] 的运行时视图亦由此生成）。
+// TopicConfig 是单主题的完整选项（用于 Options.Topics 配置映射）。
 type TopicConfig struct {
 	Group           string             `mapstructure:"group"`
 	Instances       int                `mapstructure:"instances"`

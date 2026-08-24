@@ -276,7 +276,7 @@ func (b *Bus) PublishRaw(ctx context.Context, topic string, data []byte, opts ..
 }
 
 // Subscribe 订阅；Start 后动态注册（AddConsumerHandler + RunHandlers）。
-func (b *Bus) Subscribe(ctx context.Context, topic, handlerName string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
+func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
 	o := &eventbus.SubscribeOptions{}
 	eventbus.ApplySubscribeOptions(o, opts...)
 	if cfg, ok := b.opts.Topics[topic]; ok {
@@ -293,8 +293,9 @@ func (b *Bus) Subscribe(ctx context.Context, topic, handlerName string, h eventb
 			o.ContinueOnError = true
 		}
 	}
+	handlerName := o.HandlerName
 	if handlerName == "" {
-		return errors.New("handler name is required")
+		handlerName = topic
 	}
 	if h == nil {
 		return errors.New("handler is nil")

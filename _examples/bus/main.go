@@ -37,11 +37,11 @@ type auditService struct{}
 func (s *auditService) Name() string { return "audit-service" }
 func (s *auditService) Init(ctx lynx.AppContext) error {
 	// Topic.Subscribe：Bus 从 Context / Default 解析，Payload 自动反序列化
-	return OrderCreatedTopic.Subscribe(ctx.Context(), "audit-handler",
+	return OrderCreatedTopic.Subscribe(ctx.Context(),
 		func(ctx context.Context, e *eventbus.Event[OrderCreated]) error {
 			slog.InfoContext(ctx, "audit received order", "order_id", e.Payload.OrderID, "user_id", e.Payload.UserID)
 			return nil
-		})
+		}, eventbus.WithHandlerName("audit-handler"))
 }
 func (s *auditService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
 func (s *auditService) Stop(ctx context.Context) error  { return nil }
@@ -51,11 +51,11 @@ type inventoryService struct{}
 
 func (s *inventoryService) Name() string { return "inventory" }
 func (s *inventoryService) Init(ctx lynx.AppContext) error {
-	return ctx.Bus().Subscribe(ctx.Context(), "order.created", "inventory-handler",
+	return ctx.Bus().Subscribe(ctx.Context(), "order.created",
 		func(ctx context.Context, e *eventbus.RawEvent) error {
 			slog.InfoContext(ctx, "inventory received", "payload", string(e.Payload))
 			return nil
-		})
+		}, eventbus.WithHandlerName("inventory-handler"))
 }
 func (s *inventoryService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
 func (s *inventoryService) Stop(ctx context.Context) error  { return nil }
@@ -67,20 +67,20 @@ type lifecycleCoordinator struct{}
 func (s *lifecycleCoordinator) Name() string { return "lifecycle-coordinator" }
 func (s *lifecycleCoordinator) Init(ctx lynx.AppContext) error {
 	// 订阅 App 级事件（Topic 方法，无需手传 Bus）
-	_ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord-app-started", func(ctx context.Context, e *eventbus.Event[eventbus.AppEvent]) error {
+	_ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), func(ctx context.Context, e *eventbus.Event[eventbus.AppEvent]) error {
 		slog.InfoContext(ctx, "coordinator: app started", "name", e.Payload.Name, "id", e.Payload.ID)
 		return nil
 	})
-	_ = eventbus.ServiceRegisteredTopic.Subscribe(ctx.Context(), "coord-service-registered", func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
+	_ = eventbus.ServiceRegisteredTopic.Subscribe(ctx.Context(), func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
 		slog.InfoContext(ctx, "coordinator: service registered", "service", e.Payload.Service)
 		return nil
 	})
-	_ = eventbus.ServiceStartedTopic.Subscribe(ctx.Context(), "coord-service-started", func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
+	_ = eventbus.ServiceStartedTopic.Subscribe(ctx.Context(), func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
 		slog.InfoContext(ctx, "coordinator: service started", "service", e.Payload.Service)
 		return nil
 	})
 	// 若有 HTTP 服务，可订阅其 listening 事件以获知实际监听地址
-	_ = eventbus.HTTPListeningTopic.Subscribe(ctx.Context(), "coord-http-listening", func(ctx context.Context, e *eventbus.Event[eventbus.ServerEvent]) error {
+	_ = eventbus.HTTPListeningTopic.Subscribe(ctx.Context(), func(ctx context.Context, e *eventbus.Event[eventbus.ServerEvent]) error {
 		slog.InfoContext(ctx, "coordinator: http listening", "addr", e.Payload.Addr, "advertise", e.Payload.AdvertiseAddr)
 		return nil
 	})

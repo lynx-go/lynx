@@ -17,7 +17,7 @@ func TestMarshalerPriorityOptionOverTopic(t *testing.T) {
 
 	topic := NewTopic[map[string]string]("prio.opt", WithTopicMarshaler(prefixMarshaler{}))
 	received := make(chan []byte, 1)
-	_ = bus.Subscribe(context.Background(), topic.Name(), "h-prio", func(ctx context.Context, e *RawEvent) error {
+	_ = bus.Subscribe(context.Background(), topic.Name(), func(ctx context.Context, e *RawEvent) error {
 		received <- append([]byte(nil), e.Payload...)
 		return nil
 	})
@@ -52,7 +52,7 @@ func TestSubscribeOptionMarshalerUsedForDecode(t *testing.T) {
 
 	topic := NewTopic[map[string]string]("prio.sub")
 	got := make(chan string, 1)
-	if err := topic.Subscribe(context.Background(), "h-dec", func(ctx context.Context, e *Event[map[string]string]) error {
+	if err := topic.Subscribe(context.Background(), func(ctx context.Context, e *Event[map[string]string]) error {
 		got <- e.Payload["hello"]
 		return nil
 	}, WithBus(bus), WithSubscribeMarshaler(prefixMarshaler{})); err != nil {
@@ -84,7 +84,7 @@ func TestPublishRawEventUsesParamTopic(t *testing.T) {
 	waitRunning(t, bus)
 
 	got := make(chan string, 1)
-	_ = bus.Subscribe(context.Background(), "logical.param", "h-topic", func(ctx context.Context, e *RawEvent) error {
+	_ = bus.Subscribe(context.Background(), "logical.param", func(ctx context.Context, e *RawEvent) error {
 		got <- e.Topic
 		return nil
 	})
@@ -115,7 +115,7 @@ func TestPublishRawTypedPreservesEnvelope(t *testing.T) {
 	ts := time.Unix(100, 0).UTC()
 	topic := NewTopic[[]byte]("fwd.topic")
 	got := make(chan *RawEvent, 1)
-	_ = bus.Subscribe(context.Background(), topic.Name(), "h-fwd", func(ctx context.Context, e *RawEvent) error {
+	_ = bus.Subscribe(context.Background(), topic.Name(), func(ctx context.Context, e *RawEvent) error {
 		got <- e
 		return nil
 	})

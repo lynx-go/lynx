@@ -15,7 +15,7 @@ type busProbeService struct {
 func (s *busProbeService) Name() string { return "probe" }
 func (s *busProbeService) Init(ctx AppContext) error {
 	// Subscribe in Init via Bus
-	return ctx.Bus().Subscribe(ctx.Context(), "test.event", "probe-handler", func(ctx context.Context, e *eventbus.RawEvent) error {
+	return ctx.Bus().Subscribe(ctx.Context(), "test.event", func(ctx context.Context, e *eventbus.RawEvent) error {
 		s.received <- string(e.Payload)
 		return nil
 	})
@@ -112,7 +112,7 @@ type busTypedProbe struct {
 
 func (s *busTypedProbe) Name() string { return "typed-probe" }
 func (s *busTypedProbe) Init(ctx AppContext) error {
-	return s.topic.Subscribe(ctx.Context(), "typed-handler", func(ctx context.Context, e *eventbus.Event[Order]) error {
+	return s.topic.Subscribe(ctx.Context(), func(ctx context.Context, e *eventbus.Event[Order]) error {
 		s.received <- e.Payload.ID
 		return nil
 	})

@@ -15,7 +15,7 @@ func TestAppStoppedDeliveredBeforeBusStop(t *testing.T) {
 		t.Fatalf("newLynx: %v", err)
 	}
 	gotStopped := make(chan struct{}, 1)
-	if err := eventbus.AppStoppedTopic.Subscribe(app.Context(), "test-app-stopped", func(ctx context.Context, e *eventbus.Event[eventbus.AppEvent]) error {
+	if err := eventbus.AppStoppedTopic.Subscribe(app.Context(), func(ctx context.Context, e *eventbus.Event[eventbus.AppEvent]) error {
 		gotStopped <- struct{}{}
 		return nil
 	}); err != nil {

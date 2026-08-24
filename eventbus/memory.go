@@ -255,15 +255,16 @@ func (b *memoryBus) dispatch(ctx context.Context, ev *RawEvent) error {
 }
 
 // Subscribe 订阅主题，支持 Start 后动态追加（覆盖旧 Broker 的限制）。
-func (b *memoryBus) Subscribe(ctx context.Context, topic, handlerName string, h HandlerFunc, opts ...SubscribeOption) error {
-	if handlerName == "" {
-		return errors.New("handler name is required")
-	}
+func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, opts ...SubscribeOption) error {
 	if h == nil {
 		return errors.New("handler is nil")
 	}
 	o := &SubscribeOptions{}
 	applySubscribeOptions(o, opts...)
+	handlerName := o.HandlerName
+	if handlerName == "" {
+		handlerName = topic
+	}
 	// 合并 Topic 默认值：显式优先
 	if cfg, ok := b.opts.Topics[topic]; ok {
 		if o.Group == "" {

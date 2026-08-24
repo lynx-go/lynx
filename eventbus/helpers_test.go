@@ -45,7 +45,7 @@ func TestPublishTypedUsesTopicMarshaler(t *testing.T) {
 	topic := NewTopic[map[string]string]("test.custom", WithTopicMarshaler(prefixMarshaler{}))
 
 	received := make(chan *RawEvent, 1)
-	if err := bus.Subscribe(context.Background(), topic.Name(), "h-custom", func(ctx context.Context, e *RawEvent) error {
+	if err := bus.Subscribe(context.Background(), topic.Name(), func(ctx context.Context, e *RawEvent) error {
 		received <- e
 		return nil
 	}); err != nil {
@@ -67,7 +67,7 @@ func TestPublishTypedUsesTopicMarshaler(t *testing.T) {
 		// 验证 SubscribeTyped 也能用同一 Marshaler 正确解码
 		typedCh := make(chan string, 1)
 		topic2 := NewTopic[map[string]string]("test.custom.typed", WithTopicMarshaler(prefixMarshaler{}))
-		if err := SubscribeTyped(context.Background(), bus, topic2, "h-typed", func(ctx context.Context, ev *Event[map[string]string]) error {
+		if err := SubscribeTyped(context.Background(), bus, topic2, func(ctx context.Context, ev *Event[map[string]string]) error {
 			typedCh <- ev.Payload["hello"]
 			return nil
 		}); err != nil {

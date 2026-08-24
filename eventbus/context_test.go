@@ -66,7 +66,7 @@ func TestTopicPublishSubscribeViaContext(t *testing.T) {
 	appCtx := ContextWithBus(context.Background(), bus)
 	topic := NewTopic[map[string]string]("api.ctx")
 	got := make(chan string, 1)
-	if err := topic.Subscribe(appCtx, "h-ctx", func(ctx context.Context, e *Event[map[string]string]) error {
+	if err := topic.Subscribe(appCtx, func(ctx context.Context, e *Event[map[string]string]) error {
 		got <- e.Payload["id"]
 		return nil
 	}); err != nil {
@@ -99,7 +99,7 @@ func TestTopicPublishViaDefault(t *testing.T) {
 
 	topic := NewTopic[map[string]string]("api.def")
 	got := make(chan string, 1)
-	if err := topic.Subscribe(context.Background(), "h-def", func(ctx context.Context, e *Event[map[string]string]) error {
+	if err := topic.Subscribe(context.Background(), func(ctx context.Context, e *Event[map[string]string]) error {
 		got <- e.Payload["id"]
 		return nil
 	}); err != nil {
@@ -139,7 +139,7 @@ func TestTopicWithBusOption(t *testing.T) {
 
 	topic := NewTopic[map[string]string]("api.opt")
 	got := make(chan string, 1)
-	if err := topic.Subscribe(context.Background(), "h-opt", func(ctx context.Context, e *Event[map[string]string]) error {
+	if err := topic.Subscribe(context.Background(), func(ctx context.Context, e *Event[map[string]string]) error {
 		got <- e.Payload["id"]
 		return nil
 	}, WithBus(other)); err != nil {

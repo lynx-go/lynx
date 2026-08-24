@@ -43,7 +43,7 @@ func main() {
 		logger.Info("parsed config", "config", config)
 
 		// 默认内存 Bus 已由框架注入；Init 期订阅即可。
-		if err := HelloTopic.Subscribe(app.Context(), "helloHandler",
+		if err := HelloTopic.Subscribe(app.Context(),
 			func(ctx context.Context, e *eventbus.Event[map[string]any]) error {
 				slog.InfoContext(ctx, "recv hello event", "payload", e.Payload)
 				return nil

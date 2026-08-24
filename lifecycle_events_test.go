@@ -25,7 +25,7 @@ func TestLifecycleEventsServiceRegistered(t *testing.T) {
 	}
 	received := make(chan string, 10)
 	// Subscribe before Register, so we capture the event.
-	if err := app.Bus().Subscribe(context.Background(), eventbus.TopicServiceRegistered, "test-lifecycle-registered", func(ctx context.Context, e *eventbus.RawEvent) error {
+	if err := app.Bus().Subscribe(context.Background(), eventbus.TopicServiceRegistered, func(ctx context.Context, e *eventbus.RawEvent) error {
 		// Decode ServiceEvent
 		var se eventbus.ServiceEvent
 		m := app.Bus().MarshalerFor(eventbus.TopicServiceRegistered)
@@ -66,15 +66,15 @@ func TestLifecycleEventsAppAndService(t *testing.T) {
 	serviceStopped := make(chan string, 1)
 
 	bus := app.Bus()
-	_ = bus.Subscribe(context.Background(), eventbus.TopicAppStarting, "test-app-starting", func(ctx context.Context, e *eventbus.RawEvent) error {
+	_ = bus.Subscribe(context.Background(), eventbus.TopicAppStarting, func(ctx context.Context, e *eventbus.RawEvent) error {
 		appStarting <- e.Topic
 		return nil
 	})
-	_ = bus.Subscribe(context.Background(), eventbus.TopicAppStarted, "test-app-started", func(ctx context.Context, e *eventbus.RawEvent) error {
+	_ = bus.Subscribe(context.Background(), eventbus.TopicAppStarted, func(ctx context.Context, e *eventbus.RawEvent) error {
 		appStarted <- e.Topic
 		return nil
 	})
-	_ = bus.Subscribe(context.Background(), eventbus.TopicServiceStarting, "test-svc-starting", func(ctx context.Context, e *eventbus.RawEvent) error {
+	_ = bus.Subscribe(context.Background(), eventbus.TopicServiceStarting, func(ctx context.Context, e *eventbus.RawEvent) error {
 		var se eventbus.ServiceEvent
 		_ = bus.MarshalerFor(eventbus.TopicServiceStarting).Unmarshal(e.Payload, &se)
 		if se.Service == "lifecycle-svc" {
@@ -82,7 +82,7 @@ func TestLifecycleEventsAppAndService(t *testing.T) {
 		}
 		return nil
 	})
-	_ = bus.Subscribe(context.Background(), eventbus.TopicServiceStarted, "test-svc-started", func(ctx context.Context, e *eventbus.RawEvent) error {
+	_ = bus.Subscribe(context.Background(), eventbus.TopicServiceStarted, func(ctx context.Context, e *eventbus.RawEvent) error {
 		var se eventbus.ServiceEvent
 		_ = bus.MarshalerFor(eventbus.TopicServiceStarted).Unmarshal(e.Payload, &se)
 		if se.Service == "lifecycle-svc" {
@@ -90,7 +90,7 @@ func TestLifecycleEventsAppAndService(t *testing.T) {
 		}
 		return nil
 	})
-	_ = bus.Subscribe(context.Background(), eventbus.TopicServiceStopping, "test-svc-stopping", func(ctx context.Context, e *eventbus.RawEvent) error {
+	_ = bus.Subscribe(context.Background(), eventbus.TopicServiceStopping, func(ctx context.Context, e *eventbus.RawEvent) error {
 		var se eventbus.ServiceEvent
 		_ = bus.MarshalerFor(eventbus.TopicServiceStopping).Unmarshal(e.Payload, &se)
 		if se.Service == "lifecycle-svc" {
@@ -98,7 +98,7 @@ func TestLifecycleEventsAppAndService(t *testing.T) {
 		}
 		return nil
 	})
-	_ = bus.Subscribe(context.Background(), eventbus.TopicServiceStopped, "test-svc-stopped", func(ctx context.Context, e *eventbus.RawEvent) error {
+	_ = bus.Subscribe(context.Background(), eventbus.TopicServiceStopped, func(ctx context.Context, e *eventbus.RawEvent) error {
 		var se eventbus.ServiceEvent
 		_ = bus.MarshalerFor(eventbus.TopicServiceStopped).Unmarshal(e.Payload, &se)
 		if se.Service == "lifecycle-svc" {

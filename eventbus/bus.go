@@ -21,9 +21,9 @@ type Bus interface {
 	// PublishRaw 以原始字节发布，跳过序列化（用于已序列化的 *Event 透传）。
 	PublishRaw(ctx context.Context, topic string, data []byte, opts ...PublishOption) error
 
-	// Subscribe 订阅逻辑 topic，handlerName 在 Bus 内全局唯一。
+	// Subscribe 订阅逻辑 topic；handler 名由 WithHandlerName 指定，为空时使用 topic，且在 Bus 内全局唯一。
 	// 内存 Bus 允许 Start 后动态订阅；持久化 Bus 的 Start 前后语义由实现保证。
-	Subscribe(ctx context.Context, topic, handlerName string, h HandlerFunc, opts ...SubscribeOption) error
+	Subscribe(ctx context.Context, topic string, h HandlerFunc, opts ...SubscribeOption) error
 
 	// MarshalerFor 返回 topic 的序列化器（TopicMarshalers 命中则用之，否则回退默认）。
 	MarshalerFor(topic string) Marshaler
@@ -116,6 +116,8 @@ func WithPublishMarshaler(m Marshaler) PublishOption {
 
 // SubscribeOptions 是订阅行为的配置项。
 type SubscribeOptions struct {
+	// HandlerName 在 Bus 内全局唯一；为空时实现应回退为 topic。
+	HandlerName     string
 	AutoAck         bool
 	ContinueOnError bool
 	Group           string
@@ -137,6 +139,11 @@ func (f subscribeOptionFunc) applySubscribe(o *SubscribeOptions) { f(o) }
 // ApplySubscribeOptions 应用订阅选项（供 contrib Bus 实现使用）。
 func ApplySubscribeOptions(o *SubscribeOptions, opts ...SubscribeOption) {
 	applySubscribeOptions(o, opts...)
+}
+
+// WithHandlerName 设置订阅 handler 名（Bus 内全局唯一）；省略时使用 topic。
+func WithHandlerName(name string) SubscribeOption {
+	return subscribeOptionFunc(func(o *SubscribeOptions) { o.HandlerName = name })
 }
 
 // WithAutoAck 订阅即确认，处理失败不影响 Ack。
