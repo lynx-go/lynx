@@ -7,6 +7,7 @@ import (
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/boot"
+	"github.com/lynx-go/lynx/eventbus"
 	"github.com/spf13/viper"
 )
 
@@ -37,6 +38,7 @@ func (f *fakeLynx) Run() error                         { return nil }
 func (f *fakeLynx) SetLogger(logger *slog.Logger)      {}
 func (f *fakeLynx) Logger(kwargs ...any) *slog.Logger  { return slog.Default() }
 func (f *fakeLynx) HealthCheckers() []lynx.Checker     { return nil }
+func (f *fakeLynx) Bus() eventbus.Bus                       { return eventbus.NewMemoryBus(eventbus.Options{}) }
 
 var _ lynx.App = (*fakeLynx)(nil)
 

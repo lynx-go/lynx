@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/eventbus"
 )
 
 // fakeAppContext 是 lynx.AppContext 的最小测试替身。
@@ -20,6 +21,7 @@ type fakeAppContext struct {
 
 func (f *fakeAppContext) Context() context.Context { return context.Background() }
 func (f *fakeAppContext) Config() lynx.Config      { return nil }
+func (f *fakeAppContext) Bus() eventbus.Bus             { return eventbus.NewMemoryBus(eventbus.Options{}) }
 func (f *fakeAppContext) Logger(...any) *slog.Logger {
 	return f.logger
 }

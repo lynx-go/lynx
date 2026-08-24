@@ -1455,11 +1455,15 @@ func newLynxWithConfig(c ConfigSource) (App, error) {
 		logger:   slog.Default(),
 		onStarts: []HookFunc{},
 		onStops:  []HookFunc{},
+		bus:      o.Bus,
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
 	app.services = []Service{}
 	app.c = c.(*viperConfig).v
 	if err := app.init(); err != nil {
+		return nil, err
+	}
+	if err := app.addServices(busService{app.bus}); err != nil {
 		return nil, err
 	}
 	return app, nil

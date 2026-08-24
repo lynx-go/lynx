@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/eventbus"
 	"github.com/spf13/viper"
 )
 
@@ -190,6 +191,7 @@ type fakeApp struct {
 
 func (f *fakeApp) Context() context.Context       { return context.Background() }
 func (f *fakeApp) Config() lynx.Config            { return nil }
+func (f *fakeApp) Bus() eventbus.Bus                   { return eventbus.NewMemoryBus(eventbus.Options{}) }
 func (f *fakeApp) Logger(...any) *slog.Logger     { return slog.Default() }
 func (f *fakeApp) HealthCheckers() []lynx.Checker { return nil }
 func (f *fakeApp) Close()                         {}

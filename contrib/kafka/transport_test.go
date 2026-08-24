@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
+	"github.com/lynx-go/lynx/eventbus"
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
@@ -881,6 +882,7 @@ func newFakeApp() *fakeApp { return &fakeApp{} }
 
 func (a *fakeApp) Context() context.Context       { return context.Background() }
 func (a *fakeApp) Config() lynx.Config            { return lynx.NewViperConfig(viper.New()) }
+func (a *fakeApp) Bus() eventbus.Bus                   { return eventbus.NewMemoryBus(eventbus.Options{}) }
 func (a *fakeApp) HealthCheckers() []lynx.Checker { return nil }
 func (a *fakeApp) Close()                         {}
 func (a *fakeApp) Logger(_ ...any) *slog.Logger {

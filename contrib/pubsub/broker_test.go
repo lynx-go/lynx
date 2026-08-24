@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/lynx-go/lynx/eventbus"
 	"time"
 
 	"github.com/ThreeDotsLabs/watermill/message"
@@ -42,6 +44,7 @@ func newFakeAppWithBuffer(buf *bytes.Buffer) *fakeApp {
 
 func (f *fakeApp) Context() context.Context          { return f.ctx }
 func (f *fakeApp) Config() lynx.Config               { return nil }
+func (f *fakeApp) Bus() eventbus.Bus                      { return eventbus.NewMemoryBus(eventbus.Options{}) }
 func (f *fakeApp) Logger(kwargs ...any) *slog.Logger { return f.logger.With(kwargs...) }
 func (f *fakeApp) HealthCheckers() []lynx.Checker    { return nil }
 func (f *fakeApp) Close()                            {}

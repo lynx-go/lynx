@@ -6,6 +6,8 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/lynx-go/lynx/eventbus"
 )
 
 // Options 的默认值与校验区间。
@@ -47,6 +49,7 @@ type Options struct {
 	BindFlagsFunc   BindFlagsFunc  `json:"-"`
 	BindConfigFunc  BindConfigFunc `json:"-"`
 	ExitSignals     []os.Signal    `json:"-"`
+	Bus             eventbus.Bus        `json:"-"`
 	ShutdownTimeout time.Duration  `json:"shutdown_timeout"`
 	// StopTimeout 是单个服务 Stop 的最长等待时长，超过后跳过并记录错误，
 	// 防止挂死的服务阻塞整个关停流程。
@@ -133,6 +136,10 @@ func (o *Options) EnsureDefaults() {
 		o.ExitSignals = []os.Signal{
 			syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT,
 		}
+	}
+
+	if o.Bus == nil {
+		o.Bus = eventbus.NewMemoryBus(eventbus.Options{})
 	}
 
 	// 默认启用框架内置的命令行 flags：不传任何 flags 相关 Option 时
@@ -236,6 +243,27 @@ func WithDrainTimeout(timeout time.Duration) Option {
 func WithDrainHookTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.DrainHookTimeout = timeout
+	}
+}
+
+// WithBus 注入自定义消息总线；nil 时框架使用内存默认总线（开箱即用）。
+func WithBus(b eventbus.Bus) Option {
+	return func(o *Options) {
+		o.Bus = b
+	}
+}
+
+// WithBusOptions 以选项配置默认内存总线（Bus 为 nil 时生效；已注入 Bus 时无视）。
+func WithBusOptions(opts ...eventbus.Option) Option {
+	return func(o *Options) {
+		if o.Bus != nil {
+			return
+		}
+		bo := eventbus.Options{}
+		for _, fn := range opts {
+			fn(&bo)
+		}
+		o.Bus = eventbus.NewMemoryBus(bo)
 	}
 }
 

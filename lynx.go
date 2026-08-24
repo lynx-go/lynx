@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lynx-go/lynx/eventbus"
 	"github.com/oklog/run"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -109,6 +110,8 @@ type lynx struct {
 	// newLynx 注册进 healthCheckers，关停时置位让 readiness 立即失败。
 	// 手构的 lynx 实例（如测试辅助）可能为 nil，shutdown 路径需判空。
 	drain *drainChecker
+	// bus 是应用级消息总线（一等对象），始终可用（默认内存实现）。
+	bus eventbus.Bus
 	// initErr 记录注册阶段产生的首个错误，由 Run() 统一返回。
 	initErr error
 	// shutdownErrors 聚合服务 Stop 返回的错误与超时错误，由 Run() 统一上抛。
@@ -401,6 +404,10 @@ func (app *lynx) Logger(kwargs ...any) *slog.Logger {
 
 func (app *lynx) Context() context.Context {
 	return app.ctx
+}
+
+func (app *lynx) Bus() eventbus.Bus {
+	return app.bus
 }
 
 func (app *lynx) addServices(services ...Service) error {
@@ -699,6 +706,15 @@ func (app *lynx) runOnStopHooks() error {
 	return nil
 }
 
+// busService 是 eventbus.Bus 到 lynx.Service 的适配器：避免 bus 导入 lynx 导致的循环，
+// 且不暴露 CheckHealth 到健康聚合（总线健康不影响 readiness）。
+type busService struct{ b eventbus.Bus }
+
+func (s busService) Name() string                        { return s.b.Name() }
+func (s busService) Init(ctx AppContext) error           { return s.b.Init(ctx) }
+func (s busService) Start(ctx context.Context) error     { return s.b.Start(ctx) }
+func (s busService) Stop(ctx context.Context) error      { return s.b.Stop(ctx) }
+
 func newLynx(o *Options) (App, error) {
 	o.EnsureDefaults()
 	if err := o.Validate(); err != nil {
@@ -716,6 +732,7 @@ func newLynx(o *Options) (App, error) {
 		onStarts: []HookFunc{},
 		onDrains: []HookFunc{},
 		onStops:  []HookFunc{},
+		bus:      o.Bus,
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
 	app.services = []Service{}
@@ -727,6 +744,10 @@ func newLynx(o *Options) (App, error) {
 		app.healthCheckers = []Checker{app.drain}
 	}
 	if err := app.init(); err != nil {
+		return nil, err
+	}
+	// 总线作为第 0 个服务自动注册：开箱即用，Init 失败直接阻止启动。
+	if err := app.addServices(busService{app.bus}); err != nil {
 		return nil, err
 	}
 	return app, nil

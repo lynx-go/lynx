@@ -3,6 +3,8 @@ package lynx
 import (
 	"context"
 	"log/slog"
+
+	"github.com/lynx-go/lynx/eventbus"
 )
 
 // AppContext 是框架提供给服务的应用上下文：服务的 Init 只依赖 AppContext，
@@ -15,6 +17,8 @@ type AppContext interface {
 	Config() Config
 	// Logger 获取 logger
 	Logger(kwargs ...any) *slog.Logger
+	// Bus 获取应用级消息总线（一等对象，开箱即为内存实现，可被 Watermill/Kafka 装饰）。
+	Bus() eventbus.Bus
 	// HealthCheckers 返回当前已注册的健康检查器快照（注册时收集）。
 	HealthCheckers() []Checker
 	// Close 关闭应用实例（如一次性命令执行完毕）。

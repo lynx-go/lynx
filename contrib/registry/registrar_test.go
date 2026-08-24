@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/lynx-go/lynx/eventbus"
 	"time"
 
 	"github.com/lynx-go/lynx"
@@ -21,6 +23,7 @@ type fakeAppContext struct {
 
 func (f *fakeAppContext) Context() context.Context       { return f.ctx }
 func (f *fakeAppContext) Config() lynx.Config            { return nil }
+func (f *fakeAppContext) Bus() eventbus.Bus                   { return eventbus.NewMemoryBus(eventbus.Options{}) }
 func (f *fakeAppContext) Logger(...any) *slog.Logger     { return slog.Default() }
 func (f *fakeAppContext) HealthCheckers() []lynx.Checker { return f.checkers }
 func (f *fakeAppContext) Close()                         {}
