@@ -100,7 +100,10 @@ func (b *Bus) Init(ctx eventbus.InitContext) error {
 		wmLogger = slog.New(levelFilterHandler{level: slog.LevelInfo, h: b.logger.Handler()})
 	}
 	logger := watermill.NewSlogLogger(wmLogger)
-	router, err := message.NewRouter(message.RouterConfig{}, logger)
+	router, err := message.NewRouter(message.RouterConfig{
+		// 与 App StopTimeout 同量级：避免 subscriber Close 失败时卡满 30s 默认值。
+		CloseTimeout: 5 * time.Second,
+	}, logger)
 	if err != nil {
 		return err
 	}
@@ -340,7 +343,7 @@ func (b *Bus) addHandler(topic, handlerName string, h eventbus.HandlerFunc, opts
 	if err != nil {
 		return err
 	}
-	adapter := subscriberAdapter{
+	adapter := &subscriberAdapter{
 		t:    t,
 		opts: eventbus.SubscribeOptions{Group: opts.Group, Instances: opts.Instances},
 	}
@@ -476,26 +479,69 @@ func (b *Bus) wrapHandler(topic string, h eventbus.HandlerFunc, opts eventbus.Su
 	return handler
 }
 
+// subscriberAdapter 把 eventbus.Transport 接到 Watermill Subscriber。
+// Close 必须取消 Subscribe 派生的 ctx 并等待转发 goroutine 退出：
+// Watermill handleClose 先调 Subscriber.Close，成功后才 cancel handler ctx；
+// 空 Close 会使 Transport 订阅链永不拆掉，router.Close 卡满 CloseTimeout。
 type subscriberAdapter struct {
 	t    eventbus.Transport
 	opts eventbus.SubscribeOptions
+
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
-func (a subscriberAdapter) Subscribe(ctx context.Context, topic string) (<-chan *message.Message, error) {
-	ch, err := a.t.Subscribe(ctx, topic, a.opts)
+func (a *subscriberAdapter) Subscribe(ctx context.Context, topic string) (<-chan *message.Message, error) {
+	subCtx, cancel := context.WithCancel(ctx)
+	ch, err := a.t.Subscribe(subCtx, topic, a.opts)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	out := make(chan *message.Message)
+	done := make(chan struct{})
+	a.mu.Lock()
+	a.cancel = cancel
+	a.done = done
+	a.mu.Unlock()
 	go func() {
+		defer close(done)
 		defer close(out)
-		for raw := range ch {
-			out <- toWatermill(raw)
+		defer cancel()
+		for {
+			select {
+			case <-subCtx.Done():
+				return
+			case raw, ok := <-ch:
+				if !ok {
+					return
+				}
+				msg := toWatermill(raw)
+				select {
+				case out <- msg:
+				case <-subCtx.Done():
+					return
+				}
+			}
 		}
 	}()
 	return out, nil
 }
-func (a subscriberAdapter) Close() error { return nil }
+
+func (a *subscriberAdapter) Close() error {
+	a.mu.Lock()
+	cancel := a.cancel
+	done := a.done
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+	return nil
+}
 
 func toWatermill(e *eventbus.RawEvent) *message.Message {
 	if e == nil {

@@ -41,7 +41,27 @@ func TestWatermillSubscribeAfterStart(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for event after dynamic Subscribe")
 	}
-	_ = bus.Stop(context.Background())
+	stopWithin(t, bus, 2*time.Second)
+}
+
+func TestWatermillBusStopAfterSubscribeCompletesQuickly(t *testing.T) {
+	mem := watermill.NewMemoryTransport()
+	bus := watermill.New(eventbus.Options{DefaultTransport: mem})
+	if err := bus.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = bus.Start(ctx) }()
+	waitBus(t, bus)
+
+	if err := bus.Subscribe(context.Background(), "order.created", "stop-h", func(ctx context.Context, e *eventbus.RawEvent) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	stopWithin(t, bus, 2*time.Second)
 }
 
 func TestLifecycleForcedToMemory(t *testing.T) {
@@ -71,7 +91,7 @@ func TestLifecycleForcedToMemory(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("lynx.* event not delivered via MemoryTransport")
 	}
-	_ = bus.Stop(context.Background())
+	stopWithin(t, bus, 2*time.Second)
 }
 
 func TestRouteLifecycleToNonMemoryFails(t *testing.T) {
@@ -103,6 +123,17 @@ func (t *nonMemoryTransport) Subscribe(ctx context.Context, topic string, opts e
 }
 func (t *nonMemoryTransport) Topics() []string { return t.topics }
 func (t *nonMemoryTransport) Close() error     { return nil }
+
+func stopWithin(t *testing.T, bus eventbus.Bus, d time.Duration) {
+	t.Helper()
+	start := time.Now()
+	if err := bus.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v (elapsed %v)", err, time.Since(start))
+	}
+	if elapsed := time.Since(start); elapsed > d {
+		t.Fatalf("Stop took %v, want <= %v (subscriber Close must unblock router)", elapsed, d)
+	}
+}
 
 func waitBus(t *testing.T, bus eventbus.Bus) {
 	t.Helper()
