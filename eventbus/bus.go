@@ -70,6 +70,7 @@ type Event[T any] struct {
 type PublishOptions struct {
 	MessageKey string
 	Metadata   map[string]string
+	Marshaler  Marshaler
 }
 
 // PublishOption 配置 PublishOptions。
@@ -93,6 +94,12 @@ func WithMetadataField(k, v string) PublishOption {
 		}
 		o.Metadata[k] = v
 	}
+}
+
+// WithMarshaler 覆盖本次发布的序列化器，优先级高于 Bus 的 TopicMarshalers/全局 Marshaler。
+// 供 PublishTyped 注入 Topic 携带的 Marshaler，复用 Bus 内部的序列化/头部/传播等统一逻辑。
+func WithMarshaler(m Marshaler) PublishOption {
+	return func(o *PublishOptions) { o.Marshaler = m }
 }
 
 // SubscribeOptions 是订阅行为的配置项。

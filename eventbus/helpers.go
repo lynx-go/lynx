@@ -6,15 +6,11 @@ import (
 )
 
 // PublishTyped 发布类型化负载，自动经 Topic/Marshaler 序列化。
-// Topic 携带的 Marshaler（WithTopicMarshaler）优先于 Bus 的 MarshalerFor，
-// 与 SubscribeTyped 的解码侧保持一致；避免 Publish 侧用默认 JSON 而订阅侧用自定义序列化导致的不一致。
+// 通过 WithMarshaler 将 Topic 携带的 Marshaler 注入 Bus.Publish，复用 Bus 内部
+// 的序列化、头部合并、属性传播等统一逻辑，与 SubscribeTyped 的解码侧保持一致。
 func PublishTyped[T any](ctx context.Context, b Bus, topic Topic[T], payload T, opts ...PublishOption) error {
 	if m := topic.Options().Marshaler; m != nil {
-		data, err := m.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("eventbus: marshal %q: %w", topic.Name(), err)
-		}
-		return b.PublishRaw(ctx, topic.Name(), data, opts...)
+		opts = append(append([]PublishOption(nil), opts...), WithMarshaler(m))
 	}
 	return b.Publish(ctx, topic.Name(), payload, opts...)
 }

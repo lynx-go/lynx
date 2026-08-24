@@ -197,6 +197,9 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 		raw = &eventbus.RawEvent{ID: uuid.NewString(), Topic: topic, Headers: map[string]string{}, Time: time.Now()}
 	default:
 		m := b.MarshalerFor(topic)
+		if o.Marshaler != nil {
+			m = o.Marshaler
+		}
 		bs, err := m.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("eventbus: marshal %q: %w", topic, err)
