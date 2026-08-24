@@ -186,6 +186,9 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 		headers = map[string]string{}
 	default:
 		m := b.MarshalerFor(topic)
+		if o.Marshaler != nil {
+			m = o.Marshaler
+		}
 		bs, err := m.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("bus: marshal %q: %w", topic, err)
