@@ -112,6 +112,9 @@ type lynx struct {
 	drain *drainChecker
 	// bus 是应用级消息总线（一等对象），始终可用（默认内存实现）。
 	bus eventbus.Bus
+	// busCancel 取消总线 Start 的独立上下文；Run 收尾或 Close 时调用。
+	// Bus 在 newLynx 中提前 Start，故与 app.cancelCtx 分离。
+	busCancel context.CancelFunc
 	// initErr 记录注册阶段产生的首个错误，由 Run() 统一返回。
 	initErr error
 	// shutdownErrors 聚合服务 Stop 返回的错误与超时错误，由 Run() 统一上抛。
@@ -231,6 +234,13 @@ func (app *lynx) Command(cmd CommandFunc) error {
 
 func (app *lynx) Close() {
 	app.cancelCtx()
+	// Run 未启动时清理提前 Start 的总线，避免测试/短路径泄漏；
+	// Run 路径由 defer last-actor 关停，此处不抢先 busCancel。
+	if !app.running.Load() && app.busCancel != nil {
+		_ = app.bus.Stop(context.Background())
+		app.busCancel()
+		app.busCancel = nil
+	}
 }
 
 func (app *lynx) init() error {
@@ -562,30 +572,16 @@ func (app *lynx) Run() error {
 	}
 	app.publishEvent(eventbus.TopicAppStarted, eventbus.AppEvent{Name: meta.Name, ID: meta.ID, Version: meta.Version, Time: time.Now()})
 
-	// 总线单独托管（不经 runG 的 last-actor 语义），确保 AppStopped 等收尾事件能在总线关闭前投递，
-	// 且其他服务的 Stopping/Stopped 事件不因总线提前关闭而丢失。
-	busCtx, busCancel := context.WithCancel(context.WithoutCancel(app.ctx))
-	// 发布总线自身的 Starting/Started，订阅者可在 Service.Init 中已就绪。
-	app.publishEvent(eventbus.TopicServiceStarting, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
-	app.publishEvent(eventbus.TopicServiceStarted, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
-	go func() {
-		if err := app.bus.Start(busCtx); err != nil {
-			app.publishEvent(eventbus.TopicServiceFailed, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now(), Error: err.Error()})
-		}
-	}()
-	// 等待总线进入 Running（最多 1s），避免后续 AppStarted 等事件因订阅尚未就绪而丢失。
-	for i := 0; i < 20; i++ {
-		if app.bus.CheckHealth() == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	// 确保 Run 返回后总线最后关闭，且 Stopping/Stopped 在关闭前可投递。
+	// 总线已在 newLynx 提前 Start；此处仅托管 last-actor 关停，确保
+	// AppStopped 等收尾事件能在 Bus.Stop 前投递。
 	defer func() {
 		app.publishEvent(eventbus.TopicServiceStopping, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
+		busCtx := context.WithoutCancel(app.ctx)
 		app.stopServiceBounded(busCtx, busService{app.bus})
 		app.publishEvent(eventbus.TopicServiceStopped, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
-		busCancel()
+		if app.busCancel != nil {
+			app.busCancel()
+		}
 	}()
 
 	// 关闭 actor：收到退出信号或应用上下文被取消时，先在 actor 内执行关停
@@ -810,11 +806,32 @@ func newLynx(o *Options) (App, error) {
 	if err := app.init(); err != nil {
 		return nil, err
 	}
-	// 总线单独初始化（不经 addServices 的健康聚合），失败直接阻止启动；
-	// 其 Start/Stop 由 Run 统一以 last-actor 语义托管，确保其他服务的 Stopping 事件能在总线关闭前投递。
+	// 总线单独初始化并提前 Start（不经 addServices 健康聚合）：
+	// Component Init 中即可 Subscribe（Watermill: AddConsumerHandler+RunHandlers）并收到 Publish。
+	// Start/Stop 以 last-actor 语义在 Run 收尾托管。
 	if err := app.bus.Init(app); err != nil {
 		return nil, err
 	}
+	busCtx, busCancel := context.WithCancel(context.WithoutCancel(app.ctx))
+	app.busCancel = busCancel
+	app.publishEvent(eventbus.TopicServiceStarting, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
+	go func() {
+		if err := app.bus.Start(busCtx); err != nil {
+			app.publishEvent(eventbus.TopicServiceFailed, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now(), Error: err.Error()})
+		}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if app.bus.CheckHealth() == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := app.bus.CheckHealth(); err != nil {
+		busCancel()
+		return nil, fmt.Errorf("lynx: bus failed to become ready: %w", err)
+	}
+	app.publishEvent(eventbus.TopicServiceStarted, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
 	eventbus.SetDefault(app.bus)
 	app.ctx = eventbus.ContextWithBus(app.ctx, app.bus)
 	return app, nil

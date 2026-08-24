@@ -1,5 +1,3 @@
-// Package watermill 提供基于 watermill 的 eventbus.Bus 实现，
-// 保留生产级健壮性与多后端支持，收口于一等 eventbus。
 package watermill
 
 import (
@@ -14,26 +12,30 @@ import (
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
-	"github.com/ThreeDotsLabs/watermill/message/router/plugin"
 	"github.com/google/uuid"
 	"github.com/lynx-go/lynx/eventbus"
 	"github.com/lynx-go/lynx/logging"
 )
 
-// Bus 是 watermill 驱动的 eventbus.Bus，支持多 Transport 路由与重试。
+// Bus 是 watermill 驱动的 eventbus.Bus：Router 调度 + 可插拔 Transport。
+// lynx.* 强制走内置 MemoryTransport；信号只归 App（无 SignalsHandler）。
 type Bus struct {
 	opts   eventbus.Options
 	logger *slog.Logger
 	router *message.Router
 
+	lifecycle *MemoryTransport // 专用于 lynx.*，Bus 拥有并 Close
+
 	routeMu  sync.RWMutex
 	routes   map[string]routeEntry
 	explicit map[string]routeEntry
 
-	mu      sync.Mutex
-	pending []pendingSubscription
-	started bool
-	stopped bool
+	mu           sync.Mutex
+	pending      []pendingSubscription
+	handlerNames map[string]struct{}
+	runCtx       context.Context
+	started      bool
+	stopped      bool
 }
 
 type routeEntry struct {
@@ -49,20 +51,46 @@ type pendingSubscription struct {
 }
 
 // New 创建 watermill Bus。
-func New(opts eventbus.Options) eventbus.Bus {
+func New(opts eventbus.Options) *Bus {
 	opts.EnsureDefaults()
 	return &Bus{
-		opts:     opts,
-		routes:   map[string]routeEntry{},
-		explicit: map[string]routeEntry{},
-		logger:   slog.Default(),
+		opts:         opts,
+		routes:       map[string]routeEntry{},
+		explicit:     map[string]routeEntry{},
+		handlerNames: map[string]struct{}{},
+		logger:       slog.Default(),
 	}
 }
 
 // Name 返回服务名。
 func (b *Bus) Name() string { return "watermill-bus" }
 
-// Init 初始化 router 与自动路由。
+// Route 将逻辑 topic 绑定到 Transport（Transport 侧键 = 逻辑名）。
+func (b *Bus) Route(topic string, t eventbus.Transport) error {
+	return b.RouteKey(topic, t, topic)
+}
+
+// RouteKey 将逻辑 topic 绑定到 Transport，并指定 Transport 侧键。
+// lynx.* 只能绑到本包 MemoryTransport；否则返回错误。
+func (b *Bus) RouteKey(topic string, t eventbus.Transport, key string) error {
+	if t == nil {
+		return errors.New("watermill: nil transport")
+	}
+	if eventbus.IsLifecycleTopic(topic) && !isMemoryTransport(t) {
+		return fmt.Errorf("watermill: lifecycle topic %q must use MemoryTransport, got %T", topic, t)
+	}
+	if key == "" {
+		key = topic
+	}
+	b.routeMu.Lock()
+	defer b.routeMu.Unlock()
+	e := routeEntry{t: t, key: key}
+	b.explicit[topic] = e
+	b.routes[topic] = e
+	return nil
+}
+
+// Init 初始化 router、内置生命周期 MemoryTransport，并校验路由。
 func (b *Bus) Init(ctx eventbus.InitContext) error {
 	if ctx != nil {
 		b.logger = ctx.Logger("service", "watermill-bus")
@@ -77,13 +105,18 @@ func (b *Bus) Init(ctx eventbus.InitContext) error {
 		return err
 	}
 	router.AddMiddleware(middleware.Recoverer, middleware.CorrelationID)
-	router.AddPlugin(plugin.SignalsHandler)
+	// 故意不装 SignalsHandler：信号只归 App。
 	b.router = router
+
+	b.lifecycle = NewMemoryTransport()
 
 	b.routeMu.Lock()
 	defer b.routeMu.Unlock()
 	for _, t := range b.opts.Transports {
 		for _, topic := range t.Topics() {
+			if eventbus.IsLifecycleTopic(topic) && !isMemoryTransport(t) {
+				return fmt.Errorf("watermill: lifecycle topic %q cannot auto-route to non-memory transport %T", topic, t)
+			}
 			if _, ok := b.explicit[topic]; ok {
 				continue
 			}
@@ -93,13 +126,27 @@ func (b *Bus) Init(ctx eventbus.InitContext) error {
 			b.routes[topic] = routeEntry{t: t, key: topic}
 		}
 	}
+	for topic, e := range b.explicit {
+		if eventbus.IsLifecycleTopic(topic) && !isMemoryTransport(e.t) {
+			return fmt.Errorf("watermill: lifecycle topic %q must use MemoryTransport, got %T", topic, e.t)
+		}
+	}
+	if b.opts.DefaultTransport != nil && !isMemoryTransport(b.opts.DefaultTransport) {
+		// DefaultTransport 可为 Kafka；不得承接 lynx.*（resolve 前缀规则优先）。
+	}
 	return nil
 }
 
-// CheckHealth 报告是否在运行。
+// CheckHealth 对齐 Router 运行态；Closed 后视为不健康。
 func (b *Bus) CheckHealth() error {
 	if b.router == nil {
 		return errors.New("bus is not initialized")
+	}
+	b.mu.Lock()
+	stopped := b.stopped
+	b.mu.Unlock()
+	if stopped || b.router.IsClosed() {
+		return errors.New("bus is not running")
 	}
 	if b.router.IsRunning() {
 		return nil
@@ -107,7 +154,8 @@ func (b *Bus) CheckHealth() error {
 	return errors.New("bus is not running")
 }
 
-// Start 启动 router。
+// Start 启动空 Router（允许 0 handler），阻塞至 ctx 取消或 Close。
+// Start 后 Subscribe 走 AddConsumerHandler + RunHandlers。
 func (b *Bus) Start(ctx context.Context) error {
 	b.mu.Lock()
 	if b.stopped {
@@ -122,61 +170,38 @@ func (b *Bus) Start(ctx context.Context) error {
 		b.mu.Unlock()
 		return errors.New("bus is not initialized")
 	}
-	type registration struct {
-		topic       string
-		handlerName string
-		adapter     subscriberAdapter
-		handler     message.NoPublishHandlerFunc
-	}
-	registrations := make([]registration, 0, len(b.pending))
-	names := make(map[string]struct{}, len(b.pending))
-	for _, p := range b.pending {
-		if _, dup := names[p.handlerName]; dup {
-			b.mu.Unlock()
-			return fmt.Errorf("duplicate handler name %q", p.handlerName)
-		}
-		names[p.handlerName] = struct{}{}
-		t, key, err := b.resolve(p.topic)
-		if err != nil {
-			b.mu.Unlock()
+	b.runCtx = ctx
+	pending := append([]pendingSubscription(nil), b.pending...)
+	b.pending = nil
+	b.started = true
+	b.mu.Unlock()
+
+	for _, p := range pending {
+		if err := b.addHandler(p.topic, p.handlerName, p.handler, p.opts); err != nil {
 			return err
 		}
-		registrations = append(registrations, registration{
-			topic:       key,
-			handlerName: p.handlerName,
-			adapter: subscriberAdapter{
-				t:    t,
-				opts: eventbus.SubscribeOptions{Group: p.opts.Group, Instances: p.opts.Instances},
-			},
-			handler: b.wrapHandler(p.topic, p.handler, p.opts),
-		})
 	}
-	for _, r := range registrations {
-		h := b.router.AddConsumerHandler(r.handlerName, r.topic, r.adapter, r.handler)
-		if retry, ok := b.retryMiddleware(r.topic); ok {
-			h.AddMiddleware(retry)
-		}
-	}
-	b.started = true
-	b.pending = nil
-	b.mu.Unlock()
 	return b.router.Run(ctx)
 }
 
-// Stop 关闭 router。
+// Stop 关闭 router 与生命周期 MemoryTransport。
 func (b *Bus) Stop(ctx context.Context) error {
 	b.mu.Lock()
-	if b.started {
-		b.stopped = true
-	}
+	b.stopped = true
 	b.mu.Unlock()
+	var first error
 	if b.router != nil {
 		if err := b.router.Close(); err != nil {
 			b.logger.ErrorContext(ctx, "error closing router", "error", err)
-			return err
+			first = err
 		}
 	}
-	return nil
+	if b.lifecycle != nil {
+		if err := b.lifecycle.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // Publish 发布。
@@ -204,7 +229,6 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 		}
 		raw = &eventbus.RawEvent{ID: uuid.NewString(), Payload: bs, Headers: map[string]string{}}
 	}
-	// 逻辑 topic 以函数参数为准
 	raw.Topic = topic
 	if o.MessageKey != "" {
 		raw.Key = o.MessageKey
@@ -218,7 +242,6 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 			delete(raw.Headers, k)
 		}
 	}
-	// Propagate attrs
 	for _, k := range b.propagateKeys() {
 		if _, ok := raw.Headers[k]; ok {
 			continue
@@ -238,13 +261,10 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 	if err != nil {
 		return err
 	}
-	transportTopic := key // Transport 侧键
 	if lm := b.logFor(topic); lm.Publish {
 		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", raw.Key)
 	}
-	// Publish 时 RawEvent.Topic 保持逻辑名；Transport 用 transportTopic
-	pub := cloneRawEvent(raw)
-	return t.Publish(ctx, transportTopic, pub)
+	return t.Publish(ctx, key, cloneRawEvent(raw))
 }
 
 // PublishRaw 原始发布。
@@ -252,11 +272,10 @@ func (b *Bus) PublishRaw(ctx context.Context, topic string, data []byte, opts ..
 	return b.Publish(ctx, topic, data, opts...)
 }
 
-// Subscribe 订阅。
+// Subscribe 订阅；Start 后动态注册（AddConsumerHandler + RunHandlers）。
 func (b *Bus) Subscribe(ctx context.Context, topic, handlerName string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
 	o := &eventbus.SubscribeOptions{}
 	eventbus.ApplySubscribeOptions(o, opts...)
-	// Merge topic defaults
 	if cfg, ok := b.opts.Topics[topic]; ok {
 		if o.Group == "" {
 			o.Group = cfg.Group
@@ -274,20 +293,62 @@ func (b *Bus) Subscribe(ctx context.Context, topic, handlerName string, h eventb
 	if handlerName == "" {
 		return errors.New("handler name is required")
 	}
+	if h == nil {
+		return errors.New("handler is nil")
+	}
+
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.stopped {
+		b.mu.Unlock()
 		return errors.New("cannot subscribe to a stopped bus")
 	}
-	if b.started {
-		return errors.New("cannot subscribe to a started bus")
+	if _, dup := b.handlerNames[handlerName]; dup {
+		b.mu.Unlock()
+		return fmt.Errorf("duplicate handler name %q", handlerName)
 	}
 	for _, p := range b.pending {
 		if p.handlerName == handlerName {
+			b.mu.Unlock()
 			return fmt.Errorf("duplicate handler name %q", handlerName)
 		}
 	}
-	b.pending = append(b.pending, pendingSubscription{topic: topic, handlerName: handlerName, handler: h, opts: *o})
+	started := b.started
+	if !started {
+		b.handlerNames[handlerName] = struct{}{}
+		b.pending = append(b.pending, pendingSubscription{topic: topic, handlerName: handlerName, handler: h, opts: *o})
+		b.mu.Unlock()
+		return nil
+	}
+	b.handlerNames[handlerName] = struct{}{}
+	runCtx := b.runCtx
+	b.mu.Unlock()
+
+	if err := b.addHandler(topic, handlerName, h, *o); err != nil {
+		b.mu.Lock()
+		delete(b.handlerNames, handlerName)
+		b.mu.Unlock()
+		return err
+	}
+	if runCtx == nil {
+		runCtx = ctx
+	}
+	return b.router.RunHandlers(runCtx)
+}
+
+func (b *Bus) addHandler(topic, handlerName string, h eventbus.HandlerFunc, opts eventbus.SubscribeOptions) error {
+	t, key, err := b.resolve(topic)
+	if err != nil {
+		return err
+	}
+	adapter := subscriberAdapter{
+		t:    t,
+		opts: eventbus.SubscribeOptions{Group: opts.Group, Instances: opts.Instances},
+	}
+	handler := b.wrapHandler(topic, h, opts)
+	hh := b.router.AddConsumerHandler(handlerName, key, adapter, handler)
+	if retry, ok := b.retryMiddleware(topic); ok {
+		hh.AddMiddleware(retry)
+	}
 	return nil
 }
 
@@ -302,9 +363,14 @@ func (b *Bus) MarshalerFor(topic string) eventbus.Marshaler {
 	return eventbus.JSONMarshaler{}
 }
 
-// internal helpers
-
 func (b *Bus) resolve(topic string) (eventbus.Transport, string, error) {
+	// 方案 B：lynx.* 前缀优先于 DefaultTransport / 用户路由表
+	if eventbus.IsLifecycleTopic(topic) {
+		if b.lifecycle == nil {
+			return nil, "", errors.New("watermill: lifecycle transport not initialized")
+		}
+		return b.lifecycle, topic, nil
+	}
 	b.routeMu.RLock()
 	r, ok := b.routes[topic]
 	b.routeMu.RUnlock()
@@ -319,6 +385,11 @@ func (b *Bus) resolve(topic string) (eventbus.Transport, string, error) {
 		return b.opts.DefaultTransport, topic, nil
 	}
 	return nil, "", fmt.Errorf("no transport for topic %q", topic)
+}
+
+func isMemoryTransport(t eventbus.Transport) bool {
+	_, ok := t.(*MemoryTransport)
+	return ok
 }
 
 func (b *Bus) propagateKeys() []string {
@@ -367,7 +438,6 @@ func (b *Bus) wrapHandler(topic string, h eventbus.HandlerFunc, opts eventbus.Su
 		raw := fromWatermill(msg)
 		raw.Topic = topic
 		ctx := msg.Context()
-		// Restore attrs
 		existing := map[string]struct{}{}
 		for _, a := range logging.AttrsFrom(ctx) {
 			existing[a.Key] = struct{}{}
@@ -406,7 +476,6 @@ func (b *Bus) wrapHandler(topic string, h eventbus.HandlerFunc, opts eventbus.Su
 	return handler
 }
 
-// subscriberAdapter adapts Transport to watermill Subscriber
 type subscriberAdapter struct {
 	t    eventbus.Transport
 	opts eventbus.SubscribeOptions
@@ -422,10 +491,6 @@ func (a subscriberAdapter) Subscribe(ctx context.Context, topic string) (<-chan 
 		defer close(out)
 		for raw := range ch {
 			out <- toWatermill(raw)
-		}
-		select {
-		case <-ctx.Done():
-		default:
 		}
 	}()
 	return out, nil
@@ -455,6 +520,7 @@ func fromWatermill(msg *message.Message) *eventbus.RawEvent {
 	maps.Copy(meta, msg.Metadata)
 	return eventbus.DecodeWireMetadata(msg.UUID, msg.Payload, meta)
 }
+
 func cloneRawEvent(e *eventbus.RawEvent) *eventbus.RawEvent {
 	cp := *e
 	if e.Headers != nil {
