@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.1 (2026-08-24)
+
+### 新增
+
+- **核心—全局 AppContext**：`lynx.Set` / `lynx.Get` 提供进程默认
+  `AppContext`（类比 `eventbus.SetDefault` / `slog.SetDefault`）；
+  `newLynx` 成功后自动 `Set(app)`，测试可用 `Set(nil)` 清理。
+
+---
+
 ## v1.5.0 (2026-08-24)
 
 EventBus 一等化：统一 `Bus` / `Topic[T]` / `Event[T]`，删除 `contrib/pubsub`，

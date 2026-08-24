@@ -89,6 +89,7 @@ func TestBusPublishTypedViaApp(t *testing.T) {
 
 func TestNewLynxInjectsBusContextAndDefault(t *testing.T) {
 	eventbus.SetDefault(nil)
+	Set(nil)
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx: %v", err)
@@ -98,6 +99,9 @@ func TestNewLynxInjectsBusContextAndDefault(t *testing.T) {
 	}
 	if eventbus.BusFromContext(app.Context()) != app.Bus() {
 		t.Fatal("Context should carry Bus after newLynx")
+	}
+	if Get() != app {
+		t.Fatal("Get() should be app after newLynx")
 	}
 }
 

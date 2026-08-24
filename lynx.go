@@ -834,5 +834,6 @@ func newLynx(o *Options) (App, error) {
 	app.publishEvent(eventbus.TopicServiceStarted, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
 	eventbus.SetDefault(app.bus)
 	app.ctx = eventbus.ContextWithBus(app.ctx, app.bus)
+	Set(app)
 	return app, nil
 }
