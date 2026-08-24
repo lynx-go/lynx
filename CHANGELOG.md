@@ -22,6 +22,9 @@
   SignalsHandler；Bus 在 `newLynx` 中先于 Component Start；`lynx.*` 强制
   MemoryTransport，Route 到非内存则失败；`NewFromConfig` 读 `bus:` 段。
 - **关停**：Bus last-actor 不变；`AppStopped` 在 `Bus.Stop` 前可投递。
+- **Transport Delivery**：`Subscribe` 返回 `<-chan Delivery`（`Event` +
+  `Ack`/`Nack`）；Bus 将 Router 对副本消息的确认转达到底层 broker；业务 API
+  仍不出现 `Delivery` / `*message.Message`。
 
 ---
 
