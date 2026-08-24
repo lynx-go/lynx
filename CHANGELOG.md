@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v1.5.0 (2026-08-24)
+
+EventBus 一等化：统一 `Bus` / `Topic[T]` / `Event[T]`，删除 `contrib/pubsub`，
+`contrib/kafka` 重命名为 `contrib/watermill-kafka`。设计见
+`docs/design-eventbus.md`。
 
 ### 破坏性变更
 
