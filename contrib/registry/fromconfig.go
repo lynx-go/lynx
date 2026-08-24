@@ -184,7 +184,7 @@ func loadFileConfig(cfg lynx.Config) (fileConfig, bool, error) {
 }
 
 // validateRegistrySection 轻量校验 registry 段的字段结构类型，拒绝
-// mapstructure 弱类型转换会静默掩盖的类型错误（对齐 contrib/kafka）。
+// mapstructure 弱类型转换会静默掩盖的类型错误（对齐 contrib/watermill-kafka）。
 // 仅在 cfg.Get 返回映射时生效。值为 nil 的字段（YAML null）视为未设置。
 func validateRegistrySection(raw any) error {
 	section, ok := raw.(map[string]any)

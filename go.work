@@ -4,11 +4,10 @@ use (
 	.
 	./_examples
 	./contrib/consul
-	./contrib/kafka
-	./contrib/pubsub
 	./contrib/registry
 	./contrib/schedule
 	./contrib/telemetry
 	./contrib/watermill
+	./contrib/watermill-kafka
 	./contrib/zap
 )

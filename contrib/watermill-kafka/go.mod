@@ -1,18 +1,14 @@
-module github.com/lynx-go/lynx/contrib/kafka
+module github.com/lynx-go/lynx/contrib/watermill-kafka
 
 go 1.26.5
 
-replace (
-	github.com/lynx-go/lynx => ../../
-	github.com/lynx-go/lynx/contrib/pubsub => ../pubsub
-)
+replace github.com/lynx-go/lynx => ../../
 
 require (
 	github.com/IBM/sarama v1.43.3
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/ThreeDotsLabs/watermill-kafka/v3 v3.1.0
 	github.com/lynx-go/lynx v1.0.0
-	github.com/lynx-go/lynx/contrib/pubsub v1.0.0
 	github.com/spf13/viper v1.21.0
 	github.com/xdg-go/scram v1.2.0
 )
@@ -20,7 +16,7 @@ require (
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dnwe/otelsarama v0.0.0-20240308230250-9388d9d40bc0 // indirect
 	github.com/eapache/go-resiliency v1.7.0 // indirect
 	github.com/eapache/go-xerial-snappy v0.0.0-20230731223053-c322873962e3 // indirect
@@ -48,7 +44,6 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
-	github.com/sony/gobreaker v1.0.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect

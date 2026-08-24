@@ -8,8 +8,8 @@
 | --- | --- |
 | 根模块 `github.com/lynx-go/lynx` | `v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/zap` | `contrib/zap/v1.0.0` |
-| `github.com/lynx-go/lynx/contrib/pubsub` | `contrib/pubsub/v1.0.0` |
-| `github.com/lynx-go/lynx/contrib/kafka` | `contrib/kafka/v1.0.0` |
+| `github.com/lynx-go/lynx/contrib/watermill` | `contrib/watermill/v1.0.0` |
+| `github.com/lynx-go/lynx/contrib/watermill-kafka` | `contrib/watermill-kafka/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/telemetry` | `contrib/telemetry/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/schedule` | `contrib/schedule/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/registry` | `contrib/registry/v1.0.0` |
@@ -35,7 +35,7 @@ task release-all Version=vX.Y.Z Comment="release vX.Y.Z"
 
 ```bash
 task release-tag Version=vX.Y.Z Comment="release vX.Y.Z"                       # 根模块
-task release-tag Version=contrib/kafka/vX.Y.Z Comment="release vX.Y.Z"         # 单个 contrib
+task release-tag Version=contrib/watermill-kafka/vX.Y.Z Comment="release vX.Y.Z" # 单个 contrib
 ```
 
 ## 打 tag 顺序（依赖约束）
@@ -50,17 +50,17 @@ lynx（根） ──────────┬──> contrib/zap
                       ├──> contrib/telemetry
                       ├──> contrib/schedule
                       ├──> contrib/registry ──> contrib/consul
-                      ├──> contrib/pubsub ──> contrib/kafka
+                      ├──> contrib/watermill
+                      └──> contrib/watermill-kafka
 ```
 
 推荐的显式发布顺序（贡献者单模块发版时务必遵守）：
 
 1. **根模块**：`v1.0.0`（所有 contrib 都 require 它，必须先发）；
-2. **contrib/pubsub**：`contrib/pubsub/v1.0.0`（kafka 依赖它）；
-3. **contrib/kafka**：`contrib/kafka/v1.0.0`；
-4. **contrib/telemetry / contrib/schedule / contrib/zap / contrib/registry**：无交叉依赖，可并行
+2. **contrib/watermill / contrib/watermill-kafka**：`contrib/watermill/v1.0.0`、`contrib/watermill-kafka/v1.0.0`（仅依赖根；可并行）；
+3. **contrib/telemetry / contrib/schedule / contrib/zap / contrib/registry**：无交叉依赖，可并行
    （`contrib/{telemetry,schedule,zap,registry}/v1.0.0`）；
-5. **contrib/consul**：`contrib/consul/v1.0.0`（依赖 contrib/registry，须在其后）。
+4. **contrib/consul**：`contrib/consul/v1.0.0`（依赖 contrib/registry，须在其后）。
 
 > 依赖关系以各 `contrib/*/go.mod` 的 require 为准；后续若新增 contrib 间
 > 依赖，须在发布前更新本清单。

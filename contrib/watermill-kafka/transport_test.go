@@ -12,11 +12,10 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
-	"github.com/lynx-go/lynx/eventbus"
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/pubsub"
+	"github.com/lynx-go/lynx/eventbus"
 	"github.com/spf13/viper"
 )
 
@@ -33,7 +32,8 @@ type pubSubClient interface {
 type fakePubSub struct {
 	mu        sync.Mutex
 	published []string
-	subChs    map[string][]chan *message.Message // key: "group|topic"
+	msgs      []*message.Message
+	subChs    map[string][]chan *message.Message // key: topic
 	closed    atomic.Int32
 }
 
@@ -45,6 +45,7 @@ func (f *fakePubSub) Publish(topic string, msgs ...*message.Message) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.published = append(f.published, topic)
+	f.msgs = append(f.msgs, msgs...)
 	return nil
 }
 
@@ -65,6 +66,12 @@ func (f *fakePubSub) publishTopics() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.published...)
+}
+
+func (f *fakePubSub) publishedMsgs() []*message.Message {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*message.Message(nil), f.msgs...)
 }
 
 func (f *fakePubSub) subscribeCount(topic string) int {
@@ -292,7 +299,7 @@ func TestBuildSaramaConfigMappings(t *testing.T) {
 	}, cap)
 
 	// 发布侧：Publish 触发 publisherFor → buildSaramaConfig(brokers, nil, producer)。
-	if err := tr.Publish(context.Background(), "notify", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(), "notify", &eventbus.RawEvent{ID: "id"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	producerCfg := cap.lastCfg.Load().(*sarama.Config)
@@ -319,7 +326,7 @@ func TestBuildSaramaConfigMappings(t *testing.T) {
 	// 消费侧：Subscribe 触发 subscriberFor → buildSaramaConfig(brokers, consumer, nil)。
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := tr.Subscribe(ctx, "orders", pubsub.SubscriptionOptions{}); err != nil {
+	if _, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	consumerCfg := cap.lastCfg.Load().(*sarama.Config)
@@ -368,7 +375,7 @@ func TestCompressionInvalid(t *testing.T) {
 			},
 		},
 	}, cap)
-	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err == nil {
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id"}); err == nil {
 		t.Fatal("expected Publish error for invalid compression")
 	}
 }
@@ -389,7 +396,7 @@ func TestInitialOffsetInvalid(t *testing.T) {
 	}, cap)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := tr.Subscribe(ctx, "orders", pubsub.SubscriptionOptions{}); err == nil {
+	if _, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{}); err == nil {
 		t.Fatal("expected Subscribe error for invalid initial_offset")
 	}
 }
@@ -420,7 +427,7 @@ func TestTransportPublishResolvesPhysicalTopic(t *testing.T) {
 		},
 	}, pub)
 
-	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := pub.publishTopics(); len(got) != 1 || got[0] != "t2" {
@@ -436,7 +443,7 @@ func TestTransportPublishDefaultPhysicalTopic(t *testing.T) {
 		},
 	}, pub)
 
-	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := pub.publishTopics(); len(got) != 1 || got[0] != "t1" {
@@ -452,7 +459,7 @@ func TestTransportPublishNoProducerConfig(t *testing.T) {
 		},
 	}, pub)
 
-	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err == nil {
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id"}); err == nil {
 		t.Fatal("expected Publish error without producer config")
 	}
 }
@@ -460,7 +467,7 @@ func TestTransportPublishNoProducerConfig(t *testing.T) {
 func TestTransportPublishUnknownTopic(t *testing.T) {
 	pub := newFakePubSub()
 	tr := newTestTransport(Options{Topics: map[string]TopicOptions{}}, pub)
-	if err := tr.Publish(context.Background(), "nope", message.NewMessage("id", nil)); err == nil {
+	if err := tr.Publish(context.Background(), "nope", &eventbus.RawEvent{ID: "id"}); err == nil {
 		t.Fatal("expected Publish error for unknown topic")
 	}
 }
@@ -479,7 +486,7 @@ func TestTransportSubscribeExpansion(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch, err := tr.Subscribe(ctx, "orders", pubsub.SubscriptionOptions{})
+	ch, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -503,8 +510,11 @@ func TestTransportSubscribeExpansion(t *testing.T) {
 	go func() { ch1 <- sent }()
 	select {
 	case got := <-ch:
-		if got.UUID != "id-1" {
+		if got.ID != "id-1" {
 			t.Fatalf("unexpected message: %+v", got)
+		}
+		if got.Topic != "orders" {
+			t.Fatalf("logical topic = %q, want orders", got.Topic)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("did not receive fan-in message")
@@ -525,7 +535,7 @@ func TestTransportSubscribeGroupOverride(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch, err := tr.Subscribe(ctx, "orders", pubsub.SubscriptionOptions{Group: "code-group"})
+	ch, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{Group: "code-group"})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -545,7 +555,7 @@ func TestTransportSubscribeMissingGroup(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := tr.Subscribe(ctx, "orders", pubsub.SubscriptionOptions{}); err == nil {
+	if _, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{}); err == nil {
 		t.Fatal("expected Subscribe error when group is missing")
 	}
 }
@@ -555,7 +565,7 @@ func TestTransportSubscribeUnknownTopic(t *testing.T) {
 	tr := newTestTransport(Options{Topics: map[string]TopicOptions{}}, pub)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := tr.Subscribe(ctx, "nope", pubsub.SubscriptionOptions{}); err == nil {
+	if _, err := tr.Subscribe(ctx, "nope", eventbus.SubscribeOptions{}); err == nil {
 		t.Fatal("expected Subscribe error for unknown topic")
 	}
 }
@@ -615,7 +625,7 @@ func TestTransportLifecycle(t *testing.T) {
 	// 建立客户端：Subscribe 触发 subscriber 创建（fake），Stop 时关闭。
 	subCtx, subCancel := context.WithCancel(context.Background())
 	defer subCancel()
-	if _, err := tr.Subscribe(subCtx, "orders", pubsub.SubscriptionOptions{}); err != nil {
+	if _, err := tr.Subscribe(subCtx, "orders", eventbus.SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
@@ -692,11 +702,11 @@ func TestTransportPublishAfterStop(t *testing.T) {
 	tr := newTestTransport(Options{Topics: map[string]TopicOptions{
 		"orders": {Brokers: []string{"b1"}, Topics: []string{"orders_v1"}, Producer: &ProducerOptions{}},
 	}}, newFakePubSub())
-	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id"}); err != nil {
 		t.Fatalf("Publish before Stop: %v", err)
 	}
 	_ = tr.Stop(context.Background())
-	err := tr.Publish(context.Background(), "orders", message.NewMessage("id2", nil))
+	err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id2"})
 	if err == nil || !strings.Contains(err.Error(), "stopped") {
 		t.Fatalf("Publish after Stop error = %v, want explicit stopped error", err)
 	}
@@ -708,11 +718,11 @@ func TestTransportSubscribeAfterStop(t *testing.T) {
 	tr := newTestTransport(Options{Topics: map[string]TopicOptions{
 		"orders": {Brokers: []string{"b1"}, Topics: []string{"t1"}, Consumer: &ConsumerOptions{GroupID: "g1"}},
 	}}, newFakePubSub())
-	if _, err := tr.Subscribe(context.Background(), "orders", pubsub.SubscriptionOptions{}); err != nil {
+	if _, err := tr.Subscribe(context.Background(), "orders", eventbus.SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe before Stop: %v", err)
 	}
 	_ = tr.Stop(context.Background())
-	_, err := tr.Subscribe(context.Background(), "orders", pubsub.SubscriptionOptions{})
+	_, err := tr.Subscribe(context.Background(), "orders", eventbus.SubscribeOptions{})
 	if err == nil || !strings.Contains(err.Error(), "stopped") {
 		t.Fatalf("Subscribe after Stop error = %v, want explicit stopped error", err)
 	}
@@ -730,7 +740,7 @@ func TestTransportPublishLogMessageWithoutInit(t *testing.T) {
 			},
 		},
 	}, pub)
-	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", []byte("hello"))); err != nil {
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id", Payload: []byte("hello")}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := pub.publishTopics(); len(got) != 1 || got[0] != "t1" {
@@ -792,7 +802,7 @@ func TestTransportSubscribeExpansionFailureCleansUp(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := tr.Subscribe(ctx, "orders", pubsub.SubscriptionOptions{}); err == nil {
+	if _, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{}); err == nil {
 		t.Fatal("expected Subscribe error when the 3rd underlying subscribe fails")
 	}
 
@@ -812,9 +822,8 @@ func TestTransportSubscribeExpansionFailureCleansUp(t *testing.T) {
 	}
 }
 
-func TestTransportEndToEndWithRouter(t *testing.T) {
-	// 集成形态：Broker + fake kafka Transport + 内存默认 Transport，
-	// 验证从 Publish 到 handler 的全链路（fake 注入消息）。
+func TestTransportSubscribeRawEventWire(t *testing.T) {
+	// Transport 层：Subscribe 将 watermill 消息解码为 RawEvent（含 wire 元数据）。
 	pub := newFakePubSub()
 	tr := newTestTransport(Options{
 		Topics: map[string]TopicOptions{
@@ -826,28 +835,13 @@ func TestTransportEndToEndWithRouter(t *testing.T) {
 		},
 	}, pub)
 
-	broker := pubsub.NewBroker(pubsub.Options{Transports: []pubsub.Transport{tr}})
-	app := newFakeApp()
-	if err := broker.Init(app); err != nil {
-		t.Fatalf("broker Init: %v", err)
-	}
-
-	received := make(chan *pubsub.Message, 1)
-	if err := broker.Subscribe(context.Background(), "orders", "h1",
-		func(ctx context.Context, msg *pubsub.Message) error {
-			received <- msg
-			return nil
-		}); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{})
+	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- broker.Start(ctx) }()
-
-	// 从 fake kafka 客户端注入一条消息：走 Transport 订阅 → broker → handler。
-	// 等待订阅建立后注入。
 	deadline := time.Now().Add(5 * time.Second)
 	var subCh chan *message.Message
 	for time.Now().Before(deadline) {
@@ -858,19 +852,46 @@ func TestTransportEndToEndWithRouter(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if subCh == nil {
-		cancel()
 		t.Fatal("subscription was not established")
 	}
-	subCh <- message.NewMessage("id-1", []byte("payload"))
+
+	wm := message.NewMessage("id-1", []byte("payload"))
+	wm.Metadata.Set(eventbus.MetaMessageKey, "k1")
+	wm.Metadata.Set(eventbus.MetaLogicalTopic, "orders")
+	subCh <- wm
 
 	select {
-	case got := <-received:
-		if got.ID != "id-1" || string(got.Payload) != "payload" {
-			t.Fatalf("unexpected message: %+v", got)
+	case got := <-ch:
+		if got.ID != "id-1" || string(got.Payload) != "payload" || got.Key != "k1" {
+			t.Fatalf("unexpected RawEvent: %+v", got)
+		}
+		if got.Topic != "orders" {
+			t.Fatalf("topic = %q, want orders", got.Topic)
 		}
 	case <-time.After(5 * time.Second):
-		cancel()
-		t.Fatal("handler did not receive message")
+		t.Fatal("did not receive RawEvent")
+	}
+}
+
+func TestTransportCloseDelegatesStop(t *testing.T) {
+	pub := newFakePubSub()
+	tr := newTestTransport(Options{
+		Topics: map[string]TopicOptions{
+			"orders": {Brokers: []string{"b"}, Topics: []string{"t"}, Producer: &ProducerOptions{}},
+		},
+	}, pub)
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if err := tr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if pub.closed.Load() < 1 {
+		t.Fatal("expected publisher Close via Transport.Close")
+	}
+	err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id2"})
+	if err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("Publish after Close error = %v, want stopped", err)
 	}
 }
 

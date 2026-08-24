@@ -1,5 +1,7 @@
 // Package kafka 提供 Kafka Transport 服务：按逻辑 topic 配置集群、
-// 物理主题与消费/发布参数，接入 pubsub.Broker。
+// 物理主题与消费/发布参数，实现 eventbus.Transport。
+//
+// 导入建议：import wmkafka "github.com/lynx-go/lynx/contrib/watermill-kafka"
 //
 // 配置驱动：NewFromConfig 从配置 "kafka" 段加载 Options 并创建 Transport；
 // 段缺失或为空时返回 (nil, nil) 表示 Kafka 未启用——**返回 nil 时不得
@@ -15,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -26,7 +29,7 @@ import (
 	watermillkafka "github.com/ThreeDotsLabs/watermill-kafka/v3/pkg/kafka"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/pubsub"
+	"github.com/lynx-go/lynx/eventbus"
 )
 
 // Options 是 Kafka Transport 的配置；可用 app.Config().UnmarshalKey("kafka", &opts)
@@ -178,7 +181,8 @@ func NewTransport(opts Options) (*Transport, error) {
 				Brokers:               brokers,
 				OverwriteSaramaConfig: cfg,
 				// Marshaler 必填：缺省时 NewPublisher 直接报 "missing marshaler"。
-				Marshaler: watermillkafka.DefaultMarshaler{},
+				// wireMarshaler 把 x-message-key 写入 Kafka record Key（分区键）。
+				Marshaler: wireMarshaler{},
 			}, logger)
 		},
 		newSubscriber: func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error) {
@@ -188,7 +192,7 @@ func NewTransport(opts Options) (*Transport, error) {
 				OverwriteSaramaConfig: p.sarama,
 				// Unmarshaler 必填：v3.1.x 的 setDefaults 不补默认值，
 				// 缺省时 NewSubscriber 直接报 "missing unmarshaler"。
-				Unmarshaler:         watermillkafka.DefaultMarshaler{},
+				Unmarshaler:         wireMarshaler{},
 				NackResendSleep:     p.nackResendSleep,
 				ReconnectRetrySleep: p.reconnectRetrySleep,
 			}
@@ -265,7 +269,12 @@ func (t *Transport) CheckHealth() error {
 	return nil
 }
 
-// Topics 返回配置的逻辑 topic 全集（Broker 自动路由用）。
+// Close 实现 eventbus.Transport；委托 Stop。
+func (t *Transport) Close() error {
+	return t.Stop(context.Background())
+}
+
+// Topics 返回配置的逻辑 topic 全集（Bus 自动路由用）。
 func (t *Transport) Topics() []string {
 	names := make([]string, 0, len(t.opts.Topics))
 	for name := range t.opts.Topics {
@@ -281,10 +290,14 @@ func (t *Transport) watermillLogger() watermill.LoggerAdapter {
 	return watermill.NewSlogLogger(t.logger)
 }
 
-// Publish 将消息发布到逻辑 topic 对应的物理 topic；ctx 用于传播 trace/元数据。
-func (t *Transport) Publish(ctx context.Context, topic string, msgs ...*message.Message) error {
+// Publish 将 RawEvent 发布到逻辑 topic 对应的物理 topic；ctx 用于传播 trace/元数据。
+// Kafka record Key = e.Key（经 x-message-key 写入，见 wireMarshaler）。
+func (t *Transport) Publish(ctx context.Context, topic string, e *eventbus.RawEvent) error {
 	if t.stopped.Load() {
 		return errors.New("kafka transport is stopped")
+	}
+	if e == nil {
+		return errors.New("kafka: nil RawEvent")
 	}
 	to, ok := t.opts.Topics[topic]
 	if !ok {
@@ -304,17 +317,20 @@ func (t *Transport) Publish(ctx context.Context, topic string, msgs ...*message.
 	if err != nil {
 		return err
 	}
-	if to.Producer.LogMessage {
-		for _, msg := range msgs {
-			t.logger.DebugContext(ctx, "sending kafka message", "message", string(msg.Payload), "topic", physical)
-		}
+	raw := *e
+	if raw.Topic == "" {
+		raw.Topic = topic
 	}
-	return p.Publish(physical, msgs...)
+	msg := toWatermill(&raw)
+	if to.Producer.LogMessage {
+		t.logger.DebugContext(ctx, "sending kafka message", "message", string(msg.Payload), "topic", physical, "key", raw.Key)
+	}
+	return p.Publish(physical, msg)
 }
 
 // Subscribe 订阅逻辑 topic：按（消费组 × 物理 topic × 实例数）展开，
-// 全部消息 fan-in 到单一返回 channel。
-func (t *Transport) Subscribe(ctx context.Context, topic string, opts pubsub.SubscriptionOptions) (<-chan *message.Message, error) {
+// 全部消息 fan-in 到单一返回 channel（*eventbus.RawEvent）。
+func (t *Transport) Subscribe(ctx context.Context, topic string, opts eventbus.SubscribeOptions) (<-chan *eventbus.RawEvent, error) {
 	if t.stopped.Load() {
 		return nil, errors.New("kafka transport is stopped")
 	}
@@ -362,7 +378,45 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts pubsub.Sub
 			chans = append(chans, ch)
 		}
 	}
-	return fanIn(chans, cancel), nil
+	return mapRawEvents(fanIn(chans, cancel), topic), nil
+}
+
+// toWatermill 将 RawEvent 转为 watermill 消息（wire 元数据经 EncodeWireMetadata）。
+func toWatermill(e *eventbus.RawEvent) *message.Message {
+	if e == nil {
+		return message.NewMessage("", nil)
+	}
+	msg := message.NewMessage(e.ID, e.Payload)
+	for k, v := range eventbus.EncodeWireMetadata(e) {
+		msg.Metadata.Set(k, v)
+	}
+	return msg
+}
+
+// fromWatermill 将 watermill 消息还原为 RawEvent（DecodeWireMetadata）。
+func fromWatermill(msg *message.Message) *eventbus.RawEvent {
+	if msg == nil {
+		return &eventbus.RawEvent{Headers: map[string]string{}}
+	}
+	meta := map[string]string{}
+	maps.Copy(meta, msg.Metadata)
+	return eventbus.DecodeWireMetadata(msg.UUID, msg.Payload, meta)
+}
+
+// mapRawEvents 将 watermill 消息 channel 转为 RawEvent channel，并填入逻辑 topic。
+func mapRawEvents(in <-chan *message.Message, logicalTopic string) <-chan *eventbus.RawEvent {
+	out := make(chan *eventbus.RawEvent)
+	go func() {
+		defer close(out)
+		for msg := range in {
+			raw := fromWatermill(msg)
+			if raw.Topic == "" {
+				raw.Topic = logicalTopic
+			}
+			out <- raw
+		}
+	}()
+	return out
 }
 
 // compressionCodecs 是配置字符串到 sarama 压缩算法的映射。
@@ -595,7 +649,6 @@ func fanIn(chans []<-chan *message.Message, done func()) <-chan *message.Message
 	return out
 }
 
-var _ pubsub.Transport = (*Transport)(nil)
+var _ eventbus.Transport = (*Transport)(nil)
 var _ lynx.Service = (*Transport)(nil)
-
 var _ lynx.Checker = (*Transport)(nil)

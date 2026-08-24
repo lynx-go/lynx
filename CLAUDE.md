@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lynx is a lightweight Go microservice framework built on Go 1.26+ that provides application lifecycle management, a service-based architecture, and integrations for HTTP servers, messaging (Kafka/PubSub), scheduling, and configuration management.
+Lynx is a lightweight Go microservice framework built on Go 1.26+ that provides application lifecycle management, a service-based architecture, and integrations for HTTP servers, messaging (EventBus / Watermill / Kafka), scheduling, and configuration management.
 
 ## Development Commands
 
@@ -14,7 +14,7 @@ Lynx is a lightweight Go microservice framework built on Go 1.26+ that provides 
 # Run examples
 cd _examples/http && go run main.go --addr=:8080
 cd _examples/cli && go run main.go
-cd _examples/pubsub && go run main.go
+cd _examples/bus && go run main.go
 cd _examples/schedule && go run main.go
 cd _examples/boot && go run main.go
 
@@ -41,27 +41,25 @@ Note: Task ≥3.9 passes CLI variables as `VAR=value` args; the older `--Version
 The project uses a multi-module release strategy. When releasing, you must tag:
 - Main repo: `v{version}`
 - contrib/zap: `contrib/zap/{version}`
-- contrib/pubsub: `contrib/pubsub/{version}`
-- contrib/kafka: `contrib/kafka/{version}`
+- contrib/watermill: `contrib/watermill/{version}`
+- contrib/watermill-kafka: `contrib/watermill-kafka/{version}`
 - contrib/telemetry: `contrib/telemetry/{version}`
 - contrib/schedule: `contrib/schedule/{version}`
 - contrib/registry: `contrib/registry/{version}`
-- contrib/consul: `contrib/consul/{version}`
 - contrib/consul: `contrib/consul/{version}`
 
 ### Module Structure
 
 This is a Go workspace using `go.work`. The main modules are:
-- `./` - Core lynx framework
+- `./` - Core lynx framework（含 `eventbus/`）
 - `./_examples` - Example applications
 - `./contrib/zap` - Zap logger integration
-- `./contrib/pubsub` - PubSub abstraction layer (uses Watermill)
-- `./contrib/kafka` - Kafka Transport service (watermill-kafka/v3)
+- `./contrib/watermill` - Watermill-driven `eventbus.Bus`（`NewFromConfig` 读 `bus:` 段）
+- `./contrib/watermill-kafka` - Kafka Transport service (watermill-kafka/v3)，package `kafka`，实现 `eventbus.Transport`
 - `./contrib/telemetry` - OpenTelemetry lifecycle management (trace/metrics providers)
 - `./contrib/schedule` - Cron scheduler
 - `./contrib/registry` - Service registry/discovery: types, Registrar, Resolver, Pickers, memory/DNS backends, `registry://` HTTP transport & gRPC resolver
-- `./contrib/consul` - Consul registry/discovery backend (implements registry.Registry + registry.Discovery)
-- `./contrib/consul` - Consul registry/discovery backend (`consul.NewFromConfig`)
+- `./contrib/consul` - Consul registry/discovery backend（`consul.NewFromConfig`）
 
 Server implementations (within main module):
 - `./server/http` - HTTP server using stdlib `net/http` with otelhttp instrumentation
@@ -86,6 +84,7 @@ type AppContext interface {
     Config() Config
     Logger(kwargs ...any) *slog.Logger
     HealthCheckers() []Checker
+    Bus() eventbus.Bus
     Close()
 }
 
@@ -178,15 +177,19 @@ This pattern is particularly useful for complex applications with many services.
 - Custom interceptors via `WithInterceptors()` option
 - Health check service registered at `grpc.health.v1.Health`
 
-**PubSub** (contrib/pubsub/)
-- Broker 门面服务：topic → Transport 路由表（自动路由 + 显式 Route + 默认回退）
-- Transport 接口：后端即服务（kafka/内存），公共 API 使用自有 Message 类型
-- Router 服务：Init 期缓冲注册 Handler 订阅，无时序依赖
+**EventBus** (eventbus/)
+- 一等消息总线：`Bus` / `Topic[T]` / `Event[T]`；默认 `NewMemoryBus`，`app.Bus()` / Context / Default 解析
+- 业务主路径：`Topic.Publish` / `Topic.Subscribe`（不必手传 Bus）
+- `lynx.WithBus(watermill.NewFromConfig(...))` 注入跨进程 Bus；配置 `bus:` + `kafka:`
 
-**Kafka Transport** (contrib/kafka/transport.go)
+**Watermill Bus** (contrib/watermill/)
+- Watermill Router 驱动的 `eventbus.Bus`；`lynx.*` 生命周期强制内存 Transport
+- `NewFromConfig(cfg, transports)` 从 `bus` 段加载 topics/route；标识 `memory` 兼作 DefaultTransport
+
+**Kafka Transport** (contrib/watermill-kafka/transport.go)
 - 配置驱动：UnmarshalKey("kafka") 加载 map[逻辑topic] 配置（brokers/topics/consumer/producer）
 - 内部按 brokers 分组客户端，订阅按（组 × 物理 topic × 实例数）展开后 fan-in
-- 基于 watermill-kafka/v3（IBM/sarama）
+- 基于 watermill-kafka/v3（IBM/sarama）；Kafka record Key = MessageKey / Event.Key
 
 **Scheduler** (contrib/schedule/scheduler.go)
 - Cron-based task scheduling using robfig/cron

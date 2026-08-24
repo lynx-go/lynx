@@ -23,11 +23,11 @@ tasks:
           Comment: "{{.Comment}}"
       - task: release-tag
         vars:
-          Version: "contrib/pubsub/{{.Version}}"
+          Version: "contrib/watermill/{{.Version}}"
           Comment: "{{.Comment}}"
       - task: release-tag
         vars:
-          Version: "contrib/kafka/{{.Version}}"
+          Version: "contrib/watermill-kafka/{{.Version}}"
           Comment: "{{.Comment}}"
       - task: release-tag
         vars:

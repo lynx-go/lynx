@@ -10,8 +10,7 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/ThreeDotsLabs/watermill"
 	watermillkafka "github.com/ThreeDotsLabs/watermill-kafka/v3/pkg/kafka"
-	"github.com/ThreeDotsLabs/watermill/message"
-	"github.com/lynx-go/lynx/contrib/pubsub"
+	"github.com/lynx-go/lynx/eventbus"
 	"github.com/xdg-go/scram"
 )
 
@@ -23,7 +22,7 @@ func TestPublisherConfigReturnSuccesses(t *testing.T) {
 	tr := newCapturingTransport(Options{Topics: map[string]TopicOptions{
 		"orders": {Brokers: []string{"b1:9092"}, Topics: []string{"orders_v1"}, Producer: &ProducerOptions{}},
 	}}, cap)
-	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id"}); err != nil {
 		t.Fatal(err)
 	}
 	cfg, ok := cap.lastCfg.Load().(*sarama.Config)
@@ -56,7 +55,7 @@ func TestRealPublisherFactoryNoMissingMarshaler(t *testing.T) {
 	p, err := watermillkafka.NewPublisher(watermillkafka.PublisherConfig{
 		Brokers:               []string{"127.0.0.1:19092"},
 		OverwriteSaramaConfig: cfg,
-		Marshaler:             watermillkafka.DefaultMarshaler{},
+		Marshaler:             wireMarshaler{},
 	}, watermill.NewStdLogger(false, false))
 	if err != nil {
 		t.Fatalf("real publisher factory failed: %v", err)
@@ -80,7 +79,7 @@ func TestSASLTLSConfigMapping(t *testing.T) {
 			TLS: &TLSOptions{Enabled: true, InsecureSkipVerify: true, ServerName: "kafka.internal"},
 		},
 	}}, cap)
-	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id"}); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ := cap.lastCfg.Load().(*sarama.Config)
@@ -106,7 +105,7 @@ func TestSASLInvalidMechanism(t *testing.T) {
 			SASL:     &SASLOptions{Enabled: true, User: "u", Password: "p", Mechanism: "GSSAPI"},
 		},
 	}}, cap)
-	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err == nil {
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id"}); err == nil {
 		t.Fatal("expected error for unsupported sasl mechanism")
 	}
 }
@@ -221,7 +220,7 @@ func TestPerSideConfigCache(t *testing.T) {
 			Producer: &ProducerOptions{BatchSize: 100, ClientID: "producer-id"},
 		},
 	}}, cap)
-	if err := tr.Publish(context.Background(), "orders", message.NewMessage("id", nil)); err != nil {
+	if err := tr.Publish(context.Background(), "orders", &eventbus.RawEvent{ID: "id"}); err != nil {
 		t.Fatal(err)
 	}
 	pubCfg, _ := cap.lastCfg.Load().(*sarama.Config)
@@ -232,7 +231,7 @@ func TestPerSideConfigCache(t *testing.T) {
 		t.Fatalf("producer client id = %q, want producer-id", pubCfg.ClientID)
 	}
 
-	if _, err := tr.Subscribe(context.Background(), "orders", pubsub.SubscriptionOptions{Group: "g"}); err != nil {
+	if _, err := tr.Subscribe(context.Background(), "orders", eventbus.SubscribeOptions{Group: "g"}); err != nil {
 		t.Fatal(err)
 	}
 	subCfg, _ := cap.lastCfg.Load().(*sarama.Config)

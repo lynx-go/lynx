@@ -16,8 +16,8 @@ Lynx 是一个轻量级的 Go 微服务框架，提供了开箱即用的应用�
 - **健康检查** - 集成健康检查机制，便于监控和服务发现
 - **可观测性** - 集成 OpenTelemetry tracing/metrics 与 Prometheus
 - **配置管理** - 基于 Viper 的灵活配置系统，支持多来源配置
-- **事件驱动** - 内置 PubSub 支持，轻松实现异步消息处理
-- **Kafka 集成** - 提供 Kafka Transport，简化消息队列的使用
+- **事件驱动** - 内置 EventBus（`Bus` / `Topic[T]` / `Event[T]`），默认内存开箱即用
+- **Kafka 集成** - `contrib/watermill` + `contrib/watermill-kafka` 提供跨进程 Transport
 - **定时任务** - 基于 Cron 的调度器支持
 - **日志集成** - 支持 `slog` 和 `zap` 日志库
 - **服务注册发现** - 可选 `contrib/registry`（Registrar/Resolver/memory/DNS）与 `contrib/consul` 生产后端
@@ -107,65 +107,82 @@ opts := lynx.NewOptions(
 
 ### 使用事件驱动
 
-**透明序列化（推荐）**：Publish 直接传业务对象，订阅用类型化 handler，
-序列化由 Broker 的 marshaller（默认 JSON）自动处理：
+**推荐路径**：定义 `Topic[T]`，用 `Publish` / `Subscribe`；默认内存 Bus 由框架注入，
+无需手传 Bus（解析顺序：`eventbus.WithBus` → Context → Default）。
 
 ```go
-import "github.com/lynx-go/lynx/contrib/pubsub"
+import "github.com/lynx-go/lynx/eventbus"
 
-// 发布：业务对象自动 JSON 序列化
-err := broker.Publish(ctx, "user.created", map[string]string{"user": "alice"},
-    pubsub.WithMessageKey("alice"))
+var UserCreated = eventbus.NewTopic[User]("user.created")
 
-// 订阅：自动反序列化到指定类型
-err := pubsub.Subscribe(broker, ctx, "user.created", "notify",
-    func(ctx context.Context, event *pubsub.TypedMessage[User]) error {
-        // event.Payload 已是 User 结构
+// 订阅（Init 或 OnStart 中；ctx 已含 Bus）
+err := UserCreated.Subscribe(ctx, "notify",
+    func(ctx context.Context, e *eventbus.Event[User]) error {
+        // e.Payload 已是 User
         return nil
     })
+
+// 发布：业务对象自动 JSON 序列化
+err = UserCreated.Publish(ctx, User{Name: "alice"},
+    eventbus.WithMessageKey("alice"))
 ```
 
-需要原始字节时保留字节级语义（payload 传 `*pubsub.Message` 不序列化，
-或直接用 `pubsub.MustJSONMessage` 预构建）；订阅侧用 `NewHandler` 构造
-原始字节 handler（`NewTypedHandler[[]byte]` 的恒等解码语义一致）：
+需要原始字节时用 `app.Bus().Publish` / `PublishRaw`，或 `Topic.PublishRaw`。
+
+自定义序列化器：`eventbus.Options{Marshaler: myMarshaler}`（`lynx.WithBusOptions`）或
+`TopicMarshalers` / `WithTopicMarshaler` 按 topic 覆盖。
+
+### 使用 Watermill Bus + Kafka Transport
+
+跨进程时注入 Watermill Bus，并用配置装配 `bus:` + `kafka:`：
 
 ```go
-app.Register(pubsub.NewRouter(broker, []pubsub.Handler{
-    pubsub.NewHandler("user.created", "notify", func(ctx context.Context, msg *pubsub.Message) error {
-        // msg.ID / msg.Key / msg.Headers / msg.Payload
-        return nil
-    }),
-}))
+import (
+    "github.com/lynx-go/lynx"
+    "github.com/lynx-go/lynx/contrib/watermill"
+    wmkafka "github.com/lynx-go/lynx/contrib/watermill-kafka"
+    "github.com/lynx-go/lynx/eventbus"
+)
 
-msg := pubsub.MustJSONMessage(map[string]string{"user": "alice"})
-err := broker.Publish(ctx, "user.created", msg, pubsub.WithMessageKey("alice"))
+kafkaT, err := wmkafka.NewFromConfig(cfg) // nil = kafka 段未启用
+memT := watermill.NewMemoryTransport()
+transports := map[string]eventbus.Transport{"memory": memT}
+if kafkaT != nil {
+    transports["kafka"] = kafkaT
+}
+bus, err := watermill.NewFromConfig(cfg, transports)
+// ...
+runner := lynx.NewRunner(setup, lynx.WithBus(bus), lynx.WithName("my-app"))
 ```
 
-自定义序列化器（如 Protobuf）：`pubsub.NewBroker(pubsub.Options{Marshaler: myMarshaler})`；
-按 topic 差异化（如 audit 用 Protobuf、其余 JSON）：
-`pubsub.Options{Marshaler: jsonMarshaler, TopicMarshalers: map[string]pubsub.Marshaler{"audit": pbMarshaler}}`。
+配置示例：
 
-### 使用 Kafka Transport
+```yaml
+bus:
+  topics:
+    user.created:
+      route: { transport: kafka, key: user.created }
+kafka:
+  user.created:
+    brokers: ["127.0.0.1:9092"]
+    topics: [user_created]
+    consumer: { group_id: users, instances: 3 }
+    producer: { log_message: true }
+```
+
+也可代码直接构造 Kafka Transport：
 
 ```go
-import "github.com/lynx-go/lynx/contrib/kafka"
-
-// 从配置文件加载（config.yaml 的 kafka 段），或代码构造：
-kafkaT, err := kafka.NewTransport(kafka.Options{
-    Topics: map[string]kafka.TopicOptions{
+kafkaT, err := wmkafka.NewTransport(wmkafka.Options{
+    Topics: map[string]wmkafka.TopicOptions{
         "user.created": {
             Brokers: []string{"127.0.0.1:9092"},
             Topics:  []string{"user_created"},
-            Consumer: &kafka.ConsumerOptions{GroupID: "users", Instances: 3},
-            Producer: &kafka.ProducerOptions{LogMessage: true},
+            Consumer: &wmkafka.ConsumerOptions{GroupID: "users", Instances: 3},
+            Producer: &wmkafka.ProducerOptions{LogMessage: true},
         },
     },
 })
-broker := pubsub.NewBroker(pubsub.Options{
-    Transports:       []pubsub.Transport{kafkaT},
-    DefaultTransport: pubsub.NewMemoryTransport(),
-})
-app.Register(kafkaT, broker)
 ```
 
 ### 使用定时任务
@@ -246,14 +263,15 @@ func InitializeApp() (*Bootstrap, error) {
 lynx/
 ├── boot/           # 应用引导和依赖注入
 ├── runner.go      # Runner 入口（NewRunner）
+├── eventbus/       # EventBus（Bus / Topic / Event，默认内存）
 ├── client/         # HTTP/gRPC 客户端
 │   ├── grpc/       # gRPC 客户端
 │   └── http/       # HTTP 客户端
 ├── command.go      # CLI 命令服务
 ├── service.go      # 服务接口定义
 ├── contrib/        # 扩展服务
-│   ├── kafka/      # Kafka 支持
-│   ├── pubsub/     # 消息发布订阅
+│   ├── watermill/       # Watermill 驱动的 eventbus.Bus
+│   ├── watermill-kafka/ # Kafka Transport（eventbus.Transport）
 │   ├── registry/   # 服务注册发现（Registrar/Resolver/memory/DNS）
 │   ├── consul/     # Consul 注册发现后端
 │   ├── schedule/   # 定时任务
@@ -271,9 +289,9 @@ lynx/
 │   └── http/       # HTTP 服务器
 └── _examples/      # 示例代码
     ├── boot/       # 依赖注入示例
+    ├── bus/        # EventBus 示例
     ├── cli/        # CLI 示例
     ├── http/       # HTTP 服务示例
-    ├── pubsub/     # 消息队列示例
     ├── registry/   # 服务注册发现示例
     └── schedule/   # 定时任务示例
 ```
@@ -307,14 +325,17 @@ Lynx 提供了多个可选的扩展模块：
 # HTTP 服务器
 github.com/lynx-go/lynx/server/http
 
-# Kafka 支持
-github.com/lynx-go/lynx/contrib/kafka
+# EventBus（核心，默认内存）
+github.com/lynx-go/lynx/eventbus
+
+# Watermill 驱动的 Bus
+github.com/lynx-go/lynx/contrib/watermill
+
+# Kafka Transport
+github.com/lynx-go/lynx/contrib/watermill-kafka
 
 # 可观测性（OpenTelemetry 托管）
 github.com/lynx-go/lynx/contrib/telemetry
-
-# PubSub 抽象
-github.com/lynx-go/lynx/contrib/pubsub
 
 # 服务注册发现（类型、Registrar/Resolver、memory/DNS 后端）
 github.com/lynx-go/lynx/contrib/registry
