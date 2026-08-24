@@ -410,6 +410,21 @@ func (app *lynx) Bus() eventbus.Bus {
 	return app.bus
 }
 
+// publishEvent 发布内建生命周期事件，失败仅记 debug 日志，不影响主流程。
+func (app *lynx) publishEvent(topic string, payload any) {
+	if app.bus == nil {
+		return
+	}
+	// 使用携带 Meta 的 app.ctx 为底，但脱离取消，避免关停时事件被取消。
+	ctx := context.Background()
+	if app.ctx != nil {
+		ctx = context.WithoutCancel(app.ctx)
+	}
+	if err := app.bus.Publish(ctx, topic, payload); err != nil {
+		app.logger.DebugContext(ctx, "publish lifecycle event failed", "topic", topic, "error", err)
+	}
+}
+
 func (app *lynx) addServices(services ...Service) error {
 	for _, service := range services {
 		if service == nil {
@@ -428,11 +443,13 @@ func (app *lynx) addServices(services ...Service) error {
 		// app.HealthCheckers() 等需要 app.mu 的方法时不会死锁。
 		if err := service.Init(app); err != nil {
 			cancel()
+			app.publishEvent(eventbus.TopicServiceFailed, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now(), Error: err.Error()})
 			// 逆序有界停止本批及此前已 Init 成功的服务，释放其打开的资源。
 			app.stopServices(app.ctx)
 			return err
 		}
 		app.logger.InfoContext(ctx, "initialized service", "service", service.Name())
+		app.publishEvent(eventbus.TopicServiceRegistered, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
 		// 登记事务：running 检查与 runG.Add 同持 app.mu。这是与 Run 并发时
 		// 的权威裁决点——Run 在持 mu 时置位 running，此处同样持 mu 判定+登记，
 		// 任何迟到的 Add 都不可能越过该检查；检查失败时服务不进入
@@ -446,13 +463,24 @@ func (app *lynx) addServices(services ...Service) error {
 		app.services = append(app.services, service)
 		app.runG.Add(func() error {
 			app.logger.InfoContext(ctx, "starting service", "service", service.Name())
-			return service.Start(ctx)
+			app.publishEvent(eventbus.TopicServiceStarting, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
+			// 对阻塞式服务，Started 语义为“已进入运行”：在 Start 调用前即发布，订阅者可据此协同。
+			// 若 Start 立即失败，随后会发布 Failed，订阅者将看到 Starting→Started→Failed 的时序。
+			app.publishEvent(eventbus.TopicServiceStarted, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
+			err := service.Start(ctx)
+			if err != nil {
+				app.publishEvent(eventbus.TopicServiceFailed, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now(), Error: err.Error()})
+			}
+			return err
 		}, func(err error) {
 			app.logger.InfoContext(ctx, "stopping service", "service", service.Name())
-			// cancel 在 Stop 之后执行：Stop 收到的 ctx 在 Stop 期间保持存活，
-			// 服务可用它作为优雅关停的宽限期（如 HTTP 的 Shutdown）。
-			// 挂死（如等待 ctx.Done()）的 Stop 由 StopTimeout 有界兜底。
+			app.publishEvent(eventbus.TopicServiceStopping, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
 			app.stopServiceBounded(ctx, service)
+			// stopServiceBounded 已将错误聚合到 shutdownErrors，此处仅发布 Stopped/Failed 供订阅者感知。
+			if app.shutdownErrors.HasErrors() {
+				// 无法精确判定本服务的 Stop 是否失败，统一发布 Stopped，错误细节可查日志/shutdownErrors。
+			}
+			app.publishEvent(eventbus.TopicServiceStopped, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
 			cancel()
 		})
 		if hc, ok := service.(Checker); ok {
@@ -515,6 +543,8 @@ func (app *lynx) Run() error {
 		return errors.New("lynx: Run must not be called more than once")
 	}
 	app.Logger().Info("starting")
+	meta := Meta(app.ctx)
+	app.publishEvent(eventbus.TopicAppStarting, eventbus.AppEvent{Name: meta.Name, ID: meta.ID, Version: meta.Version, Time: time.Now()})
 
 	// 退出信号提前注册：OnStart hook 阻塞期间收到的信号进入缓冲 chan，
 	// hook 结束后立即触发关停——此前信号注册在 hook 之后，阻塞的 hook
@@ -527,8 +557,36 @@ func (app *lynx) Run() error {
 	if err := app.runOnStartHooks(); err != nil {
 		// 未进入 run.Group：已 Init 的服务需手动逆序清理，释放资源。
 		app.stopServices(app.ctx)
+		app.publishEvent(eventbus.TopicAppStopped, eventbus.AppEvent{Name: meta.Name, ID: meta.ID, Version: meta.Version, Time: time.Now()})
 		return err
 	}
+	app.publishEvent(eventbus.TopicAppStarted, eventbus.AppEvent{Name: meta.Name, ID: meta.ID, Version: meta.Version, Time: time.Now()})
+
+	// 总线单独托管（不经 runG 的 last-actor 语义），确保 AppStopped 等收尾事件能在总线关闭前投递，
+	// 且其他服务的 Stopping/Stopped 事件不因总线提前关闭而丢失。
+	busCtx, busCancel := context.WithCancel(context.WithoutCancel(app.ctx))
+	// 发布总线自身的 Starting/Started，订阅者可在 Service.Init 中已就绪。
+	app.publishEvent(eventbus.TopicServiceStarting, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
+	app.publishEvent(eventbus.TopicServiceStarted, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
+	go func() {
+		if err := app.bus.Start(busCtx); err != nil {
+			app.publishEvent(eventbus.TopicServiceFailed, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now(), Error: err.Error()})
+		}
+	}()
+	// 等待总线进入 Running（最多 1s），避免后续 AppStarted 等事件因订阅尚未就绪而丢失。
+	for i := 0; i < 20; i++ {
+		if app.bus.CheckHealth() == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// 确保 Run 返回后总线最后关闭，且 Stopping/Stopped 在关闭前可投递。
+	defer func() {
+		app.publishEvent(eventbus.TopicServiceStopping, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
+		app.stopServiceBounded(busCtx, busService{app.bus})
+		app.publishEvent(eventbus.TopicServiceStopped, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
+		busCancel()
+	}()
 
 	// 关闭 actor：收到退出信号或应用上下文被取消时，先在 actor 内执行关停
 	// 流程：置位 drainChecker 后与排水睡眠并发执行 OnDrain hooks（如从服务
@@ -542,12 +600,16 @@ func (app *lynx) Run() error {
 	)
 	shutdown := func() {
 		app.Logger().Info("shutting down")
+		app.publishEvent(eventbus.TopicAppStopping, eventbus.AppEvent{Name: meta.Name, ID: meta.ID, Version: meta.Version, Time: time.Now()})
 		// Step 0: 排水窗口。置位 drainChecker 使 readiness 聚合立即失败
 		//（LB 摘流），等待 DrainTimeout 窗口结束后才执行后续关停。
 		// DrainTimeout 与 ShutdownTimeout 是两段独立预算。
 		// 所有关停入口（信号/中断/Close）都经过本函数，排水窗口统一生效。
 		if app.drain != nil {
 			app.drain.SetDraining(true)
+		}
+		if app.o.DrainTimeout > 0 {
+			app.publishEvent(eventbus.TopicDrainStarting, eventbus.DrainEvent{Timeout: app.o.DrainTimeout, Time: time.Now()})
 		}
 		// OnDrain 钩子（如从服务目录注销）与排水睡眠并发：置位后立即开始，
 		// 独立预算 DrainHookTimeout。注册钩子后关停时长上界 =
@@ -568,6 +630,7 @@ func (app *lynx) Run() error {
 			// 窗口不可被 ctx 取消打断：排水语义要求服务在窗口内保持运行，
 			// 供在途请求收尾；DrainTimeout=0 时跳过（与 v1.0 一致）。
 			time.Sleep(app.o.DrainTimeout)
+			app.publishEvent(eventbus.TopicDrainCompleted, eventbus.DrainEvent{Timeout: app.o.DrainTimeout, Time: time.Now()})
 		}
 		// 等待 OnDrain 钩子收尾（受 DrainHookTimeout 约束，不会挂死）。
 		<-drainHooksDone
@@ -601,6 +664,7 @@ func (app *lynx) Run() error {
 	// 服务 Start 先失败时 oklog/run 只返回首个 actor 错误；此处把 run group
 	// 错误、OnDrain/OnStop 钩子错误与服务 Stop 错误聚合后一并上抛（nil 安全）。
 	runErr := app.runG.Run()
+	app.publishEvent(eventbus.TopicAppStopped, eventbus.AppEvent{Name: meta.Name, ID: meta.ID, Version: meta.Version, Time: time.Now()})
 	if app.shutdownErrors.HasErrors() {
 		return errors.Join(runErr, shutdownErr, drainErr, &app.shutdownErrors)
 	}
@@ -746,8 +810,9 @@ func newLynx(o *Options) (App, error) {
 	if err := app.init(); err != nil {
 		return nil, err
 	}
-	// 总线作为第 0 个服务自动注册：开箱即用，Init 失败直接阻止启动。
-	if err := app.addServices(busService{app.bus}); err != nil {
+	// 总线单独初始化（不经 addServices 的健康聚合），失败直接阻止启动；
+	// 其 Start/Stop 由 Run 统一以 last-actor 语义托管，确保其他服务的 Stopping 事件能在总线关闭前投递。
+	if err := app.bus.Init(app); err != nil {
 		return nil, err
 	}
 	return app, nil

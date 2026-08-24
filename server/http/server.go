@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/eventbus"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
@@ -188,6 +189,7 @@ type Server struct {
 	logger     *slog.Logger
 	o          Options
 	handler    http.Handler
+	bus        eventbus.Bus
 }
 
 // Name 返回服务名称 "http"。
@@ -197,7 +199,17 @@ func (s *Server) Name() string {
 
 // Init 初始化服务，HTTP 服务无需在初始化阶段做额外工作。
 func (s *Server) Init(ctx lynx.AppContext) error {
+	if ctx != nil {
+		s.bus = ctx.Bus()
+	}
 	return nil
+}
+
+func (s *Server) publishEvent(topic string, payload any) {
+	if s.bus == nil {
+		return
+	}
+	_ = s.bus.Publish(context.Background(), topic, payload)
 }
 
 // Addr 返回实际监听地址：Start 前（或 Listen 失败时）返回空字符串；
@@ -246,6 +258,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.mu.Lock()
 	s.listener = ln
 	s.mu.Unlock()
+	s.publishEvent(eventbus.TopicHTTPListening, eventbus.ServerEvent{Service: "http", Addr: ln.Addr().String(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
 	if s.o.TLSConfig != nil {
 		srv.TLSConfig = s.o.TLSConfig
 		return srv.ServeTLS(ln, "", "")
@@ -313,12 +326,15 @@ func handleReadiness(checkers lynx.HealthCheckersFunc) http.Handler {
 // 超时后强制关闭活动连接（长轮询/流式 handler），并以错误返回。
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "stopping HTTP server")
+	s.publishEvent(eventbus.TopicHTTPStopping, eventbus.ServerEvent{Service: "http", Addr: s.Addr(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
 	s.mu.RLock()
 	hs := s.httpServer
 	s.mu.RUnlock()
 	if hs == nil {
+		s.publishEvent(eventbus.TopicHTTPStopped, eventbus.ServerEvent{Service: "http", Time: time.Now()})
 		return nil
 	}
+	defer s.publishEvent(eventbus.TopicHTTPStopped, eventbus.ServerEvent{Service: "http", Time: time.Now()})
 	if _, ok := ctx.Deadline(); !ok && s.o.ShutdownTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.o.ShutdownTimeout)

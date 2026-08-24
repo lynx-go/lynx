@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/eventbus"
 	"github.com/lynx-go/lynx/server/grpc/interceptor"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/metric"
@@ -236,6 +237,7 @@ type Server struct {
 	// 不会泄漏无人取消的轮询 goroutine。
 	stopped bool
 	running atomic.Bool
+	bus     eventbus.Bus
 }
 
 // CheckHealth 实现健康检查，服务未处于运行状态时返回错误。
@@ -254,7 +256,17 @@ func (s *Server) Name() string {
 
 // Init 初始化服务，gRPC 服务无需在初始化阶段做额外工作。
 func (s *Server) Init(ctx lynx.AppContext) error {
+	if ctx != nil {
+		s.bus = ctx.Bus()
+	}
 	return nil
+}
+
+func (s *Server) publishEvent(topic string, payload any) {
+	if s.bus == nil {
+		return
+	}
+	_ = s.bus.Publish(context.Background(), topic, payload)
 }
 
 // Addr 返回实际监听地址：Start 前（或 Listen 失败时）返回空字符串；
@@ -286,6 +298,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.mu.Lock()
 	s.listener = lis
 	s.mu.Unlock()
+	s.publishEvent(eventbus.TopicGRPCListening, eventbus.ServerEvent{Service: "grpc", Addr: lis.Addr().String(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
 
 	// Set the server to healthy, for both the named and the standard empty
 	// service name used by most gRPC health probes.
@@ -347,6 +360,8 @@ func (s *Server) updateHealthStatus() {
 // 返回错误（如强制停止）使调用方感知关停失败。
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "stopping gRPC server")
+	s.publishEvent(eventbus.TopicGRPCStopping, eventbus.ServerEvent{Service: "grpc", Addr: s.Addr(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
+	defer s.publishEvent(eventbus.TopicGRPCStopped, eventbus.ServerEvent{Service: "grpc", Time: time.Now()})
 	if s.health != nil {
 		s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 		s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)

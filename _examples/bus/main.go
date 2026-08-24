@@ -60,10 +60,41 @@ func (s *inventoryService) Init(ctx lynx.AppContext) error {
 func (s *inventoryService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
 func (s *inventoryService) Stop(ctx context.Context) error  { return nil }
 
+// lifecycleCoordinator 演示通过内建生命周期事件实现组件间协同：
+// 订阅 App/Service/HTTP 事件，其他组件可据此决定何时开始工作。
+type lifecycleCoordinator struct{}
+
+func (s *lifecycleCoordinator) Name() string { return "lifecycle-coordinator" }
+func (s *lifecycleCoordinator) Init(ctx lynx.AppContext) error {
+	bus := ctx.Bus()
+	// 订阅 App 级事件
+	_ = eventbus.SubscribeTyped(ctx.Context(), bus, eventbus.AppStartedTopic, "coord-app-started", func(ctx context.Context, e *eventbus.Event[eventbus.AppEvent]) error {
+		slog.InfoContext(ctx, "coordinator: app started", "name", e.Payload.Name, "id", e.Payload.ID)
+		return nil
+	})
+	_ = eventbus.SubscribeTyped(ctx.Context(), bus, eventbus.ServiceRegisteredTopic, "coord-service-registered", func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
+		slog.InfoContext(ctx, "coordinator: service registered", "service", e.Payload.Service)
+		return nil
+	})
+	_ = eventbus.SubscribeTyped(ctx.Context(), bus, eventbus.ServiceStartedTopic, "coord-service-started", func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
+		slog.InfoContext(ctx, "coordinator: service started", "service", e.Payload.Service)
+		return nil
+	})
+	// 若有 HTTP 服务，可订阅其 listening 事件以获知实际监听地址
+	_ = eventbus.SubscribeTyped(ctx.Context(), bus, eventbus.HTTPListeningTopic, "coord-http-listening", func(ctx context.Context, e *eventbus.Event[eventbus.ServerEvent]) error {
+		slog.InfoContext(ctx, "coordinator: http listening", "addr", e.Payload.Addr, "advertise", e.Payload.AdvertiseAddr)
+		return nil
+	})
+	return nil
+}
+func (s *lifecycleCoordinator) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (s *lifecycleCoordinator) Stop(ctx context.Context) error  { return nil }
+
 func main() {
 	runner := lynx.NewRunner(func(app lynx.App) error {
 		// Bus 开箱即用，无需 Register；直接通过 app.Bus() 发布/订阅
-		app.Register(&orderService{}, &auditService{}, &inventoryService{})
+		// lifecycleCoordinator 需最先注册，以便捕获后续服务的 Registered/Started 事件
+		app.Register(&lifecycleCoordinator{}, &orderService{}, &auditService{}, &inventoryService{})
 
 		// 演示：OnStart 中发布事件，所有订阅者（同进程）即时收到
 		app.OnStart(func(ctx context.Context) error {
