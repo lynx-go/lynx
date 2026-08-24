@@ -96,9 +96,9 @@ func WithMetadataField(k, v string) PublishOption {
 	}
 }
 
-// WithMarshaler 覆盖本次发布的序列化器，优先级高于 Bus 的 TopicMarshalers/全局 Marshaler。
+// WithPublishMarshaler 覆盖本次发布的序列化器，优先级高于 Bus 的 TopicMarshalers/全局 Marshaler。
 // 供 PublishTyped 注入 Topic 携带的 Marshaler，复用 Bus 内部的序列化/头部/传播等统一逻辑。
-func WithMarshaler(m Marshaler) PublishOption {
+func WithPublishMarshaler(m Marshaler) PublishOption {
 	return func(o *PublishOptions) { o.Marshaler = m }
 }
 
@@ -108,6 +108,7 @@ type SubscribeOptions struct {
 	ContinueOnError bool
 	Group           string
 	Instances       int
+	Marshaler       Marshaler
 }
 
 // SubscribeOption 配置 SubscribeOptions。
@@ -124,3 +125,8 @@ func WithGroup(group string) SubscribeOption { return func(o *SubscribeOptions) 
 
 // WithInstances 显式指定同组消费者成员数。
 func WithInstances(n int) SubscribeOption { return func(o *SubscribeOptions) { o.Instances = n } }
+
+// WithSubscribeMarshaler 覆盖本次订阅的序列化器，供 SubscribeTyped 注入 Topic 携带的 Marshaler。
+func WithSubscribeMarshaler(m Marshaler) SubscribeOption {
+	return func(o *SubscribeOptions) { o.Marshaler = m }
+}
