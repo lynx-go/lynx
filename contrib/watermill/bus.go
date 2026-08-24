@@ -182,33 +182,29 @@ func (b *Bus) Stop(ctx context.Context) error {
 // Publish 发布。
 func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) error {
 	o := &eventbus.PublishOptions{}
-	for _, fn := range opts {
-		fn(o)
-	}
+	eventbus.ApplyPublishOptions(o, opts...)
 	var raw *eventbus.RawEvent
+	var eventTime time.Time
 	switch v := payload.(type) {
 	case *eventbus.RawEvent:
 		if v == nil {
 			return errors.New("eventbus: payload is typed nil *RawEvent")
 		}
-		raw = v
+		raw = cloneRawEvent(v)
+		eventTime = v.Time
 	case []byte:
-		raw = &eventbus.RawEvent{ID: uuid.NewString(), Topic: topic, Payload: v, Headers: map[string]string{}, Time: time.Now()}
+		raw = &eventbus.RawEvent{ID: uuid.NewString(), Payload: v, Headers: map[string]string{}}
 	case nil:
-		raw = &eventbus.RawEvent{ID: uuid.NewString(), Topic: topic, Headers: map[string]string{}, Time: time.Now()}
+		raw = &eventbus.RawEvent{ID: uuid.NewString(), Headers: map[string]string{}}
 	default:
-		m := b.MarshalerFor(topic)
-		if o.Marshaler != nil {
-			m = o.Marshaler
-		}
+		m := eventbus.ResolvePublishMarshaler(b, topic, nil, o.Marshaler)
 		bs, err := m.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("eventbus: marshal %q: %w", topic, err)
 		}
-		raw = &eventbus.RawEvent{ID: uuid.NewString(), Topic: topic, Payload: bs, Headers: map[string]string{}, Time: time.Now()}
+		raw = &eventbus.RawEvent{ID: uuid.NewString(), Payload: bs, Headers: map[string]string{}}
 	}
-	// Clone and apply options
-	raw = cloneRawEvent(raw)
+	// 逻辑 topic 以函数参数为准
 	raw.Topic = topic
 	if o.MessageKey != "" {
 		raw.Key = o.MessageKey
@@ -217,6 +213,11 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 		raw.Headers = map[string]string{}
 	}
 	maps.Copy(raw.Headers, o.Metadata)
+	for k := range raw.Headers {
+		if k == eventbus.MetaMessageKey || k == eventbus.MetaEventTime || k == eventbus.MetaLogicalTopic {
+			delete(raw.Headers, k)
+		}
+	}
 	// Propagate attrs
 	for _, k := range b.propagateKeys() {
 		if _, ok := raw.Headers[k]; ok {
@@ -229,15 +230,21 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 			}
 		}
 	}
+	if eventTime.IsZero() {
+		eventTime = time.Now()
+	}
+	raw.Time = eventTime
 	t, key, err := b.resolve(topic)
 	if err != nil {
 		return err
 	}
-	raw.Topic = key // for transport, use physical
+	transportTopic := key // Transport 侧键
 	if lm := b.logFor(topic); lm.Publish {
 		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", raw.Key)
 	}
-	return t.Publish(ctx, key, raw)
+	// Publish 时 RawEvent.Topic 保持逻辑名；Transport 用 transportTopic
+	pub := cloneRawEvent(raw)
+	return t.Publish(ctx, transportTopic, pub)
 }
 
 // PublishRaw 原始发布。
@@ -248,9 +255,7 @@ func (b *Bus) PublishRaw(ctx context.Context, topic string, data []byte, opts ..
 // Subscribe 订阅。
 func (b *Bus) Subscribe(ctx context.Context, topic, handlerName string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
 	o := &eventbus.SubscribeOptions{}
-	for _, fn := range opts {
-		fn(o)
-	}
+	eventbus.ApplySubscribeOptions(o, opts...)
 	// Merge topic defaults
 	if cfg, ok := b.opts.Topics[topic]; ok {
 		if o.Group == "" {
@@ -428,24 +433,27 @@ func (a subscriberAdapter) Subscribe(ctx context.Context, topic string) (<-chan 
 func (a subscriberAdapter) Close() error { return nil }
 
 func toWatermill(e *eventbus.RawEvent) *message.Message {
-	msg := message.NewMessage(e.ID, e.Payload)
-	if e.Key != "" {
-		msg.Metadata.Set("x-message-key", e.Key)
+	if e == nil {
+		return message.NewMessage("", nil)
 	}
-	maps.Copy(msg.Metadata, e.Headers)
+	id := e.ID
+	if id == "" {
+		id = uuid.NewString()
+	}
+	msg := message.NewMessage(id, e.Payload)
+	for k, v := range eventbus.EncodeWireMetadata(e) {
+		msg.Metadata.Set(k, v)
+	}
 	return msg
 }
+
 func fromWatermill(msg *message.Message) *eventbus.RawEvent {
-	e := &eventbus.RawEvent{
-		ID:      msg.UUID,
-		Key:     msg.Metadata.Get("x-message-key"),
-		Headers: map[string]string{},
-		Payload: msg.Payload,
-		Time:    time.Now(),
+	if msg == nil {
+		return &eventbus.RawEvent{Headers: map[string]string{}}
 	}
-	maps.Copy(e.Headers, msg.Metadata)
-	delete(e.Headers, "x-message-key")
-	return e
+	meta := map[string]string{}
+	maps.Copy(meta, msg.Metadata)
+	return eventbus.DecodeWireMetadata(msg.UUID, msg.Payload, meta)
 }
 func cloneRawEvent(e *eventbus.RawEvent) *eventbus.RawEvent {
 	cp := *e

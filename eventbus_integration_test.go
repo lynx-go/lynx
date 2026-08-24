@@ -73,7 +73,8 @@ func TestBusPublishTypedViaApp(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- app.Run() }()
 	time.Sleep(100 * time.Millisecond)
-	_ = eventbus.PublishTyped(context.Background(), app.Bus(), topic, Order{ID: "123"})
+	// Topic 方法经 Default（newLynx SetDefault）解析 Bus
+	_ = topic.Publish(context.Background(), Order{ID: "123"})
 	select {
 	case got := <-received:
 		if got != "123" {
@@ -86,6 +87,20 @@ func TestBusPublishTypedViaApp(t *testing.T) {
 	<-done
 }
 
+func TestNewLynxInjectsBusContextAndDefault(t *testing.T) {
+	eventbus.SetDefault(nil)
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx: %v", err)
+	}
+	if eventbus.Default() != app.Bus() {
+		t.Fatal("Default() should be app.Bus after newLynx")
+	}
+	if eventbus.BusFromContext(app.Context()) != app.Bus() {
+		t.Fatal("Context should carry Bus after newLynx")
+	}
+}
+
 type busTypedProbe struct {
 	topic    eventbus.Topic[Order]
 	received chan string
@@ -93,7 +108,7 @@ type busTypedProbe struct {
 
 func (s *busTypedProbe) Name() string { return "typed-probe" }
 func (s *busTypedProbe) Init(ctx AppContext) error {
-	return eventbus.SubscribeTyped(ctx.Context(), ctx.Bus(), s.topic, "typed-handler", func(ctx context.Context, e *eventbus.Event[Order]) error {
+	return s.topic.Subscribe(ctx.Context(), "typed-handler", func(ctx context.Context, e *eventbus.Event[Order]) error {
 		s.received <- e.Payload.ID
 		return nil
 	})

@@ -5,24 +5,81 @@ import (
 	"fmt"
 )
 
-// PublishTyped 发布类型化负载，自动经 Topic/Marshaler 序列化。
-// 通过 WithPublishMarshaler 将 Topic 携带的 Marshaler 注入 Bus.Publish，复用 Bus 内部
-// 的序列化、头部合并、属性传播等统一逻辑，与 SubscribeTyped 的解码侧保持一致。
-func PublishTyped[T any](ctx context.Context, b Bus, topic Topic[T], payload T, opts ...PublishOption) error {
-	if m := topic.Options().Marshaler; m != nil {
-		opts = append(append([]PublishOption(nil), opts...), WithPublishMarshaler(m))
+// Publish 发布类型化负载。Bus 解析：WithBus Option → Context → Default。
+func (t Topic[T]) Publish(ctx context.Context, payload T, opts ...PublishOption) error {
+	po := &PublishOptions{}
+	applyPublishOptions(po, opts...)
+	b, err := resolveBus(ctx, po.Bus)
+	if err != nil {
+		return err
 	}
-	return b.Publish(ctx, topic.Name(), payload, opts...)
+	return publishTyped(ctx, b, t, payload, opts...)
 }
 
-// SubscribeTyped 订阅类型化主题，Payload 自动反序列化为 T。
-func SubscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], handlerName string, h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error {
-	m := b.MarshalerFor(topic.Name())
-	// Topic 级 Marshaler 优先，并通过 WithSubscribeMarshaler 注入 Bus 侧，保持与 PublishTyped 对称
-	if topic.Options().Marshaler != nil {
-		m = topic.Options().Marshaler
+// Subscribe 订阅类型化主题。Bus 解析同 Publish。
+func (t Topic[T]) Subscribe(ctx context.Context, handlerName string, h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error {
+	so := &SubscribeOptions{}
+	applySubscribeOptions(so, opts...)
+	b, err := resolveBus(ctx, so.Bus)
+	if err != nil {
+		return err
 	}
+	return subscribeTyped(ctx, b, t, handlerName, h, opts...)
+}
+
+// PublishRaw 转发原始事件（保留 ID/Key/Headers/Time/Payload；逻辑名以 Topic 为准）。
+func (t Topic[T]) PublishRaw(ctx context.Context, raw *RawEvent, opts ...PublishOption) error {
+	po := &PublishOptions{}
+	applyPublishOptions(po, opts...)
+	b, err := resolveBus(ctx, po.Bus)
+	if err != nil {
+		return err
+	}
+	return publishRawTyped(ctx, b, t, raw, opts...)
+}
+
+// PublishTyped 发布类型化负载（迁移期薄别名；新代码优先 Topic.Publish）。
+func PublishTyped[T any](ctx context.Context, b Bus, topic Topic[T], payload T, opts ...PublishOption) error {
+	if b == nil {
+		return ErrNoBus
+	}
+	return publishTyped(ctx, b, topic, payload, opts...)
+}
+
+// SubscribeTyped 订阅类型化主题（迁移期薄别名；新代码优先 Topic.Subscribe）。
+func SubscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], handlerName string, h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error {
+	if b == nil {
+		return ErrNoBus
+	}
+	return subscribeTyped(ctx, b, topic, handlerName, h, opts...)
+}
+
+// PublishRawTyped 以原始事件发布类型化主题（迁移期薄别名；新代码优先 Topic.PublishRaw）。
+func PublishRawTyped[T any](ctx context.Context, b Bus, topic Topic[T], raw *RawEvent, opts ...PublishOption) error {
+	if b == nil {
+		return ErrNoBus
+	}
+	return publishRawTyped(ctx, b, topic, raw, opts...)
+}
+
+func publishTyped[T any](ctx context.Context, b Bus, topic Topic[T], payload T, opts ...PublishOption) error {
+	po := &PublishOptions{}
+	applyPublishOptions(po, opts...)
+	// Topic Marshaler 作为较低优先级默认：先注入，再让调用方 opts 覆盖
+	var base []PublishOption
+	if m := topic.Options().Marshaler; m != nil {
+		base = append(base, WithPublishMarshaler(m))
+	}
+	base = append(base, opts...)
+	return b.Publish(ctx, topic.Name(), payload, base...)
+}
+
+func subscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], handlerName string, h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error {
+	so := &SubscribeOptions{}
+	applySubscribeOptions(so, opts...)
 	topts := topic.Options()
+	m := ResolveSubscribeMarshaler(b, topic.Name(), topts.Marshaler, so.Marshaler)
+
 	wrappedOpts := make([]SubscribeOption, 0, len(opts)+5)
 	if topts.Group != "" {
 		wrappedOpts = append(wrappedOpts, WithGroup(topts.Group))
@@ -42,7 +99,11 @@ func SubscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], handlerNa
 	wrappedOpts = append(wrappedOpts, opts...)
 
 	return b.Subscribe(ctx, topic.Name(), handlerName, func(ctx context.Context, raw *RawEvent) error {
-		ev, err := DecodeTyped[T](m, raw)
+		// 再次解析：opts 可能在 wrapped 末尾覆盖 Marshaler
+		final := &SubscribeOptions{}
+		applySubscribeOptions(final, wrappedOpts...)
+		dec := ResolveSubscribeMarshaler(b, topic.Name(), topts.Marshaler, final.Marshaler)
+		ev, err := DecodeTyped[T](dec, raw)
 		if err != nil {
 			return fmt.Errorf("bus: unmarshal %q: %w", topic.Name(), err)
 		}
@@ -50,10 +111,10 @@ func SubscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], handlerNa
 	}, wrappedOpts...)
 }
 
-// PublishRawTyped 以原始事件发布类型化主题（用于转发）。
-func PublishRawTyped[T any](ctx context.Context, b Bus, topic Topic[T], raw *RawEvent, opts ...PublishOption) error {
+func publishRawTyped[T any](ctx context.Context, b Bus, topic Topic[T], raw *RawEvent, opts ...PublishOption) error {
 	if raw == nil {
 		return fmt.Errorf("bus: nil raw event")
 	}
-	return b.PublishRaw(ctx, topic.Name(), raw.Payload, append([]PublishOption{WithMessageKey(raw.Key), WithMetadata(raw.Headers)}, opts...)...)
+	// 转发：整份 RawEvent 交给 Bus，保留 ID/Key/Headers/Time；topic 参数覆盖逻辑名
+	return b.Publish(ctx, topic.Name(), raw, opts...)
 }

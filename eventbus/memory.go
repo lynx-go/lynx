@@ -151,20 +151,19 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 		return errors.New("bus is closed")
 	}
 	o := &PublishOptions{Metadata: map[string]string{}}
-	for _, fn := range opts {
-		fn(o)
-	}
+	applyPublishOptions(o, opts...)
 	var data []byte
 	var headers map[string]string
 	var key string
 	var id = uuid.NewString()
+	var eventTime time.Time
 
 	switch v := payload.(type) {
 	case *RawEvent:
 		if v == nil {
 			return errors.New("bus: payload is typed nil *RawEvent")
 		}
-		// 透传：保留 ID/Key/Headers，Payload 已序列化
+		// 透传：保留 ID/Key/Headers/Time；逻辑 topic 以函数参数为准（与 Watermill 路径一致）
 		if v.ID != "" {
 			id = v.ID
 		}
@@ -174,9 +173,7 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 		}
 		headers = cloneHeaders(v.Headers)
 		data = v.Payload
-		if v.Topic != "" {
-			topic = v.Topic
-		}
+		eventTime = v.Time
 	case []byte:
 		data = v
 		key = o.MessageKey
@@ -186,10 +183,7 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 		key = o.MessageKey
 		headers = map[string]string{}
 	default:
-		m := b.MarshalerFor(topic)
-		if o.Marshaler != nil {
-			m = o.Marshaler
-		}
+		m := ResolvePublishMarshaler(b, topic, nil, o.Marshaler)
 		bs, err := m.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("bus: marshal %q: %w", topic, err)
@@ -201,7 +195,13 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 	if headers == nil {
 		headers = map[string]string{}
 	}
+	// 先合并业务 Metadata，再写入协议键，避免覆盖 x-message-key 等
 	maps.Copy(headers, o.Metadata)
+	for k := range headers {
+		if isProtocolMetaKey(k) {
+			delete(headers, k)
+		}
+	}
 	// 传播日志属性（白名单），已存在的不覆盖
 	for _, k := range b.propagateKeys() {
 		if _, ok := headers[k]; ok {
@@ -214,13 +214,16 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 			}
 		}
 	}
+	if eventTime.IsZero() {
+		eventTime = time.Now()
+	}
 	ev := &RawEvent{
 		ID:      id,
 		Topic:   topic,
 		Key:     key,
 		Headers: headers,
 		Payload: data,
-		Time:    time.Now(),
+		Time:    eventTime,
 	}
 	if lm := b.logFor(topic); lm.Publish {
 		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", key)
@@ -260,9 +263,7 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic, handlerName string, h 
 		return errors.New("handler is nil")
 	}
 	o := &SubscribeOptions{}
-	for _, fn := range opts {
-		fn(o)
-	}
+	applySubscribeOptions(o, opts...)
 	// 合并 Topic 默认值：显式优先
 	if cfg, ok := b.opts.Topics[topic]; ok {
 		if o.Group == "" {

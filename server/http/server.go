@@ -274,6 +274,9 @@ func (s *Server) buildHandler(ctx context.Context) http.Handler {
 	mux.Handle("/healthz/readiness", handleReadiness(s.o.HealthCheckers))
 
 	user := chain(s.handler, s.o.Middlewares)
+	if s.bus != nil {
+		user = injectBus(s.bus)(user)
+	}
 	if s.o.RequestLog {
 		user = NewHandler(NewRequestLogger(s.logger, func(err error) {
 			s.logger.ErrorContext(ctx, "failed to log HTTP request", "error", err)

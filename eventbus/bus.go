@@ -71,35 +71,47 @@ type PublishOptions struct {
 	MessageKey string
 	Metadata   map[string]string
 	Marshaler  Marshaler
+	// Bus 覆盖本次调用解析到的 Bus（仅 Topic 方法路径使用；Bus.Publish 忽略）。
+	Bus Bus
 }
 
 // PublishOption 配置 PublishOptions。
-type PublishOption func(*PublishOptions)
+type PublishOption interface {
+	applyPublish(*PublishOptions)
+}
+
+type publishOptionFunc func(*PublishOptions)
+
+func (f publishOptionFunc) applyPublish(o *PublishOptions) { f(o) }
+
+// ApplyPublishOptions 应用发布选项（供 contrib Bus 实现使用）。
+func ApplyPublishOptions(o *PublishOptions, opts ...PublishOption) {
+	applyPublishOptions(o, opts...)
+}
 
 // WithMessageKey 设置消息 key（写入 wire 的 x-message-key，亦进入 Event.Key）。
 func WithMessageKey(key string) PublishOption {
-	return func(o *PublishOptions) { o.MessageKey = key }
+	return publishOptionFunc(func(o *PublishOptions) { o.MessageKey = key })
 }
 
 // WithMetadata 合并消息头。
 func WithMetadata(md map[string]string) PublishOption {
-	return func(o *PublishOptions) { o.Metadata = md }
+	return publishOptionFunc(func(o *PublishOptions) { o.Metadata = md })
 }
 
 // WithMetadataField 添加单条消息头。
 func WithMetadataField(k, v string) PublishOption {
-	return func(o *PublishOptions) {
+	return publishOptionFunc(func(o *PublishOptions) {
 		if o.Metadata == nil {
 			o.Metadata = map[string]string{}
 		}
 		o.Metadata[k] = v
-	}
+	})
 }
 
-// WithPublishMarshaler 覆盖本次发布的序列化器，优先级高于 Bus 的 TopicMarshalers/全局 Marshaler。
-// 供 PublishTyped 注入 Topic 携带的 Marshaler，复用 Bus 内部的序列化/头部/传播等统一逻辑。
+// WithPublishMarshaler 覆盖本次发布的序列化器，优先级高于 Topic / Bus 默认。
 func WithPublishMarshaler(m Marshaler) PublishOption {
-	return func(o *PublishOptions) { o.Marshaler = m }
+	return publishOptionFunc(func(o *PublishOptions) { o.Marshaler = m })
 }
 
 // SubscribeOptions 是订阅行为的配置项。
@@ -109,24 +121,77 @@ type SubscribeOptions struct {
 	Group           string
 	Instances       int
 	Marshaler       Marshaler
+	// Bus 覆盖本次调用解析到的 Bus（仅 Topic 方法路径使用；Bus.Subscribe 忽略）。
+	Bus Bus
 }
 
 // SubscribeOption 配置 SubscribeOptions。
-type SubscribeOption func(*SubscribeOptions)
+type SubscribeOption interface {
+	applySubscribe(*SubscribeOptions)
+}
+
+type subscribeOptionFunc func(*SubscribeOptions)
+
+func (f subscribeOptionFunc) applySubscribe(o *SubscribeOptions) { f(o) }
+
+// ApplySubscribeOptions 应用订阅选项（供 contrib Bus 实现使用）。
+func ApplySubscribeOptions(o *SubscribeOptions, opts ...SubscribeOption) {
+	applySubscribeOptions(o, opts...)
+}
 
 // WithAutoAck 订阅即确认，处理失败不影响 Ack。
-func WithAutoAck() SubscribeOption { return func(o *SubscribeOptions) { o.AutoAck = true } }
+func WithAutoAck() SubscribeOption {
+	return subscribeOptionFunc(func(o *SubscribeOptions) { o.AutoAck = true })
+}
 
 // WithContinueOnError 处理失败仍确认，不再重投。
-func WithContinueOnError() SubscribeOption { return func(o *SubscribeOptions) { o.ContinueOnError = true } }
+func WithContinueOnError() SubscribeOption {
+	return subscribeOptionFunc(func(o *SubscribeOptions) { o.ContinueOnError = true })
+}
 
 // WithGroup 显式指定消费组，覆盖 Transport 默认。
-func WithGroup(group string) SubscribeOption { return func(o *SubscribeOptions) { o.Group = group } }
+func WithGroup(group string) SubscribeOption {
+	return subscribeOptionFunc(func(o *SubscribeOptions) { o.Group = group })
+}
 
 // WithInstances 显式指定同组消费者成员数。
-func WithInstances(n int) SubscribeOption { return func(o *SubscribeOptions) { o.Instances = n } }
+func WithInstances(n int) SubscribeOption {
+	return subscribeOptionFunc(func(o *SubscribeOptions) { o.Instances = n })
+}
 
-// WithSubscribeMarshaler 覆盖本次订阅的序列化器，供 SubscribeTyped 注入 Topic 携带的 Marshaler。
+// WithSubscribeMarshaler 覆盖本次订阅的序列化器，供解码与 Publish 对称。
 func WithSubscribeMarshaler(m Marshaler) SubscribeOption {
-	return func(o *SubscribeOptions) { o.Marshaler = m }
+	return subscribeOptionFunc(func(o *SubscribeOptions) { o.Marshaler = m })
+}
+
+// busOverride 同时实现 PublishOption 与 SubscribeOption。
+// 与 lynx.WithBus（应用构造）不同：本 Option 仅覆盖单次 Publish/Subscribe 的 Bus 解析。
+type busOverride struct{ bus Bus }
+
+func (o busOverride) applyPublish(p *PublishOptions)   { p.Bus = o.bus }
+func (o busOverride) applySubscribe(s *SubscribeOptions) { s.Bus = o.bus }
+
+// WithBus 覆盖本次 Publish/Subscribe 解析到的 Bus（优先级最高）。
+// 日常路径依赖 Context / Default，不必手传。
+func WithBus(b Bus) interface {
+	PublishOption
+	SubscribeOption
+} {
+	return busOverride{bus: b}
+}
+
+func applyPublishOptions(o *PublishOptions, opts ...PublishOption) {
+	for _, opt := range opts {
+		if opt != nil {
+			opt.applyPublish(o)
+		}
+	}
+}
+
+func applySubscribeOptions(o *SubscribeOptions, opts ...SubscribeOption) {
+	for _, opt := range opts {
+		if opt != nil {
+			opt.applySubscribe(o)
+		}
+	}
 }

@@ -815,5 +815,7 @@ func newLynx(o *Options) (App, error) {
 	if err := app.bus.Init(app); err != nil {
 		return nil, err
 	}
+	eventbus.SetDefault(app.bus)
+	app.ctx = eventbus.ContextWithBus(app.ctx, app.bus)
 	return app, nil
 }

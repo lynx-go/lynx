@@ -178,8 +178,10 @@ func NewServer(opts ...Option) *Server {
 		o:      options,
 	}
 	// Recovery 在最外层：链内任意一环（含用户拦截器）panic 都能被恢复。
+	// Bus 注入在请求时读取 s.bus（Init 后可用），供 Topic API 经 Context 解析。
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		interceptor.Recovery(),
+		s.injectBusUnary(),
 		interceptor.Logging(s.logger),
 	}
 	unaryInterceptors = append(unaryInterceptors, options.Interceptors...)
@@ -187,6 +189,7 @@ func NewServer(opts ...Option) *Server {
 	// 没有内置保护，不加拦截器会直接崩溃整个进程。
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		interceptor.RecoveryStream(),
+		s.injectBusStream(),
 		interceptor.LoggingStream(s.logger),
 	}
 	streamInterceptors = append(streamInterceptors, options.StreamInterceptors...)
@@ -428,6 +431,34 @@ func (s *Server) Stop(ctx context.Context) error {
 // GetServer 返回底层 *grpc.Server 实例，用于注册业务服务实现。
 func (s *Server) GetServer() *grpc.Server {
 	return s.server
+}
+
+// injectBusUnary 将 Bus 写入 unary 请求 Context（Init 后 s.bus 可用）。
+func (s *Server) injectBusUnary() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if s.bus != nil {
+			ctx = eventbus.ContextWithBus(ctx, s.bus)
+		}
+		return handler(ctx, req)
+	}
+}
+
+type busStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s busStream) Context() context.Context { return s.ctx }
+
+// injectBusStream 将 Bus 写入 stream 请求 Context。
+func (s *Server) injectBusStream() grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		ctx := ss.Context()
+		if s.bus != nil {
+			ctx = eventbus.ContextWithBus(ctx, s.bus)
+		}
+		return handler(srv, busStream{ServerStream: ss, ctx: ctx})
+	}
 }
 
 var _ lynx.Service = (*Server)(nil)
