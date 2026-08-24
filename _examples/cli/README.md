@@ -1,6 +1,6 @@
 # cli 示例
 
-演示 `app.Command` 单次命令执行 + 内存 pubsub（Broker/Router/Handler）的 CLI 应用。
+演示 `app.Command` 单次命令执行 + 默认内存 EventBus（`Topic.Publish` / `Subscribe`）的 CLI 应用。
 
 ## 运行
 
@@ -13,8 +13,6 @@ go run . -c config.yaml
 
 ## 关键代码点
 
-- `main.go:18`：默认配置 flag 集开箱即用，`config.yaml` 已清空（配置全部走代码显式构造）。
-- `main.go:24`：`zap.NewZapLogger(logLevel, "cli.out")` 将日志写入 `cli.out`，并包装为 slog。
-- `main.go:42-53`：`pubsub.NewBroker` + `pubsub.NewRouter` 注册 `helloHandler`，挂为应用服务。
-- `main.go:54 app.Command`：命令入口，发布 `hello` 事件后结束。
-- `main.go:45`：`pubsub.NewHandler` 构造原始字节 handler 消费 `hello` 事件。
+- `main.go`：默认配置 flag 集开箱即用；`zap` 日志写入 `cli.out`。
+- `HelloTopic.Subscribe`：Init 期订阅 `hello`（Bus 由框架注入）。
+- `app.Command`：命令入口，`HelloTopic.Publish` 后结束。

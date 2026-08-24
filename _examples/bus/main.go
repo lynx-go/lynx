@@ -36,8 +36,8 @@ type auditService struct{}
 
 func (s *auditService) Name() string { return "audit-service" }
 func (s *auditService) Init(ctx lynx.AppContext) error {
-	// 一行订阅：Topic 携带类型，Payload 自动反序列化
-	return eventbus.SubscribeTyped(ctx.Context(), ctx.Bus(), OrderCreatedTopic, "audit-handler",
+	// Topic.Subscribe：Bus 从 Context / Default 解析，Payload 自动反序列化
+	return OrderCreatedTopic.Subscribe(ctx.Context(), "audit-handler",
 		func(ctx context.Context, e *eventbus.Event[OrderCreated]) error {
 			slog.InfoContext(ctx, "audit received order", "order_id", e.Payload.OrderID, "user_id", e.Payload.UserID)
 			return nil
@@ -66,22 +66,21 @@ type lifecycleCoordinator struct{}
 
 func (s *lifecycleCoordinator) Name() string { return "lifecycle-coordinator" }
 func (s *lifecycleCoordinator) Init(ctx lynx.AppContext) error {
-	bus := ctx.Bus()
-	// 订阅 App 级事件
-	_ = eventbus.SubscribeTyped(ctx.Context(), bus, eventbus.AppStartedTopic, "coord-app-started", func(ctx context.Context, e *eventbus.Event[eventbus.AppEvent]) error {
+	// 订阅 App 级事件（Topic 方法，无需手传 Bus）
+	_ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord-app-started", func(ctx context.Context, e *eventbus.Event[eventbus.AppEvent]) error {
 		slog.InfoContext(ctx, "coordinator: app started", "name", e.Payload.Name, "id", e.Payload.ID)
 		return nil
 	})
-	_ = eventbus.SubscribeTyped(ctx.Context(), bus, eventbus.ServiceRegisteredTopic, "coord-service-registered", func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
+	_ = eventbus.ServiceRegisteredTopic.Subscribe(ctx.Context(), "coord-service-registered", func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
 		slog.InfoContext(ctx, "coordinator: service registered", "service", e.Payload.Service)
 		return nil
 	})
-	_ = eventbus.SubscribeTyped(ctx.Context(), bus, eventbus.ServiceStartedTopic, "coord-service-started", func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
+	_ = eventbus.ServiceStartedTopic.Subscribe(ctx.Context(), "coord-service-started", func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
 		slog.InfoContext(ctx, "coordinator: service started", "service", e.Payload.Service)
 		return nil
 	})
 	// 若有 HTTP 服务，可订阅其 listening 事件以获知实际监听地址
-	_ = eventbus.SubscribeTyped(ctx.Context(), bus, eventbus.HTTPListeningTopic, "coord-http-listening", func(ctx context.Context, e *eventbus.Event[eventbus.ServerEvent]) error {
+	_ = eventbus.HTTPListeningTopic.Subscribe(ctx.Context(), "coord-http-listening", func(ctx context.Context, e *eventbus.Event[eventbus.ServerEvent]) error {
 		slog.InfoContext(ctx, "coordinator: http listening", "addr", e.Payload.Addr, "advertise", e.Payload.AdvertiseAddr)
 		return nil
 	})
@@ -92,15 +91,15 @@ func (s *lifecycleCoordinator) Stop(ctx context.Context) error  { return nil }
 
 func main() {
 	runner := lynx.NewRunner(func(app lynx.App) error {
-		// Bus 开箱即用，无需 Register；直接通过 app.Bus() 发布/订阅
+		// Bus 开箱即用，无需 Register；直接通过 Topic / app.Bus() 发布/订阅
 		// lifecycleCoordinator 需最先注册，以便捕获后续服务的 Registered/Started 事件
 		app.Register(&lifecycleCoordinator{}, &orderService{}, &auditService{}, &inventoryService{})
 
 		// 演示：OnStart 中发布事件，所有订阅者（同进程）即时收到
 		app.OnStart(func(ctx context.Context) error {
-			// 方式1：类型化发布
-			_ = eventbus.PublishTyped(ctx, app.Bus(), OrderCreatedTopic, OrderCreated{OrderID: "123", UserID: "u1"})
-			// 方式2：原始发布
+			// 方式1：类型化发布（Topic.Publish）
+			_ = OrderCreatedTopic.Publish(ctx, OrderCreated{OrderID: "123", UserID: "u1"})
+			// 方式2：原始/字符串 topic 发布
 			_ = app.Bus().Publish(ctx, "order.created", map[string]string{"order_id": "456"})
 			return nil
 		})

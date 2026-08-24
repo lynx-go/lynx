@@ -583,13 +583,14 @@ srv := http.NewServer(router,
 
 此后请求链内所有 `logger.InfoContext(r.Context(), ...)` 自动携带 `request_id`（`logging.NewAttrsHandler` 注入）；访问日志同样带 `requestId` 字段（从响应头读取，见 5.1 节）。业务代码可用 `http.RequestIDFrom(r.Context())` 取当前值。`user_id` 同理：认证中间件确定身份后执行 `r = r.WithContext(logging.WithAttrs(r.Context(), slog.String(logging.FieldUserID, uid)))` 即可。
 
-3. **消息跨服务传播**：`contrib/pubsub` 的 Broker 在 Publish 时自动把 ctx 日志属性白名单写入消息头，Subscribe 时还原进 handler ctx——`request_id`/`user_id` 随消息跨服务流转，消费侧日志自动携带同一组字段（Kafka 侧为 record headers，内存 transport 为进程内 metadata）。白名单默认 `{request_id, user_id}`，可用 `Options.PropagateAttrs` 自定义（非 nil 空切片完全关闭）：
+3. **消息跨服务传播**：`eventbus.Bus`（内存或 `contrib/watermill`）在 Publish 时自动把 ctx 日志属性白名单写入消息头，Subscribe 时还原进 handler ctx——`request_id`/`user_id` 随消息跨服务流转，消费侧日志自动携带同一组字段（Kafka 侧为 record headers，内存 transport 为进程内 metadata）。白名单默认 `{request_id, user_id}`，可用 `eventbus.Options.PropagateAttrs` 自定义（非 nil 空切片完全关闭）：
 
 ```go
-broker := pubsub.NewBroker(pubsub.Options{
+bus := watermill.New(eventbus.Options{
 	DefaultTransport: kafkaTransport,
 	PropagateAttrs:   []string{logging.FieldRequestID, logging.FieldUserID},
 })
+// lynx.NewRunner(setup, lynx.WithBus(bus), ...)
 ```
 
 注意：消息头传播的字段是"日志关联"级别的；发布侧的 ctx 属性优先级最低，消息自身 `Headers` 与 `WithMetadata` 显式设置的值不被覆盖。
@@ -638,4 +639,4 @@ srv := http.NewServer(router,
 本章是教程的最后一章。更多内容可以参考：
 
 - [第 1 章：项目简介](./01-introduction.md) - 回顾 Lynx 的设计理念与核心特性
-- [示例代码](../_examples/) - 可编译运行的完整应用示例（HTTP、CLI、boot、pubsub、schedule）
+- [示例代码](../_examples/) - 可编译运行的完整应用示例（HTTP、CLI、boot、bus、schedule）

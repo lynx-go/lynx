@@ -105,12 +105,15 @@ Lynx 构建于以下优秀的开源项目之上：
 ```
 lynx/
 ├── boot/           # 应用引导和依赖注入
+├── eventbus/       # EventBus（Bus / Topic / Event）
 ├── client/         # HTTP/gRPC 客户端
 │   ├── grpc/       # gRPC 客户端
 │   └── http/       # HTTP 客户端
 ├── contrib/        # 扩展服务
-│   ├── kafka/      # Kafka 支持
-│   ├── pubsub/     # 消息发布订阅
+│   ├── watermill/       # Watermill 驱动的 Bus
+│   ├── watermill-kafka/ # Kafka Transport
+│   ├── registry/   # 服务注册发现
+│   ├── consul/     # Consul 后端
 │   ├── schedule/   # 定时任务
 │   ├── telemetry/  # OpenTelemetry 生命周期托管
 │   └── zap/        # Zap 日志集成

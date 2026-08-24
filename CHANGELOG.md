@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### 破坏性变更
+
+- **移除 `contrib/pubsub`**：进程内/跨进程消息统一走核心 `eventbus`（`Bus` /
+  `Topic[T]` / `Event[T]`）与 `contrib/watermill` Bus 实现。
+- **`contrib/kafka` → `contrib/watermill-kafka`**：模块路径重命名；实现
+  `eventbus.Transport`（不再依赖 pubsub）。配置段仍为 `kafka:`；发版 tag 为
+  `contrib/watermill-kafka/v{version}`。Kafka record key = `Event.Key` /
+  `x-message-key`（分区键）。
+
+### 新增 / 行为
+
+- **EventBus wire 契约**：`RawEvent` ↔ 底层消息单一映射（`x-message-key` /
+  `x-event-time` / `x-logical-topic`）；Publish/Subscribe Marshaler 优先级对称。
+- **Topic 方法 API**：`Topic.Publish` / `Subscribe` / `PublishRaw`；Bus 解析
+  `eventbus.WithBus` → Context → `Default()`；`newLynx` 注入 `SetDefault` 与
+  Context，HTTP/gRPC 入站注入 Bus。
+- **Watermill Bus**：Start 后动态 `AddConsumerHandler` + `RunHandlers`；去掉
+  SignalsHandler；Bus 在 `newLynx` 中先于 Component Start；`lynx.*` 强制
+  MemoryTransport，Route 到非内存则失败；`NewFromConfig` 读 `bus:` 段。
+- **关停**：Bus last-actor 不变；`AppStopped` 在 `Bus.Stop` 前可投递。
+
+---
+
 ## v1.4.0 (2026-08-20)
 
 服务注册与发现：核心补齐排水钩子与宣告地址支持，新增 `contrib/registry`

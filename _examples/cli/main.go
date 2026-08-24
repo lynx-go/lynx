@@ -6,13 +6,16 @@ import (
 	"log/slog"
 
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/pubsub"
 	"github.com/lynx-go/lynx/contrib/zap"
+	"github.com/lynx-go/lynx/eventbus"
 )
 
 type Config struct {
 	Addr string `json:"addr"`
 }
+
+// HelloTopic 是 CLI 示例的类型化主题（默认内存 Bus）。
+var HelloTopic = eventbus.NewTopic[map[string]any]("hello")
 
 func main() {
 	runner := lynx.NewRunner(func(app lynx.App) error {
@@ -39,20 +42,19 @@ func main() {
 		logger := app.Logger()
 		logger.Info("parsed config", "config", config)
 
-		broker := pubsub.NewBroker(pubsub.Options{DefaultTransport: pubsub.NewMemoryTransport()})
-		app.Register(broker)
-		router := pubsub.NewRouter(broker, []pubsub.Handler{
-			pubsub.NewHandler("hello", "helloHandler", func(ctx context.Context, event *pubsub.Message) error {
-				slog.InfoContext(ctx, "recv hello event", "payload", string(event.Payload))
+		// 默认内存 Bus 已由框架注入；Init 期订阅即可。
+		if err := HelloTopic.Subscribe(app.Context(), "helloHandler",
+			func(ctx context.Context, e *eventbus.Event[map[string]any]) error {
+				slog.InfoContext(ctx, "recv hello event", "payload", e.Payload)
 				return nil
-			}),
-		})
-		app.Register(router)
+			}); err != nil {
+			return err
+		}
 
 		fmt.Println("hello cli")
 
 		return app.Command(func(ctx context.Context) error {
-			if err := broker.Publish(ctx, "hello", pubsub.MustJSONMessage(map[string]any{"message": "hello world"})); err != nil {
+			if err := HelloTopic.Publish(ctx, map[string]any{"message": "hello world"}); err != nil {
 				return err
 			}
 			logger.Info("command executed successfully")

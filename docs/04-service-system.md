@@ -1,6 +1,6 @@
 # 4. 服务系统
 
-服务是 Lynx 应用的基本构建单元：HTTP/gRPC 服务器、消息 Broker、定时调度器，乃至一段需要在应用生命周期内运行的后台逻辑，都可以抽象为一个服务。本章介绍 `Service` 接口契约、`ServiceFactory` 与多实例机制、`Checker`/`CheckHealth` 扩展接口，并通过一个完整示例演示如何编写自定义服务，最后概览 `contrib/` 下的五个官方服务模块。
+服务是 Lynx 应用的基本构建单元：HTTP/gRPC 服务器、消息总线、定时调度器，乃至一段需要在应用生命周期内运行的后台逻辑，都可以抽象为一个服务。本章介绍 `Service` 接口契约、`ServiceFactory` 与多实例机制、`Checker`/`CheckHealth` 扩展接口，并通过一个完整示例演示如何编写自定义服务，最后概览 `contrib/` 下的官方服务模块。
 
 ## 4.1 Service 接口契约
 
@@ -86,7 +86,7 @@ HealthCheckers() []Checker
 - HTTP 服务器的就绪端点：传入 `http.WithHealthCheckers(app.HealthCheckers)`（方法值天然匹配 `lynx.HealthCheckersFunc` 签名）后，`/healthz/readiness` 会依次调用所有收集到的检查器，全部通过才返回 200（见 2.5 节）。
 - `app.Command` 注册的命令：命令执行前会带退避重试地等待所有检查器就绪（`command.go`），保证 CLI 命令不会抢在依赖服务就绪之前运行。
 
-框架内置服务中，`server/grpc` 的 Server、`contrib/pubsub` 的 Broker、`contrib/kafka` 的 Transport、`contrib/schedule` 的 Scheduler 都实现了 `CheckHealth`。典型的实现语义是：未 `Start` 前返回 error，`Start` 成功后返回 nil，`Stop` 后再次返回 error（以 `contrib/schedule` 为例）：
+框架内置服务中，`server/grpc` 的 Server、`contrib/watermill-kafka` 的 Transport、`contrib/schedule` 的 Scheduler 都实现了 `CheckHealth`（核心 `eventbus` 默认内存 Bus 不进入 readiness 聚合）。典型的实现语义是：未 `Start` 前返回 error，`Start` 成功后返回 nil，`Stop` 后再次返回 error（以 `contrib/schedule` 为例）：
 
 ```go
 func (s *Scheduler) CheckHealth() error {
@@ -182,214 +182,69 @@ var _ lynx.ServiceFactory = (*workerFactory)(nil)
 
 ## 4.5 contrib 模块概览
 
-`contrib/` 下的五个模块是框架官方维护的服务，各自是独立的 Go module，按需引入：
+`contrib/` 下的模块是框架官方维护的服务，各自是独立的 Go module，按需引入：
 
 ```bash
-go get github.com/lynx-go/lynx/contrib/pubsub
-go get github.com/lynx-go/lynx/contrib/kafka
+go get github.com/lynx-go/lynx/contrib/watermill
+go get github.com/lynx-go/lynx/contrib/watermill-kafka
 go get github.com/lynx-go/lynx/contrib/telemetry
 go get github.com/lynx-go/lynx/contrib/schedule
 go get github.com/lynx-go/lynx/contrib/zap
 ```
 
-### pubsub：消息发布订阅（Broker/Router/Handler）
+### EventBus：消息总线（核心 + Watermill + Kafka）
 
-`contrib/pubsub` 基于 Watermill 提供进程内/跨进程的事件发布订阅。核心概念：
+消息路径以核心包 `eventbus` 为契约：**Bus / Topic[T] / Event[T]**。默认内存 Bus 开箱即用（`app.Bus()`）；跨进程用 `contrib/watermill` 的 Bus + `contrib/watermill-kafka` 的 Transport，经 `lynx.WithBus(...)` 注入。
 
-- `Broker`：事件总线门面，本身是 `Service` 服务，提供 `Publish`/`Subscribe`/`Route`。内部维护一张 topic → Transport 路由表：`Options.Transports` 中每个 Transport 通过 `Topics()` 声明自己承接的逻辑 topic，`Init` 时自动建表；`Route(topic, t)` 可显式覆盖自动路由；`RouteKey(topic, t, key)` 在覆盖的同时把 transport 侧主题名改为 `key`（业务逻辑名与后端主题名解耦，如 kafka 时 `key` 对应 kafka 段配置的逻辑 key，发布与订阅两侧都会按 `key` 调用 transport）；未命中的 topic 回退到 `DefaultTransport`（两者皆无则返回错误）。
-- `Transport`：消息后端服务（kafka/内存），topic 参数一律是逻辑名，物理名解析在实现内部，见下文的 kafka 模块。
-- `Router`：把一组 `Handler` 在 `Init` 期缓冲订阅到 Broker 的服务，无时序依赖。`Handler` 接口由 `EventName()`、`HandlerName()`、`NewEvent()`、`Handle(ctx, event)` 四个方法组成，公共 API 使用自有 `pubsub.Message` 类型（`ID`/`Key`/`Headers`/`Payload`），与底层 Watermill 解耦。绝大多数场景无需手动实现该接口——用 `NewTypedHandler`/`NewHandler` 工厂构造（见下文）。
-- `NewFromConfig`：配置驱动装配——`pubsub.NewFromConfig(cfg, transports)` 从配置 `pubsub` 段加载 `events`（逻辑 topic → 事件配置）：每个事件的 `route: {transport, key}` 逐条应用 `RouteKey`（引用未知 transport 标识时构建期报错），事件级选项（`log_message`/`auto_ack`/`continue_on_error`/`group`/`instances`/`retry`）写入 `Options.Events`——`Subscribe` 时合并为默认订阅选项（显式 `SubscribeOption` 优先）、收发日志与重试按事件覆盖全局配置；`pubsub` 段顶层 `debug` 控制 watermill 核心（router）debug 日志输出（缺省 false，过滤为 info+），`log_message`（publish/subscribe 两侧独立）与 `retry` 分别提供全局收发日志与重试默认值。route 缺省的事件走自动路由/默认回退。非 nil 的传入 transports 参与自动路由，`memory` 标识（提供时）兼作默认回退；不创建任何 transport，返回 `Broker`，transports 由调用方创建并注册。`kafka.NewFromConfig(cfg)` 配套加载 `kafka` 段创建 Transport，段缺失/为空返回 `(nil, nil)`（未启用）——**返回 nil 时不得 Register**（框架对 nil 服务注册返回明确错误）。
+业务主路径（对齐 `_examples/bus`）：
 
-`pubsub` 段配置示例（`_examples/pubsub/config.yaml`）：
+```go
+var OrderCreated = eventbus.NewTopic[Order]("order.created")
+
+// Init：Subscribe（Bus 从 Context / Default 解析）
+_ = OrderCreated.Subscribe(ctx.Context(), "audit",
+    func(ctx context.Context, e *eventbus.Event[Order]) error {
+        return nil
+    })
+
+// 发布
+_ = OrderCreated.Publish(ctx, Order{ID: "1"}, eventbus.WithMessageKey("1"))
+```
+
+跨进程装配（配置 `bus:` + `kafka:`）：
 
 ```yaml
-pubsub:
-  # 控制 watermill 核心（router）debug 日志：true 时按应用日志级别输出；
-  # false（缺省）时过滤为 info+，订阅接线等内部日志不刷屏
-  debug: false
-  # 全局收发日志默认值（事件未单独配置时生效；debug 级）
-  log_message:
-    publish: true
-    subscribe: true
-  # 全局 handler 重试默认值（事件未单独配置 retry 时生效）
-  retry:
-    max_retries: 3
-    backoff: 100ms
-  events:
-    hello:
-      route:            # 显式路由；缺省走自动路由/默认回退
-        transport: kafka
-        key: hello      # transport 侧主题名，缺省与逻辑 topic 同名
-      # 事件级整体覆盖全局（未开启的一侧关闭）；缺省沿用 pubsub.log_message
-      log_message:
-        subscribe: true
-      # 事件级选项：以下均为 Subscribe 默认值，显式 SubscribeOption 优先
-      # auto_ack: true
-      # continue_on_error: true
-      # group: consumer_hello   # 覆盖 transport 默认消费组
-      # instances: 3            # 覆盖 transport 默认实例数
-      # retry: {max_retries: 2, backoff: 500ms}  # 覆盖全局重试
-```
-
-kafka 层的收发日志独立配置：`kafka.<topic>.consumer.log_message`（订阅侧）/ `kafka.<topic>.producer.log_message`（发布侧），与 pubsub 核心的 `log_message` 各管一层（transport 边界 vs broker 边界）。
-
-> ⚠ 开启 `log_message` 后，完整消息 payload 会以 debug 级写入日志；生产环境启用前请确认 payload 不含敏感数据（PII、令牌等）。
-
-Handler 的类型化工厂（对齐 `_examples/pubsub/handlers.go` 的写法）：
-
-```go
-// HelloEvent 是 hello 逻辑 topic 的业务事件类型。
-type HelloEvent struct {
-	Message string `json:"message"`
-}
-
-// helloHandler 通过 NewTypedHandler 构造类型化 handler：payload 经 topic 的
-// Marshaler 自动反序列化为 HelloEvent，元数据经 TypedMessage 信封可见。
-func helloHandler() pubsub.Handler {
-	return pubsub.NewTypedHandler("hello", "helloHandler", func(ctx context.Context, event *pubsub.TypedMessage[HelloEvent]) error {
-		slog.InfoContext(ctx, "hello event", "message", event.Payload.Message, "key", event.Key)
-		return nil
-	})
-}
-
-// notifyHandler 用 NewHandler 处理原始字节：payload 不被序列化器处理。
-func notifyHandler() pubsub.Handler {
-	return pubsub.NewHandler("notify", "notifyHandler", func(ctx context.Context, event *pubsub.Message) error {
-		slog.InfoContext(ctx, "notify event", "payload", string(event.Payload))
-		return nil
-	})
-}
-```
-
-`NewTypedHandler[T]` 是免反射的泛型擦除惯用法：类型参数 `T` 只在构造期使用，运行期经 `NewEvent()` 返回的 `*TypedMessage[T]` 信封声明解码目标（实现 `MessageDecoder`），`Init` 时按 topic 解析一次 Marshaler（`MarshalerFor`），消息到达时零额外开销地解码；`T` 为 `[]byte` 时是恒等解码，语义等价 raw。需要自定义解码或按需构造事件时再手动实现 `Handler` 接口（`NewEvent` 返回 nil 表示原始消息语义）。
-
-手工装配与注册（`_examples/pubsub/provides.go` 以 Wire 组合同一组构造函数）：
-
-```go
-kafkaT, err := kafka.NewFromConfig(app.Config()) // nil = kafka 段缺失，未启用
-if err != nil {
-	return err
-}
-memT := pubsub.NewMemoryTransport()
-transports := map[string]pubsub.Transport{"memory": memT}
-if kafkaT != nil {
-	transports["kafka"] = kafkaT
-}
-broker, err := pubsub.NewFromConfig(app.Config(), transports)
-if err != nil {
-	return err
-}
-app.Register(memT)
-if kafkaT != nil {
-	app.Register(kafkaT)
-}
-app.Register(broker)
-app.Register(pubsub.NewRouter(broker, []pubsub.Handler{helloHandler(), notifyHandler()}))
-```
-
-发布事件（类型化 payload 自动 JSON 序列化）：
-
-```go
-_ = broker.Publish(ctx, "hello", HelloEvent{Message: "hello"},
-	pubsub.WithMessageKey(uuid.NewString()),
-)
-```
-
-需要原始字节时用 `pubsub.MustJSONMessage(...)` 预构建 `*Message` 发布，与 `NewHandler` 订阅对称。
-
-### kafka：Kafka 传输（Transport）
-
-`contrib/kafka` 提供 `pubsub.Transport` 的 Kafka 实现，配置驱动：`kafka.NewFromConfig(cfg)` 把配置文件 `kafka` 段整表加载为 `kafka.Options`（`map[逻辑topic]TopicOptions`）并构造 Transport（`NewTransport` 仍可用代码直接构造）。`TopicOptions` 声明 brokers、订阅的物理 topics、consumer/producer 参数：`Consumer == nil` 表示该 topic 只发布，`Producer == nil` 表示只订阅。内部按 brokers 集合分组复用客户端；订阅按（消费组 × 物理 topic × 实例数）展开后 fan-in 到单一 channel（取自 `_examples/pubsub/main.go` 与 `config.yaml`）：
-
-`config.yaml`：
-
-```yaml
+bus:
+  topics:
+    order.created:
+      route: { transport: kafka, key: orders }
 kafka:
-  hello:
-    brokers: ["127.0.0.1:19092"]
-    topics: [topic_hello]
-    consumer:
-      group_id: consumer_hello
-      instances: 3
-      log_message: true
-      session_timeout: 45s
-      heartbeat_interval: 5s
-    producer:
-      log_message: true
-      required_acks: -1
-      compression: gzip
+  orders:
+    brokers: ["127.0.0.1:9092"]
+    topics: [orders.v1]
+    consumer: { group_id: order-svc, instances: 2 }
+    producer: {}
 ```
 
-加载与注册：
-
 ```go
-kafkaT, err := kafka.NewFromConfig(app.Config()) // 段缺失/为空返回 nil，未启用
-if err != nil {
-	return err
-}
+kafkaT, _ := wmkafka.NewFromConfig(cfg) // 段缺失返回 (nil, nil)
+memT := watermill.NewMemoryTransport()
+transports := map[string]eventbus.Transport{"memory": memT}
 if kafkaT != nil {
-	app.Register(kafkaT)
+    transports["kafka"] = kafkaT
 }
+bus, err := watermill.NewFromConfig(cfg, transports)
+// lynx.NewRunner(setup, lynx.WithBus(bus), ...)
 ```
 
-也可以代码直接构造（不依赖配置文件）：
+要点：
 
-```go
-kafkaT, err := kafka.NewTransport(kafka.Options{
-	Topics: map[string]kafka.TopicOptions{
-		"user.created": {
-			Brokers: []string{"127.0.0.1:9092"},
-			Topics:  []string{"user_created"},
-			Consumer: &kafka.ConsumerOptions{GroupID: "users", Instances: 3},
-			Producer: &kafka.ProducerOptions{LogMessage: true},
-		},
-	},
-})
-```
+- `lynx.*` 生命周期事件强制内存 Transport，配置路由到 Kafka 时 Init 失败。
+- Kafka Transport 仍按 brokers 分组、（组 × 物理 topic × instances）fan-in；record Key = `MessageKey` / `Event.Key`。
+- `wmkafka.NewFromConfig` 段缺失/为空返回 `(nil, nil)`——**不得 Register nil**。
+- 收发日志：`bus.log_message` / `bus.topics.*.log_message` 与 `kafka.*.consumer|producer.log_message` 各管一层。
 
-`ConsumerOptions.GroupID` / `Instances` 是订阅的默认值，可用 `pubsub.WithGroup` / `pubsub.WithInstances` 在代码中覆盖（显式值优先）；两者皆空时 `Subscribe` 报错。`ConsumerOptions.Instances` 是该 topic 同消费组的并发消费者成员数，上例即为 `hello` 事件启动 3 个并发 consumer。
-
-`kafka` 段完整配置键参考（未列出的键保持 sarama/watermill 默认值）：
-
-| 键 | 类型 | 说明 |
-| --- | --- | --- |
-| `brokers` | []string | Kafka 集群地址，必填 |
-| `topics` | []string | 订阅的物理 topic 列表 |
-| `consumer` | object | 消费侧配置；省略表示该 topic 只发布 |
-| `producer` | object | 发布侧配置；省略表示该 topic 只订阅 |
-| `sasl.enabled` | bool | 启用 SASL 认证 |
-| `sasl.user` / `sasl.password` | string | SASL 凭据 |
-| `sasl.mechanism` | string | `PLAIN`（缺省）/ `SCRAM-SHA-256` / `SCRAM-SHA-512` |
-| `tls.enabled` | bool | 启用 TLS |
-| `tls.insecure_skip_verify` | bool | 跳过证书校验（仅限测试环境） |
-| `tls.ca_file` | string | 自签 CA 证书路径；为空使用系统信任库 |
-| `tls.server_name` | string | 覆盖 TLS 校验的主机名；为空使用 broker 地址 |
-| `consumer.group_id` | string | 消费组 ID（`pubsub.WithGroup` 可在代码覆盖） |
-| `consumer.instances` | int | 同消费组并发 consumer 成员数（`pubsub.WithInstances` 可覆盖） |
-| `consumer.commit_interval` | duration | offset 自动提交间隔；`auto_commit_enabled: false` 时无效 |
-| `consumer.auto_commit_enabled` | bool | 省略 = sarama 默认 true；false = 每条消息 Ack 时显式提交 |
-| `consumer.initial_offset` | string | 首次消费位置：`oldest` / `newest`（缺省） |
-| `consumer.log_message` | bool | 订阅侧收到消息时输出 debug 日志 |
-| `consumer.nack_resend_sleep` | duration | Nack 后消息重投的等待时长 |
-| `consumer.reconnect_retry_sleep` | duration | 重连失败后的下次重试间隔 |
-| `consumer.session_timeout` | duration | 消费组会话超时 |
-| `consumer.heartbeat_interval` | duration | 消费组心跳间隔 |
-| `consumer.fetch_min_bytes` / `fetch_max_bytes` | int | 单次 fetch 的最小/最大字节数 |
-| `consumer.fetch_max_wait` | duration | broker 凑满 `fetch_min_bytes` 的最长等待 |
-| `consumer.client_id` | string | 客户端标识 |
-| `producer.topic` | string | 发布物理 topic；缺省取 `topics[0]` |
-| `producer.log_message` | bool | 发布侧发送消息时输出 debug 日志 |
-| `producer.batch_size` | int | 攒够多少条后批量发送 |
-| `producer.required_acks` | int | broker 应答级别：`0`=无应答 / `1`=本地写入 / `-1`=全部副本（0 视为未设置） |
-| `producer.retry_max` | int | 发送失败最大重试次数 |
-| `producer.timeout` | duration | broker 等待应答的最长时长 |
-| `producer.flush_bytes` | int | 攒够多少字节后批量发送 |
-| `producer.flush_frequency` | duration | 批量消息的最长滞留时长 |
-| `producer.compression` | string | 压缩算法：`none` / `gzip` / `snappy` / `lz4` / `zstd` |
-| `producer.client_id` | string | 客户端标识 |
-
-`sasl`/`tls` 是**集群级**配置：客户端按 `brokers` 分组共享，同一集群多个逻辑 topic 的认证配置必须一致（先构建者生效）。
+> 详细设计见 `docs/design-eventbus.md`；完整 kafka 配置键与 SASL/TLS 说明见 `contrib/watermill-kafka` 包注释与测试。
 
 ### schedule：定时任务（Scheduler/Task）
 
@@ -433,7 +288,7 @@ app.Register(telemetry.New())
 
 ### zap：日志集成
 
-`contrib/zap` 把 zap 包装成 `*slog.Logger`，日志级别复用框架统一的 `lynx.LogLevelFromConfig` 解析（`logging.level` 优先，`log-level`/`log_level` 兼容回退，均未设置时默认 `info`）；并自动附加 `service_id`、`service_name`、`version` 三个字段。一行接入（取自 `_examples/pubsub/main.go`）：
+`contrib/zap` 把 zap 包装成 `*slog.Logger`，日志级别复用框架统一的 `lynx.LogLevelFromConfig` 解析（`logging.level` 优先，`log-level`/`log_level` 兼容回退，均未设置时默认 `info`）；并自动附加 `service_id`、`service_name`、`version` 三个字段。一行接入（取自 `_examples/http/main.go`）：
 
 ```go
 app.SetLogger(zap.MustNewLogger(app))
