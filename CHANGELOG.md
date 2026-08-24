@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.5.2 (2026-08-25)
+
+### 破坏性变更
+
+- **Subscribe `handlerName` → Option**：`Bus.Subscribe` / `Topic.Subscribe` /
+  `SubscribeTyped` 不再接收位置参数 `handlerName`；改用
+  `eventbus.WithHandlerName`，省略时默认为 topic 名（同 topic 多订阅者需显式命名）。
+
+### 变更
+
+- **Topic API 整理**：`Topic[T]` 方法集中到 `topic.go`；`Options()` 返回公开类型
+  `TopicOptions`。
+
+---
+
 ## v1.5.1 (2026-08-24)
 
 ### 新增

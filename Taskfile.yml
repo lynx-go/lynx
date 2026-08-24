@@ -1,8 +1,8 @@
 version: '3'
 
 vars:
-  Version: v1.5.1
-  Comment: "release v1.5.1"
+  Version: v1.5.2
+  Comment: "release v1.5.2"
 
 tasks:
   release-tag:
