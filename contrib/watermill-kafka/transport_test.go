@@ -510,11 +510,11 @@ func TestTransportSubscribeExpansion(t *testing.T) {
 	go func() { ch1 <- sent }()
 	select {
 	case got := <-ch:
-		if got.ID != "id-1" {
+		if got.Event == nil || got.Event.ID != "id-1" {
 			t.Fatalf("unexpected message: %+v", got)
 		}
-		if got.Topic != "orders" {
-			t.Fatalf("logical topic = %q, want orders", got.Topic)
+		if got.Event.Topic != "orders" {
+			t.Fatalf("logical topic = %q, want orders", got.Event.Topic)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("did not receive fan-in message")
@@ -862,14 +862,75 @@ func TestTransportSubscribeRawEventWire(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if got.ID != "id-1" || string(got.Payload) != "payload" || got.Key != "k1" {
-			t.Fatalf("unexpected RawEvent: %+v", got)
+		if got.Event == nil || got.Event.ID != "id-1" || string(got.Event.Payload) != "payload" || got.Event.Key != "k1" {
+			t.Fatalf("unexpected RawEvent: %+v", got.Event)
 		}
-		if got.Topic != "orders" {
-			t.Fatalf("topic = %q, want orders", got.Topic)
+		if got.Event.Topic != "orders" {
+			t.Fatalf("topic = %q, want orders", got.Event.Topic)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("did not receive RawEvent")
+	}
+}
+
+func TestTransportSubscribeDeliveryAckNack(t *testing.T) {
+	pub := newFakePubSub()
+	tr := newTestTransport(Options{
+		Topics: map[string]TopicOptions{
+			"orders": {
+				Brokers:  []string{"b1"},
+				Topics:   []string{"t1"},
+				Consumer: &ConsumerOptions{GroupID: "g1"},
+			},
+		},
+	}, pub)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var subCh chan *message.Message
+	for time.Now().Before(deadline) {
+		if pub.subscribeCount("t1") == 1 {
+			subCh = pub.subChs["t1"][0]
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if subCh == nil {
+		t.Fatal("subscription was not established")
+	}
+
+	wmAck := message.NewMessage("ack-id", []byte("a"))
+	subCh <- wmAck
+	select {
+	case d := <-ch:
+		d.AckOnce()
+	case <-time.After(5 * time.Second):
+		t.Fatal("no delivery for ack")
+	}
+	select {
+	case <-wmAck.Acked():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Delivery.Ack did not Ack underlying watermill message")
+	}
+
+	wmNack := message.NewMessage("nack-id", []byte("n"))
+	subCh <- wmNack
+	select {
+	case d := <-ch:
+		d.NackOnce()
+	case <-time.After(5 * time.Second):
+		t.Fatal("no delivery for nack")
+	}
+	select {
+	case <-wmNack.Nacked():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Delivery.Nack did not Nack underlying watermill message")
 	}
 }
 

@@ -35,17 +35,16 @@ func (t *MemoryTransport) Topics() []string { return nil }
 // Publish 发布 RawEvent（转换为 watermill 消息）。
 func (t *MemoryTransport) Publish(ctx context.Context, topic string, e *eventbus.RawEvent) error {
 	msg := toWatermill(e)
-	// gochannel's Publish expects topic and messages, no ctx
 	return t.pubSub.Publish(topic, msg)
 }
 
-// Subscribe 订阅 RawEvent。
-func (t *MemoryTransport) Subscribe(ctx context.Context, topic string, opts eventbus.SubscribeOptions) (<-chan *eventbus.RawEvent, error) {
+// Subscribe 订阅，返回带 Ack/Nack 的 Delivery（转达到底层 gochannel 消息）。
+func (t *MemoryTransport) Subscribe(ctx context.Context, topic string, opts eventbus.SubscribeOptions) (<-chan eventbus.Delivery, error) {
 	ch, err := t.pubSub.Subscribe(ctx, topic)
 	if err != nil {
 		return nil, err
 	}
-	out := make(chan *eventbus.RawEvent)
+	out := make(chan eventbus.Delivery)
 	go func() {
 		defer close(out)
 		for {
@@ -58,9 +57,16 @@ func (t *MemoryTransport) Subscribe(ctx context.Context, topic string, opts even
 				}
 				raw := fromWatermill(msg)
 				raw.Topic = topic
+				wm := msg
+				d := eventbus.Delivery{
+					Event: raw,
+					Ack:   func() { _ = wm.Ack() },
+					Nack:  func() { wm.Nack() },
+				}
 				select {
-				case out <- raw:
+				case out <- d:
 				case <-ctx.Done():
+					wm.Nack()
 					return
 				}
 			}

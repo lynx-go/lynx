@@ -182,16 +182,23 @@ type RawEvent struct { /* 同上，Payload []byte */ }
 ### 4.3 Transport（扩展缝）
 
 ```go
+type Delivery struct {
+    Event *RawEvent
+    Ack   func()
+    Nack  func()
+}
+
 type Transport interface {
     Publish(ctx context.Context, topic string, e *RawEvent) error
-    Subscribe(ctx context.Context, topic string, opts SubscribeOptions) (<-chan *RawEvent, error)
+    Subscribe(ctx context.Context, topic string, opts SubscribeOptions) (<-chan Delivery, error)
     Topics() []string
     Close() error
 }
 ```
 
 - `topic` 一律为 **Transport 侧键**（经 Bus 路由解析后的 key；缺省等于逻辑名）。
-- 公共路径 **不出现** `*message.Message`。
+- `Delivery` 把**信封**与**确认句柄**分开：`RawEvent` 保持纯数据；Ack/Nack 由 Bus 在 handler 成功/失败（及 AutoAck）时调用，转达到底层 broker（Kafka offset、gochannel 等）。
+- 公共业务路径 **不出现** `*message.Message`，也**不出现** `Delivery`（仅扩展缝与 Bus 实现使用）。
 - Kafka 的物理 topic、消费组、instances、认证等留在 `contrib/watermill-kafka` 配置内。
 
 ### 4.4 开发者最小用法
@@ -484,6 +491,7 @@ kafka:
 | O6 | 是否保留薄 `Router` Service | 建议：可选；内部只调 SubscribeTyped |
 | O7 | 生命周期走 Watermill 的转换开销 / 信封 Time | **已决（方案 B）**：接受同进程多一跳；wire 契约仍适用；payload 内业务 Time 为准 |
 | O9 | `eventbus.WithBus` 与 `lynx.WithBus` 重名 | **已决**：分属两包，文档表注明；实现注释交叉引用 |
+| O10 | Transport 订阅如何保留 Ack/Nack | **已决（方案 B）**：`Subscribe` 返回 `<-chan Delivery`（Event + Ack/Nack）；业务 API 仍不出现 `Delivery` / `*message.Message` |
 
 ---
 
@@ -497,7 +505,7 @@ kafka:
 - [ ] Wire 单点映射；Marshaler 对称；Kafka Key = 分区键
 - [ ] 底座 = 自研 API + Watermill 驱动箱；不用 gocloud 做内核
 - [x] **`contrib/kafka` 重命名为 `contrib/watermill-kafka`**
-- [ ] Kafka Transport 改缝保能力，不用瘦实现顶替
+- [ ] Kafka Transport 改缝保能力，不用瘦实现顶替（含 Delivery Ack → record offset）
 
 ---
 

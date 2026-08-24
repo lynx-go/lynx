@@ -513,14 +513,17 @@ func (a *subscriberAdapter) Subscribe(ctx context.Context, topic string) (<-chan
 			select {
 			case <-subCtx.Done():
 				return
-			case raw, ok := <-ch:
+			case d, ok := <-ch:
 				if !ok {
 					return
 				}
-				msg := toWatermill(raw)
+				msg := toWatermill(d.Event)
+				// Router 对副本的 Ack/Nack 转达到 Transport Delivery（Kafka offset / gochannel）。
+				forwardDeliveryAck(msg, d)
 				select {
 				case out <- msg:
 				case <-subCtx.Done():
+					msg.Nack()
 					return
 				}
 			}
@@ -541,6 +544,18 @@ func (a *subscriberAdapter) Close() error {
 		<-done
 	}
 	return nil
+}
+
+// forwardDeliveryAck 在 Router 确认/拒绝副本消息时，调用 Transport 侧 Ack/Nack。
+func forwardDeliveryAck(msg *message.Message, d eventbus.Delivery) {
+	go func() {
+		select {
+		case <-msg.Acked():
+			d.AckOnce()
+		case <-msg.Nacked():
+			d.NackOnce()
+		}
+	}()
 }
 
 func toWatermill(e *eventbus.RawEvent) *message.Message {

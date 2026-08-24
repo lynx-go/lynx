@@ -3,6 +3,7 @@ package watermill_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,11 +119,132 @@ type nonMemoryTransport struct {
 func (t *nonMemoryTransport) Publish(ctx context.Context, topic string, e *eventbus.RawEvent) error {
 	return errors.New("not memory")
 }
-func (t *nonMemoryTransport) Subscribe(ctx context.Context, topic string, opts eventbus.SubscribeOptions) (<-chan *eventbus.RawEvent, error) {
+func (t *nonMemoryTransport) Subscribe(ctx context.Context, topic string, opts eventbus.SubscribeOptions) (<-chan eventbus.Delivery, error) {
 	return nil, errors.New("not memory")
 }
 func (t *nonMemoryTransport) Topics() []string { return t.topics }
 func (t *nonMemoryTransport) Close() error     { return nil }
+
+func TestWatermillBusForwardsDeliveryAck(t *testing.T) {
+	acked := make(chan struct{}, 1)
+	rt := &recordingTransport{
+		topic: "order.created",
+		onAck: func() { acked <- struct{}{} },
+	}
+	bus := watermill.New(eventbus.Options{
+		Transports: []eventbus.Transport{rt},
+		Retry:      &eventbus.RetryOptions{MaxRetries: 0},
+	})
+	if err := bus.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = bus.Start(ctx) }()
+	waitBus(t, bus)
+
+	if err := bus.Subscribe(context.Background(), "order.created", "ack-h", func(ctx context.Context, e *eventbus.RawEvent) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := bus.Publish(context.Background(), "order.created", map[string]string{"id": "1"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	select {
+	case <-acked:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Transport Delivery.Ack was not called after successful handler")
+	}
+	stopWithin(t, bus, 2*time.Second)
+}
+
+func TestWatermillBusForwardsDeliveryNack(t *testing.T) {
+	nacked := make(chan struct{}, 1)
+	rt := &recordingTransport{
+		topic:  "order.fail",
+		onNack: func() { nacked <- struct{}{} },
+	}
+	bus := watermill.New(eventbus.Options{
+		Transports: []eventbus.Transport{rt},
+		Retry:      &eventbus.RetryOptions{MaxRetries: 0},
+	})
+	if err := bus.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = bus.Start(ctx) }()
+	waitBus(t, bus)
+
+	if err := bus.Subscribe(context.Background(), "order.fail", "nack-h", func(ctx context.Context, e *eventbus.RawEvent) error {
+		return errors.New("handler failed")
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := bus.Publish(context.Background(), "order.fail", map[string]string{"id": "1"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	select {
+	case <-nacked:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Transport Delivery.Nack was not called after handler error")
+	}
+	stopWithin(t, bus, 2*time.Second)
+}
+
+// recordingTransport 把 Publish 的事件投到订阅 channel，并记录 Ack/Nack。
+type recordingTransport struct {
+	topic  string
+	onAck  func()
+	onNack func()
+	mu     sync.Mutex
+	subs   []chan eventbus.Delivery
+}
+
+func (t *recordingTransport) Publish(ctx context.Context, topic string, e *eventbus.RawEvent) error {
+	t.mu.Lock()
+	subs := append([]chan eventbus.Delivery(nil), t.subs...)
+	t.mu.Unlock()
+	d := eventbus.Delivery{
+		Event: e,
+		Ack:   t.onAck,
+		Nack:  t.onNack,
+	}
+	for _, ch := range subs {
+		select {
+		case ch <- d:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (t *recordingTransport) Subscribe(ctx context.Context, topic string, opts eventbus.SubscribeOptions) (<-chan eventbus.Delivery, error) {
+	ch := make(chan eventbus.Delivery, 8)
+	t.mu.Lock()
+	t.subs = append(t.subs, ch)
+	t.mu.Unlock()
+	go func() {
+		<-ctx.Done()
+		t.mu.Lock()
+		for i, s := range t.subs {
+			if s == ch {
+				t.subs = append(t.subs[:i], t.subs[i+1:]...)
+				break
+			}
+		}
+		t.mu.Unlock()
+		close(ch)
+	}()
+	return ch, nil
+}
+
+func (t *recordingTransport) Topics() []string { return []string{t.topic} }
+func (t *recordingTransport) Close() error     { return nil }
 
 func stopWithin(t *testing.T, bus eventbus.Bus, d time.Duration) {
 	t.Helper()

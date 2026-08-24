@@ -329,8 +329,8 @@ func (t *Transport) Publish(ctx context.Context, topic string, e *eventbus.RawEv
 }
 
 // Subscribe 订阅逻辑 topic：按（消费组 × 物理 topic × 实例数）展开，
-// 全部消息 fan-in 到单一返回 channel（*eventbus.RawEvent）。
-func (t *Transport) Subscribe(ctx context.Context, topic string, opts eventbus.SubscribeOptions) (<-chan *eventbus.RawEvent, error) {
+// 全部消息 fan-in 到单一返回 channel（Delivery，Ack/Nack 转达原 watermill 消息）。
+func (t *Transport) Subscribe(ctx context.Context, topic string, opts eventbus.SubscribeOptions) (<-chan eventbus.Delivery, error) {
 	if t.stopped.Load() {
 		return nil, errors.New("kafka transport is stopped")
 	}
@@ -378,7 +378,7 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts eventbus.S
 			chans = append(chans, ch)
 		}
 	}
-	return mapRawEvents(fanIn(chans, cancel), topic), nil
+	return mapDeliveries(fanIn(chans, cancel), topic), nil
 }
 
 // toWatermill 将 RawEvent 转为 watermill 消息（wire 元数据经 EncodeWireMetadata）。
@@ -403,9 +403,10 @@ func fromWatermill(msg *message.Message) *eventbus.RawEvent {
 	return eventbus.DecodeWireMetadata(msg.UUID, msg.Payload, meta)
 }
 
-// mapRawEvents 将 watermill 消息 channel 转为 RawEvent channel，并填入逻辑 topic。
-func mapRawEvents(in <-chan *message.Message, logicalTopic string) <-chan *eventbus.RawEvent {
-	out := make(chan *eventbus.RawEvent)
+// mapDeliveries 将 watermill 消息 channel 转为 Delivery channel：
+// Event 填入逻辑 topic；Ack/Nack 转达原 *message.Message（Kafka offset 提交依赖此路径）。
+func mapDeliveries(in <-chan *message.Message, logicalTopic string) <-chan eventbus.Delivery {
+	out := make(chan eventbus.Delivery)
 	go func() {
 		defer close(out)
 		for msg := range in {
@@ -413,7 +414,12 @@ func mapRawEvents(in <-chan *message.Message, logicalTopic string) <-chan *event
 			if raw.Topic == "" {
 				raw.Topic = logicalTopic
 			}
-			out <- raw
+			wm := msg
+			out <- eventbus.Delivery{
+				Event: raw,
+				Ack:   func() { _ = wm.Ack() },
+				Nack:  func() { wm.Nack() },
+			}
 		}
 	}()
 	return out

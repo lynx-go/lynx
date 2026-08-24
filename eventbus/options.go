@@ -1,7 +1,6 @@
 package eventbus
 
 import (
-	"context"
 	"time"
 )
 
@@ -51,14 +50,6 @@ type Options struct {
 	Transports []Transport
 	// DefaultTransport 回退后端。
 	DefaultTransport Transport
-}
-
-// Transport 是 Bus 可插拔的后端，topic 一律为逻辑名。
-type Transport interface {
-	Publish(ctx context.Context, topic string, e *RawEvent) error
-	Subscribe(ctx context.Context, topic string, opts SubscribeOptions) (<-chan *RawEvent, error)
-	Topics() []string
-	Close() error
 }
 
 // EnsureDefaults 填充默认值，幂等。
