@@ -6,11 +6,11 @@ import (
 )
 
 // PublishTyped 发布类型化负载，自动经 Topic/Marshaler 序列化。
-// 通过 WithMarshaler 将 Topic 携带的 Marshaler 注入 Bus.Publish，复用 Bus 内部
+// 通过 WithPublishMarshaler 将 Topic 携带的 Marshaler 注入 Bus.Publish，复用 Bus 内部
 // 的序列化、头部合并、属性传播等统一逻辑，与 SubscribeTyped 的解码侧保持一致。
 func PublishTyped[T any](ctx context.Context, b Bus, topic Topic[T], payload T, opts ...PublishOption) error {
 	if m := topic.Options().Marshaler; m != nil {
-		opts = append(append([]PublishOption(nil), opts...), WithMarshaler(m))
+		opts = append(append([]PublishOption(nil), opts...), WithPublishMarshaler(m))
 	}
 	return b.Publish(ctx, topic.Name(), payload, opts...)
 }
@@ -18,13 +18,12 @@ func PublishTyped[T any](ctx context.Context, b Bus, topic Topic[T], payload T, 
 // SubscribeTyped 订阅类型化主题，Payload 自动反序列化为 T。
 func SubscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], handlerName string, h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error {
 	m := b.MarshalerFor(topic.Name())
-	// Topic 级 Marshaler 优先
+	// Topic 级 Marshaler 优先，并通过 WithSubscribeMarshaler 注入 Bus 侧，保持与 PublishTyped 对称
 	if topic.Options().Marshaler != nil {
 		m = topic.Options().Marshaler
 	}
-	// 合并 Topic 默认订阅选项：显式 opts 优先，Topic 选项次之
 	topts := topic.Options()
-	wrappedOpts := make([]SubscribeOption, 0, len(opts)+4)
+	wrappedOpts := make([]SubscribeOption, 0, len(opts)+5)
 	if topts.Group != "" {
 		wrappedOpts = append(wrappedOpts, WithGroup(topts.Group))
 	}
@@ -36,6 +35,9 @@ func SubscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], handlerNa
 	}
 	if topts.ContinueOnError {
 		wrappedOpts = append(wrappedOpts, WithContinueOnError())
+	}
+	if m != nil {
+		wrappedOpts = append(wrappedOpts, WithSubscribeMarshaler(m))
 	}
 	wrappedOpts = append(wrappedOpts, opts...)
 
