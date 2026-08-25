@@ -181,13 +181,14 @@ This pattern is particularly useful for complex applications with many services.
 **HTTP Server** (server/http/server.go)
 - Wraps stdlib `net/http.Server` with otelhttp instrumentation (health check handlers and request log are implemented locally — no gocloud.dev dependency)
 - Support for request logging and custom timeouts
-- Automatically registers health check endpoints at `/healthz/liveness` and `/healthz/readiness`
+- Automatically registers health check endpoints at `/healthz/liveness` and `/healthz/readiness` (prefix/disabled via `WithHealthCheckPrefix`/`WithDisableHealthCheck`; checkers run concurrently with a per-check timeout, default 3s, `WithHealthCheckTimeout`)
+- `Serve` returning `http.ErrServerClosed` on normal shutdown is normalized to nil (no spurious `lynx.service.failed` events); 5xx error bodies are generic (`http.StatusText`), details go to logs only
 
 **gRPC Server** (server/grpc/server.go)
 - Wraps `google.golang.org/grpc` with health check and reflection
-- Built-in logging and recovery interceptors
-- Custom interceptors via `WithInterceptors()` option
-- Health check service registered at `grpc.health.v1.Health`
+- Built-in logging and recovery interceptors (request log switchable via `WithRequestLog`/`WithRequestLogLevel`; Recovery logs panic+stack and returns generic "internal error")
+- Custom interceptors via `WithInterceptors()` option; `WithShutdownTimeout` is the preferred alias of `WithTimeout`
+- Health check service registered at `grpc.health.v1.Health`; poller runs checkers concurrently with per-check timeout (same `WithHealthCheckTimeout` as HTTP)
 
 **EventBus** (eventbus/)
 - 一等消息总线：`Bus` / `Topic[T]` / `Event[T]`；默认 `NewMemoryBus`，`app.Bus()` / Context / Default 解析
@@ -197,12 +198,17 @@ This pattern is particularly useful for complex applications with many services.
 **Watermill Bus** (contrib/watermill/)
 - Watermill Router 驱动的 `eventbus.Bus`；`lynx.*` 生命周期强制内存 Transport
 - `NewFromConfig(cfg, transports)` 从 `bus` 段加载 topics/route；标识 `memory` 兼作 DefaultTransport
+- 消费组语义：同 topic 多 handler 共用同组（含空 group 的 Transport 默认组）会被 `Subscribe` 拒绝——Kafka 组内瓜分分区是静默半量丢消息；广播用不同 group（`WithGroup` / topic group），竞争消费用单 handler + instances；内存 Transport 广播不受限
+- 毒消息止损：`bus.max_redeliveries`（默认 10，主题级可覆盖）限制终态失败后的累计重投轮数，超过即 Ack 丢弃并记 Error
+- Transports / DefaultTransport 生命周期独立于 Bus：需 Register 托管，`Bus.Stop` 不关闭它们
 
 **Kafka Transport** (contrib/watermill-kafka/transport.go)
 - 配置驱动：UnmarshalKey("kafka") 加载 map[逻辑topic] 配置（brokers/topics/consumer/producer）
-- 内部按 brokers 分组客户端，订阅按（组 × 物理 topic × 实例数）展开后 fan-in
+- Init 即离线预构建并 `cfg.Validate()` 两侧 sarama 配置（非法 SASL 机制/压缩/初始 offset/CA 路径启动期报错）
+- 内部按 brokers 分组客户端，订阅按（组 × 物理 topic × 实例数，上限 64 超出钳制+Warn）展开后 fan-in
 - 基于 watermill-kafka/v3（IBM/sarama）；Kafka record Key = MessageKey / Event.Key
 - `Subscribe` 返回 `eventbus.Delivery`（`Event` + Ack/Nack），Bus 转达到底层消息确认
+- 同集群（brokers 相同）多 topic 配置差异经指纹比对 Warn（先构建者生效）；`log_message` 为 Debug 级（`--log-level=debug`）
 
 **Scheduler** (contrib/schedule/scheduler.go)
 - Cron-based task scheduling using robfig/cron
@@ -211,7 +217,7 @@ This pattern is particularly useful for complex applications with many services.
 
 **Command** (command.go)
 - CLI command execution with health check dependency
-- Retries waiting for services to be healthy before executing
+- Retries waiting for services to be healthy before executing (per-check bounded to 3s so a hung checker cannot stall the wait loop)
 - Auto-closes application after command completes
 
 ### Health Checks

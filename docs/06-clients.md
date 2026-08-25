@@ -31,6 +31,9 @@ defer resp.Body.Close() // 响应体由调用方读取与关闭
 `WithTimeout` 设置整体超时（缺省 30s）：自 `Do` 发起起覆盖全部尝试
 （含重试），`Do` 返回后仍约束响应体读取（ctx 到期后读取返回错误）。
 调用方 ctx 已带 deadline 时不叠加，以调用方为准；传 0 表示无超时。
+v1.6 起该语义真正生效：取消时机绑定在响应体 `Close()`/读到 EOF 上
+（仿标准库 `cancelTimerBody`），`Do` 返回不再立即取消 ctx——大响应、
+分块与流式 body 可在超时窗口内正常读取完毕。
 
 ```go
 client := clienthttp.New(clienthttp.WithTimeout(5 * time.Second))
@@ -50,7 +53,12 @@ client := clienthttp.New(clienthttp.WithRetry(3,
 - 重试条件：传输层错误（调用方 ctx 取消/超时除外）或状态码
   429/502/503/504。
 - 429/503 响应携带 `Retry-After` 时，等待至少其指示的时长（秒数或
-  HTTP-date）。
+  HTTP-date）；等待上限为 min(Retry-After, 整体超时剩余, 2 分钟)，
+  且钳制后的等待已覆盖全部剩余预算时直接以超时返回、不再发起注定
+  无法完成的重试（v1.6 起，防止极端 `Retry-After: 86400` 挂死）。
+- **非幂等警示**：传输层错误重试不区分请求方法——"请求已达对端但
+  响应丢失"的场景下重试会重复副作用。非幂等请求（POST 等）应
+  `WithRetry(0)` 关闭重试，或由调用方保证幂等（幂等键等）。
 - **可重放约束**：带请求体（`req.Body` 非 nil）且不可重放
   （`req.GetBody` 为 nil）的请求只发送一次、不重试，并记 debug 日志。
   `Get`/`Post` 传 `*bytes.Buffer`/`*bytes.Reader`/`*strings.Reader` 时

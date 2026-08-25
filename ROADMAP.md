@@ -1,6 +1,6 @@
 # Lynx 路线图
 
-> 最后更新：2026-08-24
+> 最后更新：2026-08-25
 
 ## 定位与目标
 
@@ -75,6 +75,25 @@ v1.0 发布前全量审查（功能缺失/设计缺陷/实现缺陷）的修复�
 - [x] **gRPC**：app 级健康检查同步；Recovery 最外层；流式拦截器入口
 - [x] **发布卫生**：contrib go.mod bump、各模块 LICENSE、CHANGELOG、
       内部文档清理
+
+## Phase F — 全量审查修复（v1.6.0，2026-08-25）
+
+全量架构与代码审查（83 项发现：2 Critical / 12 High / 24 Medium / 45+ Low），
+两轮修复 + 复审闭环，逐项明细见 `docs/review-2026-08-25.md`，摘要见
+`CHANGELOG.md` v1.6.0。
+
+- [x] **Critical**：client/http 默认超时致 body 不可读（cancelTimerBody 模式）；
+      Kafka 同 topic 多 handler 同组静默瓜分消息（Subscribe 拦截 + 语义文档）
+- [x] **High**：memoryBus Publish/Stop 竞态 panic；毒消息无限重投（max_redeliveries）；
+      健康检查全链路超时+并发；panic/错误详情泄露；Consul Register 无超时；
+      裸 `:port` 契约三处对齐；zap 默认采样丢日志；总线就绪 1s 硬编码
+- [x] **复审二轮**：复审发现 16 个修复引入的新问题（groupClaims 不回滚、
+      重投计数跨组互踩、forwardAck 30s 误伤慢 handler、Status 负数 panic 等），
+      全部修复并以变异验证测试锁住
+- [x] 测试盲区补齐：healthz 端点、HTTP TLS、超时×body、zap 内容断言、
+      schedule 时区、consul index 回绕与挂死 agent、watcher 错误退避
+- [ ] 后续工作：Kafka testcontainers 集成测试（WK-19）；Resolver 订阅 API
+      （消除 gRPC 5s 轮询）；command 健康等待上界可配化
 
 ## Phase E — v1.0 后的能力补全（v1.1+）
 

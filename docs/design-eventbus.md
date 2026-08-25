@@ -268,6 +268,22 @@ _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
 - 缓冲满：**丢弃并打 Error 日志**（状态协同不反压发布者）。文档写明：内存 Bus ≠ 可靠队列。
 - `Publish(*RawEvent)`：参数 `topic` 与 `RawEvent.Topic` 冲突时，**以函数参数 topic 为准**（与 Watermill 路径一致），避免静默改道。
 
+### 5.6 投递语义对比与毒消息止损（v1.6 落地）
+
+- **内存 Bus 是 at-most-once**：缓冲满丢弃、重试耗尽（默认 3 次）后丢弃，仅记日志；
+  **持久化 Bus（Watermill/Kafka）是 at-least-once**：handler 终态失败后 Nack 重投
+  （Kafka 默认 100ms 一轮）。同一份业务代码在两种 Bus 下的失败语义不同，选型时
+  必须意识到这一点。
+- **毒消息止损**：`bus.max_redeliveries`（默认 10，主题级
+  `bus.topics.<topic>.max_redeliveries` 可覆盖，`WithMaxRedeliveries` /
+  `WithTopicMaxRedeliveries`）按 `handlerName|messageID` 计数累计重投轮数，
+  超过后记 Error 并 Ack 丢弃，阻断无限重投与分区队头阻塞。
+- **消费组冲突拦截**：非内存 Transport 上同一逻辑 topic 的多个 handler 共用同一
+  消费组（含空 group 的 Transport 默认组）会被 `Subscribe` 拒绝——Kafka 组内瓜分
+  分区等于静默半量丢消息。广播用不同 group（`WithGroup`/topic group），竞争消费
+  用单 handler + instances。已知边界：不同逻辑 topic 路由到同一 Transport 且
+  物理 topics 重叠、组相同时不拦截（部署时应为物理重叠的 topic 显式分组）。
+
 ---
 
 ## 6. 底座选型结论

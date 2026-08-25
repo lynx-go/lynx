@@ -1,5 +1,76 @@
 # Changelog
 
+## v1.6.0 (2026-08-25)
+
+全量架构与代码审查的修复版本：83 项发现全部处置（81 修复 + 2 项约定不修），
+逐项明细、复审记录与遗留低危项见 `docs/review-2026-08-25.md`。相对 v1.5.2
+API 保持向后兼容（全部为增量），10 模块 `go vet` + `go test -race` 全绿。
+
+### 破坏性/行为变更（修复目标，升级注意）
+
+- **`client/http` 超时语义修正**：`Do` 不再在返回时取消 ctx——取消时机绑定到
+  响应体 `Close()`/EOF（仿标准库 `cancelTimerBody`）。此前默认 30s 超时会让
+  大响应/分块/流式 body 读取必得 `context canceled`（Critical）。
+- **5xx 错误信息不再回传客户端**：HTTP `DefaultErrorHandler` 对 5xx 返回通用
+  消息（`http.StatusText`），gRPC Recovery 对外只返回通用 "internal error"；
+  错误详情与 panic 堆栈仅进日志（信息泄露修复）。
+- **正常关停不再误发 `lynx.service.failed`**：HTTP `ErrServerClosed` 与 gRPC
+  关停期的 closed-connection 错误在 `Start` 内归一化为 nil。
+- **`contrib/zap` 级别域统一为 slog 域**：`fatal`/`info+2` 等输入从合法变报错
+  （框架默认路径不受影响）；同时禁用 zap 生产默认采样（此前同级别日志
+  100 条后每 100 条只记 1 条，错误日志静默丢失）并禁用非标准 slog 级别被
+  降级为 Info 的映射（clamp 到最近标准级）。
+- **HTTP server 关停 deadline 取 min**：调用方 Context deadline 与
+  `ShutdownTimeout` 并存时取较早者（与 gRPC 侧对齐；`ShutdownTimeout=0`
+  仍为显式无上界）。
+
+### 新增
+
+- **核心**：`lynx.WithBusReadyTimeout`（默认 10s）替换总线就绪的 1 秒硬编码；
+  Command 依赖等待的单次健康检查限时 3s（阻塞型 checker 不再挂死等待循环）。
+- **server/http**：`WithHealthCheckTimeout`（默认 3s，检查器并发执行+单查限时+
+  panic 兜底）、`WithHealthCheckPrefix`、`WithDisableHealthCheck`、
+  `DefaultErrorHandlerWithLogger`。
+- **server/grpc**：`WithShutdownTimeout`（`WithTimeout` 的推荐别名）、
+  `WithRequestLog(bool)`（默认开，可关）、`WithRequestLogLevel(slog.Level)`、
+  `RecoveryWithLogger`/`RecoveryStreamWithLogger`（记录 panic 值+堆栈）。
+- **client/http**：`Retry-After` 等待上限 min(Retry-After, 剩余超时, 2min)，
+  覆盖全部剩余预算时不再发起注定超时的重试；非幂等重试警示入文档。
+- **contrib/watermill**：毒消息重投上限 `bus.max_redeliveries`（默认 10，
+  主题级/`WithMaxRedeliveries` 可覆盖），超限记 Error 并 Ack 丢弃；非内存
+  Transport 上同 topic 多 handler 共用消费组被 `Subscribe` 拒绝（Kafka 组内
+  瓜分=静默半量丢消息），广播请用不同 group、竞争消费用单 handler+instances。
+- **contrib/registry**：`MatchFilter` 导出（consul 侧副本删除）、
+  `Status.String()`/`MarshalJSON`/`UnmarshalJSON`（字符串形式，兼容数字）、
+  `WithResolverLogger`；`heartbeat_interval ≥ heartbeat_ttl` 构造期报错。
+
+### 修复（按模块择要，完整清单见 review 文档）
+
+- **核心/eventbus**：memoryBus `Publish`/`Stop` 竞态 send-on-closed-channel
+  panic（发送移入读锁临界区）；`Topic.Subscribe` 每消息重复解析 Marshaler；
+  `Runner.RunE` 无锁读；内存 Bus at-most-once 语义文档化。
+- **server/client**：健康检查全链路（readiness 端点、gRPC health 轮询）加
+  超时与并发（此前阻塞型 checker 挂起探测、冻结轮询状态并泄漏 goroutine）；
+  `WithTimeout` 双语义对齐；healthz 端点 Recovery 兜底与路径可配；requestlog
+  去掉每请求深拷贝与死回调；`Start` 重入守卫；`X-Request-Id` 入站校验。
+- **contrib/watermill-kafka**：关闭链路三处裸 channel 发送加 ctx 保护
+  （goroutine 泄漏+in-flight 确认丢失）；Init 预构建并 `Validate()` sarama
+  配置（非法 SASL/压缩/offset 启动期报错）；Stop/Publish 竞态复查；
+  同集群配置差异指纹比对 Warn（一次性）；instances 上限 64。
+- **contrib/consul**：`Register` 传入 ctx（`ServiceRegisterOpts.WithContext`，
+  此前 3s 预算完全失效、Agent 不可达可无限挂起）；blocking query index 回退
+  sanity check（Raft index 回绕后 watch 永久失效）；`Node.Address` 回落
+  （裸 `:port` Endpoint 契约三处对齐）；零权重规格化。
+- **contrib/registry**：Resolver 关闭时 Stop 后端 watcher（条目泄漏）；
+  gRPC resolver `GetAll` 带超时且无变化不 `UpdateState`；Watch/Close 注册
+  竞态窗口；DNS 双路径 Name 统一 FQDN。
+- **辅助模块**：telemetry 并发 Init CAS 化；schedule `WithLogger` 不再被
+  Init 覆盖、Stop 等待在途任务（保留 `cron.Stop()` 句柄）、`WithLocation`
+  对自定义 cron 实例 Warn；debug 独立使用时 cancel 释放端口；logging 批次内
+  重复 key 去重；zap Sync 放行良性 errno。
+
+---
+
 ## v1.5.2 (2026-08-25)
 
 ### 破坏性变更

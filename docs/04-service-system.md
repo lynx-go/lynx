@@ -83,8 +83,8 @@ HealthCheckers() []Checker
 
 它有两个消费方：
 
-- HTTP 服务器的就绪端点：传入 `http.WithHealthCheckers(app.HealthCheckers)`（方法值天然匹配 `lynx.HealthCheckersFunc` 签名）后，`/healthz/readiness` 会依次调用所有收集到的检查器，全部通过才返回 200（见 2.5 节）。
-- `app.Command` 注册的命令：命令执行前会带退避重试地等待所有检查器就绪（`command.go`），保证 CLI 命令不会抢在依赖服务就绪之前运行。
+- HTTP 服务器的就绪端点：传入 `http.WithHealthCheckers(app.HealthCheckers)`（方法值天然匹配 `lynx.HealthCheckersFunc` 签名）后，`/healthz/readiness` 会并发调用所有收集到的检查器（单个限时，默认 3 秒，见 5.1 节），全部通过才返回 200（见 2.5 节）。
+- `app.Command` 注册的命令：命令执行前会带退避重试地等待所有检查器就绪（`command.go`，单次检查限时 3 秒，阻塞型 checker 不会挂死等待循环），保证 CLI 命令不会抢在依赖服务就绪之前运行。
 
 框架内置服务中，`server/grpc` 的 Server、`contrib/watermill-kafka` 的 Transport、`contrib/schedule` 的 Scheduler 都实现了 `CheckHealth`（核心 `eventbus` 默认内存 Bus 不进入 readiness 聚合）。典型的实现语义是：未 `Start` 前返回 error，`Start` 成功后返回 nil，`Stop` 后再次返回 error（以 `contrib/schedule` 为例）：
 

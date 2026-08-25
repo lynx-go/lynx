@@ -138,6 +138,7 @@ lynx.NewRunner(setup, lynx.WithBus(bus), lynx.WithName("my-app")).Run()
 
 ```yaml
 bus:
+  max_redeliveries: 10   # 毒消息累计重投上限，超过后记 Error 并丢弃（默认 10）
   topics:
     user.created:
       route: { transport: kafka, key: user.created }
@@ -150,6 +151,39 @@ kafka:
 ```
 
 Kafka record Key = `Event.Key` / MessageKey。Transport `Subscribe` 返回 `Delivery`（`Ack` / `Nack`），由 Bus 转达底层确认。
+
+也可代码直接构造 Kafka Transport：
+
+```go
+kafkaT, err := wmkafka.NewTransport(wmkafka.Options{
+    Topics: map[string]wmkafka.TopicOptions{
+        "user.created": {
+            Brokers: []string{"127.0.0.1:9092"},
+            Topics:  []string{"user_created"},
+            Consumer: &wmkafka.ConsumerOptions{GroupID: "users", Instances: 3},
+            Producer: &wmkafka.ProducerOptions{LogMessage: true},
+        },
+    },
+})
+```
+
+Kafka 消费语义要点：
+
+- **广播 vs 竞争消费**：同一逻辑 topic 上多个 handler 若共用同一消费组，
+  Kafka 会在组内瓜分分区——每个 handler 只收到一部分消息。Watermill Bus
+  在订阅期直接拒绝这种配置并报错：需要广播（每个 handler 收全量）时为
+  每个 handler 配置不同 group（`WithGroup` 或 `bus.topics.<topic>.group`）；
+  需要竞争消费（多实例分流）时使用单个 handler + `instances`。内存
+  Transport 是广播语义，不受此限制。
+- **Transport 生命周期独立于 Bus**：`bus.Stop()` 不关闭 `opts.Transports`
+  / `DefaultTransport`；Kafka Transport 必须作为独立服务 Register 交由
+  框架托管 Start/Stop，漏注册则永远不会关闭。
+- `log_message: true` 输出的是 **Debug 级**日志，需 `--log-level=debug`
+  （或 `bus.debug: true`）开启，并非 Info 级。
+- 毒消息止损：handler 终态失败（重试耗尽）后 Transport 会重投失败消息
+  （Kafka 默认 100ms 一轮）；`bus.max_redeliveries`（默认 10，主题级
+  `bus.topics.<topic>.max_redeliveries` 可覆盖）限制同一条消息的累计
+  重投轮数，超过后记 Error 并丢弃该消息。
 
 ### 定时任务
 

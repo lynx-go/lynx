@@ -29,8 +29,11 @@ func NewServer(handler http.Handler, opts ...Option) *Server
 
 - `WithAddr(addr string)`：监听地址，默认 `:8080`。
 - `WithTimeout(timeout time.Duration)`：请求读写超时，默认 60 秒。该值会同时设置为底层 `http.Server` 的 `ReadHeaderTimeout`、`ReadTimeout` 和 `WriteTimeout`；传入 0 或负数则不设置（保持底层默认值）。
-- `WithShutdownTimeout(timeout time.Duration)`：优雅关闭超时，默认 10 秒。调用方 Context 无 deadline 时生效：`Stop` 以它为上限等待 `Shutdown` 排空连接，超时后强制 `Close()` 活动连接，避免长轮询/流式 handler 让关闭无限挂起。
-- `WithHealthCheckers(hc lynx.HealthCheckersFunc)`：健康检查器取值函数。传入后服务器自动暴露两个端点：`/healthz/liveness` 恒返回 200（进程存活即健康，**不消费**检查器聚合），`/healthz/readiness` 依次调用所有收集到的检查器，任一失败返回 503 + 错误正文。通常直接传方法值 `app.HealthCheckers`，收集规则见 2.5 节与 4.3 节。两个端点始终注册；不传该 Option 只是就绪检查列表为空，此时 `/healthz/readiness` 恒返回 200。**与关停排水（drain，见 3.7 节）的关系**：配置 `WithDrainTimeout` 后，排水期间框架内部的 `drainChecker` 进入聚合，`/healthz/readiness` 返回 503（LB 摘流），`/healthz/liveness` 不受影响仍返回 200。
+- `WithShutdownTimeout(timeout time.Duration)`：优雅关闭超时，默认 10 秒。`Stop` 以它为上限等待 `Shutdown` 排空连接，超时后强制 `Close()` 活动连接，避免长轮询/流式 handler 让关闭无限挂起；调用方 Context 已带更早 deadline 时取较早者（与 gRPC 侧语义一致，v1.6 对齐）。传 0 表示显式无上界（仅受调用方 Context 约束）。
+- `WithHealthCheckers(hc lynx.HealthCheckersFunc)`：健康检查器取值函数。传入后服务器自动暴露两个端点：`/healthz/liveness` 恒返回 200（进程存活即健康，**不消费**检查器聚合），`/healthz/readiness` 调用所有收集到的检查器，任一失败返回 503 + 错误正文。检查器**并发执行且单个限时**（见 `WithHealthCheckTimeout`），单个 checker panic 按不健康处理，不会拖垮进程。通常直接传方法值 `app.HealthCheckers`，收集规则见 2.5 节与 4.3 节。两个端点默认注册；不传该 Option 只是就绪检查列表为空，此时 `/healthz/readiness` 恒返回 200。**与关停排水（drain，见 3.7 节）的关系**：配置 `WithDrainTimeout` 后，排水期间框架内部的 `drainChecker` 进入聚合，`/healthz/readiness` 返回 503（LB 摘流），`/healthz/liveness` 不受影响仍返回 200。
+- `WithHealthCheckTimeout(timeout time.Duration)`：单个健康检查器的执行上限，默认 3 秒；超时按不健康处理（防止阻塞型 checker 挂起探测请求）。传 0 表示不限时（退回顺序执行，慎用）。注意：**永不返回**的 checker（死锁类）其 goroutine 无法回收，会随每次探测累积泄漏，只能修复 checker 本身。
+- `WithHealthCheckPrefix(prefix string)`：健康端点路径前缀，默认 `/healthz`（端点为 `<prefix>/liveness` 与 `<prefix>/readiness`）。
+- `WithDisableHealthCheck()`：不注册健康端点（路径让给业务路由）。
 - `WithLogger(l *slog.Logger)`：请求日志使用的日志器，默认 `slog.Default()`。
 - `WithRequestLog(requestLog bool)`：是否记录访问日志，默认 `false`。开启后每个请求以 Stackdriver 兼容的 JSON 格式输出一条 `Debug` 级别日志（`server/http/requestlog.go`），字段包含方法、URL、状态码、耗时、remote IP 以及 `trace`/`spanId`——注意需要日志器级别为 debug 才能看到。
 - `WithMiddleware(middlewares ...Middleware)`：注册自定义中间件，可多次调用叠加。链序见 5.4.5 节。
@@ -97,7 +100,7 @@ func latencyMiddleware(next gohttp.Handler) gohttp.Handler {
 
 - `HandleFunc`：带错误返回的 handler 签名 `func(ctx context.Context, w http.ResponseWriter, r *http.Request) error`。
 - `StatusError`：业务错误类型实现 `StatusCode() int` 即可声明对应的 HTTP 状态码；未实现该接口的错误一律 500（支持 `errors.As`，被包装的错误同样生效）。
-- `DefaultErrorHandler`：默认错误处理——`StatusError` → 其状态码，其余 500；响应体统一 `{"error":{"message":<err.Error()>}}`（`application/json`）。仅 5xx 记一条 `Error` 日志（`slog.ErrorContext`，日志器 `slog.Default()`），字段 `method`/`path`/`status`/`error`；ctx 中经 `logging.WithAttrs` 写入的 `request_id` 等请求级属性（经 `logging.NewAttrsHandler` 装饰的日志器）自动带上。
+- `DefaultErrorHandler`：默认错误处理——`StatusError` → 其状态码，其余 500。**响应体（v1.6 起）**：4xx（`StatusError` 声明的状态码 < 500）保持 `{"error":{"message":<err.Error()>}}`；**5xx 一律返回通用消息**（`http.StatusText` 对应文本，如 "Internal Server Error"），错误详情只进日志，避免内部信息（连接串、路径、panic 值）泄露给客户端。仅 5xx 记一条 `Error` 日志（`slog.ErrorContext`，日志器 `slog.Default()`），字段 `method`/`path`/`status`/`error`；ctx 中经 `logging.WithAttrs` 写入的 `request_id` 等请求级属性（经 `logging.NewAttrsHandler` 装饰的日志器）自动带上。需要错误日志走注入实例时用 `DefaultErrorHandlerWithLogger(l)`。
 - `NewErrorHandler(h, fn)`：把返回错误的 handler 包装成标准 `http.Handler`。`fn` 返回 nil 表示已自行写好响应；返回错误时调用 `h`（传 nil 时用 `DefaultErrorHandler`）。
 
 ```go
@@ -142,7 +145,8 @@ func NewServer(opts ...Option) *Server
 ### Options 一览
 
 - `WithAddr(addr string)`：监听地址，默认 `:9090`。
-- `WithTimeout(timeout time.Duration)`：优雅关闭的超时时间，默认 60 秒。注意它**不是**请求处理超时——gRPC 服务器本身没有读/写超时选项，该值只在 `Stop` 时生效：它是 `GracefulStop` 等待时长的**上限**（调用方 Context 已有更早的 deadline 时取较小者），超时后强制 `Stop()`。
+- `WithTimeout(timeout time.Duration)`：优雅关闭的超时时间，默认 60 秒。注意它**不是**请求处理超时——gRPC 服务器本身没有读/写超时选项，该值只在 `Stop` 时生效：它是 `GracefulStop` 等待时长的**上限**（调用方 Context 已有更早的 deadline 时取较小者），超时后强制 `Stop()`。v1.6 起 `WithShutdownTimeout` 为其别名（推荐用法，与 HTTP 侧同名同义）。
+- `WithRequestLog(enabled bool)`：内置 Logging 拦截器的开关，默认 `true`（保持既有行为）。高 QPS 场景可关闭或用 `WithRequestLogLevel(slog.Level)` 调整级别（默认 Info），对齐 HTTP 侧 `WithRequestLog` 的命名。
 - `WithLogger(l *slog.Logger)`：内置 Logging 拦截器使用的日志器。
 - `WithInterceptors(interceptors ...grpc.UnaryServerInterceptor)`：追加自定义一元拦截器，链序见下文。
 - `WithServerOptions(options ...grpc.ServerOption)`：透传原生 `grpc.ServerOption`（TLS 凭据、消息大小限制、keepalive、最大并发流等），在内部选项之后应用到 `grpc.NewServer`。
@@ -192,12 +196,12 @@ Recovery 置于最外层：链内任意一环（含用户拦截器）的 panic �
 
 流式 RPC 同样安装了 `LoggingStream` 与 `RecoveryStream` 两个内置流式拦截器——gRPC 对流式 handler 的 panic 没有内置保护，不拦截会直接崩溃整个进程。
 
-- `Logging(logger)` / `LoggingStream(logger)`：请求前后各打一条日志，包含 `FullMethod` 与耗时；handler 返回错误时打 `Error` 级别。
-- `Recovery()` / `RecoveryStream()`：recover handler（含流式）中的 panic，转换为 `codes.Internal` 错误返回，避免单个请求的 panic 拖垮整个进程。
+- `Logging(logger)` / `LoggingStream(logger)`：请求前后各打一条日志，包含 `FullMethod` 与耗时；handler 返回错误时打 `Error` 级别（级别与开关见 `WithRequestLog`/`WithRequestLogLevel`）。
+- `Recovery()` / `RecoveryStream()`：recover handler（含流式）中的 panic，转换为 `codes.Internal` 错误返回，避免单个请求的 panic 拖垮整个进程。**v1.6 起**：对外错误为通用 "internal error"（panic 值不回传客户端），panic 值与完整堆栈记录进日志；`RecoveryWithLogger(l)` / `RecoveryStreamWithLogger(l)` 可注入日志实例。
 
 ### 健康检查与反射
 
-- **健康检查**：`NewServer` 时自动注册 `grpc.health.v1` 标准健康检查服务；`Start` 时将服务名 `"grpc"` 与标准的空服务名 `""`（大多数 gRPC 健康探针使用）置为 `SERVING`，`Stop` 时均置为 `NOT_SERVING`。负载均衡器/k8s 可以直接使用标准 gRPC 健康检查协议探测。接入 app 级检查器（`WithHealthCheckers`）后，按 `HealthCheckPeriod`（默认 10 秒）轮询聚合并同步：任一依赖不健康即置 `NOT_SERVING`。配置 `WithDrainTimeout` 时，排水窗口内 `drainChecker` 进入聚合，探测在下一个轮询周期内转为 `NOT_SERVING`（摘流延迟受 `HealthCheckPeriod` 约束，需要更快摘流可调小周期）。
+- **健康检查**：`NewServer` 时自动注册 `grpc.health.v1` 标准健康检查服务；`Start` 时将服务名 `"grpc"` 与标准的空服务名 `""`（大多数 gRPC 健康探针使用）置为 `SERVING`，`Stop` 时均置为 `NOT_SERVING`。负载均衡器/k8s 可以直接使用标准 gRPC 健康检查协议探测。接入 app 级检查器（`WithHealthCheckers`）后，按 `HealthCheckPeriod`（默认 10 秒）轮询聚合并同步：任一依赖不健康即置 `NOT_SERVING`。检查器并发执行且单个限时（`WithHealthCheckTimeout`，默认 3s，与 HTTP 侧同名同义）——阻塞型 checker 不再冻结轮询状态。配置 `WithDrainTimeout` 时，排水窗口内 `drainChecker` 进入聚合，探测在下一个轮询周期内转为 `NOT_SERVING`（摘流延迟受 `HealthCheckPeriod` 约束，需要更快摘流可调小周期）。
 - **反射**：`NewServer` 时自动注册 reflection 服务，因此可以直接用 `grpcurl localhost:9090 list` 之类的工具调试，无需额外配置。
 
 ### 完整示例

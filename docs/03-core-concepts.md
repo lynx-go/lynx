@@ -81,6 +81,7 @@ return nil
 | `WithExitSignals(signals...)` | 自定义触发优雅关闭的信号列表 |
 | `WithShutdownTimeout(d)` | OnStop 钩子关闭超时，默认 5 秒 |
 | `WithStopTimeout(d)` | 单个服务 Stop 最长等待时长，默认 5 秒 |
+| `WithBusReadyTimeout(d)` | 构造应用时等待总线就绪的预算，默认 10 秒（慢启动的 Watermill/Kafka 总线不再受旧的 1 秒硬编码限制） |
 
 `NewOptions` 自身已经填充了部分默认值：`ID` 取 `os.Hostname()`，`Name` 为 `DefaultName`，`ShutdownTimeout` 为 5 秒，`StopTimeout` 为 5 秒，`ExitSignals` 为默认信号列表，并默认启用内置配置 flags（`BindFlagsFunc`/`BindConfigFunc` 默认取 `DefaultBindFlagsFunc`/`DefaultBindConfigFunc`）。
 
