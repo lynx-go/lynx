@@ -28,17 +28,42 @@ type StatusError interface {
 
 // DefaultErrorHandler 是框架默认的 ErrorHandler：
 //   - 错误实现 StatusError 时以其 StatusCode() 为状态码，否则 500；
-//   - 响应体统一为 {"error":{"message":<err.Error()>}}（application/json）；
+//   - 响应体统一为 {"error":{"message":...}}（application/json）：4xx
+//     （业务声明的错误）原样透传 err.Error()；5xx 返回通用消息
+//     （http.StatusText），err.Error() 可能携带 DSN/文件路径/内部状态等
+//     细节，只进日志不回传客户端（SC-04 信息泄露）；
 //   - 仅 5xx 记一条 Error 日志（slog.ErrorContext，日志器为
-//     slog.Default()），字段 method/path/status/error；非 5xx（业务
+//     slog.Default()，字段 method/path/status/error——需要注入自定义
+//     日志器见 DefaultErrorHandlerWithLogger，SC-19）；非 5xx（业务
 //     声明的 4xx 等）不记日志，由业务自行决定是否需要记录。
 //
 // 若响应已开始（w 已写过 header——NewErrorHandler 传入的包装器可标记），
 // 不再改写响应、仅记录一条 Error 日志（status 取已写入的状态码），避免
 // 触发 superfluous WriteHeader 与损坏已发出的响应体。
 func DefaultErrorHandler(ctx context.Context, w http.ResponseWriter, r *http.Request, err error) {
+	defaultErrorHandler(ctx, slog.Default(), w, r, err)
+}
+
+// DefaultErrorHandlerWithLogger 返回携带注入日志实例的默认
+// ErrorHandler：行为与 DefaultErrorHandler 完全一致，仅错误日志改走
+// 给定 logger（SC-19：包级 DefaultErrorHandler 只能回退全局 slog，
+// 服务侧可经本变体接入 WithLogger 的实例，如
+// Recovery(WithRecoveryHandler(DefaultErrorHandlerWithLogger(srvLogger)))）。
+// logger 为 nil 时回退 slog.Default()。
+func DefaultErrorHandlerWithLogger(logger *slog.Logger) ErrorHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, err error) {
+		defaultErrorHandler(ctx, logger, w, r, err)
+	}
+}
+
+// defaultErrorHandler 是 DefaultErrorHandler 的实现主体，logger 由
+// 调用方注入（DefaultErrorHandler 传 slog.Default()，SC-19）。
+func defaultErrorHandler(ctx context.Context, logger *slog.Logger, w http.ResponseWriter, r *http.Request, err error) {
 	if tw, ok := w.(headerWriter); ok && tw.headerWritten() {
-		logHTTPError(ctx, "http handler error after response started", r, tw.statusCode(), err)
+		logHTTPError(ctx, logger, "http handler error after response started", r, tw.statusCode(), err)
 		return
 	}
 	status := http.StatusInternalServerError
@@ -46,10 +71,14 @@ func DefaultErrorHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 	if errors.As(err, &se) {
 		status = se.StatusCode()
 	}
-	writeJSONError(w, status, err)
 	if status >= http.StatusInternalServerError {
-		logHTTPError(ctx, "http handler error", r, status, err)
+		// 5xx 细节不回传客户端（SC-04）：通用消息 + 详情进日志，
+		// 日志与响应经 method/path/status 关联。
+		writeJSONErrorMessage(w, status, http.StatusText(status))
+		logHTTPError(ctx, logger, "http handler error", r, status, err)
+		return
 	}
+	writeJSONError(w, status, err)
 }
 
 // HandleFunc 是带错误返回的业务 handler 签名：ctx 为请求上下文
@@ -95,9 +124,15 @@ type errorMessage struct {
 	Message string `json:"message"`
 }
 
-// writeJSONError 以统一 JSON 错误体写错误响应。
+// writeJSONError 以统一 JSON 错误体写错误响应（消息原样透传，仅用于
+// 4xx 业务错误等可安全暴露的消息；5xx 走 writeJSONErrorMessage）。
 func writeJSONError(w http.ResponseWriter, status int, err error) {
-	b, _ := json.Marshal(errorResponse{Error: errorMessage{Message: err.Error()}})
+	writeJSONErrorMessage(w, status, err.Error())
+}
+
+// writeJSONErrorMessage 以指定消息写统一 JSON 错误体。
+func writeJSONErrorMessage(w http.ResponseWriter, status int, msg string) {
+	b, _ := json.Marshal(errorResponse{Error: errorMessage{Message: msg}})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
@@ -105,9 +140,10 @@ func writeJSONError(w http.ResponseWriter, status int, err error) {
 
 // logHTTPError 记录一条 Error 日志，字段 method/path/status/error。
 // ctx 通常为 r.Context()（NewErrorHandler 传入），携带请求级日志属性
-// （request_id 等）时经 logging.NewAttrsHandler 自动附加到记录。
-func logHTTPError(ctx context.Context, msg string, r *http.Request, status int, err error) {
-	slog.ErrorContext(ctx, msg,
+// （request_id 等）时经 logging.NewAttrsHandler 自动附加到记录；
+// logger 由调用方注入（SC-19），DefaultErrorHandler 传 slog.Default()。
+func logHTTPError(ctx context.Context, logger *slog.Logger, msg string, r *http.Request, status int, err error) {
+	logger.ErrorContext(ctx, msg,
 		"method", r.Method,
 		"path", r.URL.Path,
 		"status", status,

@@ -164,11 +164,15 @@ func subscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], h func(co
 	}
 	wrappedOpts = append(wrappedOpts, opts...)
 
+	// CORE-03：wrappedOpts 在订阅时已固定，Marshaler 解析提升到订阅时
+	// 一次完成、闭包直接捕获——此前每条消息重复 apply+解析纯属分配浪费。
+	// 优先级语义不变：用户 opts 排在 wrappedOpts 末尾最后生效，可在
+	// 订阅时覆盖 Topic 默认 Marshaler。
+	final := &SubscribeOptions{}
+	applySubscribeOptions(final, wrappedOpts...)
+	dec := ResolveSubscribeMarshaler(b, topic.Name(), topts.Marshaler, final.Marshaler)
+
 	return b.Subscribe(ctx, topic.Name(), func(ctx context.Context, raw *RawEvent) error {
-		// 再次解析：opts 可能在 wrapped 末尾覆盖 Marshaler
-		final := &SubscribeOptions{}
-		applySubscribeOptions(final, wrappedOpts...)
-		dec := ResolveSubscribeMarshaler(b, topic.Name(), topts.Marshaler, final.Marshaler)
 		ev, err := DecodeTyped[T](dec, raw)
 		if err != nil {
 			return fmt.Errorf("bus: unmarshal %q: %w", topic.Name(), err)

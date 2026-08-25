@@ -9,12 +9,15 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -271,5 +274,143 @@ func TestTLS(t *testing.T) {
 		grpc.ForceCodec(rawCodec{}))
 	if err == nil {
 		t.Fatal("明文客户端访问 TLS 服务端应失败")
+	}
+}
+
+// --- SC-10：未配置 TLS 的明文凭据降级必须可见 ---
+
+// captureWarnHandler 收集 Warn 及以上级别的 slog 记录。
+type captureWarnHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *captureWarnHandler) Enabled(_ context.Context, l slog.Level) bool {
+	return l >= slog.LevelWarn
+}
+
+func (h *captureWarnHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *captureWarnHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureWarnHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *captureWarnHandler) countMsg(msg string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, r := range h.records {
+		if r.Message == msg {
+			n++
+		}
+	}
+	return n
+}
+
+const insecureWarnMsg = "lynx grpc client: no TLS config configured, using insecure plaintext credentials"
+
+// TestDialInsecureWarns 回归 SC-10：未配置 TLS 时 Dial 记一次 Warn
+// 提示明文降级；配置了 TLS 时不产生该警告。
+func TestDialInsecureWarns(t *testing.T) {
+	h := &captureWarnHandler{}
+	conn, err := Dial("127.0.0.1:1", WithLogger(slog.New(h)))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	if n := h.countMsg(insecureWarnMsg); n != 1 {
+		t.Errorf("insecure Warn 记录数 = %d, want 1（默认不安全必须可见, SC-10）", n)
+	}
+
+	h2 := &captureWarnHandler{}
+	tlsConn, err := Dial("127.0.0.1:1",
+		WithLogger(slog.New(h2)),
+		WithTLSConfig(&tls.Config{InsecureSkipVerify: true}))
+	if err != nil {
+		t.Fatalf("Dial(TLS): %v", err)
+	}
+	defer tlsConn.Close()
+	if n := h2.countMsg(insecureWarnMsg); n != 0 {
+		t.Errorf("配置 TLS 后仍产生 %d 条 insecure 警告, want 0", n)
+	}
+}
+
+// --- SC-20：cancelOnEndStream 定时器释放 ---
+
+// fakeClientStream 最小 grpc.ClientStream 桩：RecvMsg/CloseSend 返回预设结果。
+type fakeClientStream struct {
+	grpc.ClientStream
+	recvErr    error
+	closeErr   error
+	closeCalls int32
+}
+
+func (f *fakeClientStream) RecvMsg(m any) error { return f.recvErr }
+
+func (f *fakeClientStream) CloseSend() error {
+	atomic.AddInt32(&f.closeCalls, 1)
+	return f.closeErr
+}
+
+// TestCancelOnEndStreamReleasesTimerOnRecvEOF 回归 SC-20：流正常结束
+// （RecvMsg 返回 io.EOF）时立即触发一次 cancel（释放超时定时器），且
+// 后续操作不再重复触发。
+func TestCancelOnEndStreamReleasesTimerOnRecvEOF(t *testing.T) {
+	var calls int32
+	s := &cancelOnEndStream{
+		ClientStream: &fakeClientStream{recvErr: io.EOF},
+		cancel:       func() { atomic.AddInt32(&calls, 1) },
+	}
+	if err := s.RecvMsg(nil); err != io.EOF {
+		t.Fatalf("RecvMsg err = %v, want io.EOF", err)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("cancel 调用 %d 次, want 1（EOF 应触发一次释放）", n)
+	}
+	// 之后的错误路径不再重复触发（once 语义）。
+	_ = s.CloseSend()
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("cancel 调用 %d 次, want 仍为 1（once 语义）", n)
+	}
+}
+
+// TestCancelOnEndStreamReleasesTimerOnError 回归 SC-20：流出错结束时
+// 定时器同样被释放（一次且仅一次），多次 RecvMsg 错误不重复触发。
+func TestCancelOnEndStreamReleasesTimerOnError(t *testing.T) {
+	var calls int32
+	s := &cancelOnEndStream{
+		ClientStream: &fakeClientStream{recvErr: errors.New("stream broken")},
+		cancel:       func() { atomic.AddInt32(&calls, 1) },
+	}
+	if err := s.RecvMsg(nil); err == nil {
+		t.Fatal("RecvMsg err = nil, want error")
+	}
+	if err := s.RecvMsg(nil); err == nil {
+		t.Fatal("RecvMsg err = nil, want error")
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("cancel 调用 %d 次, want 1（出错释放且仅一次）", n)
+	}
+}
+
+// TestCancelOnEndStreamRealContext 验证真实 ctx 下的行为：流正常结束后
+// 主动 cancel，ctx 提前进入 Canceled（而非等到 deadline 变
+// DeadlineExceeded），证明 WithTimeout 内部定时器已释放。
+func TestCancelOnEndStreamRealContext(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	s := &cancelOnEndStream{
+		ClientStream: &fakeClientStream{recvErr: io.EOF},
+		cancel:       cancel,
+	}
+	if err := s.RecvMsg(nil); err != io.EOF {
+		t.Fatalf("RecvMsg err = %v, want io.EOF", err)
+	}
+	if err := ctx.Err(); !errors.Is(err, context.Canceled) {
+		t.Errorf("ctx.Err() = %v, want context.Canceled（流结束即释放）", err)
 	}
 }

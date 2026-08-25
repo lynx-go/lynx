@@ -1,9 +1,12 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,9 +36,10 @@ func (f *fakeDiscovery) Watch(ctx context.Context, _ string, _ Filter) (Watcher,
 		return nil, f.watchErr
 	}
 	w := &fakeWatcher{
-		ctx:  ctx,
-		ch:   make(chan []Instance, 1),
-		done: make(chan struct{}),
+		ctx:   ctx,
+		ch:    make(chan []Instance, 1),
+		done:  make(chan struct{}),
+		errCh: make(chan error, 1),
 	}
 	// 对齐 Watcher 契约：首次 Next 立即推送当前快照。
 	w.ch <- slices.Clone(f.snap)
@@ -66,6 +70,17 @@ func (f *fakeDiscovery) breakWatch() {
 	}
 }
 
+// failWatchers 仅让现有 Watcher 的会话报错，后端仍可建立新 Watch：
+// 用于模拟已建立会话的断连（5xx/连接重置类错误），区别于 breakWatch
+// 的后端整体不可用。
+func (f *fakeDiscovery) failWatchers() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, w := range f.watchers {
+		w.fail(errWatchBroken)
+	}
+}
+
 // healWatch 恢复 Watch（模拟重连成功）。
 func (f *fakeDiscovery) healWatch() {
 	f.mu.Lock()
@@ -81,19 +96,29 @@ func (f *fakeDiscovery) watcherCount() int {
 }
 
 type fakeWatcher struct {
-	ctx  context.Context
-	ch   chan []Instance
-	done chan struct{}
-	once sync.Once
+	ctx   context.Context
+	ch    chan []Instance
+	done  chan struct{}
+	errCh chan error // 缓冲 1：fail 写入错误以唤醒阻塞中的 Next
+	once  sync.Once
 
 	mu  sync.Mutex
 	err error
 }
 
+// fail 使后续/阻塞中的 Next 返回 err。注意必须经 errCh 唤醒阻塞中的
+// select：只记 err 不发信号时，阻塞中的 Next 永远醒不来，Resolver 的
+// 断连错误路径（consume → 退避 → 重连）根本测不到。
 func (w *fakeWatcher) fail(err error) {
 	w.mu.Lock()
-	w.err = err
+	if w.err == nil {
+		w.err = err
+	}
 	w.mu.Unlock()
+	select {
+	case w.errCh <- err:
+	default:
+	}
 }
 
 func (w *fakeWatcher) Next() ([]Instance, error) {
@@ -106,6 +131,8 @@ func (w *fakeWatcher) Next() ([]Instance, error) {
 	select {
 	case snap := <-w.ch:
 		return snap, nil
+	case err := <-w.errCh:
+		return nil, err
 	case <-w.done:
 		return nil, errors.New("registry: fake watcher stopped")
 	case <-w.ctx.Done():
@@ -280,6 +307,51 @@ func TestResolverStaleWhileRevalidate(t *testing.T) {
 	})
 }
 
+// TestResolverWatchErrorBackoffReconnect 锁定 RC-23 残余缺口：已建立的
+// Watch 会话断连（Next 报错，5xx/连接重置类）后，watchLoop 必须按退避
+// （首档 1s）重新 Watch 并消费新快照——退避期内不得重建会话，恢复后
+// 缓存与后端最终一致。
+func TestResolverWatchErrorBackoffReconnect(t *testing.T) {
+	f := &fakeDiscovery{snap: []Instance{passing("svc", "i1",
+		Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"})}}
+	r := NewResolver(f)
+	defer func() { _ = r.Close() }()
+	ctx := context.Background()
+
+	// 首个 Get 填充缓存，等 watch 会话建立并消费首推快照。
+	if _, err := r.Get(ctx, "svc", Filter{}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "watch session established", func() bool {
+		return f.watcherCount() == 1
+	})
+
+	// 已建立的会话断连（Next 报错）；后端本身仍可接受新 Watch。
+	f.failWatchers()
+
+	// 退避首档 1s：错误后 200ms 内不得重建会话（远小于 1s 下限，
+	// 调度延迟只会让重建更晚，断言安全）。
+	time.Sleep(200 * time.Millisecond)
+	if n := f.watcherCount(); n != 1 {
+		t.Fatalf("reconnect must wait for backoff, watchers = %d, want 1", n)
+	}
+
+	// 断连期间后端变化：新实例上线。
+	f.push([]Instance{
+		passing("svc", "i1", Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}),
+		passing("svc", "i2", Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.2:8080"}),
+	})
+
+	// 退避到点后重新 Watch（会话数增至 2），新会话首推即含最新快照。
+	eventually(t, "reconnect after backoff", func() bool {
+		return f.watcherCount() >= 2
+	})
+	eventually(t, "cache converges after reconnect", func() bool {
+		got, err := r.GetAll(ctx, "svc", Filter{})
+		return err == nil && len(got) == 2
+	})
+}
+
 func TestResolverPollFallbackWhenWatchUnavailable(t *testing.T) {
 	f := &fakeDiscovery{
 		snap: []Instance{passing("svc", "i1",
@@ -390,6 +462,64 @@ func TestResolverCloseIdempotentAndGetFails(t *testing.T) {
 	}
 	if _, err := r.GetAll(ctx, "svc", Filter{}); !errors.Is(err, ErrResolverClosed) {
 		t.Fatalf("GetAll after Close: want ErrResolverClosed, got %v", err)
+	}
+}
+
+// TestResolverCloseStopsBackendWatchers 锁定 RC-04：Resolver 关闭（closed
+// 退出路径）必须 Stop 后端 Watcher，否则 watcher 条目在后端永久残留，
+// 此后的 Register/Deregister 持续向死 watcher 推送（RC-23 的泄漏断言）。
+func TestResolverCloseStopsBackendWatchers(t *testing.T) {
+	m := NewMemory()
+	defer func() { _ = m.Close() }()
+	r := NewResolver(m)
+	defer func() { _ = r.Close() }()
+
+	if _, err := r.GetAll(context.Background(), "svc", Filter{}); err != nil {
+		t.Fatal(err)
+	}
+	// 等 watchLoop 建立后端 watcher。
+	eventually(t, "backend watcher registered", func() bool {
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		return len(m.watchers["svc"]) == 1
+	})
+
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Close 返回 = wg.Wait 完成 = watchLoop 已退出；watcher 必须已注销。
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if n := len(m.watchers["svc"]); n != 0 {
+		t.Fatalf("backend watcher leaked after Resolver.Close: %d remaining", n)
+	}
+}
+
+// TestResolverLoggerInjection 锁定 RC-20：stale 丢弃 warn 走注入 logger，
+// 不再打向全局 slog。
+func TestResolverLoggerInjection(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	f := &fakeDiscovery{snap: []Instance{passing("svc", "i1",
+		Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"})}}
+	r := NewResolver(f, WithStaleMaxAge(80*time.Millisecond), WithResolverLogger(logger))
+	defer func() { _ = r.Close() }()
+
+	if _, err := r.Get(context.Background(), "svc", Filter{}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "watcher established", func() bool {
+		return f.watcherCount() > 0
+	})
+
+	f.breakWatch()
+	eventually(t, "stale snapshot dropped", func() bool {
+		_, err := r.Get(context.Background(), "svc", Filter{})
+		return errors.Is(err, ErrNoInstance)
+	})
+	if out := buf.String(); !strings.Contains(out, "dropped stale snapshot") {
+		t.Fatalf("injected logger did not receive stale-drop warn, buffer: %q", out)
 	}
 }
 

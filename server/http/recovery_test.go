@@ -11,8 +11,9 @@ import (
 	"testing"
 )
 
-// TestRecoveryPanicWritesResponse：panic handler → 500 + JSON 错误体 +
-// Error 日志（含 panic 与 stack 字段）；连接不被毁掉，后续请求正常。
+// TestRecoveryPanicWritesResponse：panic handler → 500 + 通用 JSON 错误体
+// （SC-04：panic 值不回传客户端）+ Error 日志（含 panic 与 stack 字段）；
+// 连接不被毁掉，后续请求正常。
 func TestRecoveryPanicWritesResponse(t *testing.T) {
 	capture, restore := useCaptureLogger(false)
 	defer restore()
@@ -38,8 +39,11 @@ func TestRecoveryPanicWritesResponse(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	if got := strings.TrimSpace(string(body)); got != `{"error":{"message":"database exploded"}}` {
-		t.Errorf("body = %q, want panic JSON body", got)
+	if got := strings.TrimSpace(string(body)); got != `{"error":{"message":"Internal Server Error"}}` {
+		t.Errorf("body = %q, want 通用消息（panic 值不得泄露, SC-04）", got)
+	}
+	if strings.Contains(string(body), "database exploded") {
+		t.Error("panic 值泄露进响应体")
 	}
 
 	rec, ok := capture.hasError("http handler panic recovered")

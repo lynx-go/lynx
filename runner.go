@@ -70,20 +70,18 @@ func (b *Runner) setupApp() (App, error) {
 }
 
 // RunE 运行 Runner 应用并返回错误，由调用方决定错误处理方式。
+// 实例与错误统一经 setupApp 获取：built/err 的读取全部落在 mu 保护内，
+// 消除此前的无锁裸读（Run 的单次语义已阻止并发重入，锁主要保证
+// setup 回调只执行一次的既有契约）。
 func (b *Runner) RunE() error {
-	if b.err != nil {
-		return b.err
+	app, err := b.setupApp()
+	if err != nil {
+		return err
 	}
-	if b.app == nil {
+	// 防御零值 Runner / 外部构造的非法状态（公开路径不可达：newLynx
+	// 失败时 err 非 nil 已在上面返回）。
+	if app == nil {
 		return ErrNotInitialized
 	}
-	if !b.built {
-		if _, err := b.setupApp(); err != nil {
-			return err
-		}
-	}
-	if b.err != nil {
-		return b.err
-	}
-	return b.app.Run()
+	return app.Run()
 }

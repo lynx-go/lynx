@@ -108,7 +108,9 @@ type otelService struct {
 	options *Options
 	tp      *sdktrace.TracerProvider
 	mp      *sdkmetric.MeterProvider
-	// inited 标记 Init 已成功执行；多 goroutine 并发 Init 时读操作安全。
+	// inited 以 CAS 守卫 Init 的唯一进入：并发 Init 时仅一个调用方创建
+	// provider，其余得到 already-initialized 错误（防止双 provider 且
+	// 全局被后者覆盖、前者泄漏）。
 	inited atomic.Bool
 }
 
@@ -120,7 +122,9 @@ func (c *otelService) Name() string {
 // Init 创建 provider 并设置为 otel 全局值。重复 Init 返回错误：
 // 多次注册会覆盖 otel 全局且首个 provider 永不 Shutdown（泄漏）。
 func (c *otelService) Init(ctx lynx.AppContext) error {
-	if c.inited.Load() {
+	// CAS 先于 provider 创建：Load-then-Store 在并发 Init 下会让两个
+	// 调用方都通过检查并各自创建 provider，全局被后者覆盖、前者泄漏。
+	if !c.inited.CompareAndSwap(false, true) {
 		return errors.New("telemetry service already initialized (register once)")
 	}
 	options := *c.options
@@ -133,13 +137,15 @@ func (c *otelService) Init(ctx lynx.AppContext) error {
 	}
 	tp, mp, err := newProviders(&options)
 	if err != nil {
+		// 创建失败回退标志：Init 保持可重试（与旧语义一致），而不是把
+		// 服务永久卡在"已初始化"却无 provider 的状态。
+		c.inited.Store(false)
 		return err
 	}
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
 	otel.SetTextMapPropagator(options.propagator)
 	c.tp, c.mp = tp, mp
-	c.inited.Store(true)
 	return nil
 }
 
@@ -151,6 +157,12 @@ func (c *otelService) Start(ctx context.Context) error {
 
 // Stop 自动 flush 并关闭 provider。未 Init（provider 为空）时安全返回 nil。
 // 关闭错误聚合返回，由框架随 Run() 统一上抛。
+//
+// 已知取舍（AUX-14）：Stop 不复位 otel 全局 provider——与 Init 设置全局
+// 对称。Stop 后全局仍指向已关闭的 provider，后续创建的 span/metric 被
+// 静默丢弃而非回落 noop。单进程单次生命周期（框架托管、进程即将退出）
+// 场景下无碍；同进程重建 telemetry 服务时请自行 otel.SetTracerProvider
+// 复位（如切回 noop.NewTracerProvider）。
 func (c *otelService) Stop(ctx context.Context) error {
 	var shutdownErrors lynx.ShutdownErrors
 	if c.tp != nil {
@@ -168,6 +180,12 @@ func (c *otelService) Stop(ctx context.Context) error {
 // newProviders 按 Options 创建 TracerProvider 与 MeterProvider；
 // 未指定 exporter/reader 时使用默认值（noop trace + Prometheus）。
 // 不修改传入的 Options（状态化 Options 是代码味道）。
+//
+// 已知取舍（AUX-16）：默认 Prometheus exporter 内部使用 otel 全局
+// DefaultRegisterer 注册 collector，且 Stop 不会 unregister——进程内
+// 多次创建本服务（重建/反复测试）会让 collector 在全局注册表累积、
+// 指标重复上报。请按单实例使用；确需重建的场景改用 WithMetricReader
+// 传入自管注册表的 reader。
 func newProviders(o *Options) (tp *sdktrace.TracerProvider, mp *sdkmetric.MeterProvider, err error) {
 	traceOpts := []sdktrace.TracerProviderOption{}
 	if o.traceExporter != nil {

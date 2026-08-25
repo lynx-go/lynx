@@ -1,7 +1,11 @@
 package eventbus
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -172,4 +176,91 @@ func TestMemoryBusWithAppContext(t *testing.T) {
 		t.Fatal("subscribe failed")
 	}
 	_ = b.Stop(context.Background())
+}
+
+// TestMemoryBusConcurrentPublishStopNoPanic 是 CORE-01 的回归：dispatch
+// 的发送必须与 Stop 的写锁互斥。修复前 dispatch 在 RLock 内只拷贝订阅者、
+// 解锁后发送，与 Stop 的 close(sub.ch) 竞态会 send on closed channel panic。
+// 多轮并发 Publish+Stop 在 -race 下通过且不 panic 即为修复生效。
+func TestMemoryBusConcurrentPublishStopNoPanic(t *testing.T) {
+	const rounds = 100
+	for i := 0; i < rounds; i++ {
+		b := NewMemoryBus(Options{})
+		_ = b.Init(nil)
+		runCtx, cancelRun := context.WithCancel(context.Background())
+		go func() { _ = b.Start(runCtx) }()
+		waitRunning(t, b)
+
+		if err := b.Subscribe(context.Background(), "race.topic", func(context.Context, *RawEvent) error {
+			return nil
+		}, WithHandlerName("h-race")); err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+
+		stopDone := make(chan struct{})
+		go func() {
+			defer close(stopDone)
+			_ = b.Stop(context.Background())
+		}()
+		// 并发发布直到 Stop 胜出（Publish 报 bus is closed）：发布压力
+		// 需覆盖"已过 closed 检查、正要 dispatch"的竞态窗口。
+		var wg sync.WaitGroup
+		for j := 0; j < 4; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					if err := b.Publish(context.Background(), "race.topic", "p"); err != nil {
+						return
+					}
+				}
+			}()
+		}
+		<-stopDone
+		wg.Wait()
+		cancelRun()
+	}
+}
+
+// fakeInitContext 以固定 logger 初始化 Bus（memoryBus.Init 仅取 Logger）。
+type fakeInitContext struct{ logger *slog.Logger }
+
+func (c *fakeInitContext) Context() context.Context        { return context.Background() }
+func (c *fakeInitContext) Logger(args ...any) *slog.Logger { return c.logger }
+
+// TestMemoryBusDropLogCarriesEventID 是 CORE-10 的回归：缓冲满丢弃事件的
+// Error 日志必须带事件 ID——内存 Bus 是 at-most-once 语义，丢失时没有
+// ID 就无法对账丢的是哪条。
+func TestMemoryBusDropLogCarriesEventID(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	bus := NewMemoryBus(Options{BufferSize: 1})
+	if err := bus.Init(&fakeInitContext{logger: logger}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	release := make(chan struct{})
+	if err := bus.Subscribe(context.Background(), "drop.topic", func(context.Context, *RawEvent) error {
+		<-release
+		return nil
+	}, WithHandlerName("h-drop")); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	// 第一条被阻塞的 handler 持有，第二条填满缓冲（BufferSize=1），
+	// 第三条起必然触发丢弃路径。
+	for i := 0; i < 5; i++ {
+		if err := bus.Publish(context.Background(), "drop.topic", []byte("p")); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	}
+	close(release)
+	_ = bus.Stop(context.Background())
+
+	out := buf.String()
+	if !strings.Contains(out, "bus dispatch dropped event") {
+		t.Fatalf("drop log missing, got: %q", out)
+	}
+	if !strings.Contains(out, " id=") {
+		t.Errorf("drop log must carry the event id, got: %q", out)
+	}
 }

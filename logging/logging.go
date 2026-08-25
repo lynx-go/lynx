@@ -18,6 +18,11 @@ type traceHandler struct {
 // NewTraceHandler 返回包装 h 的 slog.Handler：log 调用的 Context 携带
 // 有效的 OpenTelemetry SpanContext 时，自动追加 trace_id 与 span_id。
 // 同时包装纯 slog handler 与 zap 桥接的 slog handler（contrib/zap）。
+//
+// 已知取舍（AUX-10）：经 WithGroup 后注入的 trace_id/span_id 会被嵌套
+// 进 group（slog 装饰器在组内追加属性是标准行为），Loki/ELK 等按顶层
+// 字段提取的采集端将拿不到。需要在顶层提取 trace 关联时，建议不要对
+// 日志 handler 使用 WithGroup，或在采集侧以顶层字段另行注入。
 func NewTraceHandler(h slog.Handler) slog.Handler {
 	return traceHandler{next: h}
 }
@@ -58,24 +63,39 @@ const (
 )
 
 // WithAttrs 将请求级日志属性写入 ctx，供 NewAttrsHandler 注入到该
-// 上下文范围内的每条日志记录。同 key 的属性以最新写入为准（覆盖旧值）。
+// 上下文范围内的每条日志记录。同 key 的属性以最新写入为准（覆盖旧值）：
+// 跨调用时新批次覆盖旧值；同一批次内重复 key 时取最后一次传入的值
+// （等价于逐个 WithAttrs 的叠加语义），其余重复项丢弃。
 // 写入空 attrs 时原样返回 ctx。
 func WithAttrs(ctx context.Context, attrs ...slog.Attr) context.Context {
 	if len(attrs) == 0 {
 		return ctx
 	}
+	// 逆序遍历批次：同 key 只保留最后传入的（与跨调用"最新写入覆盖"
+	// 方向一致），并以此 key 集合过滤 ctx 旧值。不做批次内去重时，
+	// 重复 key 会以两条属性原样下发（部分 handler 产出重复 JSON 键），
+	// "最新为准"的承诺不成立。
 	seen := make(map[string]struct{}, len(attrs))
+	deduped := make([]slog.Attr, 0, len(attrs))
 	for i := len(attrs) - 1; i >= 0; i-- {
+		if _, ok := seen[attrs[i].Key]; ok {
+			continue
+		}
 		seen[attrs[i].Key] = struct{}{}
+		deduped = append(deduped, attrs[i])
 	}
-	merged := make([]slog.Attr, 0, len(AttrsFrom(ctx))+len(attrs))
+	// 逆序收集后翻转，恢复非重复项的原始相对顺序。
+	for i, j := 0, len(deduped)-1; i < j; i, j = i+1, j-1 {
+		deduped[i], deduped[j] = deduped[j], deduped[i]
+	}
+	merged := make([]slog.Attr, 0, len(AttrsFrom(ctx))+len(deduped))
 	for _, a := range AttrsFrom(ctx) {
 		if _, ok := seen[a.Key]; ok {
 			continue
 		}
 		merged = append(merged, a)
 	}
-	merged = append(merged, attrs...)
+	merged = append(merged, deduped...)
 	return context.WithValue(ctx, attrsKeyCtx{}, merged)
 }
 

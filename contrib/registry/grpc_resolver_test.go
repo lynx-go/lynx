@@ -249,3 +249,118 @@ func TestGRPCResolverCloseIdempotent(t *testing.T) {
 	r.Close()
 	r.Close() // 幂等
 }
+
+// TestGRPCResolverSkipsUnchangedState 锁定 RC-07：地址集无变化时不
+// UpdateState——此前每轮轮询都无条件推送，缓存快照顺序不稳定（memory
+// 按地图遍历推送）导致虚假的地址抖动。
+func TestGRPCResolverSkipsUnchangedState(t *testing.T) {
+	m := NewMemory()
+	defer func() { _ = m.Close() }()
+	ctx := context.Background()
+	if err := m.Register(ctx, passing("svc", "i1",
+		Endpoint{Protocol: ProtocolGRPC, Address: "10.0.0.1:9090"})); err != nil {
+		t.Fatal(err)
+	}
+
+	b := newGRPCBuilderForTest(t, m) // pollInterval = 10ms
+	cc := &fakeClientConn{}
+	r, err := b.Build(mustParseTarget(t, "registry:///svc"), cc, resolver.BuildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	eventually(t, "baseline state published", func() bool {
+		return cc.stateCount() == 1 && len(cc.lastState().Addresses) == 1
+	})
+
+	// 无变化期间多轮轮询（10ms × 15+）不产生新 UpdateState。
+	time.Sleep(150 * time.Millisecond)
+	if n := cc.stateCount(); n != 1 {
+		t.Fatalf("unchanged snapshots must not re-publish: %d UpdateState calls", n)
+	}
+
+	// 集合变化恰好再推一次，随后再次稳定。
+	if err := m.Register(ctx, passing("svc", "i2",
+		Endpoint{Protocol: ProtocolGRPC, Address: "10.0.0.2:9090"})); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "changed state published", func() bool {
+		return len(cc.lastState().Addresses) == 2
+	})
+	time.Sleep(150 * time.Millisecond)
+	if n := cc.stateCount(); n != 2 {
+		t.Fatalf("only changed snapshots may publish: %d UpdateState calls", n)
+	}
+}
+
+// blockingDiscovery 的 GetService 阻塞直到 ctx 取消或 10s，并记录调用方
+// 传入的 deadline 剩余量，用于验证 grpc resolver 的 3s 预算（RC-07）。
+type blockingDiscovery struct {
+	mu        sync.Mutex
+	deadlines []time.Duration
+	calls     int
+}
+
+var _ Discovery = (*blockingDiscovery)(nil)
+
+func (b *blockingDiscovery) GetService(ctx context.Context, _ string, _ Filter) ([]Instance, error) {
+	b.mu.Lock()
+	b.calls++
+	if d, ok := ctx.Deadline(); ok {
+		b.deadlines = append(b.deadlines, time.Until(d))
+	}
+	b.mu.Unlock()
+	select {
+	case <-time.After(10 * time.Second):
+		return []Instance{}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (b *blockingDiscovery) Watch(_ context.Context, _ string, _ Filter) (Watcher, error) {
+	// Watch 不可用 → Resolver 走轮询回退，不影响本测试关注的 GetAll 路径。
+	return nil, errors.New("watch unavailable")
+}
+
+func (b *blockingDiscovery) stats() (calls int, firstDeadline time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.deadlines) == 0 {
+		return b.calls, 0
+	}
+	return b.calls, b.deadlines[0]
+}
+
+// TestGRPCResolverGetAllBudgetTimeout 锁定 RC-07：resolve 的 GetAll 带 3s
+// 预算，Discovery 挂死时轮询 goroutine 不会无限期阻塞——超时后照常进入
+// 下一轮轮询。
+func TestGRPCResolverGetAllBudgetTimeout(t *testing.T) {
+	bd := &blockingDiscovery{}
+	rslv := NewResolver(bd)
+	defer func() { _ = rslv.Close() }()
+	b := NewGRPCBuilder(rslv).(*grpcBuilder)
+	b.pollInterval = 50 * time.Millisecond
+
+	cc := &fakeClientConn{}
+	r, err := b.Build(mustParseTarget(t, "registry:///svc"), cc, resolver.BuildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	// 第二次带预算的调用出现 = 第一次已按预算超时返回、goroutine 未挂死。
+	eventually(t, "poll loop survives blocked discovery", func() bool {
+		calls, _ := bd.stats()
+		return calls >= 2
+	})
+	_, deadline := bd.stats()
+	if deadline <= 0 || deadline > grpcResolveTimeout {
+		t.Fatalf("GetAll deadline = %s, want within %s budget", deadline, grpcResolveTimeout)
+	}
+	// 挂死期间不发布任何地址。
+	if n := cc.stateCount(); n != 0 {
+		t.Fatalf("blocked discovery must not publish state, got %d", n)
+	}
+}

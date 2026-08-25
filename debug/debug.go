@@ -118,6 +118,7 @@ func (s *Service) Init(ctx lynx.AppContext) error {
 
 // Addr 返回当前监听地址：Start 前返回空字符串；使用随机端口
 // （如 "127.0.0.1:0"）时返回实际分配的地址，供测试与探活使用。
+// Stop 或 Start 的 ctx 取消之后（两条关停路径一致清理）同样返回空字符串。
 func (s *Service) Addr() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -128,6 +129,10 @@ func (s *Service) Addr() string {
 }
 
 // CheckHealth 实现健康检查，服务未在运行时返回错误。
+// 已知窗口：Stop 返回到 Start 退出之间存在短暂交错（框架在 Stop 返回后
+// 取消服务 ctx，Start 才从等待中醒来），窗口内 started 尚为 true，
+// CheckHealth 可能仍报健康——进程已在关停路径上，不构成误报，行为保持
+// 不变（AUX-09 注释化）。
 func (s *Service) CheckHealth() error {
 	if !s.started.Load() {
 		return errors.New("debug server not running")
@@ -161,7 +166,6 @@ func (s *Service) Start(ctx context.Context) error {
 	s.httpServer = srv
 	s.listener = ln
 	s.mu.Unlock()
-	s.logger.InfoContext(ctx, "debug server started", "addr", ln.Addr().String())
 	if s.stopping.Load() {
 		// Stop 恰在此前执行且未拿到 httpServer（其 Shutdown 拿到 nil
 		// 直接返回）：此处补发真正关闭，不进入阻塞等待——否则 ctx 永无
@@ -173,6 +177,9 @@ func (s *Service) Start(ctx context.Context) error {
 		_ = ln.Close()
 		return errors.New("debug server stopped before start")
 	}
+	// "started" 日志置于 stopping 复查之后：交错窗口内（Stop 已先到）
+	// 不再打出误导性的启动日志（AUX-08）。
+	s.logger.InfoContext(ctx, "debug server started", "addr", ln.Addr().String())
 	s.started.Store(true)
 	s.closeReady()
 	go func() {
@@ -184,6 +191,18 @@ func (s *Service) Start(ctx context.Context) error {
 	// 返回后取消服务 ctx）。
 	<-ctx.Done()
 	s.started.Store(false)
+	// 独立使用（脱离框架、未经 Stop 直接取消 ctx）时的唯一退出路径：
+	// 与 Stop 的清理对称地关闭 httpServer 释放端口，否则 listener 一直
+	// 占用到进程退出。持 mu 与 Stop 互斥：双方中只有一方能拿到 httpServer
+	//（另一方读到 nil）；Close 幂等，Stop 已先清理时此处无副作用。
+	s.mu.Lock()
+	hs := s.httpServer
+	s.httpServer = nil
+	s.listener = nil
+	s.mu.Unlock()
+	if hs != nil {
+		_ = hs.Close()
+	}
 	return nil
 }
 
@@ -197,6 +216,10 @@ func (s *Service) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	hs := s.httpServer
 	s.httpServer = nil
+	// 与 Start 的 ctx.Done 退出路径对称地清掉 listener：两条关停路径
+	// 之后 Addr() 一致返回 ""，不残留已关闭监听器的地址（Shutdown 本就
+	// 先关 listener，此处置 nil 只是收回查询入口）。
+	s.listener = nil
 	s.mu.Unlock()
 	if hs == nil {
 		return nil

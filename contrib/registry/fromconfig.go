@@ -141,9 +141,17 @@ func NewFromConfig(cfg lynx.Config, r Registry, advertisers ...Advertiser) (*Reg
 	if fc.Weight != 0 {
 		opts = append(opts, WithWeight(fc.Weight))
 	}
+	// heartbeat_ttl / deregister_after 不进 Registrar：TTL 后端（consul）
+	// 由 consul.NewFromConfig 自行读同一配置段（registry.heartbeat_ttl /
+	// registry.deregister_after），Registrar 没有传递通道，保留字段只会
+	// 制造「已生效」的假象（RC-06）。此处只做交叉校验：interval ≥ TTL 时
+	// TTL 必然在两次心跳之间过期，实例在目录里持续闪断且无任何告警，
+	// 属配置错误，直接失败。
+	if fc.HeartbeatInterval > 0 && fc.HeartbeatTTL > 0 && fc.HeartbeatInterval >= fc.HeartbeatTTL {
+		return nil, fmt.Errorf("registry: heartbeat_interval (%s) must be < heartbeat_ttl (%s): "+
+			"TTL 会在两次心跳之间过期，实例将持续闪断", fc.HeartbeatInterval, fc.HeartbeatTTL)
+	}
 	reg := NewRegistrar(r, opts...)
-	reg.opts.heartbeatTTL = fc.HeartbeatTTL
-	reg.opts.deregisterAfter = fc.DeregisterAfter
 	return reg, nil
 }
 

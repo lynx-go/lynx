@@ -29,6 +29,12 @@ type fakeConsul struct {
 	ttlUpdates    []string
 	tokens        []string
 	queries       []string // RawQuery of /v1/health/service/*
+
+	// stripServiceAddress 让 handleRegister 构造 Service.Address 为空的
+	// 目录项（RC-03：Consul 生态常见的无 Address 注册形态）。
+	stripServiceAddress bool
+	// nodeAddress 覆盖目录项 Node.Address（默认跟随注册地址）。
+	nodeAddress string
 }
 
 func newFakeConsul(t *testing.T) (*fakeConsul, *httptest.Server) {
@@ -53,6 +59,24 @@ func (f *fakeConsul) bump() {
 	f.changed = make(chan struct{})
 }
 
+// rewindIndex 模拟 Raft index 回绕（leader 变更 / 快照恢复）：把目录
+// index 重置为更小值并唤醒阻塞中的 blocking query（RC-05 测试用）。
+// 调用方不得持有 f.mu。
+func (f *fakeConsul) rewindIndex(to uint64) {
+	f.mu.Lock()
+	f.index = to
+	close(f.changed)
+	f.changed = make(chan struct{})
+	f.mu.Unlock()
+}
+
+// queriesSnapshot 返回已记录查询的 RawQuery 副本。
+func (f *fakeConsul) queriesSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.queries...)
+}
+
 func (f *fakeConsul) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var reg api.AgentServiceRegistration
 	if err := json.NewDecoder(r.Body).Decode(&reg); err != nil {
@@ -63,9 +87,17 @@ func (f *fakeConsul) handleRegister(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	f.registrations = append(f.registrations, &reg)
 	f.tokens = append(f.tokens, r.Header.Get("X-Consul-Token"))
+	nodeAddr := reg.Address
+	if f.nodeAddress != "" {
+		nodeAddr = f.nodeAddress
+	}
+	svc := regToService(&reg)
+	if f.stripServiceAddress {
+		svc.Address = "" // 模拟未带 Service.Address 的注册
+	}
 	entry := &api.ServiceEntry{
-		Node:    &api.Node{Node: "node1", Address: reg.Address},
-		Service: regToService(&reg),
+		Node:    &api.Node{Node: "node1", Address: nodeAddr},
+		Service: svc,
 		Checks:  api.HealthChecks{{Status: api.HealthPassing}},
 	}
 	// upsert
@@ -533,7 +565,8 @@ func TestNewFromConfig(t *testing.T) {
 			"heartbeat_ttl":    "45s",
 			"deregister_after": "90s",
 			"consul": map[string]any{
-				"address":     "http://127.0.0.1:8500",
+				// 显式 https 与 tls.enabled 是合法组合（RC-19 后 http+tls 冲突报错）。
+				"address":     "https://127.0.0.1:8500",
 				"datacenter":  "dc1",
 				"namespace":   "team-a",
 				"allow_stale": true,
@@ -551,6 +584,20 @@ func TestNewFromConfig(t *testing.T) {
 		if c.heartbeatTTL != 45*time.Second || c.deregisterAfter != 90*time.Second ||
 			c.checkType != CheckTypeTTL || !c.allowStale {
 			t.Fatalf("config not mapped: %+v", c)
+		}
+	})
+	t.Run("http scheme conflicts with tls", func(t *testing.T) {
+		// RC-19：显式 http:// 与 tls.enabled=true 并存时明确报错，
+		// 不再静默把 scheme 覆盖成 https。
+		_, err := NewFromConfig(consulConfig(t, map[string]any{
+			"backend": "consul",
+			"consul": map[string]any{
+				"address": "http://127.0.0.1:8500",
+				"tls":     map[string]any{"enabled": true},
+			},
+		}))
+		if err == nil || !strings.Contains(err.Error(), "冲突") {
+			t.Fatalf("want scheme/tls conflict error, got %v", err)
 		}
 	})
 	t.Run("invalid address", func(t *testing.T) {

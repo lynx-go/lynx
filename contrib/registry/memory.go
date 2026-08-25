@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -158,37 +157,11 @@ func (m *Memory) snapshotLocked(name string, filter Filter) []Instance {
 	set := m.services[name]
 	out := make([]Instance, 0, len(set))
 	for _, inst := range set {
-		if matchFilter(inst, filter) {
+		if MatchFilter(filter, inst) {
 			out = append(out, copyInstance(inst))
 		}
 	}
 	return out
-}
-
-// matchFilter 应用 Filter：默认只保留 StatusPassing；Protocol 要求实例
-// 至少有一条该协议的 Endpoint；Tags 必须全匹配。
-func matchFilter(inst Instance, f Filter) bool {
-	if !f.IncludeUnhealthy && inst.Status != StatusPassing {
-		return false
-	}
-	if f.Protocol != "" {
-		found := false
-		for _, ep := range inst.Endpoints {
-			if ep.Protocol == f.Protocol {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	for _, tag := range f.Tags {
-		if !slices.Contains(inst.Tags, tag) {
-			return false
-		}
-	}
-	return true
 }
 
 // copyInstance 深拷贝 Endpoints / Tags / Meta，保证快照不被调用方篡改。

@@ -24,6 +24,12 @@ const (
 )
 
 // defaultDNSPorts 是无 SRV 记录时按协议补端口的缺省表。
+//
+// 已知假定（RC-15，行为保持不变）：无 SRV 时无法从 DNS 得知每个 IP 实际
+// 监听的端口，本表为每个 IP 生成 http/https/grpc 三条 Endpoint——这假定
+// 服务同时监听全部三个端口，多数服务并不成立（多出的 Endpoint 只是
+// 冗余记录，按协议 Filter 才会被选中）。生产环境应显式覆盖
+// registry.dns.ports，只保留真实监听的协议端口。
 var defaultDNSPorts = map[string]int{
 	ProtocolHTTP:  8080,
 	ProtocolHTTPS: 8443,
@@ -186,7 +192,7 @@ func (d *dnsDiscovery) protocols(filter Filter) []string {
 
 // resolve 执行一次完整解析：SRV 优先，无 SRV（NXDOMAIN）回落 A/AAAA +
 // 端口表。返回的实例按 ID 排序，保证快照可比较。结果再过一遍
-// matchFilter：DNS 实例无 Tags，带 Tags 的 Filter 恒不匹配（与 memory
+// MatchFilter：DNS 实例无 Tags，带 Tags 的 Filter 恒不匹配（与 memory
 // 后端语义一致）。
 func (d *dnsDiscovery) resolve(ctx context.Context, name string, filter Filter) ([]Instance, error) {
 	instances, err := d.resolveRaw(ctx, name, filter)
@@ -195,14 +201,14 @@ func (d *dnsDiscovery) resolve(ctx context.Context, name string, filter Filter) 
 	}
 	out := instances[:0]
 	for _, inst := range instances {
-		if matchFilter(inst, filter) {
+		if MatchFilter(filter, inst) {
 			out = append(out, inst)
 		}
 	}
 	return out, nil
 }
 
-// resolveRaw 是不带 matchFilter 的解析实现。
+// resolveRaw 是不经过 MatchFilter 过滤的解析实现（过滤在 resolve 统一做）。
 func (d *dnsDiscovery) resolveRaw(ctx context.Context, name string, filter Filter) ([]Instance, error) {
 	qname := d.queryName(name)
 	protocols := d.protocols(filter)
@@ -214,7 +220,7 @@ func (d *dnsDiscovery) resolveRaw(ctx context.Context, name string, filter Filte
 	if !isNotFound(err) {
 		return nil, err
 	}
-	return d.resolveHost(ctx, name, qname, protocols)
+	return d.resolveHost(ctx, qname, protocols)
 }
 
 // resolveSRV 逐协议查 _{protocol}._tcp.{qname}；任一协议命中即采用 SRV
@@ -268,8 +274,9 @@ func (d *dnsDiscovery) resolveSRV(ctx context.Context, qname string, protocols [
 }
 
 // resolveHost 查 A/AAAA，每个 IP 一条实例，端口来自端口表：一条 A 记录
-// + 多协议 = 多条 Endpoint（同 host 不同 port）。
-func (d *dnsDiscovery) resolveHost(ctx context.Context, name, qname string, protocols []string) ([]Instance, error) {
+// + 多协议 = 多条 Endpoint（同 host 不同 port）。Name 与 SRV 路径统一用
+// FQDN（qname）：两种路径切换时快照 Name 不跳变（RC-14），快照可比较。
+func (d *dnsDiscovery) resolveHost(ctx context.Context, qname string, protocols []string) ([]Instance, error) {
 	ips, err := d.lookup.LookupHost(ctx, qname)
 	if err != nil {
 		return nil, err
@@ -292,7 +299,7 @@ func (d *dnsDiscovery) resolveHost(ctx context.Context, name, qname string, prot
 			continue
 		}
 		instances = append(instances, Instance{
-			Name:      name,
+			Name:      qname,
 			ID:        ip,
 			Endpoints: endpoints,
 			Status:    StatusPassing,

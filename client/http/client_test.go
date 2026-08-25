@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -334,6 +335,53 @@ func TestBodyLeftToCaller(t *testing.T) {
 	}
 }
 
+// redirectRoundTripper 返回 302 响应：配合 CheckRedirect 报错，使标准库
+// http.Client 同时返回非 nil 的 resp（body 已关闭）与 err——这是
+// Client.Do 可能出现「err != nil 且 resp != nil」的真实可达路径。
+type redirectRoundTripper struct{}
+
+func (redirectRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusFound,
+		Header:     http.Header{"Location": {"http://example.invalid/y"}},
+		Body:       io.NopCloser(strings.NewReader("redirecting")),
+		Request:    r,
+	}, nil
+}
+
+// TestDoErrorReturnsRawBody 回归复审 G：Do 在 err != nil 时（即使同时带
+// 非 nil resp，如 CheckRedirect 报错）必须立即释放整体超时 ctx 并原样
+// 返回两者，不得把 body 包进 cancelBody——错误返回的 body 无人读取，
+// 包装会让超时定时器存活到 deadline 自然到期（标准库 net/http 的
+// Client.send 同款处理：err 非 nil 即无条件 stop 定时器）。
+func TestDoErrorReturnsRawBody(t *testing.T) {
+	client := New(
+		WithTimeout(30*time.Second),
+		WithClientOptions(func(c *http.Client) {
+			c.Transport = redirectRoundTripper{}
+			c.CheckRedirect = func(*http.Request, []*http.Request) error {
+				return errors.New("no redirects")
+			}
+		}),
+	)
+	req, err := http.NewRequest(http.MethodGet, "http://example.invalid/x", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err == nil || !strings.Contains(err.Error(), "no redirects") {
+		t.Fatalf("Do err = %v, want redirect rejection", err)
+	}
+	if resp == nil {
+		t.Fatal("redirect error must still return the previous response alongside err")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// 错误路径不包装 body：resp.Body 即传输层返回的原始对象。
+	if _, wrapped := resp.Body.(*cancelBody); wrapped {
+		t.Fatalf("error path must not wrap body in cancelBody, got %T", resp.Body)
+	}
+}
+
 // TestPropagationClosedLoop 是传播闭环的端到端测试：
 // client 发送（ctx 预置 request_id）→ server/http WithRequestID 接收
 // 并还原进 ctx，断言两端 request_id 一致。
@@ -404,6 +452,131 @@ func TestRetryAfterParse(t *testing.T) {
 		Header: http.Header{"Retry-After": {"garbage"}}}
 	if d := retryAfter(invalid); d != 0 {
 		t.Errorf("invalid = %v, want 0", d)
+	}
+}
+
+// TestLargeChunkedBodyReadableAfterDoReturns 回归 SC-01：整体超时不得在
+// Do 返回时取消 ctx——否则连接被立即关闭，大响应/分块 body 读取必得
+// context canceled。此处 256KB 分块（禁用内部缓冲、逐块 flush）响应在
+// Do 返回后必须能被调用方完整读取。
+func TestLargeChunkedBodyReadableAfterDoReturns(t *testing.T) {
+	const chunkSize = 16 * 1024
+	const chunks = 16 // 共 256KB，超过传输层缓冲，杜绝小响应掩盖问题
+	chunk := bytes.Repeat([]byte("a"), chunkSize)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		for i := 0; i < chunks; i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush() // 分块编码：Do 在 body 结束前就能返回
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+
+	client := New(WithTimeout(5 * time.Second))
+	resp, err := client.Get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读取大响应 body 失败（SC-01 回归，ctx 被 Do 提前取消）: %v", err)
+	}
+	if want := chunkSize * chunks; len(b) != want {
+		t.Errorf("body 长度 = %d, want %d", len(b), want)
+	}
+}
+
+// TestSlowBodyReadFailsAfterTimeout 回归 SC-01 另一半：Do 返回后慢速
+// body 读取仍受整体超时约束——超时到期后读取返回错误，不永久挂起。
+// （与自身文档"ctx 到期后读取返回错误"的契约一致。）
+func TestSlowBodyReadFailsAfterTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(2 * time.Second) // 慢速 body：远超客户端整体超时
+		_, _ = w.Write([]byte("more"))
+	}))
+	defer srv.Close()
+
+	client := New(WithTimeout(200 * time.Millisecond))
+	resp, err := client.Get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Get（头部阶段应成功）: %v", err)
+	}
+	defer resp.Body.Close()
+
+	start := time.Now()
+	_, readErr := io.ReadAll(resp.Body)
+	elapsed := time.Since(start)
+	if readErr == nil {
+		t.Fatal("慢 body 读取在整体超时后仍成功，want 错误（超时应约束 body 读取）")
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("读取耗时 %v，超时后应尽快返回错误", elapsed)
+	}
+}
+
+// TestCapRetryWait 单元测试 SC-12：重试等待上限取 min(原值, 整体超时
+// 剩余, 2min 固定上限)。
+func TestCapRetryWait(t *testing.T) {
+	// 无 deadline：仅受固定上限约束。
+	if got := capRetryWait(context.Background(), time.Hour); got != 2*time.Minute {
+		t.Errorf("无 deadline 时 1h 被 cap 为 %v, want 2m", got)
+	}
+	if got := capRetryWait(context.Background(), time.Second); got != time.Second {
+		t.Errorf("小于上限的等待不应被改变: %v, want 1s", got)
+	}
+
+	// 有 deadline：受剩余时间约束。
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	got := capRetryWait(ctx, time.Hour)
+	if got <= 0 || got > 100*time.Millisecond {
+		t.Errorf("有 deadline 时 1h 被 cap 为 %v, want (0, 100ms]", got)
+	}
+}
+
+// TestRetryAfterExtremeValueCapped 回归 SC-12：对端返回 Retry-After:
+// 86400 时不得等满——等待被钳制到整体超时剩余，超时后以
+// DeadlineExceeded 返回，而不是挂死等待。
+func TestRetryAfterExtremeValueCapped(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Retry-After", "86400")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	client := New(WithTimeout(300*time.Millisecond),
+		WithRetry(2, WithRetryInitialInterval(10*time.Millisecond)))
+	start := time.Now()
+	_, err := client.Get(context.Background(), srv.URL)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("want timeout error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("elapsed = %v, 等待未被钳制（极端 Retry-After 被等满）", elapsed)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1（超时前不应发生第二次尝试）", got)
 	}
 }
 

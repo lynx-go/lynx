@@ -14,11 +14,14 @@ import (
 	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -140,10 +143,18 @@ type Transport struct {
 	// producer 参数正交（Config 的 Consumer/Producer 段），各侧独立构建，
 	// 避免同集群两侧参数互斥、静默丢配置。
 	// 缓存 key 仅按 brokers 分组：同 brokers 的多 topic 若配置了不同的
-	// producer/consumer 参数，先构建者生效，后配置被静默忽略（P2-3 已知语义，
-	// 与 SASL/TLS 的集群级约束一致）。
+	// producer/consumer 参数，先构建者生效，后配置被静默忽略——差异经
+	// pubCfgFP/subCfgFP 指纹比对发现并记 Warn（WK-06）。
 	pubSaramaConfigs map[string]*sarama.Config // key: brokers 列表
 	subSaramaConfigs map[string]*sarama.Config // key: brokers 列表
+	pubCfgFP         map[string]string         // key: brokers；value: 配置指纹（哈希，不含明文口令）
+	subCfgFP         map[string]string         // 同上（订阅侧）
+	// warnedFP 记录已告警的（side|brokers）组合（复审-3，WK-06 去重）：
+	// 配置失配在每次 Publish/Subscribe 都会命中指纹比对，不去重会按消息
+	// 速率刷 Warn。一旦告警即不再重复——配置恢复正常也不重置（一次性
+	// 告警是简化：进程生命周期内每组合至多一条，首条已足以指出该集群
+	// 存在被忽略的 topic 级配置）。调用方必须已持有 t.mu。
+	warnedFP map[string]struct{}
 
 	// 客户端工厂 seam：测试注入 fake。
 	newPublisher  func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error)
@@ -176,6 +187,7 @@ func NewTransport(opts Options) (*Transport, error) {
 		subscribers:      map[string]message.Subscriber{},
 		pubSaramaConfigs: map[string]*sarama.Config{},
 		subSaramaConfigs: map[string]*sarama.Config{},
+		warnedFP:         map[string]struct{}{},
 		newPublisher: func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
 			return watermillkafka.NewPublisher(watermillkafka.PublisherConfig{
 				Brokers:               brokers,
@@ -207,16 +219,45 @@ func NewTransport(opts Options) (*Transport, error) {
 func (t *Transport) Name() string { return "kafka-transport" }
 
 // Init 校验配置并记录日志实例。
+// WK-08：为每个 topic 预构建两侧 sarama 配置并 cfg.Validate()（纯离线
+// 校验，不触网）——非法 sasl 机制/compression/initial_offset/心跳超时
+// 失配/TLS CA 路径等在启动期即报错，而不是等服务"健康启动"后首次
+// Publish/Subscribe 才失败（届时消息已在丢）。
 func (t *Transport) Init(ctx lynx.AppContext) error {
 	if ctx != nil {
 		t.logger = ctx.Logger("service", t.Name())
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	for name, topic := range t.opts.Topics {
 		if len(topic.Brokers) == 0 {
 			return fmt.Errorf("kafka: topic %q has no brokers", name)
 		}
 		if len(topic.Topics) == 0 {
 			return fmt.Errorf("kafka: topic %q has no physical topics", name)
+		}
+		if topic.Producer != nil {
+			// WK-06：Init 预构建时即可发现同集群多 topic 的差异配置。
+			t.checkCfgFP("producer", name, strings.Join(topic.Brokers, ","),
+				configFingerprint(topic.Producer, topic.SASL, topic.TLS), t.pubCfgFP)
+			cfg, err := t.buildPublisherConfig(topic.Brokers, topic.Producer, topic.SASL, topic.TLS)
+			if err != nil {
+				return fmt.Errorf("kafka: topic %q producer config: %w", name, err)
+			}
+			if err := cfg.Validate(); err != nil {
+				return fmt.Errorf("kafka: topic %q producer config invalid: %w", name, err)
+			}
+		}
+		if topic.Consumer != nil {
+			t.checkCfgFP("consumer", name, strings.Join(topic.Brokers, ","),
+				configFingerprint(topic.Consumer, topic.SASL, topic.TLS), t.subCfgFP)
+			cfg, err := t.buildSubscriberConfig(topic.Brokers, topic.Consumer, topic.SASL, topic.TLS)
+			if err != nil {
+				return fmt.Errorf("kafka: topic %q consumer config: %w", name, err)
+			}
+			if err := cfg.Validate(); err != nil {
+				return fmt.Errorf("kafka: topic %q consumer config invalid: %w", name, err)
+			}
 		}
 	}
 	return nil
@@ -261,7 +302,9 @@ func (t *Transport) Stop(ctx context.Context) error {
 	return nil
 }
 
-// CheckHealth 报告 Transport 是否在运行。
+// CheckHealth 报告 Transport 是否在运行。仅是进程内运行标志（Start 置位），
+// 不做 broker 连通性检查（WK-12 语义澄清）：broker 断连要等 Publish/
+// Subscribe 报错才会暴露。
 func (t *Transport) CheckHealth() error {
 	if !t.running.Load() {
 		return errors.New("kafka transport is not running")
@@ -313,7 +356,7 @@ func (t *Transport) Publish(ctx context.Context, topic string, e *eventbus.RawEv
 		}
 		physical = to.Topics[0]
 	}
-	p, err := t.publisherFor(to.Brokers, to.Producer, to.SASL, to.TLS)
+	p, err := t.publisherFor(to.Brokers, topic, to.Producer, to.SASL, to.TLS)
 	if err != nil {
 		return err
 	}
@@ -323,6 +366,8 @@ func (t *Transport) Publish(ctx context.Context, topic string, e *eventbus.RawEv
 	}
 	msg := toWatermill(&raw)
 	if to.Producer.LogMessage {
+		// Debug 级日志：log_message 配置实际开启的是 debug 级输出，
+		// 需 --log-level=debug 才可见（WK-18 语义澄清）。
 		t.logger.DebugContext(ctx, "sending kafka message", "message", string(msg.Payload), "topic", physical, "key", raw.Key)
 	}
 	return p.Publish(physical, msg)
@@ -355,8 +400,17 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts eventbus.S
 	if instances < 1 {
 		instances = 1
 	}
+	// WK-15：每个实例是一条独立的消费组成员（sarama 客户端/TCP 连接），
+	// instances=1000 会真实创建 1000 条连接，静默接受只会把资源耗尽延迟
+	// 到运行期。钳制到上限并告警（不直接报错，保留极端配置的启动能力，
+	// 问题显式化交给运维）。
+	if instances > maxConsumerInstances {
+		t.logger.Warn("kafka: consumer instances exceed limit, clamped",
+			"topic", topic, "instances", instances, "limit", maxConsumerInstances)
+		instances = maxConsumerInstances
+	}
 
-	sub, err := t.subscriberFor(to.Brokers, group, to.Consumer, to.SASL, to.TLS)
+	sub, err := t.subscriberFor(to.Brokers, topic, group, to.Consumer, to.SASL, to.TLS)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +432,7 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts eventbus.S
 			chans = append(chans, ch)
 		}
 	}
-	return mapDeliveries(fanIn(chans, cancel), topic), nil
+	return mapDeliveries(subCtx, fanIn(subCtx, chans, cancel), topic), nil
 }
 
 // toWatermill 将 RawEvent 转为 watermill 消息（wire 元数据经 EncodeWireMetadata）。
@@ -405,25 +459,46 @@ func fromWatermill(msg *message.Message) *eventbus.RawEvent {
 
 // mapDeliveries 将 watermill 消息 channel 转为 Delivery channel：
 // Event 填入逻辑 topic；Ack/Nack 转达原 *message.Message（Kafka offset 提交依赖此路径）。
-func mapDeliveries(in <-chan *message.Message, logicalTopic string) <-chan eventbus.Delivery {
+// WK-05：收发两侧均带 ctx 退出分支——下游停读（返回 channel 无人消费）
+// 时裸发送会永久阻塞 goroutine 且 in-flight 消息的确认丢失；ctx 取消时
+// 对手中消息 Nack 交还 Transport（真实 Kafka 侧 ResendLoop 已随自身 ctx
+// 退出，Nack 不会引发再次重投），随后关闭输出释放下游。
+func mapDeliveries(ctx context.Context, in <-chan *message.Message, logicalTopic string) <-chan eventbus.Delivery {
 	out := make(chan eventbus.Delivery)
 	go func() {
 		defer close(out)
-		for msg := range in {
-			raw := fromWatermill(msg)
-			if raw.Topic == "" {
-				raw.Topic = logicalTopic
-			}
-			wm := msg
-			out <- eventbus.Delivery{
-				Event: raw,
-				Ack:   func() { _ = wm.Ack() },
-				Nack:  func() { wm.Nack() },
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-in:
+				if !ok {
+					return
+				}
+				raw := fromWatermill(msg)
+				if raw.Topic == "" {
+					raw.Topic = logicalTopic
+				}
+				wm := msg
+				select {
+				case out <- eventbus.Delivery{
+					Event: raw,
+					Ack:   func() { _ = wm.Ack() },
+					Nack:  func() { wm.Nack() },
+				}:
+				case <-ctx.Done():
+					wm.Nack()
+					return
+				}
 			}
 		}
 	}()
 	return out
 }
+
+// maxConsumerInstances 是单次订阅展开的实例数上限（WK-15）：每个实例是
+// 一条独立的消费组连接，超过此数几乎必然是配置错误而非真实需求。
+const maxConsumerInstances = 64
 
 // compressionCodecs 是配置字符串到 sarama 压缩算法的映射。
 var compressionCodecs = map[string]sarama.CompressionCodec{
@@ -472,11 +547,132 @@ func applyAuth(cfg *sarama.Config, sasl *SASLOptions, tlsOpts *TLSOptions) error
 	return nil
 }
 
+// configFingerprint 生成配置指纹（WK-06）：同集群（brokers 相同）只构建
+// 一份 sarama 配置（先到先得），指纹用于在缓存命中时发现"后配置的
+// topic 参数与生效配置不一致"并 Warn。指纹基于规范化格式化（复审-6）：
+// fmt 对组合值内的指针只打印地址而非内容，因此递归解引用全部指针字段
+// （顶层 parts 与嵌套字段一视同仁，如 ConsumerOptions.AutoCommitEnabled
+// *bool 按指向值参与）——同值不同指针实例必须同指纹，否则会误报差异；
+// 哈希化避免把 SASL 口令等敏感值带进日志。配置树是纯数据（无环、不含
+// 函数/channel），递归不会失控。
+func configFingerprint(parts ...any) string {
+	var sb strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			sb.WriteByte(';')
+		}
+		formatFingerprintValue(reflect.ValueOf(p), &sb)
+	}
+	sum := sha256.Sum256([]byte(sb.String()))
+	return hex.EncodeToString(sum[:8])
+}
+
+// formatFingerprintValue 把值规范化为确定性字符串：指针解引用、nil 记作
+// "<nil>"、结构体按字段名有序展开、map 按键排序、切片保序——同值必须
+// 产出同串（configFingerprint 的实现细节）。
+func formatFingerprintValue(v reflect.Value, sb *strings.Builder) {
+	switch v.Kind() {
+	case reflect.Invalid:
+		sb.WriteString("<zero>")
+	case reflect.Pointer, reflect.Interface:
+		if v.IsNil() {
+			sb.WriteString("<nil>")
+			return
+		}
+		formatFingerprintValue(v.Elem(), sb)
+	case reflect.Struct:
+		t := v.Type()
+		sb.WriteByte('{')
+		for i := 0; i < v.NumField(); i++ {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(t.Field(i).Name)
+			sb.WriteByte(':')
+			formatFingerprintValue(v.Field(i), sb)
+		}
+		sb.WriteByte('}')
+	case reflect.Slice:
+		if v.IsNil() {
+			sb.WriteString("<nil>")
+			return
+		}
+		fallthrough
+	case reflect.Array:
+		sb.WriteByte('[')
+		for i := 0; i < v.Len(); i++ {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			formatFingerprintValue(v.Index(i), sb)
+		}
+		sb.WriteByte(']')
+	case reflect.Map:
+		if v.IsNil() {
+			sb.WriteString("<nil>")
+			return
+		}
+		keys := make([]string, 0, v.Len())
+		byKey := make(map[string]reflect.Value, v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			k := fmt.Sprint(iter.Key().Interface())
+			keys = append(keys, k)
+			byKey[k] = iter.Value()
+		}
+		sort.Strings(keys)
+		sb.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(k)
+			sb.WriteByte(':')
+			formatFingerprintValue(byKey[k], sb)
+		}
+		sb.WriteByte('}')
+	default:
+		if v.CanInterface() {
+			fmt.Fprintf(sb, "%v", v.Interface())
+			return
+		}
+		// 未导出字段（当前配置结构不存在）：退化为类型+种类标记。
+		fmt.Fprintf(sb, "<unexported %s.%s>", v.Type(), v.Kind())
+	}
+}
+
+// checkCfgFP 在配置缓存命中且指纹不一致时 Warn（WK-06）：客户端按 brokers
+// 共享、先构建者生效，同集群多 topic 的差异配置会被静默忽略——不能报错
+// （可能是 topic 级冗余配置），但必须留下痕迹，否则线上排查无从下手。
+// cached 为 nil（首次，无任何生效配置）时不告警。
+// 复审-3：按（side|brokers）维度一次性告警——Publish/Subscribe 每次调用
+// 都会命中比对，同一失配持续存在时只 Warn 首次，不随消息速率刷日志
+// （见 Transport.warnedFP 的去重语义说明）。调用方必须已持有 t.mu。
+func (t *Transport) checkCfgFP(side, topic, key, fp string, cached map[string]string) {
+	prev, ok := cached[key]
+	if !ok || prev == fp {
+		return
+	}
+	warnKey := side + "|" + key
+	if _, warned := t.warnedFP[warnKey]; warned {
+		return
+	}
+	if t.warnedFP == nil {
+		t.warnedFP = map[string]struct{}{}
+	}
+	t.warnedFP[warnKey] = struct{}{}
+	t.logger.Warn("kafka: "+side+" config differs from the effective config for these brokers; topic-level settings ignored",
+		"topic", topic, "brokers", key,
+		"effective_fingerprint", prev, "ignored_fingerprint", fp)
+}
+
 // buildPublisherConfig 构建并缓存发布侧 sarama.Config（按 brokers 分组）。
 // consumer 与 producer 参数正交，两侧独立构建，互不覆盖。
-// 调用方必须已持有 t.mu。
+// 调用方必须已持有 t.mu；缓存命中的差异检测见 Init/publisherFor 的
+// checkCfgFP（WK-06）。
 func (t *Transport) buildPublisherConfig(brokers []string, producer *ProducerOptions, sasl *SASLOptions, tlsOpts *TLSOptions) (*sarama.Config, error) {
 	key := strings.Join(brokers, ",")
+	fp := configFingerprint(producer, sasl, tlsOpts)
 	if cfg, ok := t.pubSaramaConfigs[key]; ok {
 		return cfg, nil
 	}
@@ -519,14 +715,20 @@ func (t *Transport) buildPublisherConfig(brokers []string, producer *ProducerOpt
 	if err := applyAuth(cfg, sasl, tlsOpts); err != nil {
 		return nil, err
 	}
+	if t.pubCfgFP == nil {
+		t.pubCfgFP = map[string]string{}
+	}
 	t.pubSaramaConfigs[key] = cfg
+	t.pubCfgFP[key] = fp
 	return cfg, nil
 }
 
 // buildSubscriberConfig 构建并缓存订阅侧 sarama.Config（按 brokers 分组）。
-// 调用方必须已持有 t.mu。
+// 调用方必须已持有 t.mu；缓存命中的差异检测见 Init/subscriberFor 的
+// checkCfgFP（WK-06）。
 func (t *Transport) buildSubscriberConfig(brokers []string, consumer *ConsumerOptions, sasl *SASLOptions, tlsOpts *TLSOptions) (*sarama.Config, error) {
 	key := strings.Join(brokers, ",")
+	fp := configFingerprint(consumer, sasl, tlsOpts)
 	if cfg, ok := t.subSaramaConfigs[key]; ok {
 		return cfg, nil
 	}
@@ -570,14 +772,27 @@ func (t *Transport) buildSubscriberConfig(brokers []string, consumer *ConsumerOp
 	if err := applyAuth(cfg, sasl, tlsOpts); err != nil {
 		return nil, err
 	}
+	if t.subCfgFP == nil {
+		t.subCfgFP = map[string]string{}
+	}
 	t.subSaramaConfigs[key] = cfg
+	t.subCfgFP[key] = fp
 	return cfg, nil
 }
 
-func (t *Transport) publisherFor(brokers []string, producer *ProducerOptions, sasl *SASLOptions, tlsOpts *TLSOptions) (message.Publisher, error) {
+func (t *Transport) publisherFor(brokers []string, topic string, producer *ProducerOptions, sasl *SASLOptions, tlsOpts *TLSOptions) (message.Publisher, error) {
 	key := strings.Join(brokers, ",")
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// WK-07：Publish 的无锁 stopped 快照与本锁之间存在窗口——Stop 可能在
+	// 等 mu 期间完成并关闭全部客户端；持锁后必须复查，返回框架级错误
+	// 而非命中缓存报 sarama "client is closed"。
+	if t.stopped.Load() {
+		return nil, errors.New("kafka transport is stopped")
+	}
+	// WK-06：客户端缓存命中前先比对指纹，差异配置 Warn（客户端层缓存
+	// 命中时不会再走 buildXxxConfig，检测必须在此层做）。
+	t.checkCfgFP("producer", topic, key, configFingerprint(producer, sasl, tlsOpts), t.pubCfgFP)
 	if p, ok := t.publishers[key]; ok {
 		return p, nil
 	}
@@ -593,10 +808,16 @@ func (t *Transport) publisherFor(brokers []string, producer *ProducerOptions, sa
 	return p, nil
 }
 
-func (t *Transport) subscriberFor(brokers []string, group string, consumer *ConsumerOptions, sasl *SASLOptions, tlsOpts *TLSOptions) (message.Subscriber, error) {
+func (t *Transport) subscriberFor(brokers []string, topic string, group string, consumer *ConsumerOptions, sasl *SASLOptions, tlsOpts *TLSOptions) (message.Subscriber, error) {
 	key := strings.Join(brokers, ",") + "|" + group
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// WK-07：与 publisherFor 同理，持锁后复查 stopped。
+	if t.stopped.Load() {
+		return nil, errors.New("kafka transport is stopped")
+	}
+	// WK-06：同 publisherFor，差异配置在客户端缓存命中前检测。
+	t.checkCfgFP("consumer", topic, strings.Join(brokers, ","), configFingerprint(consumer, sasl, tlsOpts), t.subCfgFP)
 	if s, ok := t.subscribers[key]; ok {
 		return s, nil
 	}
@@ -618,14 +839,29 @@ func (t *Transport) subscriberFor(brokers []string, group string, consumer *Cons
 }
 
 // logMessages 包装订阅 channel：每条消息按 ConsumerOptions.LogMessage
-// 输出 debug 日志（对齐 Producer 侧 LogMessage 语义）。
+// 输出 debug 日志（对齐 Producer 侧 LogMessage 语义；Debug 级，需
+// --log-level=debug 可见，WK-18）。发送带 ctx 退出分支（WK-05）：
+// 下游停读时不得永久阻塞。
 func (t *Transport) logMessages(ctx context.Context, physical string, in <-chan *message.Message) <-chan *message.Message {
 	out := make(chan *message.Message)
 	go func() {
 		defer close(out)
-		for msg := range in {
-			t.logger.DebugContext(ctx, "received kafka message", "message", string(msg.Payload), "topic", physical)
-			out <- msg
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-in:
+				if !ok {
+					return
+				}
+				t.logger.DebugContext(ctx, "received kafka message", "message", string(msg.Payload), "topic", physical)
+				select {
+				case out <- msg:
+				case <-ctx.Done():
+					msg.Nack()
+					return
+				}
+			}
 		}
 	}()
 	return out
@@ -633,15 +869,31 @@ func (t *Transport) logMessages(ctx context.Context, physical string, in <-chan 
 
 // fanIn 合并多个订阅 channel 为单一 channel；全部输入关闭后关闭输出，
 // 并调用 done（用于取消 Subscribe 的派生 ctx，释放子订阅）。
-func fanIn(chans []<-chan *message.Message, done func()) <-chan *message.Message {
+// WK-05：收发均带 ctx 退出分支——订阅 ctx 取消时即使上游 channel 未
+// 关闭（fake/异常路径）worker 也必须退出，阻塞在发送侧时对 in-flight
+// 消息 Nack。
+func fanIn(ctx context.Context, chans []<-chan *message.Message, done func()) <-chan *message.Message {
 	out := make(chan *message.Message)
 	var wg sync.WaitGroup
 	for _, ch := range chans {
 		wg.Add(1)
 		go func(ch <-chan *message.Message) {
 			defer wg.Done()
-			for msg := range ch {
-				out <- msg
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case msg, ok := <-ch:
+					if !ok {
+						return
+					}
+					select {
+					case out <- msg:
+					case <-ctx.Done():
+						msg.Nack()
+						return
+					}
+				}
 			}
 		}(ch)
 	}

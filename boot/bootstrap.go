@@ -27,6 +27,11 @@ type Bootstrap struct {
 }
 
 // New 创建 Bootstrap 实例。
+// 参数顺序（onStarts、onStops、services、serviceFactories）与 Bootstrap
+// 字段声明顺序不同（中间隔着 DrainHooks）——这是历史固定的 Wire 兼容
+// 取舍：签名被既有 wire 生成的 injector 代码引用，调整参数顺序会破坏
+// 全部 injector 的可编译性；后加入的排水钩子因此走可选的
+// WithDrainHooks setter（不改 New 签名），而非插入新参数。
 func New(
 	onStarts OnStartHooks,
 	onStops OnStopHooks,

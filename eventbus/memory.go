@@ -15,6 +15,14 @@ import (
 )
 
 // memoryBus 是默认的进程内 Bus：零依赖、开箱即用、支持 Start 后动态订阅。
+//
+// 投递语义（与持久化 Bus 的关键差异，选型时必读）：
+// 内存 Bus 是 at-most-once——订阅者缓冲满时非阻塞丢弃（仅 Error 日志，
+// 见 dispatch）；handler 重试耗尽同样丢弃（见 handleWithRetry）。
+// 原因：状态协同场景不应反压发布者，更不该阻塞进程内事件循环。
+// 持久化 Bus（如 Kafka，见 contrib/watermill-kafka）语义相反：
+// at-least-once，处理失败无限重投。跨 Bus 迁移前先确认业务能接受
+// 哪一侧的丢失/重复语义，必要时内存侧调大 BufferSize 或业务侧幂等。
 type memoryBus struct {
 	opts   Options
 	logger *slog.Logger
@@ -236,19 +244,24 @@ func (b *memoryBus) PublishRaw(ctx context.Context, topic string, data []byte, o
 }
 
 func (b *memoryBus) dispatch(ctx context.Context, ev *RawEvent) error {
+	// 发送必须在 RLock 临界区内完成：与 Stop 的写锁 close(sub.ch) 互斥。
+	// 若先拷贝订阅者再解锁发送，关停期间的并发 Publish 会落进
+	// "已拷贝、已 close" 窗口，send on closed channel 直接 panic。
+	// 非阻塞发送开销极小，持读锁不影响并发 Publish 的吞吐。
 	b.mu.RLock()
-	subs := append([]*subscriber(nil), b.subs[ev.Topic]...)
-	b.mu.RUnlock()
+	defer b.mu.RUnlock()
+	subs := b.subs[ev.Topic]
 	if len(subs) == 0 {
 		return nil
 	}
 	for _, sub := range subs {
-		// 非阻塞投递，满缓冲时丢弃并告警（状态协同不该反压发布者）
+		// 非阻塞投递，满缓冲时丢弃并告警（状态协同不该反压发布者，
+		// at-most-once 语义见 Bus 接口注释）；日志带事件 ID 便于对账。
 		select {
 		case sub.ch <- cloneRawEvent(ev):
 		default:
 			b.logger.ErrorContext(ctx, "bus dispatch dropped event: subscriber buffer full",
-				"topic", ev.Topic, "handler", sub.handlerName)
+				"topic", ev.Topic, "handler", sub.handlerName, "id", ev.ID)
 		}
 	}
 	return nil
@@ -296,7 +309,7 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 		handlerName: handlerName,
 		topic:       topic,
 		ch:          ch,
-		handler:     b.wrapHandler(topic, h, *o),
+		handler:     h,
 		opts:        *o,
 		cancel:      cancel,
 	}
@@ -375,12 +388,6 @@ func (b *memoryBus) handleWithRetry(ctx context.Context, sub *subscriber, ev *Ra
 		}
 	}
 	b.logger.ErrorContext(hCtx, "handler failed after retries", "error", err, "handler", sub.handlerName)
-}
-
-func (b *memoryBus) wrapHandler(topic string, h HandlerFunc, opts SubscribeOptions) HandlerFunc {
-	return func(ctx context.Context, ev *RawEvent) error {
-		return h(ctx, ev)
-	}
 }
 
 func cloneHeaders(h map[string]string) map[string]string {

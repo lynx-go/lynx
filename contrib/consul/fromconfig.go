@@ -71,6 +71,13 @@ func NewFromConfig(cfg lynx.Config) (*Client, error) {
 		if err != nil {
 			return nil, err
 		}
+		// 显式 scheme 与 tls.enabled 冲突时报错而非静默覆盖（RC-19）：
+		// 此前 address 写入的 http 会被 tls.enabled 的 https 悄悄改掉，
+		// 用户以为走 TLS 明文探测、或以为走明文实际握手失败，均难排障。
+		if fc.Consul.TLS.Enabled && scheme == "http" {
+			return nil, fmt.Errorf("consul: registry.consul.address %q 显式 http 与 tls.enabled=true 冲突：TLS 应使用 https:// 地址或去掉 scheme",
+				fc.Consul.Address)
+		}
 		apiConfig.Address = address
 		if scheme != "" {
 			apiConfig.Scheme = scheme

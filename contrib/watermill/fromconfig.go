@@ -10,10 +10,12 @@ import (
 
 // busFileConfig 是 "bus" 段配置（NewFromConfig 使用）。
 type busFileConfig struct {
-	Debug      bool                       `mapstructure:"debug"`
-	LogMessage *logMessageConfig          `mapstructure:"log_message"`
-	Retry      *retryConfig               `mapstructure:"retry"`
-	Topics     map[string]topicFileConfig `mapstructure:"topics"`
+	Debug      bool              `mapstructure:"debug"`
+	LogMessage *logMessageConfig `mapstructure:"log_message"`
+	Retry      *retryConfig      `mapstructure:"retry"`
+	// MaxRedeliveries 是 Bus 级毒消息重投上限（WK-02，见 Options.MaxRedeliveries）。
+	MaxRedeliveries int                        `mapstructure:"max_redeliveries"`
+	Topics          map[string]topicFileConfig `mapstructure:"topics"`
 }
 
 type topicFileConfig struct {
@@ -24,6 +26,8 @@ type topicFileConfig struct {
 	Group           string            `mapstructure:"group"`
 	Instances       int               `mapstructure:"instances"`
 	Retry           *retryConfig      `mapstructure:"retry"`
+	// MaxRedeliveries 覆盖该主题的重投上限（0 = 沿用 Bus 级）。
+	MaxRedeliveries int `mapstructure:"max_redeliveries"`
 }
 
 type routeConfig struct {
@@ -90,7 +94,19 @@ func NewFromConfig(cfg lynx.Config, transports map[string]eventbus.Transport) (*
 			LogMessage:      tc.LogMessage.toOptions(),
 		}
 	}
-	bus := New(opts)
+	// WK-02：重投上限的配置入口在 watermill 自己的扩展 Options
+	//（eventbus.Options 已冻结），配置文件 bus.max_redeliveries /
+	// bus.topics.<topic>.max_redeliveries 装配至此。0 = 未设置（用默认值）。
+	var ext []Option
+	if file.MaxRedeliveries != 0 {
+		ext = append(ext, WithMaxRedeliveries(file.MaxRedeliveries))
+	}
+	for topic, tc := range file.Topics {
+		if tc.MaxRedeliveries != 0 {
+			ext = append(ext, WithTopicMaxRedeliveries(topic, tc.MaxRedeliveries))
+		}
+	}
+	bus := New(opts, ext...)
 	for topic, tc := range file.Topics {
 		if tc.Route == nil {
 			continue

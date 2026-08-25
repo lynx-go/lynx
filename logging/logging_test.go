@@ -141,6 +141,54 @@ func TestWithAttrsEmptyReturnsSameCtx(t *testing.T) {
 	}
 }
 
+// TestWithAttrsDedupesWithinBatch 回归 AUX-07：同一批次内重复 key 不
+// 去重时"最新写入为准"的承诺不成立（重复项会原样下发，部分 handler
+// 产出重复 JSON 键）。批次内应保留最后一次传入的值（与跨调用"最新
+// 覆盖"方向一致）。
+func TestWithAttrsDedupesWithinBatch(t *testing.T) {
+	ctx := WithAttrs(context.Background(),
+		slog.String("k", "first"),
+		slog.String("j", "keep"),
+		slog.String("k", "last"),
+	)
+
+	attrs := AttrsFrom(ctx)
+	if len(attrs) != 2 {
+		t.Fatalf("got %d attrs, want 2 (duplicate k should be dropped): %v", len(attrs), attrs)
+	}
+	got := map[string]string{}
+	for _, a := range attrs {
+		got[a.Key] = a.Value.String()
+	}
+	if got["k"] != "last" {
+		t.Errorf("k = %q, want last (later write wins within batch)", got["k"])
+	}
+	if got["j"] != "keep" {
+		t.Errorf("j = %q, want keep (non-duplicate order preserved)", got["j"])
+	}
+}
+
+// TestAttrsHandlerNoDuplicateKeysInOutput 验证去重后的属性在最终日志
+// 输出中只出现一次（JSON 键不重复）。
+func TestAttrsHandlerNoDuplicateKeysInOutput(t *testing.T) {
+	buf, base := newRecordingHandler()
+	logger := slog.New(NewAttrsHandler(base))
+
+	ctx := WithAttrs(context.Background(),
+		slog.String("request_id", "rid-old"),
+		slog.String("request_id", "rid-new"),
+	)
+	logger.InfoContext(ctx, "hello")
+
+	out := buf.String()
+	if n := strings.Count(out, `"request_id":`); n != 1 {
+		t.Errorf("request_id appears %d times in output, want 1: %s", n, out)
+	}
+	if !strings.Contains(out, `"request_id":"rid-new"`) {
+		t.Errorf("output should keep the later value, got: %s", out)
+	}
+}
+
 func TestAttrsFromUnset(t *testing.T) {
 	if attrs := AttrsFrom(context.Background()); attrs != nil {
 		t.Errorf("AttrsFrom on plain context = %v, want nil", attrs)

@@ -23,7 +23,7 @@ type fakeAppContext struct {
 
 func (f *fakeAppContext) Context() context.Context       { return f.ctx }
 func (f *fakeAppContext) Config() lynx.Config            { return nil }
-func (f *fakeAppContext) Bus() eventbus.Bus                   { return eventbus.NewMemoryBus(eventbus.Options{}) }
+func (f *fakeAppContext) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
 func (f *fakeAppContext) Logger(...any) *slog.Logger     { return slog.Default() }
 func (f *fakeAppContext) HealthCheckers() []lynx.Checker { return f.checkers }
 func (f *fakeAppContext) Close()                         {}
@@ -401,6 +401,125 @@ func TestRegistrarAdvertiseTimeout(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start must return after advertise_timeout")
 	}
+}
+
+// barePortAdvertiser 恒定返回裸端口 Endpoint（模拟 AdvertiseAddr 未设置且
+// 监听器只报 ":8080" 的场景）。
+type barePortAdvertiser struct{ ep Endpoint }
+
+func (a *barePortAdvertiser) Endpoints() []Endpoint { return []Endpoint{a.ep} }
+
+// TestRegistrarSkipsBarePortWithoutAdvertiseHost 锁定 RC-02：instance() 对
+// 无法补全的裸端口 Advertiser Endpoint 跳过 + Warn，不再让裸 ":8080"
+// 入目录（违反 Endpoint host:port 契约，registry.go）。
+func TestRegistrarSkipsBarePortWithoutAdvertiseHost(t *testing.T) {
+	t.Run("skip when advertise host missing", func(t *testing.T) {
+		backend := &fakeRegistry{}
+		r := NewRegistrar(backend, WithServiceName("svc"),
+			WithStaticEndpoints(Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}),
+			WithAdvertisers(&barePortAdvertiser{ep: Endpoint{Protocol: ProtocolGRPC, Address: ":9090"}}),
+		)
+		mustInit(t, r, newFakeAppContext())
+
+		done := make(chan error, 1)
+		go func() { done <- r.Start(context.Background()) }()
+		defer func() {
+			_ = r.Stop(context.Background())
+			<-done
+		}()
+		waitFor(t, time.Second, func() bool { return r.CheckHealth() == nil })
+
+		backend.mu.Lock()
+		var got []Endpoint
+		if len(backend.instances) > 0 {
+			got = backend.instances[0].Endpoints
+		}
+		backend.mu.Unlock()
+		if len(got) != 1 || got[0].Address != "10.0.0.1:8080" {
+			t.Fatalf("bare :9090 must be skipped, registered endpoints: %+v", got)
+		}
+	})
+	t.Run("completed when advertise host present", func(t *testing.T) {
+		backend := &fakeRegistry{}
+		r := NewRegistrar(backend, WithServiceName("svc"),
+			WithAdvertiseHost("10.1.1.1"),
+			WithAdvertisers(&barePortAdvertiser{ep: Endpoint{Protocol: ProtocolGRPC, Address: ":9090"}}),
+		)
+		mustInit(t, r, newFakeAppContext())
+
+		done := make(chan error, 1)
+		go func() { done <- r.Start(context.Background()) }()
+		defer func() {
+			_ = r.Stop(context.Background())
+			<-done
+		}()
+		waitFor(t, time.Second, func() bool { return r.CheckHealth() == nil })
+
+		backend.mu.Lock()
+		var got []Endpoint
+		if len(backend.instances) > 0 {
+			got = backend.instances[0].Endpoints
+		}
+		backend.mu.Unlock()
+		if len(got) != 1 || got[0].Address != "10.1.1.1:9090" {
+			t.Fatalf("bare port must be completed with advertise host, got %+v", got)
+		}
+	})
+}
+
+// TestRegistrarStartAbortedSkipsRegister 锁定 RC-21：waitForEndpoints 因
+// ctx 取消或 Stop 先行而退出时，Start 短路注册（不 tryRegister、不启动
+// 后台重试），直接返回 nil。
+func TestRegistrarStartAbortedSkipsRegister(t *testing.T) {
+	t.Run("ctx canceled while waiting", func(t *testing.T) {
+		backend := &fakeRegistry{}
+		never := Static(ProtocolHTTP, "") // 永不就绪
+		r := NewRegistrar(backend, WithServiceName("svc"),
+			WithAdvertisers(never), WithFailFast(false))
+		mustInit(t, r, newFakeAppContext())
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- r.Start(ctx) }()
+		time.Sleep(50 * time.Millisecond) // 让 Start 进入等待
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("aborted Start must return nil, got %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Start must unblock after ctx cancel")
+		}
+		if n := backend.registeredCount(); n != 0 {
+			t.Fatalf("register must be skipped on abort, got %d calls", n)
+		}
+	})
+	t.Run("stop while waiting", func(t *testing.T) {
+		backend := &fakeRegistry{}
+		never := Static(ProtocolHTTP, "")
+		r := NewRegistrar(backend, WithServiceName("svc"),
+			WithAdvertisers(never), WithFailFast(false))
+		mustInit(t, r, newFakeAppContext())
+
+		done := make(chan error, 1)
+		go func() { done <- r.Start(context.Background()) }()
+		time.Sleep(50 * time.Millisecond)
+		if err := r.Stop(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("aborted Start must return nil, got %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Start must unblock after Stop")
+		}
+		if n := backend.registeredCount(); n != 0 {
+			t.Fatalf("register must be skipped on abort, got %d calls", n)
+		}
+	})
 }
 
 // waitFor 轮询 cond 直到为真或超时。

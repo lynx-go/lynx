@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // recordingTransport 记录最后一次收到的请求并返回固定响应。
@@ -249,5 +250,107 @@ func TestHTTPTransportWrapNilBase(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusTeapot {
 		t.Fatalf("want 418, got %d", resp.StatusCode)
+	}
+}
+
+// TestHTTPTransportPortInServiceHost 锁定 RC-12：registry://svc:8081 的
+// 端口不得被 Hostname() 静默丢弃——端口非空时按目录 Endpoint 端口匹配。
+func TestHTTPTransportPortInServiceHost(t *testing.T) {
+	_, rt, rec := newHTTPFixture(t,
+		passing("svc", "i1",
+			Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"},
+			Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8081"}),
+	)
+
+	// 显式端口 → 命中同端口 Endpoint，而不是首条。
+	do(t, rt, "registry://svc:8081/users")
+	if got := rec.lastRequest().URL.Host; got != "10.0.0.1:8081" {
+		t.Fatalf("port must be honored, dialed %q, want 10.0.0.1:8081", got)
+	}
+
+	// 目录无该端口：报错，而非静默丢端口后拨到默认 Endpoint。
+	req, err := http.NewRequest(http.MethodGet, "registry://svc:9999/users", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.RoundTrip(req); err == nil || !strings.Contains(err.Error(), "9999") {
+		t.Fatalf("port mismatch must fail with port in error, got %v", err)
+	}
+
+	// 无端口：维持原行为（默认首条 http Endpoint）。
+	do(t, rt, "registry://svc/users")
+	if got := rec.lastRequest().URL.Host; got != "10.0.0.1:8080" {
+		t.Fatalf("no-port default changed: %q", got)
+	}
+}
+
+// TestHTTPTransportEmptyPortTreatedAsNoPort 锁定复审 D：URL.Host 带尾部
+// 冒号但端口为空（registry://svc:/path，SplitHostPort 得 "svc" 与 ""）时
+// 必须按无端口处理，服务名取 host 部分——不得把 "svc:" 整串当服务名去
+// 查目录，产生费解的解析错误。
+func TestHTTPTransportEmptyPortTreatedAsNoPort(t *testing.T) {
+	_, rt, rec := newHTTPFixture(t,
+		passing("svc", "i1", Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}),
+	)
+	do(t, rt, "registry://svc:/users/1")
+	got := rec.lastRequest()
+	if got.URL.Host != "10.0.0.1:8080" {
+		t.Fatalf("empty port must behave like no port, dialed %q", got.URL.Host)
+	}
+	if got.URL.Path != "/users/1" {
+		t.Fatalf("path must be preserved, got %q", got.URL.Path)
+	}
+	// 只有端口没有服务名（registry://:8080/）：ErrBadName，而不是拿
+	// ":8080" 当服务名去查目录。
+	req, err := http.NewRequest(http.MethodGet, "registry://:8080/users", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.RoundTrip(req); !errors.Is(err, ErrBadName) {
+		t.Fatalf("port-only host: want ErrBadName, got %v", err)
+	}
+}
+
+// TestHTTPTransportHTTPSFallbackErrorChain 锁定 RC-13：https 回落失败时
+// 错误链必须同时保留 http 侧首次错误（此处为 stale 丢弃导致的无实例），
+// 不得被 https 上下文单独覆盖。
+func TestHTTPTransportHTTPSFallbackErrorChain(t *testing.T) {
+	f := &fakeDiscovery{snap: []Instance{passing("svc", "i1",
+		Endpoint{Protocol: ProtocolHTTPS, Address: "10.0.0.1:8443"})}}
+	rslv := NewResolver(f, WithStaleMaxAge(80*time.Millisecond))
+	defer func() { _ = rslv.Close() }()
+	rt := NewHTTPTransport(rslv).Wrap(&recordingTransport{})
+
+	// 首次请求正常走 https 回落并填充缓存。
+	do(t, rt, "registry://svc/users")
+	eventually(t, "watcher established", func() bool {
+		return f.watcherCount() > 0
+	})
+
+	// 断开 watch 并等快照超 stale：http 与 https 两侧都拿不到实例。
+	f.breakWatch()
+	eventually(t, "stale snapshot dropped", func() bool {
+		req, err := http.NewRequest(http.MethodGet, "registry://svc/users", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, roundErr := rt.RoundTrip(req)
+		return roundErr != nil
+	})
+	req, err := http.NewRequest(http.MethodGet, "registry://svc/users", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, roundErr := rt.RoundTrip(req)
+	if roundErr == nil {
+		t.Fatal("want error after stale drop")
+	}
+	if !errors.Is(roundErr, ErrNoInstance) {
+		t.Fatalf("want ErrNoInstance in chain, got %v", roundErr)
+	}
+	// joined 链上同时可见 http 侧原因与 https 回落上下文。
+	msg := roundErr.Error()
+	if !strings.Contains(msg, "no healthy instance") || !strings.Contains(msg, "https fallback") {
+		t.Fatalf("error chain must keep both sides, got %q", msg)
 	}
 }

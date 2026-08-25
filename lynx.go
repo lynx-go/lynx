@@ -269,8 +269,11 @@ func (app *lynx) init() error {
 }
 
 // applyLogLevel 读取配置中的日志级别并应用到应用默认 logger 上。
-// 仅当用户未通过 SetLogger 覆盖时生效——init 在构建回调之前运行，
-// 构建回调里的 SetLogger 会再次替换 app.logger。
+// 执行时机在构建回调（SetupFunc）之前：此处 app.logger 尚未经过用户
+// SetLogger 定制，重建 TextHandler 不会丢弃用户已设置的 handler 形态——
+// 构建回调中的 SetLogger 在其后运行，其结果最终生效（用户优先）。
+// 代价是若用户依赖 slog.SetDefault 预设非 TextHandler，此处会覆盖回
+// TextHandler，需在回调内再次 SetLogger。
 func (app *lynx) applyLogLevel() {
 	levelStr := LogLevelFromConfig(app.Config())
 	if levelStr == "" {
@@ -474,8 +477,12 @@ func (app *lynx) addServices(services ...Service) error {
 		app.runG.Add(func() error {
 			app.logger.InfoContext(ctx, "starting service", "service", service.Name())
 			app.publishEvent(eventbus.TopicServiceStarting, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
-			// 对阻塞式服务，Started 语义为“已进入运行”：在 Start 调用前即发布，订阅者可据此协同。
-			// 若 Start 立即失败，随后会发布 Failed，订阅者将看到 Starting→Started→Failed 的时序。
+			// Started 事件契约：语义是"已进入运行"，不是"Start 已成功返回"。
+			// 发布点固定在 Start 调用之前——阻塞式服务（如 HTTP/gRPC server）
+			// 的 Start 只在关停时才返回，若等返回后再发布，订阅者整个生命周期
+			// 都收不到 Started。代价：快速返回型服务若 Start 立即失败，订阅者
+			// 会看到 Starting→Started→Failed 的时序，Failed 才是权威裁决，
+			// 订阅侧不得仅凭 Started 认定服务持续可用（API 冻结，行为不变）。
 			app.publishEvent(eventbus.TopicServiceStarted, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
 			err := service.Start(ctx)
 			if err != nil {
@@ -486,10 +493,8 @@ func (app *lynx) addServices(services ...Service) error {
 			app.logger.InfoContext(ctx, "stopping service", "service", service.Name())
 			app.publishEvent(eventbus.TopicServiceStopping, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
 			app.stopServiceBounded(ctx, service)
-			// stopServiceBounded 已将错误聚合到 shutdownErrors，此处仅发布 Stopped/Failed 供订阅者感知。
-			if app.shutdownErrors.HasErrors() {
-				// 无法精确判定本服务的 Stop 是否失败，统一发布 Stopped，错误细节可查日志/shutdownErrors。
-			}
+			// 统一发布 Stopped：Stop 错误无法精确归属到单个服务（stopServiceBounded
+			// 聚合进 shutdownErrors 由 Run 上抛），订阅侧以 Run 返回值/日志为准。
 			app.publishEvent(eventbus.TopicServiceStopped, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
 			cancel()
 		})
@@ -770,10 +775,10 @@ func (app *lynx) runOnStopHooks() error {
 // 且不暴露 CheckHealth 到健康聚合（总线健康不影响 readiness）。
 type busService struct{ b eventbus.Bus }
 
-func (s busService) Name() string                        { return s.b.Name() }
-func (s busService) Init(ctx AppContext) error           { return s.b.Init(ctx) }
-func (s busService) Start(ctx context.Context) error     { return s.b.Start(ctx) }
-func (s busService) Stop(ctx context.Context) error      { return s.b.Stop(ctx) }
+func (s busService) Name() string                    { return s.b.Name() }
+func (s busService) Init(ctx AppContext) error       { return s.b.Init(ctx) }
+func (s busService) Start(ctx context.Context) error { return s.b.Start(ctx) }
+func (s busService) Stop(ctx context.Context) error  { return s.b.Stop(ctx) }
 
 func newLynx(o *Options) (App, error) {
 	o.EnsureDefaults()
@@ -820,8 +825,13 @@ func newLynx(o *Options) (App, error) {
 			app.publishEvent(eventbus.TopicServiceFailed, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now(), Error: err.Error()})
 		}
 	}()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	// 就绪等待受 BusReadyTimeout 总预算约束（默认 10s，可经
+	// WithBusReadyTimeout 配置）：此前硬编码 1 秒会让 Watermill+Kafka 等
+	// 慢启动后端在正常部署下构造失败。轮询间隔保持 10ms 量级——后端
+	// 就绪无通知机制，忙轮询是唯一手段；预算耗尽仍不健康则快失败，
+	// 优于带病运行。
+	readyDeadline := time.Now().Add(o.BusReadyTimeout)
+	for time.Now().Before(readyDeadline) {
 		if app.bus.CheckHealth() == nil {
 			break
 		}
@@ -829,7 +839,7 @@ func newLynx(o *Options) (App, error) {
 	}
 	if err := app.bus.CheckHealth(); err != nil {
 		busCancel()
-		return nil, fmt.Errorf("lynx: bus failed to become ready: %w", err)
+		return nil, fmt.Errorf("lynx: bus failed to become ready within %s: %w", o.BusReadyTimeout, err)
 	}
 	app.publishEvent(eventbus.TopicServiceStarted, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
 	eventbus.SetDefault(app.bus)

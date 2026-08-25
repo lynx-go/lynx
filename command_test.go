@@ -253,3 +253,61 @@ func TestCommandStopClosesApp(t *testing.T) {
 		t.Error("Stop() should close the app")
 	}
 }
+
+// hungChecker 的 CheckHealth 永久阻塞直到测试释放：暴露 CORE-11 修复前
+// "单次尝试永久卡死、backoff 上限失效"的缺陷。
+type hungChecker struct {
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (c *hungChecker) CheckHealth() error {
+	c.calls.Add(1)
+	<-c.release
+	return errors.New("hung checker released")
+}
+
+// TestCommandStartHungCheckerTimesOut 锁定 CORE-11：挂死的 checker 被单次
+// 检查超时上界兜住，超时视为未就绪参与重试，重试耗尽后 Start 返回错误，
+// 而非永久阻塞。
+func TestCommandStartHungCheckerTimesOut(t *testing.T) {
+	checker := &hungChecker{release: make(chan struct{})}
+	defer close(checker.release)
+	app := newAppWithCheckers(t, checker)
+
+	var ran atomic.Int32
+	cmd := NewCommand(func(ctx context.Context) error {
+		ran.Add(1)
+		return nil
+	}, WithMaxTries(2), WithBackoff(time.Millisecond, 5*time.Millisecond))
+	if err := cmd.Init(app); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	start := time.Now()
+	err := cmd.Start(context.Background())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Start() error = nil, want retry exhaustion error")
+	}
+	if !strings.Contains(err.Error(), "timed out waiting for dependencies to be healthy") {
+		t.Errorf("Start() error = %v, want dependency wait error", err)
+	}
+	if !strings.Contains(err.Error(), "health check timed out") {
+		t.Errorf("Start() error = %v, want per-check timeout to be the not-ready cause", err)
+	}
+	// 2 次尝试 × 3s 单次上界 + 毫秒级 backoff，总时长应落在 (5s, 10s)。
+	if elapsed < 5*time.Second {
+		t.Errorf("Start() took %v, want per-check timeout to actually engage", elapsed)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("Start() took %v, want bounded by per-check timeout × MaxTries", elapsed)
+	}
+	if got := checker.calls.Load(); got != 2 {
+		t.Errorf("health checked %d times, want 2 (MaxTries)", got)
+	}
+	if got := ran.Load(); got != 0 {
+		t.Errorf("command ran %d times, want 0", got)
+	}
+}

@@ -7,6 +7,7 @@ package grpc
 import (
 	"context"
 	"crypto/tls"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -31,6 +32,9 @@ type Options struct {
 	TLSConfig *tls.Config
 	// TracerProvider 为插装使用的 TracerProvider，nil 时用全局（缺省 noop）。
 	TracerProvider trace.TracerProvider
+	// Logger 为内部日志（如未配置 TLS 的降级警告）使用的实例，
+	// nil 时用 slog.Default()。
+	Logger *slog.Logger
 	// DialOptions 透传额外的 grpc.DialOption（如消息大小限制、keepalive）。
 	DialOptions []grpc.DialOption
 }
@@ -43,6 +47,14 @@ type Option func(*Options)
 func WithTimeout(d time.Duration) Option {
 	return func(o *Options) {
 		o.Timeout = d
+	}
+}
+
+// WithLogger 设置客户端内部日志（如未配置 TLS 的降级警告）使用的日志
+// 实例；nil 时使用 slog.Default()。
+func WithLogger(l *slog.Logger) Option {
+	return func(o *Options) {
+		o.Logger = l
 	}
 }
 
@@ -92,6 +104,9 @@ func Dial(target string, opts ...Option) (*grpc.ClientConn, error) {
 	for _, opt := range opts {
 		opt(&options)
 	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
 
 	otelOpts := []otelgrpc.Option{}
 	if options.TracerProvider != nil {
@@ -104,11 +119,15 @@ func Dial(target string, opts ...Option) (*grpc.ClientConn, error) {
 	}
 	grpcOpts = append(grpcOpts, options.DialOptions...)
 	// TLSConfig 装配在 DialOptions 之后：grpc 对重复凭据取最后应用者，
-	// 保证 TLSConfig 优先（见 WithTLSConfig）。未配置 TLS 时显式使用
-	// 明文凭据（grpc.NewClient 不再隐式缺省）。
+	// 保证 TLSConfig 优先（见 WithTLSConfig）。
 	if options.TLSConfig != nil {
 		grpcOpts = append(grpcOpts, grpc.WithTransportCredentials(credentials.NewTLS(options.TLSConfig)))
 	} else {
+		// 默认不安全必须可见（SC-10）：未配置 TLS 时静默降级为明文凭据
+		// 是生产隐患，记一次 Warn 提醒；确属内网明文场景可忽略或经
+		// WithLogger 定向降噪。
+		options.Logger.Warn("lynx grpc client: no TLS config configured, using insecure plaintext credentials",
+			"target", target)
 		grpcOpts = append(grpcOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 	return grpc.NewClient(target, grpcOpts...)
@@ -193,6 +212,11 @@ func applyDefaults(ctx context.Context, timeout time.Duration) (context.Context,
 
 // injectAttrs 把 ctx 的日志属性（request_id/user_id）写入 outgoing
 // metadata，key 与日志字段同名；调用方已显式设置的 key 不被覆盖。
+//
+// 跨代理兼容性警示（SC-18）：metadata key 使用下划线（request_id/
+// user_id），而 Envoy/部分代理默认 headers_with_underscores_action=
+// REJECT_REQUEST，会把带下划线的 header 拒绝或剥离——跨代理部署时需
+// 显式配置代理放行下划线 header，或改用中划线 key（需两端约定）。
 func injectAttrs(ctx context.Context) context.Context {
 	attrs := logging.AttrsFrom(ctx)
 	if len(attrs) == 0 {

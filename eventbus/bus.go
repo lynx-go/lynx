@@ -13,6 +13,12 @@ import (
 
 // Bus 是应用级消息总线的核心接口，既是服务也是健康检查项。
 // 任意 Service 可通过 AppContext.Bus() 取得当前总线实例。
+//
+// 投递语义由实现决定，两类实现是两个极端，订阅方必须按实现侧语义编写：
+//   - 内存 Bus（默认）：at-most-once。订阅者缓冲满即丢弃事件（仅 Error
+//     日志），handler 重试耗尽后丢弃；不反压发布者。适合进程内状态协同。
+//   - 持久化 Bus（contrib/watermill-kafka 等）：at-least-once。处理失败
+//     会被重投（Kafka 消费组语义），重复投递需业务幂等兜底。
 type Bus interface {
 	// Publish 发布业务对象到逻辑 topic，按 Topic 的 Marshaler 序列化。
 	// topic 为逻辑名，物理映射由 Bus 实现决定（内存直接投递，持久化 Bus 按配置路由）。
@@ -175,7 +181,7 @@ func WithSubscribeMarshaler(m Marshaler) SubscribeOption {
 // 与 lynx.WithBus（应用构造）不同：本 Option 仅覆盖单次 Publish/Subscribe 的 Bus 解析。
 type busOverride struct{ bus Bus }
 
-func (o busOverride) applyPublish(p *PublishOptions)   { p.Bus = o.bus }
+func (o busOverride) applyPublish(p *PublishOptions)     { p.Bus = o.bus }
 func (o busOverride) applySubscribe(s *SubscribeOptions) { s.Bus = o.bus }
 
 // WithBus 覆盖本次 Publish/Subscribe 解析到的 Bus（优先级最高）。

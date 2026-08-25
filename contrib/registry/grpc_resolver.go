@@ -3,7 +3,7 @@ package registry
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +15,18 @@ import (
 // grpcDefaultPollInterval 是 gRPC resolver 轮询 Resolver 缓存的默认间隔。
 // Resolver 内部已有 Watch 推送缓存，这里只需按较慢周期把缓存变化
 // 翻译成 resolver.State。
+//
+// 已知缺口（后续工作，不在 v1 修复）：gRPC 侧没有订阅 Resolver 缓存变化
+// 的 API，只能 5s 轮询——实例增删最多延迟一个轮询周期才反映到连接地址。
+// 完整方案是给 Resolver 增加OnChange 回调（cacheEntry 变更通知），届时
+// 轮询仅作兜底。
 const grpcDefaultPollInterval = 5 * time.Second
+
+// grpcResolveTimeout 是单次 GetAll 的预算。Resolver 缓存命中时 GetAll
+// 无网络 IO，但缓存未填充（或已 stale 被丢弃）时会同步走 Discovery 的
+// GetService——Discovery 卡住时若无预算，轮询 goroutine 将无限期阻塞
+// （RC-07）。3s 与 Registrar 侧 rpcTimeout 对齐。
+const grpcResolveTimeout = 3 * time.Second
 
 // grpcBuilder 实现 resolver.Builder，scheme 为 "registry"。
 type grpcBuilder struct {
@@ -98,6 +109,11 @@ type grpcResolver struct {
 	done       chan struct{}
 	once       sync.Once
 	wg         sync.WaitGroup
+
+	// lastAddrs 是上一次 UpdateState 的地址集（已排序），hasState 标记
+	// 是否已建立基线：无变化的轮询不再 UpdateState（RC-07）。
+	lastAddrs []resolver.Address
+	hasState  bool
 }
 
 // loop 立即解析一次，随后按 pollInterval 或 ResolveNow 触发再解析。
@@ -120,12 +136,20 @@ func (gr *grpcResolver) loop() {
 
 // resolve 经 Resolver.GetAll 取实例（同一套空快照 / stale 上限 /
 // 默认 Filter），翻译为 resolver.Address 后 UpdateState。
-// 解析出错（如快照超 stale 上限被丢弃）时保留上一次状态、不清空地址，
-// 这是 gRPC resolver 对暂态错误的惯例。
+// 解析出错（如快照超 stale 上限被丢弃、GetAll 超时）时保留上一次状态、
+// 不清空地址，这是 gRPC resolver 对暂态错误的惯例。
+//
+// GetAll 自带 grpcResolveTimeout 预算：Discovery 网络调用挂死时本方法
+// 在预算内返回错误，轮询 goroutine 不会无限期阻塞（RC-07）。
+// 地址集与上次相同（排序后比较）则跳过 UpdateState：Resolver 缓存快照
+// 顺序不稳定（map 遍历），无 diff 时每次轮询都会触发无意义的
+// UpdateState / 重新建连。首个快照（含空列表）始终发布，建立基线。
 func (gr *grpcResolver) resolve() {
-	insts, err := gr.rslv.GetAll(context.Background(), gr.name, gr.filter)
+	ctx, cancel := context.WithTimeout(context.Background(), grpcResolveTimeout)
+	insts, err := gr.rslv.GetAll(ctx, gr.name, gr.filter)
+	cancel()
 	if err != nil {
-		slog.Debug("registry: grpc resolve failed, keeping last state",
+		gr.rslv.logger.Debug("registry: grpc resolve failed, keeping last state",
 			"service", gr.name, "error", err)
 		return
 	}
@@ -145,10 +169,27 @@ func (gr *grpcResolver) resolve() {
 			})
 		}
 	}
-	if err := gr.cc.UpdateState(resolver.State{Addresses: addrs}); err != nil {
-		slog.Debug("registry: grpc UpdateState failed",
-			"service", gr.name, "error", err)
+	// 排序后比较：快照顺序不稳定，集合相同即视为无变化。
+	slices.SortFunc(addrs, func(a, b resolver.Address) int {
+		return strings.Compare(a.Addr, b.Addr)
+	})
+	if gr.hasState && equalAddresses(gr.lastAddrs, addrs) {
+		return
 	}
+	if err := gr.cc.UpdateState(resolver.State{Addresses: addrs}); err != nil {
+		gr.rslv.logger.Debug("registry: grpc UpdateState failed",
+			"service", gr.name, "error", err)
+		return
+	}
+	gr.lastAddrs = addrs
+	gr.hasState = true
+}
+
+// equalAddresses 比较两个已排序的地址集（Addr 与 Attributes 全等）。
+func equalAddresses(a, b []resolver.Address) bool {
+	return slices.EqualFunc(a, b, func(x, y resolver.Address) bool {
+		return x.Addr == y.Addr && x.Attributes.Equal(y.Attributes)
+	})
 }
 
 // ResolveNow 触发一次立即再解析（非阻塞）。

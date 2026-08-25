@@ -17,6 +17,10 @@ const (
 	DefaultStopTimeout     = 5 * time.Second
 	// DefaultDrainHookTimeout 是 OnDrain 钩子的默认总预算（3 秒）。
 	DefaultDrainHookTimeout = 3 * time.Second
+	// DefaultBusReadyTimeout 是 newLynx 等待消息总线就绪的总预算（10 秒）：
+	// Watermill+Kafka 等后端的就绪明显慢于默认内存 Bus，1 秒级的硬编码
+	// 预算会让正常部署下的构造直接失败，故放宽为可配的 10 秒。
+	DefaultBusReadyTimeout = 10 * time.Second
 	// MinTimeout 与 MaxTimeout 是 ShutdownTimeout 与 StopTimeout 共用的
 	// 校验区间（1 秒 ~ 5 分钟）。
 	MinTimeout = 1 * time.Second
@@ -39,6 +43,8 @@ var (
 	ErrDrainTimeoutInvalid = errors.New("drain timeout must not be negative")
 	// ErrDrainHookTimeoutInvalid 表示 DrainHookTimeout 为负值。
 	ErrDrainHookTimeoutInvalid = errors.New("drain hook timeout must not be negative")
+	// ErrBusReadyTimeoutInvalid 表示 BusReadyTimeout 为负值（就绪等待预算不允许负值）。
+	ErrBusReadyTimeoutInvalid = errors.New("bus ready timeout must not be negative")
 )
 
 // Options 是 App 应用的核心配置项。
@@ -49,10 +55,13 @@ type Options struct {
 	BindFlagsFunc   BindFlagsFunc  `json:"-"`
 	BindConfigFunc  BindConfigFunc `json:"-"`
 	ExitSignals     []os.Signal    `json:"-"`
-	Bus             eventbus.Bus        `json:"-"`
+	Bus             eventbus.Bus   `json:"-"`
 	ShutdownTimeout time.Duration  `json:"shutdown_timeout"`
 	// StopTimeout 是单个服务 Stop 的最长等待时长，超过后跳过并记录错误，
 	// 防止挂死的服务阻塞整个关停流程。
+	// ShutdownTimeout 与 StopTimeout 的 0 均表示"未设置"：EnsureDefaults
+	// 会折叠为默认值，无法显式表达"禁用上界"（注意与 server 侧
+	// ShutdownTimeout=0 的"无上界"语义不同）。
 	StopTimeout time.Duration `json:"stop_timeout"`
 	// DrainTimeout 是关停排水（drain）窗口时长：0 表示不启用排水（默认，
 	// 向后兼容，关停行为与 v1.0 完全一致）。启用后，关停流程先让
@@ -66,6 +75,12 @@ type Options struct {
 	// 时关停时长上界 = max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout
 	// + 各服务 StopTimeout；无钩子（默认）时该项不计入，行为与之前一致。
 	DrainHookTimeout time.Duration `json:"drain_hook_timeout"`
+	// BusReadyTimeout 是 newLynx 构造应用时等待消息总线就绪
+	// （CheckHealth 通过）的总预算，默认 10 秒：Watermill+Kafka 等
+	// 慢启动后端需要比 1 秒级硬编码更宽的就绪窗口。0 表示使用默认值
+	//（无法显式禁用等待——总线就绪是构造成功的硬前提）；负值在
+	// Validate 时报错。
+	BusReadyTimeout time.Duration `json:"bus_ready_timeout"`
 	// disableConfigFlags 标记用户显式关闭默认 flags（WithDisableConfigFlags）。
 	// EnsureDefaults 在 NewOptions 与 newLynx 间可能被多次调用，需要该
 	// 标记保持关闭语义不被默认值覆盖。
@@ -105,6 +120,9 @@ func (o *Options) Validate() error {
 	if o.DrainHookTimeout < 0 {
 		return ErrDrainHookTimeoutInvalid
 	}
+	if o.BusReadyTimeout < 0 {
+		return ErrBusReadyTimeoutInvalid
+	}
 	return nil
 }
 
@@ -129,6 +147,10 @@ func (o *Options) EnsureDefaults() {
 
 	if o.DrainHookTimeout == 0 {
 		o.DrainHookTimeout = DefaultDrainHookTimeout
+	}
+
+	if o.BusReadyTimeout == 0 {
+		o.BusReadyTimeout = DefaultBusReadyTimeout
 	}
 
 	if len(o.ExitSignals) == 0 {
@@ -212,6 +234,9 @@ func WithExitSignals(signals ...os.Signal) Option {
 }
 
 // WithShutdownTimeout 设置应用优雅关停的超时时间。
+// 注意：0 不是"禁用上界"，会被 EnsureDefaults 折叠为默认值（5 秒），
+// 显式禁用上界当前无法表达（与 server 侧 ShutdownTimeout=0 的
+// "无上界"语义不一致，历史行为冻结不改）。
 func WithShutdownTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.ShutdownTimeout = timeout
@@ -219,6 +244,9 @@ func WithShutdownTimeout(timeout time.Duration) Option {
 }
 
 // WithStopTimeout 设置单个服务 Stop 的最长等待时长，超过后跳过并记录错误。
+// 注意：0 不是"禁用上界"，会被 EnsureDefaults 折叠为默认值（5 秒），
+// 显式禁用上界当前无法表达（与 server 侧 ShutdownTimeout=0 的
+// "无上界"语义不一致，历史行为冻结不改）。
 func WithStopTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.StopTimeout = timeout
@@ -243,6 +271,15 @@ func WithDrainTimeout(timeout time.Duration) Option {
 func WithDrainHookTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.DrainHookTimeout = timeout
+	}
+}
+
+// WithBusReadyTimeout 设置 newLynx 等待消息总线就绪的总预算（默认 10 秒）。
+// Watermill+Kafka 等后端的就绪明显慢于内存 Bus，可按部署环境调宽；
+// 0 表示回退默认值（无法显式禁用），负值会在 Validate 时报错。
+func WithBusReadyTimeout(timeout time.Duration) Option {
+	return func(o *Options) {
+		o.BusReadyTimeout = timeout
 	}
 }
 

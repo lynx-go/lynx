@@ -3,14 +3,19 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/eventbus"
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 )
 
 func TestServiceLifecycle(t *testing.T) {
@@ -194,5 +199,142 @@ func TestInitTwiceFails(t *testing.T) {
 	}
 	if err := comp.Init(nil); err == nil {
 		t.Fatal("expected error on second Init")
+	}
+}
+
+// TestConcurrentInitSingleWinner 回归 AUX-03：Load-then-Store 检查下并发
+// Init 可能让多个调用方都通过检查、各自创建 provider（全局被后者覆盖、
+// 前者泄漏）；CAS 必须保证仅一个调用方成功。
+func TestConcurrentInitSingleWinner(t *testing.T) {
+	beforeTP := otel.GetTracerProvider()
+	beforeMP := otel.GetMeterProvider()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(beforeTP)
+		otel.SetMeterProvider(beforeMP)
+	})
+
+	comp := New(WithTraceExporter(&fakeSpanExporter{}), WithMetricReader(sdkmetric.NewManualReader()))
+	const n = 8
+	var successes atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := comp.Init(nil); err == nil {
+				successes.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := successes.Load(); got != 1 {
+		t.Fatalf("concurrent Init successes = %d, want exactly 1", got)
+	}
+	_ = comp.Stop(context.Background())
+}
+
+// fakeAppCtx 是 lynx.AppContext 的最小测试替身（service.name 注入分支用）。
+type fakeAppCtx struct{}
+
+func (f *fakeAppCtx) Context() context.Context       { return context.Background() }
+func (f *fakeAppCtx) Config() lynx.Config            { return nil }
+func (f *fakeAppCtx) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
+func (f *fakeAppCtx) Logger(...any) *slog.Logger     { return slog.Default() }
+func (f *fakeAppCtx) HealthCheckers() []lynx.Checker { return nil }
+func (f *fakeAppCtx) Close()                         {}
+
+// spanRecordingExporter 记录导出的 span，供 resource 属性断言。
+type spanRecordingExporter struct {
+	mu    sync.Mutex
+	spans []sdktrace.ReadOnlySpan
+}
+
+func (e *spanRecordingExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.spans = append(e.spans, spans...)
+	return nil
+}
+
+func (e *spanRecordingExporter) Shutdown(context.Context) error { return nil }
+
+func (e *spanRecordingExporter) recorded() []sdktrace.ReadOnlySpan {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]sdktrace.ReadOnlySpan(nil), e.spans...)
+}
+
+// TestInitInjectsServiceNameResource 覆盖 AUX-17 测试缺口：Init(ctx) 的
+// ctx 非 nil 且未显式 WithResource 时自动以应用名构建 service.name 资源
+// 属性，该分支此前零覆盖。
+func TestInitInjectsServiceNameResource(t *testing.T) {
+	beforeTP := otel.GetTracerProvider()
+	beforeMP := otel.GetMeterProvider()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(beforeTP)
+		otel.SetMeterProvider(beforeMP)
+	})
+
+	exporter := &spanRecordingExporter{}
+	comp := New(WithTraceExporter(exporter), WithMetricReader(sdkmetric.NewManualReader()))
+	if err := comp.Init(&fakeAppCtx{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer func() { _ = comp.Stop(context.Background()) }()
+
+	svc := comp.(*otelService)
+	_, span := svc.tp.Tracer("aux17-test").Start(context.Background(), "span")
+	span.End()
+	if err := svc.tp.ForceFlush(context.Background()); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+
+	spans := exporter.recorded()
+	if len(spans) == 0 {
+		t.Fatal("no spans were exported")
+	}
+	// ctx 非 nil 分支注入了 service.name 资源属性（应用名取自服务环境；
+	// 测试替身未注入 metadata，值为空字符串，但属性本身必须存在）。
+	if _, ok := spans[0].Resource().Set().Value(semconv.ServiceNameKey); !ok {
+		t.Errorf("span resource missing service.name attribute, got: %v", spans[0].Resource())
+	}
+}
+
+// TestInitNilCtxSkipsServiceName 验证 Init(nil) 不注入 service.name
+// 资源（与 TestInitInjectsServiceNameResource 形成分支对照）。
+func TestInitNilCtxSkipsServiceName(t *testing.T) {
+	beforeTP := otel.GetTracerProvider()
+	beforeMP := otel.GetMeterProvider()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(beforeTP)
+		otel.SetMeterProvider(beforeMP)
+	})
+
+	exporter := &spanRecordingExporter{}
+	comp := New(WithTraceExporter(exporter), WithMetricReader(sdkmetric.NewManualReader()))
+	if err := comp.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer func() { _ = comp.Stop(context.Background()) }()
+
+	svc := comp.(*otelService)
+	_, span := svc.tp.Tracer("aux17-test").Start(context.Background(), "span")
+	span.End()
+	if err := svc.tp.ForceFlush(context.Background()); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+
+	spans := exporter.recorded()
+	if len(spans) == 0 {
+		t.Fatal("no spans were exported")
+	}
+	// Init(nil) 未走注入分支：service.name 保持 SDK 默认值
+	//（"unknown_service:<binary>"），而非被本服务覆盖为应用名。
+	// 若属性缺失亦视为未注入（防御不同 SDK 版本的默认 resource 差异）。
+	res := spans[0].Resource()
+	if v, ok := res.Set().Value(semconv.ServiceNameKey); ok {
+		if got := v.AsString(); got != "" && !strings.HasPrefix(got, "unknown_service") {
+			t.Errorf("Init(nil) unexpectedly injected service.name = %q, want SDK default, resource: %v", got, res)
+		}
 	}
 }

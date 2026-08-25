@@ -41,8 +41,6 @@ type registrarOptions struct {
 	failFast          bool
 	affectReadiness   bool
 	heartbeatInterval time.Duration
-	heartbeatTTL      time.Duration // 供 TTL 后端（如 consul）使用，Registrar 本身不读
-	deregisterAfter   time.Duration // 同上
 	advertiseTimeout  time.Duration
 	advertiseHost     string
 	tags              []string
@@ -144,7 +142,6 @@ type Registrar struct {
 	version       string
 	advertiseHost string
 	static        []Endpoint // Init 补全后的静态 endpoints
-	started       bool
 
 	registered        atomic.Bool // 目录中当前有记录（Deregister 幂等的判定）
 	heartbeatFailures atomic.Int32
@@ -239,10 +236,19 @@ func (r *Registrar) Start(ctx context.Context) error {
 		r.mu.Unlock()
 		return nil // Stop-before-Start 竞态：直接退出
 	}
-	r.started = true
 	r.mu.Unlock()
 
 	if err := r.waitForEndpoints(ctx); err != nil {
+		if errors.Is(err, errStartAborted) {
+			// ctx 已取消或 Stop 先行：注册注定失败，短路掉 tryRegister
+			// 与后台重试（fail_fast=false 时 retryLoop 会在进程退出
+			// 路径上继续空转），直接进入阻塞等待（随即返回，RC-21）。
+			select {
+			case <-ctx.Done():
+			case <-r.stopCh:
+			}
+			return nil
+		}
 		return err
 	}
 
@@ -266,8 +272,14 @@ func (r *Registrar) Start(ctx context.Context) error {
 	return nil
 }
 
+// errStartAborted 表示等待 Endpoint 期间 ctx 已取消或 Stop 已先行：
+// 注册注定失败，Start 应跳过 tryRegister / retryLoop 直接进入阻塞等待。
+var errStartAborted = errors.New("registry: start aborted before register")
+
 // waitForEndpoints 轮询 Advertiser 直到出现非空 Endpoints 或到达
-// advertise_timeout。超时且没有静态 endpoints 时返回错误。
+// advertise_timeout。超时且没有静态 endpoints 时返回错误；ctx 取消或
+// Stop 先行时返回 errStartAborted（而非 nil），调用方据此短路注册
+// （RC-21）。
 func (r *Registrar) waitForEndpoints(ctx context.Context) error {
 	if len(r.opts.advertisers) == 0 {
 		return nil
@@ -289,9 +301,9 @@ func (r *Registrar) waitForEndpoints(ctx context.Context) error {
 			}
 			return fmt.Errorf("registry: no endpoints after %s (advertise_timeout)", r.opts.advertiseTimeout)
 		case <-ctx.Done():
-			return nil
+			return errStartAborted
 		case <-r.stopCh:
-			return nil
+			return errStartAborted
 		}
 	}
 }
@@ -307,12 +319,28 @@ func (r *Registrar) advertisedEndpointsReady() bool {
 
 // instance 组装当前目录记录：静态 endpoints + 各 Advertiser 的 endpoints
 // （裸端口用 advertise host 补全；无法补全的跳过并告警）。
+//
+// 跳过而非报错的原因：静态路径（completeEndpoints）在 Init 即可判定
+// 配置错误，适合 fail-fast；Advertiser 的地址来自运行中的监听器，
+// 裸端口只意味着「此刻没有可宣告的 host」，跳过 + Warn 让其余 Endpoint
+// 继续注册，不违反 Endpoint 的 host:port 契约（registry.go，禁止裸
+// ":8080" 入目录）。
 func (r *Registrar) instance() Instance {
 	endpoints := append([]Endpoint(nil), r.static...)
 	for _, adv := range r.opts.advertisers {
 		for _, ep := range adv.Endpoints() {
 			host, port, err := net.SplitHostPort(ep.Address)
-			if err == nil && host == "" && r.advertiseHost != "" {
+			if err != nil {
+				r.logger.Warn("registry: skip advertiser endpoint with malformed address",
+					"endpoint", ep.Address, "protocol", ep.Protocol)
+				continue
+			}
+			if host == "" {
+				if r.advertiseHost == "" {
+					r.logger.Warn("registry: skip bare-port advertiser endpoint without advertise host",
+						"endpoint", ep.Address, "protocol", ep.Protocol)
+					continue
+				}
 				ep.Address = net.JoinHostPort(r.advertiseHost, port)
 			}
 			endpoints = append(endpoints, ep)

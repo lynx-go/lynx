@@ -5,9 +5,11 @@ package grpc
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +32,10 @@ const (
 	DefaultGRPCAddr          = ":9090"
 	DefaultTimeout           = 60 * time.Second
 	DefaultHealthCheckPeriod = 10 * time.Second
+	// DefaultHealthCheckTimeout 是健康轮询中单个 checker 的执行上限
+	//（SC-03）：CheckHealth 接口无 ctx 参数，挂死的 checker 会卡死轮询
+	// goroutine 并把状态冻结在 SERVING。
+	DefaultHealthCheckTimeout = 3 * time.Second
 )
 
 // Options 是 gRPC 服务服务的配置项。
@@ -37,7 +43,9 @@ type Options struct {
 	Addr string
 	// AdvertiseAddr 是服务对外宣告的地址（host:port），由
 	// WithAdvertiseAddr 设置，仅原样保存该字符串；为空表示未显式指定。
-	AdvertiseAddr      string
+	AdvertiseAddr string
+	// Timeout 是优雅关停的上限（历史名——gRPC 侧语义是关停而非读写
+	// 超时，见 WithShutdownTimeout 别名，SC-05）；0 表示无上界。
 	Timeout            time.Duration
 	Logger             *slog.Logger
 	Interceptors       []grpc.UnaryServerInterceptor
@@ -47,8 +55,18 @@ type Options struct {
 	MeterProvider      metric.MeterProvider
 	// HealthCheck 提供 app 级健康检查器；非 nil 时按 HealthCheckPeriod
 	// 轮询并同步到 grpc health 服务（依赖服务不健康时探测返回 NOT_SERVING）。
-	HealthCheck       lynx.HealthCheckersFunc
+	HealthCheck lynx.HealthCheckersFunc
+	// HealthCheckPeriod 是健康轮询间隔。
 	HealthCheckPeriod time.Duration
+	// HealthCheckTimeout 是轮询中单个 checker 的执行上限（缺省 3s，
+	// SC-03），超时视为不健康；0 表示不限时（挂死 checker 会卡死轮询）。
+	HealthCheckTimeout time.Duration
+	// RequestLog 控制内置日志拦截器（缺省 true 保持历史行为，SC-07）：
+	// 与 HTTP 侧默认关闭、Debug 级相反，gRPC 侧默认每 RPC 两条 Info，
+	// 高吞吐服务建议 WithRequestLog(false) 或降级。
+	RequestLog bool
+	// RequestLogLevel 是内置日志拦截器的输出级别（缺省 Info，SC-07）。
+	RequestLogLevel slog.Level
 	// TLSConfig 非 nil 时启用 TLS 传输（credentials.NewTLS），与 HTTP 侧
 	// WithTLSConfig 语义对齐。
 	TLSConfig *tls.Config
@@ -74,10 +92,22 @@ func WithAdvertiseAddr(hostPort string) Option {
 }
 
 // WithTimeout 设置 gRPC 服务优雅关停的超时时间。
+//
+// 历史命名警示（SC-05）：gRPC 侧的 Timeout 语义是"优雅关停上限"，
+// 与 HTTP 侧 WithTimeout 的"读写超时"完全不同——这是同名选项双语义
+// 的已知坑，新代码请改用 WithShutdownTimeout 别名。
 func WithTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.Timeout = timeout
 	}
+}
+
+// WithShutdownTimeout 设置 gRPC 服务优雅关停的超时时间，与 WithTimeout
+// 等价（内部同一字段）——新增别名与 HTTP 侧 WithShutdownTimeout 对齐
+// （SC-05）。注意与 HTTP 侧 WithTimeout（读写超时）的语义差异：
+// 传 0 表示无上界。
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return WithTimeout(timeout)
 }
 
 // WithLogger 设置 gRPC 服务的日志实例。
@@ -115,6 +145,33 @@ func WithHealthCheckers(hc lynx.HealthCheckersFunc) Option {
 func WithHealthCheckPeriod(period time.Duration) Option {
 	return func(o *Options) {
 		o.HealthCheckPeriod = period
+	}
+}
+
+// WithHealthCheckTimeout 设置健康轮询中单个 checker 的执行上限
+// （缺省 3s，SC-03）：CheckHealth 接口无 ctx/超时（API 冻结），挂死的
+// checker 在超时后被视为不健康，轮询 goroutine 不被卡死。传 0 表示
+// 不限时（慎用）。
+func WithHealthCheckTimeout(timeout time.Duration) Option {
+	return func(o *Options) {
+		o.HealthCheckTimeout = timeout
+	}
+}
+
+// WithRequestLog 控制内置 gRPC 请求日志拦截器（缺省 true 保持兼容，
+// SC-07）：false 时每 RPC 不再产生两条日志。与 HTTP 侧差异：HTTP 的
+// 请求日志默认关闭且为 Debug 级，gRPC 历史行为默认 Info 级全开——
+// 高吞吐服务建议关闭或 WithRequestLogLevel(slog.LevelDebug) 降噪。
+func WithRequestLog(enabled bool) Option {
+	return func(o *Options) {
+		o.RequestLog = enabled
+	}
+}
+
+// WithRequestLogLevel 设置内置日志拦截器的输出级别（缺省 Info，SC-07）。
+func WithRequestLogLevel(level slog.Level) Option {
+	return func(o *Options) {
+		o.RequestLogLevel = level
 	}
 }
 
@@ -157,9 +214,12 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 // 并注册 gRPC 健康检查服务。
 func NewServer(opts ...Option) *Server {
 	options := Options{
-		Addr:    DefaultGRPCAddr,
-		Timeout: DefaultTimeout,
-		Logger:  slog.Default(),
+		Addr:               DefaultGRPCAddr,
+		Timeout:            DefaultTimeout,
+		Logger:             slog.Default(),
+		RequestLog:         true,
+		RequestLogLevel:    slog.LevelInfo,
+		HealthCheckTimeout: DefaultHealthCheckTimeout,
 	}
 	for _, opt := range opts {
 		opt(&options)
@@ -178,20 +238,27 @@ func NewServer(opts ...Option) *Server {
 		o:      options,
 		ready:  make(chan struct{}),
 	}
-	// Recovery 在最外层：链内任意一环（含用户拦截器）panic 都能被恢复。
+	// Recovery 在最外层：链内任意一环（含用户拦截器）panic 都能被恢复，
+	// 恢复时记录 panic 值 + 调用栈并返回通用错误（SC-04/SC-06）。
 	// Bus 注入在请求时读取 s.bus（Init 后可用），供 Topic API 经 Context 解析。
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
-		interceptor.Recovery(),
+		interceptor.RecoveryWithLogger(options.Logger),
 		s.injectBusUnary(),
-		interceptor.Logging(s.logger),
+	}
+	if options.RequestLog {
+		unaryInterceptors = append(unaryInterceptors,
+			interceptor.LoggingWithLevel(options.Logger, options.RequestLogLevel))
 	}
 	unaryInterceptors = append(unaryInterceptors, options.Interceptors...)
 	// 流式 RPC 同样需要日志与 panic 恢复：gRPC 对流式 handler 的 panic
 	// 没有内置保护，不加拦截器会直接崩溃整个进程。
 	streamInterceptors := []grpc.StreamServerInterceptor{
-		interceptor.RecoveryStream(),
+		interceptor.RecoveryStreamWithLogger(options.Logger),
 		s.injectBusStream(),
-		interceptor.LoggingStream(s.logger),
+	}
+	if options.RequestLog {
+		streamInterceptors = append(streamInterceptors,
+			interceptor.LoggingStreamWithLevel(options.Logger, options.RequestLogLevel))
 	}
 	streamInterceptors = append(streamInterceptors, options.StreamInterceptors...)
 	statsOpts := []otelgrpc.Option{}
@@ -238,10 +305,19 @@ type Server struct {
 	healthCancel context.CancelFunc
 	// stopped 标记 Stop 已被调用（mu 保护）：Stop 早于 Start 执行到
 	// startHealthPoller 时，poller 启动即在同锁段内发现并取消自身，
-	// 不会泄漏无人取消的轮询 goroutine。
-	stopped   bool
-	running   atomic.Bool
-	bus       eventbus.Bus
+	// 不会泄漏无人取消的轮询 goroutine。Init 会复位本标志（SC-15，
+	// 重启语义留口；当前不支持同一实例不重 Init 的 restart）。
+	stopped bool
+	// stopRequested 标记 Stop 已被调用（原子，SC-02）：Start 在 Serve
+	// 返回错误时据此把关停引起的 "use of closed network connection"
+	// 类错误归一化为 nil，避免框架把正常关停发布为
+	// lynx.service.failed 虚假事件。
+	stopRequested atomic.Bool
+	// started 守卫 Start 重入（SC-14）：二次 Start 会覆盖 listener
+	// 造成泄漏，直接报错；Init 复位。
+	started atomic.Bool
+	running atomic.Bool
+	bus     eventbus.Bus
 	ready     chan struct{}
 	readyOnce sync.Once
 }
@@ -260,11 +336,19 @@ func (s *Server) Name() string {
 	return "grpc"
 }
 
-// Init 初始化服务，gRPC 服务无需在初始化阶段做额外工作。
+// Init 初始化服务：接管 Bus，并复位生命周期标志（SC-15：lynx 生命周期
+// 为 Init→Start→Stop，Init 复位 started/stopped/stopRequested 使
+// "重新 Init 后可再 Start" 留有语义口子；当前不支持同实例不重 Init 的
+// restart）。
 func (s *Server) Init(ctx lynx.AppContext) error {
 	if ctx != nil {
 		s.bus = ctx.Bus()
 	}
+	s.started.Store(false)
+	s.stopRequested.Store(false)
+	s.mu.Lock()
+	s.stopped = false
+	s.mu.Unlock()
 	return nil
 }
 
@@ -303,13 +387,26 @@ func (s *Server) closeReady() {
 }
 
 // Start 启动 gRPC 服务并开始监听，阻塞至服务退出。
+// 正常关停（Stop 先关 listener）时 Serve 返回 "use of closed network
+// connection" 类错误——stopRequested 已置位则归一化为 nil（SC-02），
+// 避免框架把正常关停发布为 lynx.service.failed 虚假事件。
+// 二次调用 Start 返回错误（SC-14）。
 func (s *Server) Start(ctx context.Context) error {
-	s.logger.InfoContext(ctx, "starting gRPC server, listening on "+s.o.Addr)
+	// 重入守卫：二次 Start 会覆盖 listener 并泄漏旧 listener。
+	if !s.started.CompareAndSwap(false, true) {
+		return errors.New("grpc server: Start called more than once")
+	}
 
 	lis, err := net.Listen("tcp", s.o.Addr)
 	if err != nil {
+		// Listen 失败不算已启动：复位守卫，允许换地址重试。
+		s.started.Store(false)
 		return err
 	}
+	// 监听就绪后才打印 listening 日志（SC-16）：提前打印会在 Listen 失败
+	//（如端口占用）时留下误导性的"正在监听"记录，且与 listening 事件
+	// 语义对齐。
+	s.logger.InfoContext(ctx, "starting gRPC server, listening on "+lis.Addr().String())
 	s.mu.Lock()
 	s.listener = lis
 	s.mu.Unlock()
@@ -328,7 +425,27 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.o.HealthCheck != nil {
 		s.startHealthPoller()
 	}
-	return s.server.Serve(lis)
+	serveErr := s.server.Serve(lis)
+	// 正常关停：Stop 先关 listener 再 GracefulStop，Accept 因 listener 已
+	// 关闭而失败——这是关停流程的一部分而非启动失败，归一化为 nil
+	//（SC-02）。仅在 Stop 已请求时归一化，真实监听错误仍然上报。
+	if serveErr != nil && s.stopRequested.Load() && isClosedConnError(serveErr) {
+		return nil
+	}
+	return serveErr
+}
+
+// isClosedConnError 判定错误是否为"连接/监听器已被主动关闭"类：net 包
+// 标准错误经 errors.Is 匹配，字符串兜底覆盖 grpc 内部未包装的路径
+// （如 Windows 上的 Accept 错误文案）。
+func isClosedConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	return strings.Contains(err.Error(), "use of closed network connection")
 }
 
 // startHealthPoller 按 HealthCheckPeriod 轮询 app 级健康检查器并同步到
@@ -362,14 +479,68 @@ func (s *Server) startHealthPoller() {
 
 func (s *Server) updateHealthStatus() {
 	status := grpc_health_v1.HealthCheckResponse_SERVING
-	for _, c := range s.o.HealthCheck() {
-		if err := c.CheckHealth(); err != nil {
-			status = grpc_health_v1.HealthCheckResponse_NOT_SERVING
-			break
-		}
+	// 经限时并发 helper 执行（SC-03）：挂死的 checker 按超时不健康，
+	// 轮询 goroutine 不被卡死、状态不会冻结在 SERVING。
+	if err := runHealthChecks(s.o.HealthCheck, s.o.HealthCheckTimeout); err != nil {
+		status = grpc_health_v1.HealthCheckResponse_NOT_SERVING
 	}
 	s.health.SetServingStatus("", status)
 	s.health.SetServingStatus("grpc", status)
+}
+
+// runHealthChecks 并发执行 checkers 并整体限时 timeout：任一失败立即
+// 返回其错误；超时返回超时错误（视为不健康，SC-03，与 server/http 侧
+// 同款实现）。lynx.Checker 接口无 ctx 参数（API 冻结），挂死的 checker
+// 无法被打断只能被"放弃等待"——结果 channel 带缓冲，最终返回的
+// checker goroutine 写入后自行退出，不卡轮询。固有边界（放弃等待模式
+// 的残余代价）：永不返回的 checker（死锁类）其 goroutine 无法回收，
+// 会随每次健康轮询累积泄漏，只能修复 checker 本身或重启进程消除。
+// timeout <= 0 表示不限时：退化为顺序执行（保持旧行为的逃生口）。
+func runHealthChecks(checkers lynx.HealthCheckersFunc, timeout time.Duration) error {
+	cs := checkers()
+	if len(cs) == 0 {
+		return nil
+	}
+	if timeout <= 0 {
+		for _, c := range cs {
+			if err := checkOne(c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	results := make(chan error, len(cs))
+	for _, c := range cs {
+		go func(c lynx.Checker) {
+			results <- checkOne(c)
+		}(c)
+	}
+	// checker 并发起步，共享一个计时窗口即等效"每个 checker 限时"。
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for i := 0; i < len(cs); i++ {
+		select {
+		case err := <-results:
+			if err != nil {
+				return err
+			}
+		case <-timer.C:
+			return fmt.Errorf("health check timed out after %s", timeout)
+		}
+	}
+	return nil
+}
+
+// checkOne 执行单个 checker 并兜底其 panic：并发路径下 checker 运行在
+// 独立 goroutine，panic 会直接崩溃进程，必须就地 recover 并按不健康
+// 处理（与 server/http 侧同款）。
+func checkOne(c lynx.Checker) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("health check panicked: %v", r)
+		}
+	}()
+	return c.CheckHealth()
 }
 
 // Stop 优雅关停 gRPC 服务：先关闭监听器，再等待在途请求完成，超时后强制停止。
@@ -383,6 +554,9 @@ func (s *Server) Stop(ctx context.Context) error {
 		s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	}
 	s.running.Store(false)
+	// 关 listener 之前置位（SC-02）：Start 侧据此把 Serve 返回的
+	// closed-connection 错误归一化为 nil（正常关停不是失败）。
+	s.stopRequested.Store(true)
 	s.mu.Lock()
 	s.stopped = true
 	if s.healthCancel != nil {

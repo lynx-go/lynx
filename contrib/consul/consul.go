@@ -15,10 +15,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net"
 	"os"
-	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -133,10 +133,21 @@ func WithAllowStale(v bool) Option {
 	return func(c *Client) { c.allowStale = v }
 }
 
+// WithLogger 注入 Client 内部日志（目录项回落、Meta 解码失败等 Warn）。
+// 缺省回退 slog.Default()。Token 绝不进入日志（包级约定）。
+func WithLogger(l *slog.Logger) Option {
+	return func(c *Client) {
+		if l != nil {
+			c.logger = l
+		}
+	}
+}
+
 // Client 是 Consul 后端，同时实现 registry.Registry 与 registry.Discovery。
 type Client struct {
 	agent  *api.Agent
 	health *api.Health
+	logger *slog.Logger
 
 	checkType       string
 	checkPath       string
@@ -172,6 +183,7 @@ func New(config *api.Config, opts ...Option) (*Client, error) {
 	c := &Client{
 		agent:           apiClient.Agent(),
 		health:          apiClient.Health(),
+		logger:          slog.Default(),
 		checkType:       CheckTypeHTTP,
 		checkPath:       defaultCheckPath,
 		checkInterval:   defaultCheckInterval,
@@ -190,7 +202,7 @@ func New(config *api.Config, opts ...Option) (*Client, error) {
 // 透传，Port/Address 取第一个匹配 check 协议的 Endpoint，其余 Endpoint
 // 写入 Meta 键 lynx_endpoints；同时写 Weights.Passing（v1 Lynx Picker
 // 不读）。同 ID 重复注册是 last-write-wins upsert（Consul 语义）。
-func (c *Client) Register(_ context.Context, inst registry.Instance) error {
+func (c *Client) Register(ctx context.Context, inst registry.Instance) error {
 	if err := c.checkOpen(); err != nil {
 		return err
 	}
@@ -225,6 +237,13 @@ func (c *Client) Register(_ context.Context, inst registry.Instance) error {
 		meta[metaEndpointsKey] = string(encoded)
 	}
 
+	// Weight 零值规格化为 Passing=1：Consul 语义里 Weights.Passing=0 表示
+	// 「不可用」，而调用方漏配 Weight 多为「用默认」而非「主动摘流」，
+	// 与 registrar 侧 defaultWeight 呼应（RC-18）。
+	passingWeight := inst.Weight
+	if passingWeight == 0 {
+		passingWeight = 1
+	}
 	reg := &api.AgentServiceRegistration{
 		ID:      inst.ID,
 		Name:    inst.Name,
@@ -232,12 +251,13 @@ func (c *Client) Register(_ context.Context, inst registry.Instance) error {
 		Meta:    meta,
 		Address: host,
 		Port:    port,
-		Weights: &api.AgentWeights{Passing: inst.Weight, Warning: 1},
+		Weights: &api.AgentWeights{Passing: passingWeight, Warning: 1},
 		Check:   c.buildCheck(main),
 	}
-	// consul/api 的 ServiceRegister 不接受 ctx（无 WithContext 变体），
-	// 超时由 Registrar 侧预算保证。
-	return c.agent.ServiceRegister(reg)
+	// consul/api v1.34.4 的 ServiceRegisterOpts 支持 WithContext：ctx 必须
+	// 传入，否则 Registrar 侧 3s 预算对注册完全失效——Agent 不可达时
+	// fail_fast 卡死 Start、后台重试 goroutine 永久挂起（RC-01）。
+	return c.agent.ServiceRegisterOpts(reg, api.ServiceRegisterOpts{}.WithContext(ctx))
 }
 
 // pickMainEndpoint 选主端口：http 检查取第一条 http/https Endpoint，
@@ -346,9 +366,6 @@ func (c *Client) GetService(ctx context.Context, name string, filter registry.Fi
 // Watch 返回 blocking-query Watcher：首次 Next 立即推当前快照（含空
 // 列表），之后 WaitIndex 推进、集合变化即推送；错误按 1s–30s 退避重连。
 func (c *Client) Watch(ctx context.Context, name string, filter registry.Filter) (registry.Watcher, error) {
-	if err := c.checkOpen(); err != nil {
-		return nil, err
-	}
 	if name == "" {
 		return nil, registry.ErrBadName
 	}
@@ -361,7 +378,14 @@ func (c *Client) Watch(ctx context.Context, name string, filter registry.Filter)
 		done:   make(chan struct{}),
 	}
 	w.first.Store(true)
+	// closed 检查必须与注册同临界区（RC-09）：此前 checkOpen 释放锁后才
+	// 注册 watcher，Close 若落在窗口内，该 watcher 无人停（直连使用时
+	// goroutine 泄漏）。
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, errClosed
+	}
 	c.watchers[w] = struct{}{}
 	c.mu.Unlock()
 	go w.loop()
@@ -383,8 +407,11 @@ func (c *Client) query(ctx context.Context, name string, filter registry.Filter,
 	}
 	instances := make([]registry.Instance, 0, len(entries))
 	for _, entry := range entries {
-		inst := convertEntry(entry)
-		if matchFilter(inst, filter) {
+		inst, ok := c.convertEntry(entry)
+		if !ok {
+			continue // 无可拨号地址：已 Warn，跳过（RC-03）
+		}
+		if registry.MatchFilter(filter, inst) {
 			instances = append(instances, inst)
 		}
 	}
@@ -394,13 +421,28 @@ func (c *Client) query(ctx context.Context, name string, filter registry.Filter,
 // convertEntry 把 Consul ServiceEntry 还原为 registry.Instance：主端口
 // Endpoint 在切片首位，lynx_endpoints 解码追加；version/weight 回填字段；
 // 内部 Meta 键（lynx_*、version、weight）不进入返回的 Meta。
-func convertEntry(entry *api.ServiceEntry) registry.Instance {
+//
+// 地址回落（RC-03）：服务未带 Service.Address 注册时（Consul 生态常见，
+// agent 会用 Node.Address 拨号）回落 entry.Node.Address；两者皆空返回
+// ok=false，调用方跳过该条目并已在此处 Warn——绝不能产出裸 ":8080"
+// Endpoint（违反 registry.Endpoint 契约）。
+func (c *Client) convertEntry(entry *api.ServiceEntry) (registry.Instance, bool) {
 	svc := entry.Service
 	meta := maps.Clone(svc.Meta)
 
+	host := svc.Address
+	if host == "" && entry.Node != nil {
+		host = entry.Node.Address
+	}
+	if host == "" {
+		c.logger.Warn("consul: catalog entry has no dialable address, skipping",
+			"service", svc.Service, "id", svc.ID)
+		return registry.Instance{}, false
+	}
+
 	main := registry.Endpoint{
 		Protocol: registry.ProtocolHTTP,
-		Address:  net.JoinHostPort(svc.Address, strconv.Itoa(svc.Port)),
+		Address:  net.JoinHostPort(host, strconv.Itoa(svc.Port)),
 	}
 	endpoints := make([]registry.Endpoint, 0, 4)
 	if protocol, ok := meta[metaMainProtocolKey]; ok && protocol != "" {
@@ -409,7 +451,12 @@ func convertEntry(entry *api.ServiceEntry) registry.Instance {
 	endpoints = append(endpoints, main)
 	if encoded := meta[metaEndpointsKey]; encoded != "" {
 		var rest []registry.Endpoint
-		if err := json.Unmarshal([]byte(encoded), &rest); err == nil {
+		// 解码失败必须 Warn（RC-17）：静默吞掉会让多 Endpoint 服务静默
+		// 退化为单 Endpoint，排障无从下手。
+		if err := json.Unmarshal([]byte(encoded), &rest); err != nil {
+			c.logger.Warn("consul: lynx_endpoints decode failed, falling back to main endpoint only",
+				"service", svc.Service, "id", svc.ID, "error", err)
+		} else {
 			endpoints = append(endpoints, rest...)
 		}
 	}
@@ -432,7 +479,7 @@ func convertEntry(entry *api.ServiceEntry) registry.Instance {
 	if len(meta) > 0 {
 		inst.Meta = meta
 	}
-	return inst
+	return inst, true
 }
 
 // aggregateStatus 聚合 Consul Checks：任一 critical → Critical，任一
@@ -448,33 +495,6 @@ func aggregateStatus(checks api.HealthChecks) registry.Status {
 		}
 	}
 	return status
-}
-
-// matchFilter 应用 registry.Filter（contrib/registry 的 matchFilter 未
-// 导出，此处等价实现）：默认只保留 StatusPassing；Protocol 要求实例至少
-// 一条该协议 Endpoint；Tags 全匹配。
-func matchFilter(inst registry.Instance, f registry.Filter) bool {
-	if !f.IncludeUnhealthy && inst.Status != registry.StatusPassing {
-		return false
-	}
-	if f.Protocol != "" {
-		found := false
-		for _, ep := range inst.Endpoints {
-			if ep.Protocol == f.Protocol {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	for _, tag := range f.Tags {
-		if !slices.Contains(inst.Tags, tag) {
-			return false
-		}
-	}
-	return true
 }
 
 func (c *Client) checkOpen() error {
@@ -527,13 +547,23 @@ func (w *watcher) Next() ([]registry.Instance, error) {
 		if err != nil {
 			return nil, err
 		}
+		// 顺序论证（RC-10，窗口测试不可行故以确定性顺序保证）：
+		// 1) 先排空 ch——排空前 loop 推入的快照内容已包含在本次查询
+		//    结果中（其触发变化的 index ≤ meta.LastIndex），丢弃是去重；
+		// 2) 再写 lastIndex——排空之后、写入之前 loop 新推入的快照
+		//    不会被本次排空波及，保留下一次 Next 消费；
+		// 3) lastIndex 写的是本次查询的（可能较小的）index：若第 1 步
+		//    丢掉了更新的快照，下一轮 blocking query 会以较小 WaitIndex
+		//    立即重新取回该状态，自愈；不会出现「推送被丢且 lastIndex
+		//    停在过期值」的永久丢失。
+		// 已知边界：index 单调假设被破坏（stale 读到新 index + 旧数据）
+		// 时仍可能丢一次推送，仅 allow_stale=true 且极小概率，接受。
 		w.mu.Lock()
-		w.lastIndex = meta.LastIndex
-		// 排空首快照前轮询 goroutine 可能已推入的快照。
 		select {
 		case <-w.ch:
 		default:
 		}
+		w.lastIndex = meta.LastIndex
 		w.mu.Unlock()
 		return instances, nil
 	}
@@ -593,6 +623,15 @@ func (w *watcher) loop() {
 		backoff = watchBackoffMin
 
 		w.mu.Lock()
+		// index 回绕 sanity check（RC-05，Consul 官方 blocking query 模式）：
+		// Raft index 回退（leader 变更 / 快照恢复）后，以过期的 WaitIndex
+		// 查询会整轮阻塞到 WaitTime 超时、且推重复快照。检测到
+		// LastIndex < 本次使用的 WaitIndex 时重置为 0 立即重查（不 sleep）。
+		if meta.LastIndex < index {
+			w.lastIndex = 0
+			w.mu.Unlock()
+			continue
+		}
 		if meta.LastIndex == w.lastIndex {
 			w.mu.Unlock()
 			continue // WaitTime 超时返回同 index：无变化，不推送

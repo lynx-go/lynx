@@ -181,6 +181,33 @@ func TestNewFromConfig(t *testing.T) {
 			}
 		}
 	})
+	// RC-06：interval ≥ TTL 交叉校验——TTL 会在两次心跳间过期，实例持续
+	// 闪断，必须在构造期报错。默认值（10s/30s）在合法范围。
+	t.Run("heartbeat interval ttl cross validation", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			section map[string]any
+			wantErr bool
+		}{
+			{"interval exceeds ttl", map[string]any{"backend": "memory", "heartbeat_interval": "31s", "heartbeat_ttl": "30s"}, true},
+			{"interval equals ttl", map[string]any{"backend": "memory", "heartbeat_interval": "30s", "heartbeat_ttl": "30s"}, true},
+			{"interval below ttl", map[string]any{"backend": "memory", "heartbeat_interval": "10s", "heartbeat_ttl": "30s"}, false},
+			{"ttl unset skips check", map[string]any{"backend": "memory", "heartbeat_interval": "5s"}, false},
+			{"interval unset skips check", map[string]any{"backend": "memory", "heartbeat_ttl": "1s"}, false},
+		}
+		for _, c := range cases {
+			r, err := NewFromConfig(configOf(t, c.section), NewMemory())
+			if c.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "heartbeat_interval") {
+					t.Fatalf("%s: want mismatch error, got %v", c.name, err)
+				}
+				continue
+			}
+			if err != nil || r == nil {
+				t.Fatalf("%s: want success, got %v %v", c.name, r, err)
+			}
+		}
+	})
 }
 
 // fakeApp 记录 Register / OnDrain 调用。
@@ -191,7 +218,7 @@ type fakeApp struct {
 
 func (f *fakeApp) Context() context.Context       { return context.Background() }
 func (f *fakeApp) Config() lynx.Config            { return nil }
-func (f *fakeApp) Bus() eventbus.Bus                   { return eventbus.NewMemoryBus(eventbus.Options{}) }
+func (f *fakeApp) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
 func (f *fakeApp) Logger(...any) *slog.Logger     { return slog.Default() }
 func (f *fakeApp) HealthCheckers() []lynx.Checker { return nil }
 func (f *fakeApp) Close()                         {}

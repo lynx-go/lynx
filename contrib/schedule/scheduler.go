@@ -46,9 +46,17 @@ type Options struct {
 	Location *time.Location
 	// OnTaskError 是任务执行错误回调；nil 时保持默认日志输出。
 	OnTaskError func(ctx context.Context, task Task, err error)
+	// loggerSet 标记 Logger 是否由 WithLogger 显式设置：显式设置时
+	// Init 不再用 ctx.Logger 覆盖（对齐 debug 包的防护）——否则任务
+	// 错误日志与 cron 内部日志两处实例不同源。
+	loggerSet bool
 }
 
 // CheckHealth 实现健康检查，调度器未初始化或未运行时返回错误。
+// 已知窗口：Stop 返回到 Start 退出之间存在短暂交错（框架在 Stop 返回后
+// 取消服务 ctx，Start 才从等待中醒来），窗口内 started 尚为 true，
+// CheckHealth 可能仍报健康——进程已在关停路径上，不构成误报，行为保持
+// 不变（AUX-09 注释化）。
 func (s *Scheduler) CheckHealth() error {
 	if s.cron == nil {
 		return errors.New("scheduler not initialized")
@@ -65,13 +73,18 @@ func (s *Scheduler) Name() string {
 }
 
 // Init 记录任务上下文与日志实例。ctx 为 nil（脱离框架单用）时保持
-// 默认值：任务上下文回退 Background。
+// 默认值：任务上下文回退 Background。显式 WithLogger 设置的日志实例
+// 不被 ctx.Logger 覆盖（对齐 debug 包）。
 func (s *Scheduler) Init(ctx lynx.AppContext) error {
 	if ctx == nil {
 		return nil
 	}
 	s.taskCtx = ctx.Context()
-	s.logger = ctx.Logger("service", "cron-scheduler")
+	// loggerSet 防护：任务错误日志与 cron 内部日志必须同源，Init 无条件
+	// 覆盖会让 WithLogger 的显式配置静默失效。
+	if !s.options.loggerSet {
+		s.logger = ctx.Logger("service", "cron-scheduler")
+	}
 	return nil
 }
 
@@ -117,9 +130,12 @@ func (s *Scheduler) closeRunDone() {
 	s.doneOnce.Do(func() { close(s.runDone) })
 }
 
-// Stop 停止 cron 调度器。cron.Stop 发出停止信号，调度循环随即退出；
-// 等待 runDone 收敛受调用方 deadline 约束（调用方无 deadline 时立即
-// 返回，由框架的 StopTimeout 统一兜底）。
+// Stop 停止 cron 调度器。cron.Stop 发出停止信号并返回等待句柄，该句柄
+// 在全部在途任务执行完毕后 Done；有 deadline 时 Stop 在 deadline 内等待
+// 「在途任务收敛（cron 等待句柄）或调度循环退出（runDone）」任一先到，
+// 调用方无 deadline 时立即返回（由框架的 StopTimeout 统一兜底）。
+// 注意这不是完备的收敛保证：runDone 先到（Start 协程退出）时在途任务
+// 可能仍在运行，等待句柄由调用方 deadline 兜底放弃。
 // 停止后调度器不可重启（stopping 永久置位）：需要再次运行时请重新构造
 // Scheduler。
 func (s *Scheduler) Stop(ctx context.Context) error {
@@ -129,9 +145,12 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 		s.closeRunDone()
 		return nil
 	}
-	s.cron.Stop()
+	// cron.Stop 的等待句柄不接受外部 ctx：调度器无法中断在途任务，
+	// 只能由调用方 deadline（下方 ctx.Done 分支）放弃等待。
+	cronCtx := s.cron.Stop()
 	if _, ok := ctx.Deadline(); ok {
 		select {
+		case <-cronCtx.Done():
 		case <-s.runDone:
 		case <-ctx.Done():
 		}
@@ -156,10 +175,12 @@ type HandlerFunc func(ctx context.Context) error
 // Option 用于配置调度器 Options 的选项函数。
 type Option func(*Options)
 
-// WithLogger 设置调度器的日志实例。
+// WithLogger 设置调度器的日志实例；显式设置后 Init 不再以 ctx.Logger
+// 覆盖（见 Init 的 loggerSet 防护）。
 func WithLogger(logger *slog.Logger) Option {
 	return func(o *Options) {
 		o.Logger = logger
+		o.loggerSet = true
 	}
 }
 
@@ -178,8 +199,9 @@ func WithDebugEnabled() Option {
 }
 
 // WithLocation 设置任务调度的时区；未设置时使用 time.Local。
-// 仅对内置默认 cron 实例生效：使用 WithCron 传入自定义实例时，
-// 请在其构造中自行设置 Location。
+// 仅对内置默认 cron 实例生效：使用 WithCron 传入自定义实例时该选项
+// 被忽略（NewScheduler 会记 Warn 日志提示），请在其构造中自行设置
+// Location。
 func WithLocation(loc *time.Location) Option {
 	return func(o *Options) {
 		o.Location = loc
@@ -204,10 +226,21 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	for _, opt := range opts {
 		opt(o)
 	}
+	// WithLogger(nil) 的兜底：与 debug 包一致，nil 实例会让后续日志
+	// 调用 panic（此处 NewSlogLogger 与任务错误日志都会用到）。
+	if o.Logger == nil {
+		o.Logger = slog.Default()
+	}
 	logger := NewSlogLogger(o.Logger, o.DebugEnabled)
 	var cronInstance *cron.Cron
 	if o.Cron != nil {
 		cronInstance = o.Cron
+		if o.Location != nil {
+			// WithCron 的实例在构造时已固定时区，此处无法回填：
+			// 静默忽略会让"配置了时区却不生效"的排障变成玄学，
+			// 至少留下 Warn 指引正确的配置位置。
+			o.Logger.Warn("schedule: WithLocation is ignored for the custom cron instance; set the location on the cron instance itself")
+		}
 	} else {
 		cronOpts := []cron.Option{
 			cron.WithSeconds(),

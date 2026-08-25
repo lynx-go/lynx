@@ -72,6 +72,28 @@ type command struct {
 	options *CommandOptions
 }
 
+// healthCheckTimeout 是单次 CheckHealth 的上界。Checker 接口（无 ctx
+// 参数）已冻结，挂死的 checker 若不加防护会让单次尝试永久阻塞，
+// MaxTries/MaxBackoff 的重试上限全部失效；超时按"未就绪"参与重试。
+const healthCheckTimeout = 3 * time.Second
+
+// checkHealthBounded 以固定上界执行单次健康检查：goroutine+select 兜底
+// 无 ctx 的 checker。结果经缓冲 chan 返回，超时后迟到的结果被自然丢弃
+// （goroutine 不因无人接收而阻塞；若 checker 永久挂死，该 goroutine
+// 随之遗留——保证等待循环不挂死优先，与 stopServiceBounded 同一取舍）。
+// 不监听调用侧 ctx：健康的 checker 立即返回即成功（即使 ctx 已取消，
+// 既有语义为"首查健康即运行"）；取消裁决由 backoff.Retry 在重试间完成。
+func checkHealthBounded(checker Checker) error {
+	done := make(chan error, 1)
+	go func() { done <- checker.CheckHealth() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(healthCheckTimeout):
+		return fmt.Errorf("health check timed out after %v", healthCheckTimeout)
+	}
+}
+
 func (cmd *command) Name() string {
 	return cmd.options.Name
 }
@@ -94,9 +116,10 @@ func (cmd *command) Start(ctx context.Context) error {
 	if _, err := backoff.Retry(ctx, func() (any, error) {
 		// 每轮重试重新获取健康检查快照：注册先于 Run 的服务在启动过程中
 		// 陆续变健康，快照按轮刷新可纳入等待范围（服务必须全部注册在
-		// Run 之前，见 App 接口注释）。
+		// Run 之前，见 App 接口注释）。单次检查经 checkHealthBounded 限时，
+		// 挂死的 checker 视为未就绪参与重试，不再阻塞整个等待循环。
 		for _, checker := range cmd.appctx.HealthCheckers() {
-			if err := checker.CheckHealth(); err != nil {
+			if err := checkHealthBounded(checker); err != nil {
 				cmd.logger.WarnContext(ctx, "waiting for dependent service ready", "error", err)
 				return nil, err
 			}

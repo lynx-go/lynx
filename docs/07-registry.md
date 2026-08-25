@@ -128,7 +128,13 @@ registry:
   fail_fast: true        # 首次注册失败时 Start 是否返回错误（默认 true）
   affect_readiness: true # Registrar 健康状态是否参与 readiness 聚合（默认 true）
   heartbeat_interval: 10s
-  heartbeat_ttl: 30s     # 供 TTL 后端（consul）使用，Registrar 本身不读
+  heartbeat_ttl: 30s     # TTL 后端（consul）由 consul.NewFromConfig 直接读同一段；
+                         # Registrar 不传递该值，但构造时交叉校验 interval < ttl
+                         #（失配即报错：TTL 会在两次心跳之间过期，实例持续闪断）
+                         # 注意：交叉校验只在两者都显式设置时生效。只调大
+                         # heartbeat_interval（超过 30s）而不设 heartbeat_ttl 时，
+                         # consul 后端沿用默认 TTL=30s，构造期不报错但运行期实例
+                         # 真实闪断——interval 超过 30s 时必须显式设置 heartbeat_ttl
   deregister_after: 60s  # 同上（Consul DeregisterCriticalServiceAfter）
   advertise_timeout: 5s  # 等待 Advertiser 出现非空 Endpoints 的上限
   tags: ["api", "internal"]
@@ -387,7 +393,18 @@ conn, err := clientgrpc.Dial("registry:///user-service",
 
 gRPC resolver 按 5s 周期把 Resolver 缓存翻译成连接地址；解析出错时
 保留上一次地址状态（gRPC resolver 对暂态错误的惯例），服务下线（空
-快照）则立即生效。
+快照）则立即生效。两个实现细节值得知道：
+
+- **单次解析带 3s 预算**：缓存未填充（或已 stale 被丢弃）时 GetAll 会
+  同步走 Discovery 的 GetService，预算防止后端挂死时轮询 goroutine
+  无限期阻塞；
+- **地址集无变化不 UpdateState**：快照顺序不稳定（后端按 map 遍历
+  推送），按排序后比较去重，避免每轮轮询触发虚假的地址抖动。
+
+> **已知缺口（后续工作）**：gRPC 侧目前没有订阅 Resolver 缓存变化的
+> API，只能 5s 轮询——实例增删最多延迟一个轮询周期才反映到连接地址。
+> 完整方案是给 Resolver 增加 OnChange 回调（缓存变更通知），届时轮询
+> 仅作兜底；v1 不实现。
 
 > **警告**：`resolver.Register(b)` 是进程全局副作用（注册 scheme 全局
 > 表，测试与多 resolver 进程会撞车），只作为可选便利，不作为推荐入口；
@@ -416,6 +433,14 @@ gRPC resolver 按 5s 周期把 Resolver 缓存翻译成连接地址；解析出�
 
 DNS 后端无 version/tag/weight 概念；`IncludeUnhealthy` 对 DNS 无意义
 （所有记录视为 Passing）。
+
+> **务必覆盖 `registry.dns.ports` 或始终带协议过滤**：无 SRV 记录时
+> DNS 无法得知每个 IP 实际监听的端口，后端按缺省端口表（http=8080、
+> https=8443、grpc=9090）为每个 IP 生成**三条** Endpoint——这假定服务
+> 同时监听全部三个端口，多数服务并不成立。注意 `dns.ports` 的语义是
+> 在默认表上**逐项覆盖**（无法删除默认项），因此只开单协议的服务要么
+> 修正端口号、要么在查询侧始终带 `Filter.Protocol`，让多余协议的
+> Endpoint 从不进入选择集。
 
 ## 7.11 失败模式摘要
 

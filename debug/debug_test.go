@@ -383,3 +383,67 @@ func TestServiceReadyNotClosedOnListenError(t *testing.T) {
 	default:
 	}
 }
+
+// TestStopClearsAddr 锁定复审 I：Stop 关停路径与 Start 的 ctx.Done 退出
+// 路径必须一致地清理 listener——Stop 之后 Addr() 返回空字符串，而非
+// 残留已关闭监听器的地址。
+func TestStopClearsAddr(t *testing.T) {
+	s, cancel, done := startService(t)
+	defer cancel()
+	waitServing(t, s)
+	if s.Addr() == "" {
+		t.Fatal("Addr() should be non-empty while serving")
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if addr := s.Addr(); addr != "" {
+		t.Fatalf("Addr() after Stop = %q, want empty", addr)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("Start() error = %v, want nil", err)
+	}
+}
+
+// TestStartCtxCancelReleasesPort 回归 AUX-05：独立使用（Init(nil)/直接
+// Start、未经 Stop）时，ctx 取消退出路径必须关闭 httpServer 释放端口，
+// 否则 listener 持续占用到进程退出。
+func TestStartCtxCancelReleasesPort(t *testing.T) {
+	s := NewService(WithAddr("127.0.0.1:0"))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Start(ctx) }()
+
+	// 等待监听就绪并记录实际端口。
+	deadline := time.Now().Add(5 * time.Second)
+	var addr string
+	for time.Now().Before(deadline) {
+		if a := s.Addr(); a != "" {
+			addr = a
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("debug service did not start listening within 5s")
+	}
+
+	// 不调用 Stop，直接取消 Start 的 ctx（独立使用路径）。
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after ctx cancel")
+	}
+
+	// 端口必须已释放：同地址可立即重新 Listen。
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("port %s not released after ctx cancel: %v", addr, err)
+	}
+	_ = ln.Close()
+}

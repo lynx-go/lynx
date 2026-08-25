@@ -77,6 +77,16 @@ func TestOptionsValidate(t *testing.T) {
 			options: Options{DrainHookTimeout: -time.Millisecond},
 			wantErr: ErrDrainHookTimeoutInvalid,
 		},
+		{
+			name:    "bus ready timeout zero is allowed",
+			options: Options{BusReadyTimeout: 0},
+			wantErr: nil,
+		},
+		{
+			name:    "bus ready timeout negative",
+			options: Options{BusReadyTimeout: -time.Millisecond},
+			wantErr: ErrBusReadyTimeoutInvalid,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -108,6 +118,10 @@ func TestOptionsEnsureDefaults(t *testing.T) {
 	}
 	if o.DrainHookTimeout != DefaultDrainHookTimeout {
 		t.Errorf("DrainHookTimeout = %v, want %v", o.DrainHookTimeout, DefaultDrainHookTimeout)
+	}
+	// BusReadyTimeout 默认 10s（CORE-02：取代 newLynx 硬编码的 1 秒预算）。
+	if o.BusReadyTimeout != DefaultBusReadyTimeout {
+		t.Errorf("BusReadyTimeout = %v, want %v", o.BusReadyTimeout, DefaultBusReadyTimeout)
 	}
 	if len(o.ExitSignals) == 0 {
 		t.Error("ExitSignals should not be empty")
@@ -158,6 +172,7 @@ func TestOptionFuncs(t *testing.T) {
 		WithShutdownTimeout(3*time.Second),
 		WithExitSignals(syscall.SIGTERM),
 		WithDrainTimeout(2*time.Second),
+		WithBusReadyTimeout(30*time.Second),
 	)
 	if o.ID != "id-1" {
 		t.Errorf("ID = %q, want %q", o.ID, "id-1")
@@ -173,6 +188,9 @@ func TestOptionFuncs(t *testing.T) {
 	}
 	if o.DrainTimeout != 2*time.Second {
 		t.Errorf("DrainTimeout = %v, want %v", o.DrainTimeout, 2*time.Second)
+	}
+	if o.BusReadyTimeout != 30*time.Second {
+		t.Errorf("BusReadyTimeout = %v, want %v", o.BusReadyTimeout, 30*time.Second)
 	}
 	if len(o.ExitSignals) != 1 {
 		t.Errorf("ExitSignals = %v, want 1 entry", o.ExitSignals)
@@ -251,5 +269,9 @@ func TestOptionsString(t *testing.T) {
 	}
 	if !strings.Contains(s, `"version":"v1"`) {
 		t.Errorf("String() = %q, want it to contain version", s)
+	}
+	// json tag 与 Options.String() 序列化一致（CORE-02）。
+	if !strings.Contains(s, `"bus_ready_timeout":`) {
+		t.Errorf("String() = %q, want it to contain bus_ready_timeout", s)
 	}
 }

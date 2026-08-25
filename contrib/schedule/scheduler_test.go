@@ -1,14 +1,19 @@
 package schedule
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/eventbus"
 	"github.com/robfig/cron/v3"
 )
 
@@ -509,4 +514,190 @@ func TestStartRespectsCtx(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start did not return after ctx cancel")
 	}
+}
+
+// fakeAppCtx 是 lynx.AppContext 的最小测试替身（Init 注入测试用）。
+type fakeAppCtx struct {
+	logger *slog.Logger
+}
+
+func (f *fakeAppCtx) Context() context.Context       { return context.Background() }
+func (f *fakeAppCtx) Config() lynx.Config            { return nil }
+func (f *fakeAppCtx) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
+func (f *fakeAppCtx) Logger(...any) *slog.Logger     { return f.logger }
+func (f *fakeAppCtx) HealthCheckers() []lynx.Checker { return nil }
+func (f *fakeAppCtx) Close()                         {}
+
+// TestInitKeepsExplicitLogger 回归 AUX-02：WithLogger 显式设置的实例不被
+// Init 的 ctx.Logger 覆盖（对齐 debug 包的 loggerSet 防护）。
+func TestInitKeepsExplicitLogger(t *testing.T) {
+	explicit := discardLogger()
+	s, err := NewScheduler(nil, WithLogger(explicit))
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	if err := s.Init(&fakeAppCtx{logger: slog.Default()}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if s.logger != explicit {
+		t.Fatal("Init should not override explicit WithLogger instance")
+	}
+}
+
+// TestInitWithoutExplicitLoggerUsesCtxLogger 验证未显式 WithLogger 时 Init
+// 仍取 ctx.Logger（loggerSet 防护不改变默认行为）。
+func TestInitWithoutExplicitLoggerUsesCtxLogger(t *testing.T) {
+	ctxLogger := discardLogger()
+	s, err := NewScheduler(nil)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	if err := s.Init(&fakeAppCtx{logger: ctxLogger}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if s.logger != ctxLogger {
+		t.Fatal("Init should use ctx.Logger when WithLogger not set")
+	}
+}
+
+// TestStopWaitsForInflightTask 回归 AUX-06：Stop 必须等待 cron 在途任务
+// 收敛（cron.Stop 返回的等待句柄 Done），而非只等 Start 协程退出或一路
+// 阻塞到 deadline 耗尽。
+func TestStopWaitsForInflightTask(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	var finished atomic.Bool
+	task := &testTask{
+		name: "inflight",
+		// 高频触发：首个 tick 即产生一个由 cron 调度发起的在途任务
+		//（必须由 cron 发起而非测试手动 Run，否则不进入其 jobWaiter
+		// 追踪，Stop 的等待句柄不会为它等待）。
+		cron: "@every 100ms",
+		handler: func(ctx context.Context) error {
+			startedOnce.Do(func() { close(started) })
+			<-release
+			finished.Store(true)
+			return nil
+		},
+	}
+	s, err := NewScheduler([]Task{task}, WithLogger(discardLogger()))
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startDone := make(chan struct{})
+	go func() { defer close(startDone); _ = s.Start(ctx) }()
+
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("inflight task did not start")
+	}
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelStop()
+	stopDone := make(chan struct{})
+	go func() { _ = s.Stop(stopCtx); close(stopDone) }()
+
+	// 任务仍阻塞时 Stop 不得返回：旧行为下 select 只等 runDone/ctx.Done
+	//（runDone 因 Start ctx 未取消而不会关闭），只会干等 deadline 耗尽。
+	select {
+	case <-stopDone:
+		cancel()
+		t.Fatal("Stop returned while inflight task still running")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// 释放任务后 Stop 应随收敛立即返回（远早于 5s deadline）。
+	close(release)
+	select {
+	case <-stopDone:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("Stop did not return after inflight task finished")
+	}
+	if !finished.Load() {
+		t.Fatal("inflight task reported finished=false after Stop returned")
+	}
+	cancel()
+	<-startDone
+}
+
+// bufferLogger 返回写入 buffer 的 slog 实例，供日志内容断言。
+func bufferLogger() (*bytes.Buffer, *slog.Logger) {
+	buf := &bytes.Buffer{}
+	return buf, slog.New(slog.NewTextHandler(buf, nil))
+}
+
+// TestWithLocationWarnOnCustomCron 回归 AUX-13：WithLocation 对 WithCron
+// 自定义实例静默失效，必须留下 Warn 日志指引。
+func TestWithLocationWarnOnCustomCron(t *testing.T) {
+	buf, logger := bufferLogger()
+	_, err := NewScheduler(nil,
+		WithLogger(logger),
+		WithCron(cron.New()),
+		WithLocation(time.UTC),
+	)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "WithLocation") || !strings.Contains(out, "ignored") {
+		t.Errorf("missing WithLocation-ignored warning, got: %s", out)
+	}
+}
+
+// TestWithLocationSilentOnDefaultCron 验证默认 cron 路径不误报 Warn。
+func TestWithLocationSilentOnDefaultCron(t *testing.T) {
+	buf, logger := bufferLogger()
+	_, err := NewScheduler(nil, WithLogger(logger), WithLocation(time.UTC))
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	if out := buf.String(); strings.Contains(out, "WithLocation") {
+		t.Errorf("unexpected warning for default cron instance, got: %s", out)
+	}
+}
+
+// TestWithLocationAffectsScheduleTime 覆盖 AUX-17 时区测试缺口：断言
+// 内置 cron 实例按指定时区计算下次触发时间（Entry.Next 的墙上时钟为
+// 该时区的 09:00:00），而非宿主机本地时区。
+func TestWithLocationAffectsScheduleTime(t *testing.T) {
+	// 选 UTC+7 这类非整点无偏移的时区：与多数测试机本地时区（UTC+8 或
+	// 其他）区分，本地时区恰好也是 UTC+7 时仍可用 UTC 对照排除。
+	loc := time.FixedZone("test-utc-plus-7", 7*3600)
+	s, err := NewScheduler(
+		[]Task{newCountingTask("tz", "0 0 9 * * *", &atomic.Int32{})},
+		WithLogger(discardLogger()),
+		WithLocation(loc),
+	)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	if err := s.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = s.Start(ctx) }()
+
+	// Entry.Next 由调度循环计算，启动后短暂轮询等待填充。
+	if !pollUntil(2*time.Second, 5*time.Millisecond, func() bool {
+		return len(s.cron.Entries()) > 0 && !s.cron.Entries()[0].Next.IsZero()
+	}) {
+		t.Fatal("cron entry Next was not computed")
+	}
+	next := s.cron.Entries()[0].Next
+	if h, m, sec := next.In(loc).Clock(); h != 9 || m != 0 || sec != 0 {
+		t.Errorf("next fire time = %v (in %s), want 09:00:00 in %s", next.In(loc), loc, loc)
+	}
+
+	cancel()
+	<-done
 }

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lynx-go/lynx/eventbus"
 	"github.com/oklog/run"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -1467,4 +1468,115 @@ func newLynxWithConfig(c ConfigSource) (App, error) {
 		return nil, err
 	}
 	return app, nil
+}
+
+// readyGateBus 是可控就绪时间的测试 Bus：Init 之后 readyAfter 内
+// CheckHealth 报错；never 置位则永不就绪。用于锁定 BusReadyTimeout 语义。
+type readyGateBus struct {
+	readyAfter time.Duration
+	never      bool
+	startedAt  time.Time
+}
+
+func (b *readyGateBus) Name() string { return "ready-gate-bus" }
+func (b *readyGateBus) Init(ctx eventbus.InitContext) error {
+	if ctx != nil {
+		_ = ctx.Logger()
+	}
+	b.startedAt = time.Now()
+	return nil
+}
+func (b *readyGateBus) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+func (b *readyGateBus) Stop(ctx context.Context) error { return nil }
+func (b *readyGateBus) CheckHealth() error {
+	if b.never || time.Since(b.startedAt) < b.readyAfter {
+		return errors.New("not ready yet")
+	}
+	return nil
+}
+func (b *readyGateBus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) error {
+	return nil
+}
+func (b *readyGateBus) PublishRaw(ctx context.Context, topic string, data []byte, opts ...eventbus.PublishOption) error {
+	return nil
+}
+func (b *readyGateBus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
+	return nil
+}
+func (b *readyGateBus) MarshalerFor(topic string) eventbus.Marshaler { return eventbus.JSONMarshaler{} }
+
+// TestNewLynxWaitsForSlowBus 锁定 CORE-02：就绪预算默认 10s，慢于旧
+// 硬编码 1s 的 Bus（Watermill+Kafka 部署常态）也能在预算内构造成功。
+func TestNewLynxWaitsForSlowBus(t *testing.T) {
+	slow := &readyGateBus{readyAfter: 1200 * time.Millisecond}
+	start := time.Now()
+	app, err := newLynx(NewOptions(WithBus(slow)))
+	if err != nil {
+		t.Fatalf("newLynx() error = %v, want success within default BusReadyTimeout", err)
+	}
+	defer app.Close()
+	if elapsed := time.Since(start); elapsed < 1200*time.Millisecond {
+		t.Errorf("newLynx() returned after %v, want to wait for slow bus readiness", elapsed)
+	}
+}
+
+// TestNewLynxBusReadyTimeoutOption 锁定 WithBusReadyTimeout：预算可收紧、
+// 失败快于旧的固定 1 秒，且错误信息带预算时长。
+func TestNewLynxBusReadyTimeoutOption(t *testing.T) {
+	never := &readyGateBus{never: true}
+	start := time.Now()
+	_, err := newLynx(NewOptions(WithBus(never), WithBusReadyTimeout(200*time.Millisecond)))
+	if err == nil {
+		t.Fatal("newLynx() error = nil, want failure when bus never becomes ready")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("newLynx() took %v, want fast fail near the configured 200ms budget", elapsed)
+	}
+	if !strings.Contains(err.Error(), "200ms") {
+		t.Errorf("newLynx() error = %v, want it to mention the configured budget", err)
+	}
+}
+
+// TestRunnerRunEAfterSetupFailure 锁定 CORE-08：RunE 统一经 setupApp 取
+// 实例与错误，setup 失败后的重复调用返回同一错误（锁内读取，无裸读路径）。
+func TestRunnerRunEAfterSetupFailure(t *testing.T) {
+	b := NewRunner(func(app App) error { return errors.New("setup boom") })
+	first := b.RunE()
+	second := b.RunE()
+	if first == nil || second == nil {
+		t.Fatalf("RunE() = %v, %v, want both non-nil", first, second)
+	}
+	if !errors.Is(first, second) {
+		t.Errorf("repeated RunE() = %v then %v, want the same error", first, second)
+	}
+}
+
+// TestRunnerRunECompletes 锁定 CORE-08 成功路径：RunE 经 setupApp 构建
+// 并驱动应用运行至命令完成返回。
+func TestRunnerRunECompletes(t *testing.T) {
+	ran := make(chan struct{})
+	b := NewRunner(func(app App) error {
+		return app.Command(func(ctx context.Context) error {
+			close(ran)
+			return nil
+		})
+	})
+	done := make(chan error, 1)
+	go func() { done <- b.RunE() }()
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("command did not run")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunE() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunE() did not return after command completed")
+	}
 }

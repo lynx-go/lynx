@@ -134,8 +134,9 @@ func TestDefaultErrorHandlerWrappedStatusError(t *testing.T) {
 	}
 }
 
-// TestDefaultErrorHandlerPlainError：普通 error → 500 + JSON 错误体 +
-// Error 日志（method/path/status/error 四字段）。
+// TestDefaultErrorHandlerPlainError：普通 error → 500 + 通用 JSON 错误体
+// （SC-04：5xx 细节不回传客户端）+ Error 日志携带原始错误
+// （method/path/status/error 四字段）。
 func TestDefaultErrorHandlerPlainError(t *testing.T) {
 	capture, restore := useCaptureLogger(false)
 	defer restore()
@@ -151,8 +152,8 @@ func TestDefaultErrorHandlerPlainError(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":{"message":"EOF"}}` {
-		t.Errorf("body = %q, want EOF JSON body", got)
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":{"message":"Internal Server Error"}}` {
+		t.Errorf("body = %q, want 通用消息（5xx 细节不得泄露, SC-04）", got)
 	}
 
 	rec2, ok := capture.hasError("http handler error")
@@ -169,7 +170,63 @@ func TestDefaultErrorHandlerPlainError(t *testing.T) {
 		t.Errorf("log status = %q, want 500", rec2.attrs["status"])
 	}
 	if rec2.attrs["error"] != "EOF" {
-		t.Errorf("log error = %q, want EOF", rec2.attrs["error"])
+		t.Errorf("log error = %q, want EOF（详情进日志）", rec2.attrs["error"])
+	}
+}
+
+// TestDefaultErrorHandler5xxStatusErrorUsesGenericMessage：实现了
+// StatusError 的 5xx（如 503）同样只回传通用消息，详情进日志。
+func TestDefaultErrorHandler5xxStatusErrorUsesGenericMessage(t *testing.T) {
+	capture, restore := useCaptureLogger(false)
+	defer restore()
+
+	h := NewErrorHandler(nil, func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		return &serviceUnavailableError{msg: "db conn pool exhausted (postgres://u:p@10.0.0.1/db)"}
+	})
+	rec := doRequest(h, http.MethodGet, "/api")
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":{"message":"Service Unavailable"}}` {
+		t.Errorf("body = %q, want 通用消息（连接串不得泄露, SC-04）", got)
+	}
+	rec2, ok := capture.hasError("http handler error")
+	if !ok {
+		t.Fatal("no Error log record for 5xx response")
+	}
+	if !strings.Contains(rec2.attrs["error"], "postgres://") {
+		t.Errorf("log error = %q, want 原始详情进日志", rec2.attrs["error"])
+	}
+}
+
+// serviceUnavailableError 实现 StatusError：声明 503。
+type serviceUnavailableError struct{ msg string }
+
+func (e *serviceUnavailableError) Error() string   { return e.msg }
+func (e *serviceUnavailableError) StatusCode() int { return http.StatusServiceUnavailable }
+
+// TestDefaultErrorHandlerWithLogger（SC-19）：注入的 logger 接收 5xx
+// 错误日志，不触碰全局 slog.Default。
+func TestDefaultErrorHandlerWithLogger(t *testing.T) {
+	capture, restore := useCaptureLogger(false)
+	defer restore()
+
+	injected := &captureHandler{}
+	h := NewErrorHandler(DefaultErrorHandlerWithLogger(slog.New(injected)),
+		func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+			return io.EOF
+		})
+	rec := doRequest(h, http.MethodGet, "/orders")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	if _, ok := injected.hasError("http handler error"); !ok {
+		t.Error("injected logger did not receive the 5xx error record")
+	}
+	if capture.count() != 0 {
+		t.Errorf("global slog.Default captured %d records, want 0（不走全局, SC-19）", capture.count())
 	}
 }
 

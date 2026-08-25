@@ -93,6 +93,37 @@ func TestDNSSRVPreferred(t *testing.T) {
 	}
 }
 
+// TestDNSNameConsistentAcrossPaths 锁定 RC-14：SRV 路径与 Host 路径的
+// 快照 Name 统一为 FQDN（查询名），同一服务在两种路径间切换时 Name
+// 不跳变、快照可比较。
+func TestDNSNameConsistentAcrossPaths(t *testing.T) {
+	lookup := newFakeLookup()
+	// svc 走 SRV 路径；plain 无 SRV 记录，回落 A/AAAA。
+	lookup.srv["_http|svc.default.svc.cluster.local"] = []*net.SRV{
+		{Target: "pod-a.default.svc.cluster.local.", Port: 8080},
+	}
+	lookup.hosts = []string{"10.0.0.1"}
+
+	d := NewDNSDiscovery(withDNSLookup(lookup))
+	srvGot, err := d.GetService(context.Background(), "svc", Filter{Protocol: ProtocolHTTP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostGot, err := d.GetService(context.Background(), "plain", Filter{Protocol: ProtocolHTTP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(srvGot) != 1 || len(hostGot) != 1 {
+		t.Fatalf("want 1 instance per path, got srv=%v host=%v", ids(srvGot), ids(hostGot))
+	}
+	if want := "svc.default.svc.cluster.local"; srvGot[0].Name != want {
+		t.Fatalf("SRV path Name = %q, want FQDN %q", srvGot[0].Name, want)
+	}
+	if want := "plain.default.svc.cluster.local"; hostGot[0].Name != want {
+		t.Fatalf("Host path Name = %q, want FQDN %q (与 SRV 路径形态一致)", hostGot[0].Name, want)
+	}
+}
+
 func TestDNSFallbackToHostWithPorts(t *testing.T) {
 	lookup := newFakeLookup() // 无 SRV → NXDOMAIN
 	lookup.hosts = []string{"10.0.0.2", "10.0.0.1"}

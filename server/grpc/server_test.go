@@ -15,6 +15,7 @@ import (
 	"net"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,10 +145,11 @@ func TestStartStop(t *testing.T) {
 
 	select {
 	case err := <-startErr:
-		// Stop closes the listener before GracefulStop, so Serve returns a
-		// "use of closed network connection" error.
-		if err != nil && !strings.Contains(err.Error(), "closed network connection") {
-			t.Errorf("Start() error = %v, want nil or closed-connection error after stop", err)
+		// SC-02：Stop 先关 listener，Serve 会返回 "use of closed network
+		// connection" 类错误——必须归一化为 nil，否则框架把正常关停
+		// 发布为 lynx.service.failed 虚假事件。
+		if err != nil {
+			t.Errorf("Start() error = %v, want nil（正常关停归一化, SC-02）", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("Start() did not return after Stop()")
@@ -689,10 +691,9 @@ func TestServerAddrAfterListen(t *testing.T) {
 	_ = s.Stop(context.Background())
 	select {
 	case err := <-startErr:
-		// Stop closes the listener before GracefulStop, so Serve returns a
-		// "use of closed network connection" error.
-		if err != nil && !strings.Contains(err.Error(), "closed network connection") {
-			t.Errorf("Start() error = %v, want nil or closed-connection error after stop", err)
+		// SC-02：正常关停归一化为 nil（旧断言接受 closed-connection 错误）。
+		if err != nil {
+			t.Errorf("Start() error = %v, want nil（正常关停归一化, SC-02）", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("Start() did not return after Stop()")
@@ -756,4 +757,289 @@ func TestServerReadyNotClosedOnListenError(t *testing.T) {
 		t.Fatal("Ready() closed on Listen failure")
 	default:
 	}
+}
+
+// --- SC-05：WithShutdownTimeout 别名 ---
+
+// TestWithShutdownTimeoutAlias 验证别名与 WithTimeout 等价（同一字段）。
+func TestWithShutdownTimeoutAlias(t *testing.T) {
+	s := NewServer(WithShutdownTimeout(5 * time.Second))
+	if s.o.Timeout != 5*time.Second {
+		t.Errorf("WithShutdownTimeout 别名未生效: Timeout = %v, want 5s", s.o.Timeout)
+	}
+	// 后应用的选项生效（与 WithTimeout 同一装配路径）。
+	s2 := NewServer(WithTimeout(9*time.Second), WithShutdownTimeout(5*time.Second))
+	if s2.o.Timeout != 5*time.Second {
+		t.Errorf("Timeout = %v, want 5s（后应用者生效）", s2.o.Timeout)
+	}
+}
+
+// --- SC-03：health poller 挂死 checker 限时 ---
+
+// chanChecker 挂死到 block 关闭才返回，模拟挂死的下游依赖检查。
+type chanChecker struct{ block chan struct{} }
+
+func (c chanChecker) CheckHealth() error { <-c.block; return nil }
+
+// TestHealthPollerHungCheckerTimesOut 回归 SC-03：挂死的 checker 不得
+// 卡死 health poller——HealthCheckTimeout 到期后按不健康同步
+// NOT_SERVING。旧代码首轮 updateHealthStatus 卡死在 CheckHealth，状态
+// 冻结在 SERVING。
+func TestHealthPollerHungCheckerTimesOut(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block) // 放行挂死的 checker goroutine
+
+	s := NewServer(
+		WithAddr("127.0.0.1:0"),
+		WithHealthCheckers(func() []lynx.Checker { return []lynx.Checker{chanChecker{block: block}} }),
+		WithHealthCheckPeriod(30*time.Millisecond),
+		WithHealthCheckTimeout(80*time.Millisecond),
+	)
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start(context.Background()) }()
+	defer func() {
+		_ = s.Stop(context.Background())
+		select {
+		case <-startErr:
+		case <-time.After(5 * time.Second):
+			t.Error("Start did not return after Stop")
+		}
+	}()
+
+	var addr string
+	for i := 0; i < 200 && addr == ""; i++ {
+		s.mu.Lock()
+		if s.listener != nil {
+			addr = s.listener.Addr().String()
+		}
+		s.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("server did not start listening")
+	}
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	client := grpc_health_v1.NewHealthClient(conn)
+
+	// 挂死 checker + 80ms 超时 + 30ms 轮询：数秒内必须翻转为
+	// NOT_SERVING（旧代码永久 SERVING）。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Check(context.Background(), &grpc_health_v1.HealthCheckRequest{})
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		if resp.Status == grpc_health_v1.HealthCheckResponse_NOT_SERVING {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("health status frozen at SERVING with a hung checker (SC-03: poller not timing out)")
+}
+
+// --- SC-14/SC-15：Start 守卫与 Init 复位 ---
+
+// TestStartRejectsReentry 回归 SC-14：二次 Start 直接报错（覆盖 listener
+// 会泄漏旧 listener）。
+func TestStartRejectsReentry(t *testing.T) {
+	s := NewServer(WithAddr(freeAddr(t)))
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start(context.Background()) }()
+	waitRunning(t, s)
+	defer func() {
+		_ = s.Stop(context.Background())
+		select {
+		case <-startErr:
+		case <-time.After(5 * time.Second):
+			t.Error("Start did not return after Stop")
+		}
+	}()
+
+	err := s.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("second Start() err = %v, want reentry guard error", err)
+	}
+}
+
+// TestStartGuardResetsOnListenFailure：Listen 失败不算已启动，守卫复位
+// 后允许重试。
+func TestStartGuardResetsOnListenFailure(t *testing.T) {
+	occ, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	addr := occ.Addr().String()
+
+	s := NewServer(WithAddr(addr))
+	if err := s.Start(context.Background()); err == nil {
+		_ = occ.Close()
+		t.Fatal("Start on occupied port = nil, want listen error")
+	}
+	_ = occ.Close()
+
+	// 重试不应被守卫以 "more than once" 拒绝。
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start(context.Background()) }()
+	waitRunning(t, s)
+	_ = s.Stop(context.Background())
+	select {
+	case err := <-startErr:
+		if err != nil {
+			t.Errorf("retry Start() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retry Start() did not return after Stop()")
+	}
+}
+
+// TestInitResetsLifecycleFlags 回归 SC-15：Init 复位 started/stopped/
+// stopRequested——否则未来支持 restart 时 poller 永不再启动、Start 被
+// 守卫永久拒绝。
+func TestInitResetsLifecycleFlags(t *testing.T) {
+	s := NewServer(WithAddr(freeAddr(t)))
+	// 模拟完整生命周期后（Start 置位 started、Stop 置位 stopRequested/
+	// stopped）再 Init。
+	s.started.Store(true)
+	s.stopRequested.Store(true)
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
+
+	if err := s.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if s.started.Load() {
+		t.Error("started 未被 Init 复位 (SC-15)")
+	}
+	if s.stopRequested.Load() {
+		t.Error("stopRequested 未被 Init 复位 (SC-15)")
+	}
+	s.mu.Lock()
+	stopped := s.stopped
+	s.mu.Unlock()
+	if stopped {
+		t.Error("stopped 未被 Init 复位 (SC-15)")
+	}
+}
+
+// --- SC-07：请求日志开关 ---
+
+// captureLogHandler 收集 slog 记录（server/grpc 测试用）。
+type captureLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *captureLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *captureLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureLogHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *captureLogHandler) countMsg(msg string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, r := range h.records {
+		if r.Message == msg {
+			n++
+		}
+	}
+	return n
+}
+
+// registerPing 注册最小测试服务，返回可直接 Invoke 的方法名。handler
+// 必须显式调用传入的 ic（拦截器链）——grpc 把链组装为单一拦截器经
+// handler 参数传入，由 handler 负责调用（protoc 生成代码同款模式），
+// 不调用则链被短路。
+func registerPing(s *Server) {
+	s.GetServer().RegisterService(&grpc.ServiceDesc{
+		ServiceName: "test.Ping",
+		HandlerType: (*interface{})(nil),
+		Methods: []grpc.MethodDesc{{
+			MethodName: "Call",
+			Handler: func(srv any, ctx context.Context, dec func(any) error, ic grpc.UnaryServerInterceptor) (any, error) {
+				return ic(ctx, srv, &grpc.UnaryServerInfo{FullMethod: "/test.Ping/Call"},
+					func(ctx context.Context, req any) (any, error) {
+						m := new(struct{})
+						if err := dec(m); err != nil {
+							return nil, err
+						}
+						return m, nil
+					})
+			},
+		}},
+	}, struct{}{})
+}
+
+// invokePing 起服务、发一次 RPC、收尾。
+func invokePing(t *testing.T, s *Server) {
+	t.Helper()
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start(context.Background()) }()
+	waitRunning(t, s)
+	defer func() {
+		_ = s.Stop(context.Background())
+		select {
+		case <-startErr:
+		case <-time.After(5 * time.Second):
+			t.Error("Start did not return after Stop")
+		}
+	}()
+
+	s.mu.Lock()
+	addr := ""
+	if s.listener != nil {
+		addr = s.listener.Addr().String()
+	}
+	s.mu.Unlock()
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.Invoke(context.Background(), "/test.Ping/Call", &struct{}{}, &struct{}{}, grpc.ForceCodec(rawCodec{})); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+}
+
+// TestRequestLogDefaultEnabledAndSwitchable 回归 SC-07：缺省每 RPC 记
+// 请求日志（兼容旧行为）；WithRequestLog(false) 后不再产生。
+func TestRequestLogDefaultEnabledAndSwitchable(t *testing.T) {
+	t.Run("default enabled", func(t *testing.T) {
+		h := &captureLogHandler{}
+		s := NewServer(WithAddr(freeAddr(t)), WithLogger(slog.New(h)))
+		if !s.o.RequestLog {
+			t.Fatal("RequestLog 缺省应为 true（兼容）")
+		}
+		registerPing(s)
+		invokePing(t, s)
+		if n := h.countMsg("gRPC request"); n == 0 {
+			t.Error("默认配置下 RPC 未产生请求日志（兼容性回归）")
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		h := &captureLogHandler{}
+		s := NewServer(WithAddr(freeAddr(t)), WithLogger(slog.New(h)), WithRequestLog(false))
+		registerPing(s)
+		invokePing(t, s)
+		if n := h.countMsg("gRPC request"); n != 0 {
+			t.Errorf("WithRequestLog(false) 后仍产生 %d 条请求日志, want 0", n)
+		}
+		if n := h.countMsg("gRPC request completed"); n != 0 {
+			t.Errorf("WithRequestLog(false) 后仍产生 %d 条完成日志, want 0", n)
+		}
+	})
 }

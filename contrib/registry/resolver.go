@@ -18,7 +18,7 @@ const (
 )
 
 // filterAll 用于向 Discovery 拉取/订阅全量实例（含非 Passing）。
-// 缓存键只用服务名，调用方 Filter 在读路径由 matchFilter 应用，
+// 缓存键只用服务名，调用方 Filter 在读路径由 MatchFilter 应用，
 // 这样同进程内不同 Filter 共享一条缓存与一个 watch goroutine。
 var filterAll = Filter{IncludeUnhealthy: true}
 
@@ -56,6 +56,18 @@ func WithPollInterval(d time.Duration) ResolverOption {
 	}
 }
 
+// WithResolverLogger 注入 Resolver 内部日志（stale 丢弃 warn、watch 重连
+// debug）。此前走全局 slog.Warn，与包内其余组件的注入式 logger 不一致，
+// 进程内多 Resolver（测试场景）无法分离日志（RC-20）。缺省回退
+// slog.Default()，保持既有行为。
+func WithResolverLogger(l *slog.Logger) ResolverOption {
+	return func(r *Resolver) {
+		if l != nil {
+			r.logger = l
+		}
+	}
+}
+
 // Resolver 是带进程内缓存的客户端发现：每个服务名一条缓存 +
 // 一个后台 watch goroutine（Watch 失败时回退轮询）。
 // 并发安全；Close 幂等。
@@ -64,6 +76,7 @@ type Resolver struct {
 	picker       Picker
 	staleMaxAge  time.Duration
 	pollInterval time.Duration
+	logger       *slog.Logger
 
 	mu      sync.Mutex
 	entries map[string]*cacheEntry // key = 服务名，见 filterAll 注释
@@ -84,6 +97,7 @@ func NewResolver(d Discovery, opts ...ResolverOption) *Resolver {
 		picker:       RoundRobinPicker(),
 		staleMaxAge:  60 * time.Second,
 		pollInterval: 15 * time.Second,
+		logger:       slog.Default(),
 		entries:      make(map[string]*cacheEntry),
 		ctx:          ctx,
 		cancel:       cancel,
@@ -144,7 +158,7 @@ func (r *Resolver) lookup(ctx context.Context, name string, filter Filter) ([]In
 	}
 	out := make([]Instance, 0, len(insts))
 	for _, inst := range insts {
-		if matchFilter(inst, filter) {
+		if MatchFilter(filter, inst) {
 			out = append(out, copyInstance(inst))
 		}
 	}
@@ -170,6 +184,11 @@ func (r *Resolver) entryFor(name string) (*cacheEntry, bool) {
 
 // ensureFilled 在缓存未填充时同步 GetService 一次（首个 Get 不等待
 // watch 首轮推送）。并发首个 Get 可能重复拉取，结果等价，不加锁串行化。
+//
+// 已知权衡（RC-22，接受）：本方法与 watchLoop 并发写同一 cacheEntry，
+// 交错时缓存可能短暂回退到稍旧的快照（store 非原子读-改-写）。下一次
+// watch 推送即收敛；不引入额外同步的原因是读路径无锁快照的性能收益
+// 与该窗口（毫秒级、自愈）不成正比。
 func (r *Resolver) ensureFilled(ctx context.Context, name string, e *cacheEntry) error {
 	e.mu.RLock()
 	filled := e.filled
@@ -199,7 +218,7 @@ func (r *Resolver) snapshot(name string, e *cacheEntry) ([]Instance, error) {
 	}
 	e.mu.Lock()
 	if e.instances != nil && time.Since(e.updatedAt) > r.staleMaxAge {
-		slog.Warn("registry: resolver dropped stale snapshot",
+		r.logger.Warn("registry: resolver dropped stale snapshot",
 			"service", name,
 			"age", time.Since(e.updatedAt).Round(time.Millisecond),
 			"stale_max_age", r.staleMaxAge)
@@ -233,10 +252,13 @@ func (r *Resolver) watchLoop(name string, e *cacheEntry) {
 			continue
 		}
 		closed, received := r.consume(name, w, e)
+		// 无论因何退出会话都 Stop：closed 路径（Resolver 关闭）此前直接
+		// return 不调 Stop，后端 watcher 条目永久残留，此后的 Register/
+		// Deregister 持续向死 watcher 推送（内存泄漏 + 无效工作，RC-04）。
+		_ = w.Stop()
 		if closed {
 			return
 		}
-		_ = w.Stop()
 		// Watch 断开：退避重连，期间读路径继续提供最后一次成功快照，
 		// 直至年龄超过 staleMaxAge 被丢弃。收到过快照的会话视为健康
 		// 连接，重置退避；从未收到快照的反复断开则按 1s–30s 增长。
@@ -265,7 +287,7 @@ func (r *Resolver) consume(name string, w Watcher, e *cacheEntry) (closed, recei
 			if errors.Is(err, context.Canceled) {
 				return true, received
 			}
-			slog.Debug("registry: resolver watch error, reconnecting",
+			r.logger.Debug("registry: resolver watch error, reconnecting",
 				"service", name, "error", err)
 			return false, received
 		}

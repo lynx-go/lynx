@@ -64,9 +64,13 @@ func NewHandler(log Logger, h http.Handler) http.Handler {
 }
 
 func cloneRequestWithoutBody(r *http.Request) *http.Request {
-	r = r.Clone(r.Context())
-	r.Body = nil
-	return r
+	// 浅拷贝即可（SC-09）：Entry 只读取 Method/URL 等字段，r.Clone 的
+	// header 深拷贝是每请求一次的无谓分配潮；浅拷贝同样把 Body 隔离为
+	// nil，日志侧不会误读请求体（Logger 契约保证不持有 Entry）。
+	r2 := new(http.Request)
+	*r2 = *r
+	r2.Body = nil
+	return r2
 }
 
 // Entry 记录一次已完成的 HTTP 请求的信息
@@ -204,28 +208,25 @@ func (r *responseStats) Flush() {
 // The record's fields are suitable for consumption by Stackdriver Logging.
 // slog.Logger is concurrency-safe, so no additional locking is required.
 type RequestLogger struct {
-	onErr  func(error)
 	logger *slog.Logger
 }
 
 // NewRequestLogger returns a new logger.
-// A nil onErr is treated the same as func(error) {}.
+// onErr 仅为保持既有签名兼容而保留（SC-09）：底层 slog 写入不返回
+// 错误，历史上 log() 恒返 nil 使该回调成为死代码，其调用链已删除，
+// 传入的函数恒不被调用。
 func NewRequestLogger(logger *slog.Logger, onErr func(error)) *RequestLogger {
-	return &RequestLogger{
-		logger: logger,
-		onErr:  onErr,
-	}
+	_ = onErr
+	return &RequestLogger{logger: logger}
 }
 
 // Log writes a record to its writer.  Multiple concurrent calls will
 // produce sequential writes to its writer.
 func (l *RequestLogger) Log(ent *Entry) {
-	if err := l.log(ent); err != nil && l.onErr != nil {
-		l.onErr(err)
-	}
+	l.log(ent)
 }
 
-func (l *RequestLogger) log(ent *Entry) error {
+func (l *RequestLogger) log(ent *Entry) {
 	// r represents the fluent-plugin-google-cloud format
 	// See https://github.com/GoogleCloudPlatform/fluent-plugin-google-cloud/blob/f93046d92f7722db2794a042c3f2dde5df91a90b/lib/fluent/plugin/out_google_cloud.rb#L145
 	// to check json tags
@@ -268,7 +269,6 @@ func (l *RequestLogger) log(ent *Entry) error {
 	r.SpanID = ent.SpanID.String()
 	r.RequestID = ent.RequestID
 	l.logger.Debug("requestlog", "request", r)
-	return nil
 }
 
 func appendLatency(b []byte, d time.Duration) []byte {
