@@ -175,6 +175,7 @@ func NewServer(handler http.Handler, opts ...Option) *Server {
 		logger:  options.Logger,
 		o:       options,
 		handler: handler,
+		ready:   make(chan struct{}),
 	}
 }
 
@@ -190,6 +191,8 @@ type Server struct {
 	o          Options
 	handler    http.Handler
 	bus        eventbus.Bus
+	ready      chan struct{}
+	readyOnce  sync.Once
 }
 
 // Name 返回服务名称 "http"。
@@ -230,6 +233,15 @@ func (s *Server) AdvertiseAddr() string {
 	return s.o.AdvertiseAddr
 }
 
+// Ready 在 Listen 成功之后、Serve 之前关闭。Listen 失败不关闭。
+func (s *Server) Ready() <-chan struct{} {
+	return s.ready
+}
+
+func (s *Server) closeReady() {
+	s.readyOnce.Do(func() { close(s.ready) })
+}
+
 // Start 启动 HTTP 服务并开始监听，阻塞至服务退出。
 // 显式注入 otel provider（WithPublicEndpoint 保持与旧实现一致的
 // traceparent-as-link 语义），不修改进程全局 otel provider。
@@ -259,6 +271,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.listener = ln
 	s.mu.Unlock()
 	s.publishEvent(eventbus.TopicHTTPListening, eventbus.ServerEvent{Service: "http", Addr: ln.Addr().String(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
+	s.closeReady()
 	if s.o.TLSConfig != nil {
 		srv.TLSConfig = s.o.TLSConfig
 		return srv.ServeTLS(ln, "", "")
@@ -380,3 +393,5 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 var _ lynx.Service = (*Server)(nil)
+
+var _ lynx.Ready = (*Server)(nil)

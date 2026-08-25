@@ -21,7 +21,7 @@ type fakeAppContext struct {
 
 func (f *fakeAppContext) Context() context.Context { return context.Background() }
 func (f *fakeAppContext) Config() lynx.Config      { return nil }
-func (f *fakeAppContext) Bus() eventbus.Bus             { return eventbus.NewMemoryBus(eventbus.Options{}) }
+func (f *fakeAppContext) Bus() eventbus.Bus        { return eventbus.NewMemoryBus(eventbus.Options{}) }
 func (f *fakeAppContext) Logger(...any) *slog.Logger {
 	return f.logger
 }
@@ -328,5 +328,58 @@ func TestServeErrorNoPanic(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Errorf("Start() error = %v, want nil", err)
+	}
+}
+
+func TestServiceReadyAfterListen(t *testing.T) {
+	s := NewService(WithAddr("127.0.0.1:0"), WithLogger(discardLogger()))
+	select {
+	case <-s.Ready():
+		t.Fatal("Ready() closed before Start")
+	default:
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Start(ctx) }()
+
+	select {
+	case <-s.Ready():
+	case err := <-done:
+		t.Fatalf("Start() returned before Ready: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ready() did not close after Listen")
+	}
+	if s.Addr() == "" {
+		t.Error("Addr() empty after Ready closed")
+	}
+
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("Start() did not return after Stop()")
+	}
+}
+
+func TestServiceReadyNotClosedOnListenError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer ln.Close()
+
+	s := NewService(WithAddr(ln.Addr().String()), WithLogger(discardLogger()))
+	if err := s.Start(context.Background()); err == nil {
+		t.Fatal("Start() = nil, want listen error")
+	}
+	select {
+	case <-s.Ready():
+		t.Fatal("Ready() closed on Listen failure")
+	default:
 	}
 }

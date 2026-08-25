@@ -97,6 +97,18 @@ type Lifecycle interface {
 
 Services are registered via `app.Register(...)` and automatically managed through their lifecycle. Services implementing `lynx.Checker` (`CheckHealth() error`, defined locally in health.go — no gocloud.dev dependency) are automatically added to health checks; `app.HealthCheckers()` returns the snapshot slice. `Stop` errors are collected (bounded by `Options.StopTimeout`) and surfaced by `Run()` together with OnStop hook errors.
 
+Optional `lynx.Ready` (`Ready() <-chan struct{}`): close the channel after the service has entered the running state (HTTP/gRPC/debug: after `Listen`, before `Serve`). Listen/Start failure must not close it.
+
+**OrderedServices**
+`lynx.OrderedServices(name, svcs...)` wraps multiple services as one `Service`. Init/Start run in argument order; Stop is reverse. Nested groups are allowed. Children must not also be `Register`'d.
+
+Start sequencing after launching each child `Start` in its own goroutine:
+1. `Ready` → wait until the channel closes
+2. else `Checker` → poll `CheckHealth` until nil (timeout 10s)
+3. else proceed immediately after `Start` is invoked
+
+The wrapper itself implements `Checker` (aggregates children) and `Ready` (closes after all children are ready). Top-level services registered on the App still start concurrently with each other.
+
 **ServiceFactory**
 For dynamic service creation with configurable instance counts (service.go:40-55):
 ```go
@@ -224,8 +236,8 @@ The `lynx.NewRunner()` function creates a `*Runner` instance with two run method
 
 **Adding a New Service**
 1. Implement the Service interface
-2. Optionally implement lynx.Checker
-3. Register via `app.Register(myService)`
+2. Optionally implement lynx.Checker and/or lynx.Ready (Listen-based servers should close Ready after bind)
+3. Register via `app.Register(myService)`, or sequence dependents with `app.Register(lynx.OrderedServices("name", a, b))`
 
 **Adding a Hook**
 ```go

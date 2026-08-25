@@ -176,6 +176,7 @@ func NewServer(opts ...Option) *Server {
 	s := &Server{
 		logger: options.Logger,
 		o:      options,
+		ready:  make(chan struct{}),
 	}
 	// Recovery 在最外层：链内任意一环（含用户拦截器）panic 都能被恢复。
 	// Bus 注入在请求时读取 s.bus（Init 后可用），供 Topic API 经 Context 解析。
@@ -238,9 +239,11 @@ type Server struct {
 	// stopped 标记 Stop 已被调用（mu 保护）：Stop 早于 Start 执行到
 	// startHealthPoller 时，poller 启动即在同锁段内发现并取消自身，
 	// 不会泄漏无人取消的轮询 goroutine。
-	stopped bool
-	running atomic.Bool
-	bus     eventbus.Bus
+	stopped   bool
+	running   atomic.Bool
+	bus       eventbus.Bus
+	ready     chan struct{}
+	readyOnce sync.Once
 }
 
 // CheckHealth 实现健康检查，服务未处于运行状态时返回错误。
@@ -290,6 +293,15 @@ func (s *Server) AdvertiseAddr() string {
 	return s.o.AdvertiseAddr
 }
 
+// Ready 在 Listen 成功之后、Serve 之前关闭。Listen 失败不关闭。
+func (s *Server) Ready() <-chan struct{} {
+	return s.ready
+}
+
+func (s *Server) closeReady() {
+	s.readyOnce.Do(func() { close(s.ready) })
+}
+
 // Start 启动 gRPC 服务并开始监听，阻塞至服务退出。
 func (s *Server) Start(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "starting gRPC server, listening on "+s.o.Addr)
@@ -302,6 +314,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.listener = lis
 	s.mu.Unlock()
 	s.publishEvent(eventbus.TopicGRPCListening, eventbus.ServerEvent{Service: "grpc", Addr: lis.Addr().String(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
+	s.closeReady()
 
 	// Set the server to healthy, for both the named and the standard empty
 	// service name used by most gRPC health probes.
@@ -464,3 +477,5 @@ func (s *Server) injectBusStream() grpc.StreamServerInterceptor {
 var _ lynx.Service = (*Server)(nil)
 
 var _ lynx.Checker = (*Server)(nil)
+
+var _ lynx.Ready = (*Server)(nil)

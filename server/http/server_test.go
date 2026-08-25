@@ -621,3 +621,51 @@ func TestWithAdvertiseAddr(t *testing.T) {
 		t.Errorf("AdvertiseAddr() = %q, want %q", got, "10.0.0.1:8080")
 	}
 }
+
+func TestServerReadyAfterListen(t *testing.T) {
+	srv := NewServer(http.NewServeMux(), WithAddr("127.0.0.1:0"))
+	select {
+	case <-srv.Ready():
+		t.Fatal("Ready() closed before Start")
+	default:
+	}
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start(context.Background()) }()
+
+	select {
+	case <-srv.Ready():
+	case err := <-startErr:
+		t.Fatalf("Start() returned before Ready: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ready() did not close after Listen")
+	}
+	if srv.Addr() == "" {
+		t.Error("Addr() empty after Ready closed")
+	}
+
+	_ = srv.Stop(context.Background())
+	select {
+	case <-startErr:
+	case <-time.After(5 * time.Second):
+		t.Error("Start() did not return after Stop()")
+	}
+}
+
+func TestServerReadyNotClosedOnListenError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer ln.Close()
+
+	srv := NewServer(http.NewServeMux(), WithAddr(ln.Addr().String()))
+	if err := srv.Start(context.Background()); err == nil {
+		t.Fatal("Start() = nil, want listen error")
+	}
+	select {
+	case <-srv.Ready():
+		t.Fatal("Ready() closed on Listen failure")
+	default:
+	}
+}

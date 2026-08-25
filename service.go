@@ -42,6 +42,16 @@ type Service interface {
 	Lifecycle
 }
 
+// Ready 是可选接口：服务在进入可工作状态时关闭返回的 channel
+// （例如 Listen 成功之后、Serve 之前）。
+// OrderedServices 若检测到该接口，会在启动下一个子服务前等待其关闭；
+// 未实现则回退到 Checker 轮询，再否则视为已 invoke 即就绪。
+// 仅在成功跨过启动门槛后关闭；Listen/Start 失败不得关闭，以便等待方
+// 通过 Start 返回的错误结束，而不会误判为已就绪。
+type Ready interface {
+	Ready() <-chan struct{}
+}
+
 // ServiceFactory 按 FactoryOptions 描述的方式构建服务实例。
 type ServiceFactory interface {
 	New() Service

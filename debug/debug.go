@@ -78,6 +78,7 @@ func NewService(opts ...Option) *Service {
 	return &Service{
 		logger: options.Logger,
 		o:      options,
+		ready:  make(chan struct{}),
 	}
 }
 
@@ -93,7 +94,9 @@ type Service struct {
 	started    atomic.Bool
 	// stopping 标记 Stop 已被调用：Start 在监听前与监听后各检查一次，
 	// 避免 Stop 先于 Start 时留下无人关停的 http.Server。
-	stopping atomic.Bool
+	stopping  atomic.Bool
+	ready     chan struct{}
+	readyOnce sync.Once
 }
 
 // Name 返回服务名称 "debug"。
@@ -132,6 +135,15 @@ func (s *Service) CheckHealth() error {
 	return nil
 }
 
+// Ready 在 Listen 成功并置位 started 之后关闭。Listen 失败或不启动不关闭。
+func (s *Service) Ready() <-chan struct{} {
+	return s.ready
+}
+
+func (s *Service) closeReady() {
+	s.readyOnce.Do(func() { close(s.ready) })
+}
+
 // Start 启动 pprof HTTP 服务并阻塞至传入 ctx 取消。
 // 竞态安全：Stop 先于本方法调用时（服务启动失败引发的提前中断）不启动
 // 并立即返回；Stop 恰在本方法监听前后交错时同样收敛（见内注释）。
@@ -162,6 +174,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return errors.New("debug server stopped before start")
 	}
 	s.started.Store(true)
+	s.closeReady()
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.logger.ErrorContext(ctx, "debug server serve error", "error", err)
@@ -253,3 +266,5 @@ func newMux() *http.ServeMux {
 var _ lynx.Service = (*Service)(nil)
 
 var _ lynx.Checker = (*Service)(nil)
+
+var _ lynx.Ready = (*Service)(nil)
