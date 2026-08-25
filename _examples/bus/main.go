@@ -79,6 +79,10 @@ func (s *lifecycleCoordinator) Init(ctx lynx.AppContext) error {
 		slog.InfoContext(ctx, "coordinator: service started", "service", e.Payload.Service)
 		return nil
 	})
+	_ = eventbus.ServiceStartedTopic.Subscribe(ctx.Context(), func(ctx context.Context, e *eventbus.Event[eventbus.ServiceEvent]) error {
+		slog.InfoContext(ctx, "coordinator: service started2", "service", e.Payload.Service)
+		return nil
+	}, eventbus.WithHandlerName("lifecycle-handler2"))
 	// 若有 HTTP 服务，可订阅其 listening 事件以获知实际监听地址
 	_ = eventbus.HTTPListeningTopic.Subscribe(ctx.Context(), func(ctx context.Context, e *eventbus.Event[eventbus.ServerEvent]) error {
 		slog.InfoContext(ctx, "coordinator: http listening", "addr", e.Payload.Addr, "advertise", e.Payload.AdvertiseAddr)
