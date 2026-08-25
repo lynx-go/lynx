@@ -13,8 +13,7 @@ func TestMemoryBusPublishSubscribe(t *testing.T) {
 	if err := b.Init(nil); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go func() { _ = b.Start(ctx) }()
 
 	// Wait for running
