@@ -315,9 +315,9 @@ type Server struct {
 	stopRequested atomic.Bool
 	// started 守卫 Start 重入（SC-14）：二次 Start 会覆盖 listener
 	// 造成泄漏，直接报错；Init 复位。
-	started atomic.Bool
-	running atomic.Bool
-	bus     eventbus.Bus
+	started   atomic.Bool
+	running   atomic.Bool
+	bus       eventbus.Bus
 	ready     chan struct{}
 	readyOnce sync.Once
 }
