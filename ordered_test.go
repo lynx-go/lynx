@@ -196,6 +196,23 @@ func TestOrderedServicesInitFailureStopsPrevious(t *testing.T) {
 	}
 }
 
+func TestOrderedServicesInitFailureJoinsStopError(t *testing.T) {
+	log := &orderLog{}
+	initErr := errors.New("init-b")
+	stopErr := errors.New("stop-a")
+	g := OrderedServices("g",
+		&seqProbe{name: "a", log: log, stopErr: stopErr},
+		&seqProbe{name: "b", log: log, initErr: initErr},
+	)
+	err := g.Init(testAppCtx(t))
+	if !errors.Is(err, initErr) {
+		t.Fatalf("Init() missing init error: %v", err)
+	}
+	if !errors.Is(err, stopErr) {
+		t.Fatalf("Init() missing stop error: %v", err)
+	}
+}
+
 func TestOrderedServicesRejectsEmptyName(t *testing.T) {
 	g := OrderedServices("", &seqProbe{name: "a", log: &orderLog{}})
 	if err := g.Init(testAppCtx(t)); err == nil {

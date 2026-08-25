@@ -70,8 +70,9 @@ func (g *orderedServices) Init(ctx AppContext) error {
 	}
 	for i, s := range g.svcs {
 		if err := s.Init(ctx); err != nil {
-			g.stopRange(stopCtx, i)
-			return err
+			// Init 失败时 App 不会登记本包装器，也就不会再调 Stop；
+			// 此处是唯一的清理机会，Stop 错误必须一并返回。
+			return errors.Join(err, g.stopRange(stopCtx, i))
 		}
 	}
 	return nil
