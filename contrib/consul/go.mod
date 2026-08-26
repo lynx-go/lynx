@@ -4,12 +4,14 @@ go 1.26.5
 
 replace (
 	github.com/lynx-go/lynx => ../../
+	github.com/lynx-go/lynx/contrib/cluster => ../cluster
 	github.com/lynx-go/lynx/contrib/registry => ../registry
 )
 
 require (
 	github.com/hashicorp/consul/api v1.34.4
 	github.com/lynx-go/lynx v1.0.0
+	github.com/lynx-go/lynx/contrib/cluster v1.0.0
 	github.com/lynx-go/lynx/contrib/registry v1.0.0
 	github.com/spf13/viper v1.21.0
 )

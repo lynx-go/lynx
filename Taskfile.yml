@@ -45,3 +45,11 @@ tasks:
         vars:
           Version: "contrib/consul/{{.Version}}"
           Comment: "{{.Comment}}"
+      - task: release-tag
+        vars:
+          Version: "contrib/cluster/{{.Version}}"
+          Comment: "{{.Comment}}"
+      - task: release-tag
+        vars:
+          Version: "contrib/cluster-redis/{{.Version}}"
+          Comment: "{{.Comment}}"

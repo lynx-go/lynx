@@ -1,17 +1,10 @@
-module github.com/lynx-go/lynx/contrib/schedule
+module github.com/lynx-go/lynx/contrib/cluster
 
 go 1.26.5
 
-replace (
-	github.com/lynx-go/lynx => ../../
-	github.com/lynx-go/lynx/contrib/cluster => ../cluster
-)
+replace github.com/lynx-go/lynx => ../../
 
-require (
-	github.com/lynx-go/lynx v1.0.0
-	github.com/lynx-go/lynx/contrib/cluster v1.0.0
-	github.com/robfig/cron/v3 v3.0.1
-)
+require github.com/lynx-go/lynx v1.0.0
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -21,6 +14,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/oklog/run v1.2.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect

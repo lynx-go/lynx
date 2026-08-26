@@ -145,6 +145,7 @@ func WithLogger(l *slog.Logger) Option {
 
 // Client 是 Consul 后端，同时实现 registry.Registry 与 registry.Discovery。
 type Client struct {
+	api    *api.Client
 	agent  *api.Agent
 	health *api.Health
 	logger *slog.Logger
@@ -181,6 +182,7 @@ func New(config *api.Config, opts ...Option) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{
+		api:             apiClient,
 		agent:           apiClient.Agent(),
 		health:          apiClient.Health(),
 		logger:          slog.Default(),

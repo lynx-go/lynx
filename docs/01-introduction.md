@@ -113,7 +113,9 @@ lynx/
 │   ├── watermill/       # Watermill 驱动的 Bus
 │   ├── watermill-kafka/ # Kafka Transport
 │   ├── registry/   # 服务注册发现
-│   ├── consul/     # Consul 后端
+│   ├── consul/     # Consul 后端（注册发现 + cluster.Store）
+│   ├── cluster/    # 进程间协调
+│   ├── cluster-redis/
 │   ├── schedule/   # 定时任务
 │   ├── telemetry/  # OpenTelemetry 生命周期托管
 │   └── zap/        # Zap 日志集成

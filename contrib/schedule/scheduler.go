@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/contrib/cluster"
 	"github.com/robfig/cron/v3"
 )
 
@@ -50,6 +51,9 @@ type Options struct {
 	// Init 不再用 ctx.Logger 覆盖（对齐 debug 包的防护）——否则任务
 	// 错误日志与 cron 内部日志两处实例不同源。
 	loggerSet bool
+	// Store 是集群占位后端。Exclusive 任务经 TryOnce 抢格子；
+	// 未设置时 Exclusive 任务使 NewScheduler 返回 ErrStoreRequired。
+	Store cluster.Store
 }
 
 // CheckHealth 实现健康检查，调度器未初始化或未运行时返回错误。
@@ -218,6 +222,18 @@ func WithErrorHandler(fn func(ctx context.Context, task Task, err error)) Option
 	}
 }
 
+// WithStore 设置集群占位后端。Exclusive 任务通过 cluster.TryOnce 抢格子。
+func WithStore(s cluster.Store) Option {
+	return func(o *Options) {
+		o.Store = s
+	}
+}
+
+var (
+	// ErrStoreRequired 表示存在 Exclusive 任务但未 WithStore。
+	ErrStoreRequired = errors.New("schedule: Exclusive task requires WithStore")
+)
+
 // NewScheduler 创建调度器服务并注册所有定时任务，cron 表达式非法时返回错误。
 func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	o := &Options{
@@ -254,6 +270,12 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 		cronInstance = cron.New(cronOpts...)
 	}
 
+	for _, t := range tasks {
+		if isExclusive(t) && o.Store == nil {
+			return nil, ErrStoreRequired
+		}
+	}
+
 	scheduler := &Scheduler{
 		options: o,
 		logger:  o.Logger,
@@ -261,8 +283,13 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 		tasks:   tasks,
 		runDone: make(chan struct{}),
 	}
+	loc := o.Location
+	if loc == nil {
+		loc = time.Local
+	}
 	for i := range tasks {
 		task := tasks[i]
+		exclusive := isExclusive(task)
 		if _, err := scheduler.cron.AddFunc(task.Cron(), func() {
 			// 任务上下文取自 Init（ctx.Context，携带应用元数据，关闭时
 			// 取消）；未 Init 时回退 Background。
@@ -276,13 +303,26 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 						"task_name", task.Name(), "error", fmt.Errorf("%v", r))
 				}
 			}()
-			if err := task.HandlerFunc()(ctx); err != nil {
-				if scheduler.options.OnTaskError != nil {
-					scheduler.options.OnTaskError(ctx, task, err)
-				} else {
-					scheduler.logger.ErrorContext(ctx, "schedule task execute error",
-						"task_name", task.Name(), "error", err)
+			run := task.HandlerFunc()
+			if exclusive {
+				name, ttl, err := fireIdentity(task.Name(), task.Cron(), time.Now().In(loc), loc)
+				if err != nil {
+					scheduler.reportTaskError(ctx, task, err)
+					return
 				}
+				skipped, err := cluster.TryOnce(ctx, scheduler.options.Store, name, ttl, run)
+				if skipped {
+					scheduler.logger.DebugContext(ctx, "schedule exclusive fire skipped",
+						"task_name", task.Name(), "fire", name)
+					return
+				}
+				if err != nil {
+					scheduler.reportTaskError(ctx, task, err)
+				}
+				return
+			}
+			if err := run(ctx); err != nil {
+				scheduler.reportTaskError(ctx, task, err)
 			}
 		}); err != nil {
 			return nil, err
@@ -290,6 +330,15 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	}
 
 	return scheduler, nil
+}
+
+func (s *Scheduler) reportTaskError(ctx context.Context, task Task, err error) {
+	if s.options.OnTaskError != nil {
+		s.options.OnTaskError(ctx, task, err)
+		return
+	}
+	s.logger.ErrorContext(ctx, "schedule task execute error",
+		"task_name", task.Name(), "error", err)
 }
 
 // NewSlogLogger 将 slog 实例适配为 cron.Logger；logDebug 为 true 时输出调试日志。

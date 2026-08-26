@@ -3,6 +3,8 @@ go 1.26.5
 use (
 	.
 	./_examples
+	./contrib/cluster
+	./contrib/cluster-redis
 	./contrib/consul
 	./contrib/registry
 	./contrib/schedule

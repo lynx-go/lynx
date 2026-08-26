@@ -189,6 +189,7 @@ go get github.com/lynx-go/lynx/contrib/watermill
 go get github.com/lynx-go/lynx/contrib/watermill-kafka
 go get github.com/lynx-go/lynx/contrib/telemetry
 go get github.com/lynx-go/lynx/contrib/schedule
+go get github.com/lynx-go/lynx/contrib/cluster
 go get github.com/lynx-go/lynx/contrib/zap
 ```
 
@@ -277,6 +278,22 @@ var _ schedule.Task = new(task)
 ```
 
 `Scheduler` 实现了 `CheckHealth`：任务 handler 中的 panic 会被 recover 并记录日志，不会中断调度器。
+
+多节点下默认每个进程各自触发。要让某次 cron 格子全集群只跑一次，用 `schedule.Exclusive` 并注入 `cluster.Store`（`cluster.NewMemory` 仅单测；生产用 `consul.Client.Store()` 或 `cluster-redis`）：
+
+```go
+store := consulClient.Store(cluster.WithNamespace(app.Name()))
+scheduler, err := schedule.NewScheduler([]schedule.Task{
+    localCacheRefresh,                 // 每节点都跑
+    schedule.Exclusive(nightlyBilling), // 这次格子全集群一次
+}, schedule.WithStore(store))
+```
+
+整份调度器只在一个节点运行时，用 `cluster.Singleton("cron", scheduler, store)` 再 `Register`。`Exclusive` 未配 `WithStore` 时 `NewScheduler` 失败。Consul Session TTL 最短 10s，更短的间隔请用 Redis 后端。
+
+### cluster：进程间协调
+
+`contrib/cluster` 提供占位端口 `Store`（`Claim` 一次性、`Acquire` 长租约续约）以及配方 `TryOnce` / `Campaign` / `Singleton`。不提供业务用分布式锁 API。适配器：包内 Memory、`contrib/consul`、`contrib/cluster-redis`。
 
 ### telemetry：可观测性托管
 

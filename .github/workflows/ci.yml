@@ -28,6 +28,8 @@ jobs:
           - { module: contrib/zap, flag: zap }
           - { module: contrib/registry, flag: registry }
           - { module: contrib/consul, flag: consul }
+          - { module: contrib/cluster, flag: cluster }
+          - { module: contrib/cluster-redis, flag: cluster-redis }
     steps:
       - uses: actions/checkout@v4
 
@@ -71,7 +73,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [., _examples, contrib/watermill, contrib/watermill-kafka, contrib/telemetry, contrib/schedule, contrib/zap, contrib/registry, contrib/consul]
+        module: [., _examples, contrib/watermill, contrib/watermill-kafka, contrib/telemetry, contrib/schedule, contrib/zap, contrib/registry, contrib/consul, contrib/cluster, contrib/cluster-redis]
     steps:
       - uses: actions/checkout@v4
 
