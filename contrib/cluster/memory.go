@@ -119,10 +119,7 @@ func (l *memLease) Release(ctx context.Context) error {
 }
 
 func (l *memLease) renewLoop() {
-	interval := l.ttl / 3
-	if interval < time.Millisecond {
-		interval = time.Millisecond
-	}
+	interval := max(l.ttl/3, time.Millisecond)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
