@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v1.7.0 (2026-08-27)
+
+`cluster.Store` 更名为 `cluster.Coordinator`。本次发布 tag：根 `v1.7.0`（仅文档）、
+`contrib/cluster/v1.0.0` 与 `contrib/cluster-redis/v1.0.0`（首次发布）、
+`contrib/consul/v1.7.0` 与 `contrib/schedule/v1.7.0`（相对 v1.6.0 为破坏性变更）。
 
 ### 破坏性变更：`cluster.Store` 更名为 `cluster.Coordinator`
 
@@ -20,6 +24,12 @@
 
 `Claim` / `Acquire` / `Lease` / `Leadership` / `TryOnce` / `Campaign` /
 `Singleton` / `NewMemory` 等方法与配方签名语义不变，仅接口参数类型随更名。
+
+### 修复
+
+- **`contrib/consul` go.mod 版本引用修正**：`require` 的
+  `contrib/registry` 从不存在的 `v1.0.0` 修正为已发布的 `v1.6.0`
+  （此前被本地 `replace` 遮蔽，模块代理无法解析；v1.6.0 tag 即带此问题）。
 
 ## v1.6.0 (2026-08-25)
 
