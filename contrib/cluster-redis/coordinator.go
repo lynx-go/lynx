@@ -1,4 +1,4 @@
-// Package clusterredis 用 Redis 实现 cluster.Store（SET NX + 续约）。
+// Package clusterredis 用 Redis 实现 cluster.Coordinator（SET NX + 续约）。
 // 这是协调后端，不是给业务用的 Redis 客户端。
 package clusterredis
 
@@ -17,17 +17,17 @@ const (
 	delScript   = `if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end`
 )
 
-type store struct {
+type coordinator struct {
 	rdb  redis.Cmdable
 	opts []cluster.Option
 }
 
-// NewStore 用 Redis 客户端构造 cluster.Store。rdb 通常是 *redis.Client。
-func NewStore(rdb redis.Cmdable, opts ...cluster.Option) cluster.Store {
-	return &store{rdb: rdb, opts: opts}
+// NewCoordinator 用 Redis 客户端构造 cluster.Coordinator。rdb 通常是 *redis.Client。
+func NewCoordinator(rdb redis.Cmdable, opts ...cluster.Option) cluster.Coordinator {
+	return &coordinator{rdb: rdb, opts: opts}
 }
 
-func (s *store) Claim(ctx context.Context, name string, ttl time.Duration) (bool, error) {
+func (s *coordinator) Claim(ctx context.Context, name string, ttl time.Duration) (bool, error) {
 	if name == "" {
 		return false, cluster.ErrEmptyName
 	}
@@ -43,7 +43,7 @@ func (s *store) Claim(ctx context.Context, name string, ttl time.Duration) (bool
 	return ok, nil
 }
 
-func (s *store) Acquire(ctx context.Context, name string, ttl time.Duration) (cluster.Lease, bool, error) {
+func (s *coordinator) Acquire(ctx context.Context, name string, ttl time.Duration) (cluster.Lease, bool, error) {
 	if name == "" {
 		return nil, false, cluster.ErrEmptyName
 	}
@@ -114,6 +114,6 @@ func newToken() string {
 }
 
 var (
-	_ cluster.Store = (*store)(nil)
-	_ cluster.Lease = (*redisLease)(nil)
+	_ cluster.Coordinator = (*coordinator)(nil)
+	_ cluster.Lease       = (*redisLease)(nil)
 )

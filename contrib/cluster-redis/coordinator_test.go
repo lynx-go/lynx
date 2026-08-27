@@ -11,16 +11,16 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func newTestStore(t *testing.T, opts ...cluster.Option) (cluster.Store, *miniredis.Miniredis) {
+func newTestCoordinator(t *testing.T, opts ...cluster.Option) (cluster.Coordinator, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
-	return NewStore(rdb, opts...), mr
+	return NewCoordinator(rdb, opts...), mr
 }
 
 func TestClaimExclusiveAndExpiry(t *testing.T) {
-	s, mr := newTestStore(t, cluster.WithNamespace("app"))
+	s, mr := newTestCoordinator(t, cluster.WithNamespace("app"))
 	won, err := s.Claim(context.Background(), "job", 50*time.Millisecond)
 	if err != nil || !won {
 		t.Fatalf("first: won=%v err=%v", won, err)
@@ -37,7 +37,7 @@ func TestClaimExclusiveAndExpiry(t *testing.T) {
 }
 
 func TestAcquireRelease(t *testing.T) {
-	s, _ := newTestStore(t)
+	s, _ := newTestCoordinator(t)
 	lease, ok, err := s.Acquire(context.Background(), "leader", 200*time.Millisecond)
 	if err != nil || !ok {
 		t.Fatalf("acquire: ok=%v err=%v", ok, err)
@@ -56,7 +56,7 @@ func TestAcquireRelease(t *testing.T) {
 }
 
 func TestAcquireRenews(t *testing.T) {
-	s, mr := newTestStore(t)
+	s, mr := newTestCoordinator(t)
 	lease, ok, err := s.Acquire(context.Background(), "leader", 200*time.Millisecond)
 	if err != nil || !ok {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestAcquireRenews(t *testing.T) {
 }
 
 func TestBadInput(t *testing.T) {
-	s, _ := newTestStore(t)
+	s, _ := newTestCoordinator(t)
 	if _, err := s.Claim(context.Background(), "", time.Second); !errors.Is(err, cluster.ErrEmptyName) {
 		t.Fatalf("got %v", err)
 	}

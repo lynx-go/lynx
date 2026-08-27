@@ -1,7 +1,7 @@
 package schedule
 
 // Exclusive 把 t 标成集群单例：同一次 cron 格子最多一个节点执行。
-// 未包装的 Task 仍每节点各自触发。出现 Exclusive 时必须 WithStore。
+// 未包装的 Task 仍每节点各自触发。出现 Exclusive 时必须 WithCoordinator。
 func Exclusive(t Task) Task {
 	if t == nil {
 		return nil

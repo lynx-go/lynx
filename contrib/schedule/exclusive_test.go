@@ -10,30 +10,30 @@ import (
 	"github.com/lynx-go/lynx/contrib/cluster"
 )
 
-func TestExclusiveRequiresStore(t *testing.T) {
+func TestExclusiveRequiresCoordinator(t *testing.T) {
 	_, err := NewScheduler(
 		[]Task{Exclusive(newCountingTask("t", "@every 1s", &atomic.Int32{}))},
 		WithLogger(discardLogger()),
 	)
-	if !errors.Is(err, ErrStoreRequired) {
-		t.Fatalf("got %v, want ErrStoreRequired", err)
+	if !errors.Is(err, ErrCoordinatorRequired) {
+		t.Fatalf("got %v, want ErrCoordinatorRequired", err)
 	}
 }
 
-func TestExclusiveSameStoreRunsOncePerTick(t *testing.T) {
-	store := cluster.NewMemory(cluster.WithNamespace("sched-test"))
+func TestExclusiveSharedCoordinatorRunsOncePerTick(t *testing.T) {
+	coord := cluster.NewMemory(cluster.WithNamespace("sched-test"))
 	var a, b atomic.Int32
 	s1, err := NewScheduler([]Task{Exclusive(&testTask{name: "once", cron: "@every 1s", handler: func(ctx context.Context) error {
 		a.Add(1)
 		return nil
-	}})}, WithLogger(discardLogger()), WithStore(store), WithLocation(time.UTC))
+	}})}, WithLogger(discardLogger()), WithCoordinator(coord), WithLocation(time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
 	s2, err := NewScheduler([]Task{Exclusive(&testTask{name: "once", cron: "@every 1s", handler: func(ctx context.Context) error {
 		b.Add(1)
 		return nil
-	}})}, WithLogger(discardLogger()), WithStore(store), WithLocation(time.UTC))
+	}})}, WithLogger(discardLogger()), WithCoordinator(coord), WithLocation(time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestExclusiveSameStoreRunsOncePerTick(t *testing.T) {
 		t.Fatal("exclusive task never ran")
 	}
 	// Two independent schedulers over ~2 ticks: without exclusivity we'd see
-	// roughly 2× ticks. With a shared store each tick is claimed once.
+	// roughly 2× ticks. With a shared coordinator each tick is claimed once.
 	if a.Load() > 0 && b.Load() > 0 && a.Load()+b.Load() > 6 {
 		t.Fatalf("too many combined runs a=%d b=%d (exclusivity not applied)", a.Load(), b.Load())
 	}
@@ -108,27 +108,27 @@ func TestNonExclusiveBothRun(t *testing.T) {
 	cancel2()
 }
 
-type errStore struct{ err error }
+type errCoordinator struct{ err error }
 
-func (e errStore) Claim(ctx context.Context, name string, ttl time.Duration) (bool, error) {
+func (e errCoordinator) Claim(ctx context.Context, name string, ttl time.Duration) (bool, error) {
 	return false, e.err
 }
 
-func (e errStore) Acquire(ctx context.Context, name string, ttl time.Duration) (cluster.Lease, bool, error) {
+func (e errCoordinator) Acquire(ctx context.Context, name string, ttl time.Duration) (cluster.Lease, bool, error) {
 	return nil, false, e.err
 }
 
 func TestExclusiveClaimErrorGoesToHandler(t *testing.T) {
 	var got atomic.Int32
 	var ran atomic.Int32
-	boom := errors.New("store down")
+	boom := errors.New("coordinator down")
 	s, err := NewScheduler(
 		[]Task{Exclusive(&testTask{name: "t", cron: "@every 1s", handler: func(ctx context.Context) error {
 			ran.Add(1)
 			return nil
 		}})},
 		WithLogger(discardLogger()),
-		WithStore(errStore{err: boom}),
+		WithCoordinator(errCoordinator{err: boom}),
 		WithErrorHandler(func(ctx context.Context, task Task, err error) {
 			if errors.Is(err, boom) {
 				got.Add(1)
@@ -143,17 +143,17 @@ func TestExclusiveClaimErrorGoesToHandler(t *testing.T) {
 	if !pollUntil(3*time.Second, 20*time.Millisecond, func() bool { return got.Load() >= 1 }) {
 		cancel()
 		_ = s.Stop(context.Background())
-		t.Fatal("OnTaskError not invoked for store error")
+		t.Fatal("OnTaskError not invoked for coordinator error")
 	}
 	if ran.Load() != 0 {
-		t.Fatalf("handler ran %d times on store error", ran.Load())
+		t.Fatalf("handler ran %d times on coordinator error", ran.Load())
 	}
 	_ = s.Stop(context.Background())
 	cancel()
 }
 
 func TestExclusiveSkipNotError(t *testing.T) {
-	store := cluster.NewMemory()
+	coord := cluster.NewMemory()
 	var errs atomic.Int32
 	var runs atomic.Int32
 	mk := func() *Scheduler {
@@ -163,7 +163,7 @@ func TestExclusiveSkipNotError(t *testing.T) {
 				return nil
 			}})},
 			WithLogger(discardLogger()),
-			WithStore(store),
+			WithCoordinator(coord),
 			WithLocation(time.UTC),
 			WithErrorHandler(func(ctx context.Context, task Task, err error) {
 				errs.Add(1)

@@ -12,7 +12,7 @@ import (
 type singleton struct {
 	name  string
 	inner lynx.Service
-	store Store
+	coord Coordinator
 	ttl   time.Duration
 
 	stopping atomic.Bool
@@ -24,11 +24,11 @@ type singleton struct {
 
 // Singleton 包装 inner：只有本节点成为 name 的 leader 时才运行 inner.Start。
 // 失联后停 inner 并重新竞选。Stop 时 Resign。未当选时 CheckHealth 返回 nil。
-func Singleton(name string, inner lynx.Service, s Store) lynx.Service {
+func Singleton(name string, inner lynx.Service, s Coordinator) lynx.Service {
 	return &singleton{
 		name:  name,
 		inner: inner,
-		store: s,
+		coord: s,
 		ttl:   DefaultLeaseTTL,
 	}
 }
@@ -44,8 +44,8 @@ func (s *singleton) Init(ctx lynx.AppContext) error {
 	if s.inner == nil {
 		return ErrNilService
 	}
-	if s.store == nil {
-		return ErrNilStore
+	if s.coord == nil {
+		return ErrNilCoordinator
 	}
 	if s.name == "" {
 		return ErrEmptyName
@@ -67,7 +67,7 @@ func (s *singleton) Start(ctx context.Context) error {
 		if s.stopping.Load() || runCtx.Err() != nil {
 			return nil
 		}
-		lead, err := CampaignTTL(runCtx, s.store, s.name, s.ttl)
+		lead, err := CampaignTTL(runCtx, s.coord, s.name, s.ttl)
 		if err != nil {
 			if runCtx.Err() != nil || s.stopping.Load() {
 				return nil

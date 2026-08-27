@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### 破坏性变更：`cluster.Store` 更名为 `cluster.Coordinator`
+
+`Store` 名字暗示持久化存储，实际是进程间协调端口（`Claim` 一次性占位、
+`Acquire` 长租约）。更名为 `Coordinator` 与包语义（「进程间协调」「协调后端」）
+一致，不留兼容别名。受影响模块：`contrib/cluster`、`contrib/cluster-redis`、
+`contrib/consul`、`contrib/schedule`。迁移对照：
+
+| 旧 | 新 |
+|---|---|
+| `cluster.Store` | `cluster.Coordinator` |
+| `cluster.ErrNilStore` | `cluster.ErrNilCoordinator` |
+| `clusterredis.NewStore` | `clusterredis.NewCoordinator` |
+| `consul.Client.Store()` / `consul.NewStore` | `consul.Client.Coordinator()` / `consul.NewCoordinator` |
+| `schedule.Options.Store` / `schedule.WithStore` | `schedule.Options.Coordinator` / `schedule.WithCoordinator` |
+| `schedule.ErrStoreRequired` | `schedule.ErrCoordinatorRequired` |
+
+`Claim` / `Acquire` / `Lease` / `Leadership` / `TryOnce` / `Campaign` /
+`Singleton` / `NewMemory` 等方法与配方签名语义不变，仅接口参数类型随更名。
+
 ## v1.6.0 (2026-08-25)
 
 全量架构与代码审查的修复版本：83 项发现全部处置（81 修复 + 2 项约定不修），

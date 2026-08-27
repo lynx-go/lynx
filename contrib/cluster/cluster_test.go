@@ -126,9 +126,9 @@ func TestTryOnceSkipAndRun(t *testing.T) {
 	}
 }
 
-func TestTryOnceNilStore(t *testing.T) {
+func TestTryOnceNilCoordinator(t *testing.T) {
 	_, err := TryOnce(context.Background(), nil, "x", time.Second, func(ctx context.Context) error { return nil })
-	if !errors.Is(err, ErrNilStore) {
+	if !errors.Is(err, ErrNilCoordinator) {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -181,11 +181,11 @@ func (r *recService) Start(ctx context.Context) error {
 func (r *recService) Stop(context.Context) error { return nil }
 
 func TestSingletonOnlyOneStarts(t *testing.T) {
-	store := NewMemory()
+	coord := NewMemory()
 	a := &recService{started: make(chan struct{})}
 	b := &recService{started: make(chan struct{})}
-	sa := Singleton("worker", a, store)
-	sb := Singleton("worker", b, store)
+	sa := Singleton("worker", a, coord)
+	sb := Singleton("worker", b, coord)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = sa.Start(ctx) }()
@@ -220,9 +220,9 @@ func TestSingletonOnlyOneStarts(t *testing.T) {
 	cancel()
 }
 
-func TestSingletonInitRequiresStore(t *testing.T) {
+func TestSingletonInitRequiresCoordinator(t *testing.T) {
 	s := Singleton("x", &recService{started: make(chan struct{})}, nil)
-	if err := s.Init(nil); !errors.Is(err, ErrNilStore) {
+	if err := s.Init(nil); !errors.Is(err, ErrNilCoordinator) {
 		t.Fatalf("got %v", err)
 	}
 }

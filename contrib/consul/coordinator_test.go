@@ -95,10 +95,10 @@ func (f *fakeLock) handleKV(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(true)
 }
 
-func TestStoreClaimExclusive(t *testing.T) {
+func TestCoordinatorClaimExclusive(t *testing.T) {
 	_, srv := newFakeLock(t)
 	c := newTestClient(t, srv)
-	s := c.Store(cluster.WithNamespace("app"))
+	s := c.Coordinator(cluster.WithNamespace("app"))
 	won, err := s.Claim(context.Background(), "job", MinSessionTTL)
 	if err != nil || !won {
 		t.Fatalf("first: won=%v err=%v", won, err)
@@ -112,19 +112,19 @@ func TestStoreClaimExclusive(t *testing.T) {
 	}
 }
 
-func TestStoreClaimRejectsShortTTL(t *testing.T) {
+func TestCoordinatorClaimRejectsShortTTL(t *testing.T) {
 	_, srv := newFakeLock(t)
 	c := newTestClient(t, srv)
-	_, err := c.Store().Claim(context.Background(), "job", time.Second)
+	_, err := c.Coordinator().Claim(context.Background(), "job", time.Second)
 	if err == nil || !strings.Contains(err.Error(), "10s") {
 		t.Fatalf("got %v", err)
 	}
 }
 
-func TestStoreAcquireRelease(t *testing.T) {
+func TestCoordinatorAcquireRelease(t *testing.T) {
 	_, srv := newFakeLock(t)
 	c := newTestClient(t, srv)
-	s := NewStore(c, cluster.WithNamespace("app"), cluster.WithInstance("n1"))
+	s := NewCoordinator(c, cluster.WithNamespace("app"), cluster.WithInstance("n1"))
 	lease, ok, err := s.Acquire(context.Background(), "leader", MinSessionTTL)
 	if err != nil || !ok {
 		t.Fatalf("acquire: ok=%v err=%v", ok, err)
@@ -145,10 +145,10 @@ func TestStoreAcquireRelease(t *testing.T) {
 	}
 }
 
-func TestStoreEmptyName(t *testing.T) {
+func TestCoordinatorEmptyName(t *testing.T) {
 	_, srv := newFakeLock(t)
 	c := newTestClient(t, srv)
-	_, err := c.Store().Claim(context.Background(), "", MinSessionTTL)
+	_, err := c.Coordinator().Claim(context.Background(), "", MinSessionTTL)
 	if !errors.Is(err, cluster.ErrEmptyName) {
 		t.Fatalf("got %v", err)
 	}

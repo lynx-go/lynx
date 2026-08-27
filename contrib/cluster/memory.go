@@ -8,7 +8,7 @@ import (
 )
 
 type memory struct {
-	opts storeOptions
+	opts coordinatorOptions
 	mu   sync.Mutex
 	// slots 的键是带 namespace 的完整键。
 	slots map[string]*memSlot
@@ -22,10 +22,10 @@ type memSlot struct {
 	cancel context.CancelFunc
 }
 
-// NewMemory 返回进程内 Store，供单测与单进程使用，不能跨进程协调。
-func NewMemory(opts ...Option) Store {
+// NewMemory 返回进程内 Coordinator，供单测与单进程使用，不能跨进程协调。
+func NewMemory(opts ...Option) Coordinator {
 	return &memory{
-		opts:  applyStoreOptions(opts),
+		opts:  applyCoordinatorOptions(opts),
 		slots: make(map[string]*memSlot),
 	}
 }
@@ -141,5 +141,5 @@ func (l *memLease) renewLoop() {
 	}
 }
 
-var _ Store = (*memory)(nil)
+var _ Coordinator = (*memory)(nil)
 var _ Lease = (*memLease)(nil)

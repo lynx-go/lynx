@@ -255,9 +255,9 @@ lynx/
 │   ├── watermill/        # Watermill 驱动的 eventbus.Bus
 │   ├── watermill-kafka/  # Kafka Transport
 │   ├── registry/         # Registrar / Resolver / memory / DNS
-│   ├── consul/           # Consul 后端（含 cluster.Store）
+│   ├── consul/           # Consul 后端（含 cluster.Coordinator）
 │   ├── cluster/          # 进程间协调（Claim / Acquire / Singleton）
-│   ├── cluster-redis/    # Redis cluster.Store
+│   ├── cluster-redis/    # Redis cluster.Coordinator
 │   ├── schedule/         # Cron
 │   ├── telemetry/        # OpenTelemetry 生命周期
 │   └── zap/              # Zap 日志

@@ -22,14 +22,14 @@ func (l *leadership) Resign(ctx context.Context) error {
 }
 
 // Campaign 循环 Acquire 直到成为 leader 或 ctx 结束。
-func Campaign(ctx context.Context, s Store, name string) (Leadership, error) {
+func Campaign(ctx context.Context, s Coordinator, name string) (Leadership, error) {
 	return CampaignTTL(ctx, s, name, DefaultLeaseTTL)
 }
 
 // CampaignTTL 与 Campaign 相同，但使用指定 ttl。
-func CampaignTTL(ctx context.Context, s Store, name string, ttl time.Duration) (Leadership, error) {
+func CampaignTTL(ctx context.Context, s Coordinator, name string, ttl time.Duration) (Leadership, error) {
 	if s == nil {
-		return nil, ErrNilStore
+		return nil, ErrNilCoordinator
 	}
 	for {
 		if err := ctx.Err(); err != nil {

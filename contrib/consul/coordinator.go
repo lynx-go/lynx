@@ -13,26 +13,26 @@ import (
 // MinSessionTTL 是 Consul Session TTL 的下限（官方 10s）。
 const MinSessionTTL = 10 * time.Second
 
-var errTTLTooShort = errors.New("consul: store ttl must be at least 10s (session minimum)")
+var errTTLTooShort = errors.New("consul: coordinator ttl must be at least 10s (session minimum)")
 
-type kvStore struct {
+type kvCoordinator struct {
 	c    *Client
 	opts []cluster.Option
 }
 
-// Store 返回基于本 Client 的 cluster.Store（KV + Session）。
+// Coordinator 返回基于本 Client 的 cluster.Coordinator（KV + Session）。
 // 与 Registry 共用同一 Consul 连接与 token。Session TTL 最短 10s，
 // 短间隔任务请用 contrib/cluster-redis。
-func (c *Client) Store(opts ...cluster.Option) cluster.Store {
-	return &kvStore{c: c, opts: opts}
+func (c *Client) Coordinator(opts ...cluster.Option) cluster.Coordinator {
+	return &kvCoordinator{c: c, opts: opts}
 }
 
-// NewStore 等价于 c.Store(opts...)。
-func NewStore(c *Client, opts ...cluster.Option) cluster.Store {
-	return c.Store(opts...)
+// NewCoordinator 等价于 c.Coordinator(opts...)。
+func NewCoordinator(c *Client, opts ...cluster.Option) cluster.Coordinator {
+	return c.Coordinator(opts...)
 }
 
-func (s *kvStore) Claim(ctx context.Context, name string, ttl time.Duration) (bool, error) {
+func (s *kvCoordinator) Claim(ctx context.Context, name string, ttl time.Duration) (bool, error) {
 	_, err := s.createLock(ctx, name, ttl)
 	if err != nil {
 		if errors.Is(err, errBusy) {
@@ -43,7 +43,7 @@ func (s *kvStore) Claim(ctx context.Context, name string, ttl time.Duration) (bo
 	return true, nil
 }
 
-func (s *kvStore) Acquire(ctx context.Context, name string, ttl time.Duration) (cluster.Lease, bool, error) {
+func (s *kvCoordinator) Acquire(ctx context.Context, name string, ttl time.Duration) (cluster.Lease, bool, error) {
 	sess, err := s.createLock(ctx, name, ttl)
 	if err != nil {
 		if errors.Is(err, errBusy) {
@@ -64,7 +64,7 @@ func (s *kvStore) Acquire(ctx context.Context, name string, ttl time.Duration) (
 
 var errBusy = errors.New("consul: lock held")
 
-func (s *kvStore) createLock(ctx context.Context, name string, ttl time.Duration) (string, error) {
+func (s *kvCoordinator) createLock(ctx context.Context, name string, ttl time.Duration) (string, error) {
 	if err := s.c.checkOpen(); err != nil {
 		return "", err
 	}
@@ -157,6 +157,6 @@ func (l *sessionLease) renewLoop(ttl time.Duration) {
 }
 
 var (
-	_ cluster.Store = (*kvStore)(nil)
-	_ cluster.Lease = (*sessionLease)(nil)
+	_ cluster.Coordinator = (*kvCoordinator)(nil)
+	_ cluster.Lease       = (*sessionLease)(nil)
 )

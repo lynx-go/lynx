@@ -20,14 +20,15 @@ var (
 	ErrInvalidTTL = errors.New("cluster: ttl must be positive")
 	// ErrEmptyName 表示占位名为空。
 	ErrEmptyName = errors.New("cluster: empty name")
-	// ErrNilStore 表示 Store 为 nil。
-	ErrNilStore = errors.New("cluster: nil store")
+	// ErrNilCoordinator 表示 Coordinator 为 nil。
+	ErrNilCoordinator = errors.New("cluster: nil coordinator")
 	// ErrNilService 表示 Singleton 的 inner 为 nil。
 	ErrNilService = errors.New("cluster: nil service")
 )
 
-// Store 是集群占位端口。适配器必须并发安全。
-type Store interface {
+// Coordinator 是进程间协调端口：Claim 一次性占位、Acquire 长租约。
+// 适配器必须并发安全。
+type Coordinator interface {
 	// Claim 一次性占位，ttl 后自动过期，无续约、不释放。
 	// won=false 且 err=nil 表示已被占用（跳过，不是错误）。
 	Claim(ctx context.Context, name string, ttl time.Duration) (won bool, err error)
@@ -43,22 +44,22 @@ type Lease interface {
 	Release(ctx context.Context) error
 }
 
-// Option 配置 Store 的命名空间与实例标识。
-type Option func(*storeOptions)
+// Option 配置 Coordinator 的命名空间与实例标识。
+type Option func(*coordinatorOptions)
 
-type storeOptions struct {
+type coordinatorOptions struct {
 	namespace string
 	instance  string
 }
 
-func defaultStoreOptions() storeOptions {
-	return storeOptions{
+func defaultCoordinatorOptions() coordinatorOptions {
+	return coordinatorOptions{
 		namespace: DefaultNamespace,
 	}
 }
 
-func applyStoreOptions(opts []Option) storeOptions {
-	o := defaultStoreOptions()
+func applyCoordinatorOptions(opts []Option) coordinatorOptions {
+	o := defaultCoordinatorOptions()
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&o)
@@ -72,7 +73,7 @@ func applyStoreOptions(opts []Option) storeOptions {
 
 // WithNamespace 设置键前缀（默认 "lynx"）。实际键为 "{ns}/{name}"。
 func WithNamespace(ns string) Option {
-	return func(o *storeOptions) {
+	return func(o *coordinatorOptions) {
 		if ns != "" {
 			o.namespace = ns
 		}
@@ -81,21 +82,21 @@ func WithNamespace(ns string) Option {
 
 // WithInstance 写入占位 value，仅供排障（默认空）。
 func WithInstance(id string) Option {
-	return func(o *storeOptions) {
+	return func(o *coordinatorOptions) {
 		o.instance = id
 	}
 }
 
-func (o storeOptions) key(name string) string {
+func (o coordinatorOptions) key(name string) string {
 	return o.namespace + "/" + name
 }
 
 // FormatKey 返回适配器写入后端的键：{namespace}/{name}。
 func FormatKey(name string, opts ...Option) string {
-	return applyStoreOptions(opts).key(name)
+	return applyCoordinatorOptions(opts).key(name)
 }
 
 // Owner 返回 WithInstance 设置的排障标识，未设置时为空。
 func Owner(opts ...Option) string {
-	return applyStoreOptions(opts).instance
+	return applyCoordinatorOptions(opts).instance
 }

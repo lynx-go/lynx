@@ -60,10 +60,10 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./contrib/watermill-kafka` - Kafka Transport service (watermill-kafka/v3)，package `kafka`，实现 `eventbus.Transport`
 - `./contrib/telemetry` - OpenTelemetry lifecycle management (trace/metrics providers)
 - `./contrib/schedule` - Cron scheduler；`Exclusive` 任务经 `cluster.TryOnce` 按格子互斥
-- `./contrib/cluster` - 进程间协调：`Store`（Claim/Acquire）、`TryOnce`、`Campaign`、`Singleton`
-- `./contrib/cluster-redis` - Redis 实现 `cluster.Store`（仅协调，不是业务 Redis 客户端）
+- `./contrib/cluster` - 进程间协调：`Coordinator`（Claim/Acquire）、`TryOnce`、`Campaign`、`Singleton`
+- `./contrib/cluster-redis` - Redis 实现 `cluster.Coordinator`（仅协调，不是业务 Redis 客户端）
 - `./contrib/registry` - Service registry/discovery: types, Registrar, Resolver, Pickers, memory/DNS backends, `registry://` HTTP transport & gRPC resolver
-- `./contrib/consul` - Consul registry/discovery backend（`consul.NewFromConfig`），并提供 `Client.Store()` 实现 `cluster.Store`
+- `./contrib/consul` - Consul registry/discovery backend（`consul.NewFromConfig`），并提供 `Client.Coordinator()` 实现 `cluster.Coordinator`
 
 Server implementations (within main module):
 - `./server/http` - HTTP server using stdlib `net/http` with otelhttp instrumentation
@@ -218,10 +218,10 @@ This pattern is particularly useful for complex applications with many services.
 - Cron-based task scheduling using robfig/cron
 - Tasks implement `Task` interface with Name(), Cron(), HandlerFunc()
 - `Start` respects the passed ctx (waits `<-ctx.Done()`); `Stop` is safe before Start (atomic `stopping` flag)
-- Multi-node: `schedule.Exclusive(task)` + `WithStore(cluster.Store)` (per-fire TryOnce), or wrap the scheduler with `cluster.Singleton`
+- Multi-node: `schedule.Exclusive(task)` + `WithCoordinator(cluster.Coordinator)` (per-fire TryOnce), or wrap the scheduler with `cluster.Singleton`
 
 **Cluster** (contrib/cluster)
-- `Store.Claim` (one-shot occupancy, TTL expiry, no release) and `Store.Acquire` (renewed lease)
+- `Coordinator.Claim` (one-shot occupancy, TTL expiry, no release) and `Coordinator.Acquire` (renewed lease)
 - Recipes: `TryOnce`, `Campaign`, `Singleton(lynx.Service)`
 - Adapters: Memory; Consul Session+KV (`ttl >= 10s`); Redis SET NX (`contrib/cluster-redis`)
 

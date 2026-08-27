@@ -51,9 +51,9 @@ type Options struct {
 	// Init 不再用 ctx.Logger 覆盖（对齐 debug 包的防护）——否则任务
 	// 错误日志与 cron 内部日志两处实例不同源。
 	loggerSet bool
-	// Store 是集群占位后端。Exclusive 任务经 TryOnce 抢格子；
-	// 未设置时 Exclusive 任务使 NewScheduler 返回 ErrStoreRequired。
-	Store cluster.Store
+	// Coordinator 是进程间协调后端。Exclusive 任务经 TryOnce 抢格子；
+	// 未设置时 Exclusive 任务使 NewScheduler 返回 ErrCoordinatorRequired。
+	Coordinator cluster.Coordinator
 }
 
 // CheckHealth 实现健康检查，调度器未初始化或未运行时返回错误。
@@ -222,16 +222,16 @@ func WithErrorHandler(fn func(ctx context.Context, task Task, err error)) Option
 	}
 }
 
-// WithStore 设置集群占位后端。Exclusive 任务通过 cluster.TryOnce 抢格子。
-func WithStore(s cluster.Store) Option {
+// WithCoordinator 设置进程间协调后端。Exclusive 任务通过 cluster.TryOnce 抢格子。
+func WithCoordinator(s cluster.Coordinator) Option {
 	return func(o *Options) {
-		o.Store = s
+		o.Coordinator = s
 	}
 }
 
 var (
-	// ErrStoreRequired 表示存在 Exclusive 任务但未 WithStore。
-	ErrStoreRequired = errors.New("schedule: Exclusive task requires WithStore")
+	// ErrCoordinatorRequired 表示存在 Exclusive 任务但未 WithCoordinator。
+	ErrCoordinatorRequired = errors.New("schedule: Exclusive task requires WithCoordinator")
 )
 
 // NewScheduler 创建调度器服务并注册所有定时任务，cron 表达式非法时返回错误。
@@ -271,8 +271,8 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	}
 
 	for _, t := range tasks {
-		if isExclusive(t) && o.Store == nil {
-			return nil, ErrStoreRequired
+		if isExclusive(t) && o.Coordinator == nil {
+			return nil, ErrCoordinatorRequired
 		}
 	}
 
@@ -310,7 +310,7 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 					scheduler.reportTaskError(ctx, task, err)
 					return
 				}
-				skipped, err := cluster.TryOnce(ctx, scheduler.options.Store, name, ttl, run)
+				skipped, err := cluster.TryOnce(ctx, scheduler.options.Coordinator, name, ttl, run)
 				if skipped {
 					scheduler.logger.DebugContext(ctx, "schedule exclusive fire skipped",
 						"task_name", task.Name(), "fire", name)
