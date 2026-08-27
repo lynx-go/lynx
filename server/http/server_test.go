@@ -665,7 +665,7 @@ func TestServerReadyNotClosedOnListenError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	srv := NewServer(http.NewServeMux(), WithAddr(ln.Addr().String()))
 	if err := srv.Start(context.Background()); err == nil {
@@ -1042,7 +1042,7 @@ func TestHealthCheckPrefix(t *testing.T) {
 	}
 
 	// 缺省前缀端点不再存在：应命中业务兜底 handler（响应 "user"）。
-	status, body, err := healthzGet(t, "http://"+addr+"/healthz/liveness")
+	_, body, err := healthzGet(t, "http://"+addr+"/healthz/liveness")
 	if err != nil {
 		t.Fatalf("GET /healthz/liveness: %v", err)
 	}

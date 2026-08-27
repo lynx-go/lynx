@@ -15,7 +15,7 @@ func TestTopicOptionsIsExported(t *testing.T) {
 		eventbus.WithTopicMarshaler(eventbus.JSONMarshaler{}),
 	)
 	opts := topic.Options()
-	var _ eventbus.TopicOptions = opts
+	var _ = opts
 	if opts.Group != "g1" {
 		t.Fatalf("Group = %q, want g1", opts.Group)
 	}

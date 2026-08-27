@@ -61,7 +61,7 @@ func TestAcquireRenews(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatal(err)
 	}
-	defer lease.Release(context.Background())
+	defer func() { _ = lease.Release(context.Background()) }()
 	mr.FastForward(80 * time.Millisecond)
 	time.Sleep(100 * time.Millisecond)     // ttl/3 ≈ 66ms，给续约一次机会
 	mr.FastForward(150 * time.Millisecond) // 80+150>200，无续约会过期

@@ -332,9 +332,11 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 				"attempt", attempt, "max_attempts", ro.MaxAttempts)
 			return lastResp, lastErr
 		}
-		// 重试间关闭上一次响应体，避免连接与资源泄漏。
+		// 重试间关闭上一次响应体，避免连接与资源泄漏。该响应体即将
+		// 被丢弃且通常未读尽，Close 失败仅意味着连接不能归还连接池，
+		// 不影响后续重试，显式忽略。
 		if lastResp != nil {
-			lastResp.Body.Close()
+			_ = lastResp.Body.Close()
 		}
 		// 等待退避；429/503 携带 Retry-After 时取其较大值，但等待时长
 		// 受上限约束（见 capRetryWait，SC-12）——对端返回极端值（如

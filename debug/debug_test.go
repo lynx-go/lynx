@@ -140,7 +140,7 @@ func getBody(t *testing.T, url string) (int, string) {
 	if err != nil {
 		t.Fatalf("GET %s error = %v", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read body of %s error = %v", url, err)
@@ -232,7 +232,7 @@ func TestStopRefusesConnections(t *testing.T) {
 	}
 	conn, err := net.DialTimeout("tcp", addr, time.Second)
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Error("connection to stopped debug server should be refused")
 	}
 }
@@ -275,7 +275,7 @@ func TestStartListenError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	s := NewService(WithAddr(ln.Addr().String()))
 	if err := s.Start(context.Background()); err == nil {
 		t.Error("Start() error = nil, want listen error")
@@ -293,7 +293,7 @@ func TestStopForcesCloseOnTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial error = %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, _ = conn.Write([]byte("GET /debug/pprof/ HTTP/1.1\r\nHost: debug\r\n"))
 
 	ctx, cancelStop := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -371,7 +371,7 @@ func TestServiceReadyNotClosedOnListenError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	s := NewService(WithAddr(ln.Addr().String()), WithLogger(discardLogger()))
 	if err := s.Start(context.Background()); err == nil {

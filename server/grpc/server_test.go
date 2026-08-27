@@ -746,7 +746,7 @@ func TestServerReadyNotClosedOnListenError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	s := NewServer(WithAddr(ln.Addr().String()))
 	if err := s.Start(context.Background()); err == nil {

@@ -160,7 +160,7 @@ func TestMemoryBusWithAppContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go b.Start(ctx)
+	go func() { _ = b.Start(ctx) }()
 	time.Sleep(20 * time.Millisecond)
 
 	done := make(chan struct{}, 1)

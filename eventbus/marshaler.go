@@ -11,7 +11,10 @@ type Marshaler interface {
 // JSONMarshaler 是默认实现。
 type JSONMarshaler struct{}
 
-func (JSONMarshaler) Marshal(v any) ([]byte, error)     { return json.Marshal(v) }
+// Marshal 将业务对象序列化为 Payload，直接委托 json.Marshal。
+func (JSONMarshaler) Marshal(v any) ([]byte, error) { return json.Marshal(v) }
+
+// Unmarshal 将 Payload 反序列化到 out，直接委托 json.Unmarshal。
 func (JSONMarshaler) Unmarshal(b []byte, out any) error { return json.Unmarshal(b, out) }
 
 // ResolvePublishMarshaler 按对称优先级解析发布侧 Marshaler（高→低）：

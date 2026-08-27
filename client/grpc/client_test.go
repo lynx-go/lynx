@@ -94,7 +94,7 @@ func TestMetadataPropagation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	ctx := logging.WithAttrs(context.Background(),
 		slog.String(logging.FieldRequestID, "rid-1"),
@@ -144,7 +144,7 @@ func TestMetadataExistingNotOverwritten(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	ctx := metadata.NewOutgoingContext(
 		logging.WithAttrs(context.Background(),
@@ -169,7 +169,7 @@ func TestDialLazy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial 应成功（惰性连接，不发起连接）：%v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -202,7 +202,7 @@ func TestTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	var reply []byte
 	err = conn.Invoke(context.Background(), "/test.Echo/Echo", []byte("req"), &reply,
@@ -257,7 +257,7 @@ func TestTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(TLS): %v", err)
 	}
-	defer tlsConn.Close()
+	defer func() { _ = tlsConn.Close() }()
 	var reply []byte
 	if err := tlsConn.Invoke(context.Background(), "/test.Echo/Echo", []byte("req"), &reply,
 		grpc.ForceCodec(rawCodec{})); err != nil {
@@ -269,7 +269,7 @@ func TestTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(plaintext): %v", err)
 	}
-	defer plainConn.Close()
+	defer func() { _ = plainConn.Close() }()
 	err = plainConn.Invoke(context.Background(), "/test.Echo/Echo", []byte("req"), &reply,
 		grpc.ForceCodec(rawCodec{}))
 	if err == nil {
@@ -321,7 +321,7 @@ func TestDialInsecureWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if n := h.countMsg(insecureWarnMsg); n != 1 {
 		t.Errorf("insecure Warn 记录数 = %d, want 1（默认不安全必须可见, SC-10）", n)
 	}
@@ -333,7 +333,7 @@ func TestDialInsecureWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(TLS): %v", err)
 	}
-	defer tlsConn.Close()
+	defer func() { _ = tlsConn.Close() }()
 	if n := h2.countMsg(insecureWarnMsg); n != 0 {
 		t.Errorf("配置 TLS 后仍产生 %d 条 insecure 警告, want 0", n)
 	}

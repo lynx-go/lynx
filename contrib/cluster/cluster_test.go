@@ -92,7 +92,7 @@ func TestMemoryAcquireRenews(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("acquire: ok=%v err=%v", ok, err)
 	}
-	defer lease.Release(context.Background())
+	defer func() { _ = lease.Release(context.Background()) }()
 	time.Sleep(250 * time.Millisecond)
 	_, ok, err = s.Acquire(context.Background(), "leader", 150*time.Millisecond)
 	if err != nil {

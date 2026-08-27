@@ -33,7 +33,7 @@ func TestPublishTypedUsesTopicMarshaler(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go bus.Start(ctx)
+	go func() { _ = bus.Start(ctx) }()
 	// 等待 bus running
 	for i := 0; i < 20; i++ {
 		if bus.CheckHealth() == nil {
@@ -119,7 +119,7 @@ func TestSubscribeTypedMarshalerResolvedAtSubscribe(t *testing.T) {
 	_ = bus.Init(nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go bus.Start(ctx)
+	go func() { _ = bus.Start(ctx) }()
 	waitRunning(t, bus)
 
 	// 方向一：Topic 默认 strictPrefix，用户 opts 显式 JSON——

@@ -50,7 +50,7 @@ func TestPropagation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -86,7 +86,7 @@ func TestPropagationRespectsExistingHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if got != "explicit" {
 		t.Errorf("X-Request-Id = %q, want explicit（已存在头部不被覆盖）", got)
@@ -131,7 +131,7 @@ func TestRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -177,7 +177,7 @@ func TestRetryReplayableBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if got := attempts.Load(); got != 3 {
 		t.Errorf("attempts = %d, want 3", got)
@@ -198,7 +198,7 @@ func TestRetryReplayableBody(t *testing.T) {
 func TestRetryNonReplayableBody(t *testing.T) {
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, r.Body)
 		attempts.Add(1)
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -221,7 +221,7 @@ func TestRetryNonReplayableBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503（不重试，返回最后尝试的响应）", resp.StatusCode)
@@ -251,7 +251,7 @@ func TestRetryRetryAfter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -301,7 +301,7 @@ func TestRetryTransportError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -314,7 +314,7 @@ func TestRetryTransportError(t *testing.T) {
 // TestBodyLeftToCaller 断言 Do 不读取、不关闭响应体：调用方负责。
 func TestBodyLeftToCaller(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hello"))
+		_, _ = w.Write([]byte("hello"))
 	}))
 	defer srv.Close()
 
@@ -406,7 +406,7 @@ func TestPropagationClosedLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	mu.Lock()
 	rid := gotID
@@ -483,7 +483,7 @@ func TestLargeChunkedBodyReadableAfterDoReturns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -515,7 +515,7 @@ func TestSlowBodyReadFailsAfterTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get（头部阶段应成功）: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	start := time.Now()
 	_, readErr := io.ReadAll(resp.Body)

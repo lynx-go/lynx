@@ -12,7 +12,7 @@ func TestMarshalerPriorityOptionOverTopic(t *testing.T) {
 	_ = bus.Init(nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go bus.Start(ctx)
+	go func() { _ = bus.Start(ctx) }()
 	waitRunning(t, bus)
 
 	topic := NewTopic[map[string]string]("prio.opt", WithTopicMarshaler(prefixMarshaler{}))
@@ -47,7 +47,7 @@ func TestSubscribeOptionMarshalerUsedForDecode(t *testing.T) {
 	_ = bus.Init(nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go bus.Start(ctx)
+	go func() { _ = bus.Start(ctx) }()
 	waitRunning(t, bus)
 
 	topic := NewTopic[map[string]string]("prio.sub")
@@ -80,7 +80,7 @@ func TestPublishRawEventUsesParamTopic(t *testing.T) {
 	_ = bus.Init(nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go bus.Start(ctx)
+	go func() { _ = bus.Start(ctx) }()
 	waitRunning(t, bus)
 
 	got := make(chan string, 1)
@@ -109,7 +109,7 @@ func TestPublishRawTypedPreservesEnvelope(t *testing.T) {
 	_ = bus.Init(nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go bus.Start(ctx)
+	go func() { _ = bus.Start(ctx) }()
 	waitRunning(t, bus)
 
 	ts := time.Unix(100, 0).UTC()
