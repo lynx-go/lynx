@@ -13,6 +13,7 @@ replace (
 
 require (
 	github.com/google/wire v0.7.0
+	github.com/lynx-go/commands v0.2.1
 	github.com/lynx-go/lynx v1.0.0
 	github.com/lynx-go/lynx/contrib/registry v1.0.0
 	github.com/lynx-go/lynx/contrib/schedule v1.0.0
