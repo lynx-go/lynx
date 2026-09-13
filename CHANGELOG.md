@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.9.0 (2026-09-13)
+
+本次发布 tag：根 `v1.9.0`（唯一变更模块，contrib 无改动不重复打 tag）。
+
+### 破坏性变更：`Config.Unmarshal` / `UnmarshalKey` 增加 `UnmarshalOption` 变参
+
+签名变更为 `Unmarshal(out any, opts ...UnmarshalOption) error` 与
+`UnmarshalKey(path string, out any, opts ...UnmarshalOption) error`：调用方
+不传 opts 时源码兼容、行为零变化；自带 `Config`/`ConfigSource` 实现的外部
+代码需同步签名。`UnmarshalOptions`（`TagName` / `EnvForAllKeys`）为解码器
+无关概念，任意实现应可解释：
+
+- `WithTagName(tag)`：指定匹配配置键的 struct tag（默认路径 viper 语义，
+  仅 mapstructure）。
+- `WithEnvForAllKeys()`：结构体驱动的逐叶取值——以目标结构体叶子为键集
+  逐键 `Get`，使仅在环境变量中设置的键（配置文件无此键）也参与解码；
+  viper `Unmarshal` 基于 `AllSettings`，对此类键不可见。叶子键按
+  `mapstructure → json → 小写字段名` 回退（`TagName` 显式设置时仅该 tag
+  回退字段名），解码语义对齐 viper 默认（`WeaklyTypedInput` +
+  duration/逗号切分钩子）；非结构体目标与动态键 map 字段回落 viper 路径。
+
 ## v1.8.0 (2026-09-13)
 
 本次发布 tag：根 `v1.8.0`（唯一变更模块，contrib 无改动不重复打 tag）。
