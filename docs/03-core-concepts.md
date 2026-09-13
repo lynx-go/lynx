@@ -153,7 +153,7 @@ lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
 })
 ```
 
-`SetEnvPrefix` 加 `AutomaticEnv` 让 Viper 自动读取带前缀的环境变量；`BindEnv` 则把指定配置键精确绑定到某个环境变量。配置来源的优先级遵循 Viper 的规则：命令行参数、环境变量、配置文件可以组合使用。
+`SetEnvPrefix` 加 `AutomaticEnv` 让 Viper 自动读取带前缀的环境变量；配合 `SetEnvKeyReplacer`（如 `strings.NewReplacer(".", "_")`）可让任意点分键（`server.grpc.addr`）被 `PREFIX_SERVER_GRPC_ADDR` 形式的环境变量覆盖；`BindEnv` 则把指定配置键精确绑定到某个环境变量。配置来源的优先级遵循 Viper 的规则：命令行参数、环境变量、配置文件可以组合使用。需要「结构体整体解码 + 环境变量全量覆盖」时，用 `app.Config().Unmarshal(out, lynx.WithEnvForAllKeys())`。
 
 另外，应用名称、ID、版本这三个元信息也参与配置合并：配置中的 `service.name`、`service.id`、`service.version` 键优先，覆盖 `Options` 中的对应值；旧顶层键 `name`、`id`、`version` 的回退已于 v1.0 移除，不再参与合并。最终注入应用 Context 的是合并后的结果。
 
@@ -161,8 +161,8 @@ lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
 
 框架对配置的访问抽象为两个通用接口，与具体配置库解耦（默认实现适配 `*viper.Viper`，通过 `lynx.NewViperConfig` 包装）：
 
-- `lynx.Config`：**只读**配置接口，`app.Config()` 返回。`Get(path)` 按点分路径取值（如 `"logging.level"`），`GetString`/`GetBool`/`GetInt`/`GetStringMap`/`GetStringSlice` 是类型化取值，`IsSet` 判断键是否存在，`Unmarshal(out)` 把配置整体解码到结构体。
-- `lynx.ConfigSource`：`Config` 的超集，供初始化绑定阶段（`BindConfigFunc`）使用，额外提供 `Set` 与配置源管理方法：`SetFile`（配置文件路径）、`AddSearchPath`（搜索目录）、`SetFileFormat`（文件格式）、`SetEnvPrefix`（环境变量前缀）、`AutomaticEnv`（环境变量自动匹配）、`BindEnv`（显式环境变量绑定）。
+- `lynx.Config`：**只读**配置接口，`app.Config()` 返回。`Get(path)` 按点分路径取值（如 `"logging.level"`），`GetString`/`GetBool`/`GetInt`/`GetStringMap`/`GetStringSlice` 是类型化取值，`IsSet` 判断键是否存在，`Unmarshal(out, opts...)` 把配置整体解码到结构体：`WithTagName` 指定匹配 tag，`WithEnvForAllKeys` 以目标结构体叶子为键集逐键取值（使仅在环境变量中设置的键也参与解码——viper Unmarshal 基于 AllSettings，对此类键不可见）。
+- `lynx.ConfigSource`：`Config` 的超集，供初始化绑定阶段（`BindConfigFunc`）使用，额外提供 `Set` 与配置源管理方法：`SetFile`（配置文件路径）、`AddSearchPath`（搜索目录）、`SetFileFormat`（文件格式）、`SetEnvPrefix`（环境变量前缀）、`SetEnvKeyReplacer`（环境变量键名替换，如把点分路径映射为下划线）、`AutomaticEnv`（环境变量自动匹配）、`BindEnv`（显式环境变量绑定）。
 
 接入其他配置库（如 koanf）时，只需实现 `Config` 与 `ConfigSource` 两个接口，并在 `BindConfigFunc` 中完成来源绑定，框架其余部分无需改动。
 
