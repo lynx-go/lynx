@@ -62,3 +62,23 @@ func TestViperConfigUnmarshalKeyMissingPath(t *testing.T) {
 		t.Fatalf("expected empty map, got %+v", got)
 	}
 }
+
+func TestViperConfigSetEnvKeyReplacer(t *testing.T) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(strings.NewReader("server.grpc.addr: \":9090\"\n")); err != nil {
+		t.Fatalf("ReadConfig: %v", err)
+	}
+	c := NewViperConfig(v)
+	c.SetEnvPrefix("APP")
+	c.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	c.AutomaticEnv()
+
+	if got := c.GetString("server.grpc.addr"); got != ":9090" {
+		t.Fatalf("before env override: got %q, want %q", got, ":9090")
+	}
+	t.Setenv("APP_SERVER_GRPC_ADDR", ":10001")
+	if got := c.GetString("server.grpc.addr"); got != ":10001" {
+		t.Fatalf("after env override: got %q, want %q", got, ":10001")
+	}
+}

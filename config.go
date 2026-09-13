@@ -1,6 +1,10 @@
 package lynx
 
-import "github.com/spf13/viper"
+import (
+	"strings"
+
+	"github.com/spf13/viper"
+)
 
 // Config 是应用配置的通用读取接口，与具体配置库解耦。
 // 默认实现适配 *viper.Viper（见 NewViperConfig）。
@@ -41,6 +45,9 @@ type ConfigSource interface {
 	SetFileFormat(format string)
 	// SetEnvPrefix 设置环境变量前缀。
 	SetEnvPrefix(prefix string)
+	// SetEnvKeyReplacer 设置环境变量键名替换规则，用于把点分路径键映射为
+	// 环境变量名（如 "." → "_"），使任意键都能被环境变量覆盖。
+	SetEnvKeyReplacer(repl *strings.Replacer)
 	// AutomaticEnv 启用环境变量自动匹配。
 	AutomaticEnv()
 	// BindEnv 将 path 绑定到环境变量；env 为空时使用 path 的默认环境变量形式。
@@ -112,6 +119,10 @@ func (c *viperConfig) SetFileFormat(format string) {
 
 func (c *viperConfig) SetEnvPrefix(prefix string) {
 	c.v.SetEnvPrefix(prefix)
+}
+
+func (c *viperConfig) SetEnvKeyReplacer(repl *strings.Replacer) {
+	c.v.SetEnvKeyReplacer(repl)
 }
 
 func (c *viperConfig) AutomaticEnv() {
