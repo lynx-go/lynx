@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.8.0 (2026-09-13)
+
+本次发布 tag：根 `v1.8.0`（唯一变更模块，contrib 无改动不重复打 tag）。
+
+### 新增
+
+- **核心**：`ConfigSource` 新增 `SetEnvKeyReplacer(*strings.Replacer)`，透传 viper
+  同名能力（默认实现适配），恢复 v1.0.0 精简接口时移除的「环境变量键名映射」——
+  设置前缀与 replacer（如 `"." → "_"`）+ `AutomaticEnv` 后任意点分键都能被
+  `PREFIX_A_B` 形式的环境变量覆盖，调用方不再需要逐键 `BindEnv` 变通。对自带
+  `ConfigSource` 实现的外部代码为接口增量，需补一个透传方法。
+
+### 修复
+
+- **docs**：修正 `02-quick-start.md` 中「`Unmarshal` 按结构体 tag（`mapstructure`
+  或 `json`）解码」的错误表述——默认实现（viper 适配）仅按 `mapstructure` tag
+  或字段名大小写不敏感匹配，`json` tag 不参与匹配，snake_case 配置键（如
+  `access_key_id`）无法直接解码到 CamelCase 字段。
+
 ## v1.7.0 (2026-08-27)
 
 `cluster.Store` 更名为 `cluster.Coordinator`。本次发布 tag：根 `v1.7.0`（仅文档）、
