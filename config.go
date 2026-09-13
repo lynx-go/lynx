@@ -24,10 +24,40 @@ type Config interface {
 	GetStringSlice(path string) []string
 	// IsSet 报告 path 是否已设置。
 	IsSet(path string) bool
-	// Unmarshal 将配置解码到 out 指向的结构体。
-	Unmarshal(out any) error
-	// UnmarshalKey 将 path 对应的配置子树解码到 out 指向的结构体。
-	UnmarshalKey(path string, out any) error
+	// Unmarshal 将配置解码到 out 指向的结构体。默认行为与 viper 一致，
+	// 通过 opts 选择或定制解码行为（见 UnmarshalOption）。
+	Unmarshal(out any, opts ...UnmarshalOption) error
+	// UnmarshalKey 将 path 对应的配置子树解码到 out 指向的结构体；
+	// opts 语义与 Unmarshal 相同，叶子键以 path 为前缀。
+	UnmarshalKey(path string, out any, opts ...UnmarshalOption) error
+}
+
+// UnmarshalOptions 是 Unmarshal/UnmarshalKey 的解码设置。
+// 字段均为解码器无关概念，任意 Config 实现都应能解释。
+type UnmarshalOptions struct {
+	// TagName 非空时仅按该 struct tag 匹配配置键（无 tag 的字段按
+	// 小写字段名匹配）。空值时：默认路径仅按 mapstructure 匹配（viper
+	// 语义）；EnvForAllKeys 路径按 mapstructure → json → 小写字段名回退。
+	TagName string
+	// EnvForAllKeys 开启结构体驱动的逐叶取值：以 out 的结构体叶子为键集
+	// 逐键 Get，使仅在环境变量中设置的键（配置文件无此键）也参与解码——
+	// viper Unmarshal 基于 AllSettings，对此类键不可见。无法枚举叶子的
+	// 目标（非结构体、动态键的 map 字段）回落 viper 路径。
+	EnvForAllKeys bool
+}
+
+// UnmarshalOption 定制 Unmarshal/UnmarshalKey 的解码行为。
+type UnmarshalOption func(*UnmarshalOptions)
+
+// WithTagName 指定匹配配置键所用的 struct tag。
+func WithTagName(tag string) UnmarshalOption {
+	return func(o *UnmarshalOptions) { o.TagName = tag }
+}
+
+// WithEnvForAllKeys 开启结构体驱动的逐叶取值，使仅在环境变量中设置的键
+// 也参与解码。
+func WithEnvForAllKeys() UnmarshalOption {
+	return func(o *UnmarshalOptions) { o.EnvForAllKeys = true }
 }
 
 // ConfigSource 是配置源的绑定接口，在初始化绑定阶段（BindConfigFunc）
@@ -93,12 +123,20 @@ func (c *viperConfig) IsSet(key string) bool {
 	return c.v.IsSet(key)
 }
 
-func (c *viperConfig) Unmarshal(out any) error {
-	return c.v.Unmarshal(out)
+func (c *viperConfig) Unmarshal(out any, opts ...UnmarshalOption) error {
+	o := applyUnmarshalOptions(opts)
+	if o.EnvForAllKeys && structTypeOf(out) != nil {
+		return unmarshalByStruct(c, "", out, o)
+	}
+	return c.v.Unmarshal(out, o.viperOpts()...)
 }
 
-func (c *viperConfig) UnmarshalKey(key string, out any) error {
-	return c.v.UnmarshalKey(key, out)
+func (c *viperConfig) UnmarshalKey(path string, out any, opts ...UnmarshalOption) error {
+	o := applyUnmarshalOptions(opts)
+	if o.EnvForAllKeys && structTypeOf(out) != nil {
+		return unmarshalByStruct(c, path, out, o)
+	}
+	return c.v.UnmarshalKey(path, out, o.viperOpts()...)
 }
 
 func (c *viperConfig) Set(key string, value any) {
