@@ -29,7 +29,7 @@ type AppContext interface {
 // Stop 的调用契约：必须容忍在 Start 之前被调用——Init 成功但
 // Start 未执行（或 Start 已失败）时，框架会逆序调用 Stop 做资源清理。
 // 实现不得假设 Start 必然先于 Stop。Stop 返回的错误会被框架收集，
-// 与 OnStop 钩子错误一起由 Run() 统一上抛给调用方。
+// 与 OnPreStop 钩子错误一起由 Run() 统一上抛给调用方。
 type Lifecycle interface {
 	Init(ctx AppContext) error
 	Start(ctx context.Context) error

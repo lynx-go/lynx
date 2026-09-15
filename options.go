@@ -15,12 +15,14 @@ const (
 	DefaultName            = "lynx-app"
 	DefaultShutdownTimeout = 5 * time.Second
 	DefaultStopTimeout     = 5 * time.Second
-	// DefaultDrainHookTimeout 是 OnDrain 钩子的默认总预算（3 秒）。
-	DefaultDrainHookTimeout = 3 * time.Second
 	// DefaultBusReadyTimeout 是 newLynx 等待消息总线就绪的总预算（10 秒）：
 	// Watermill+Kafka 等后端的就绪明显慢于默认内存 Bus，1 秒级的硬编码
 	// 预算会让正常部署下的构造直接失败，故放宽为可配的 10 秒。
 	DefaultBusReadyTimeout = 10 * time.Second
+	// DefaultCleanupTimeout 是 OnPostStop 收尾钩子的默认总预算（10 秒）：
+	// 对齐典型 Wire cleanup（关闭 DB/Redis 连接池）的合理上界，任何单个
+	// Close 挂起都不阻塞进程退出。
+	DefaultCleanupTimeout = 10 * time.Second
 	// MinTimeout 与 MaxTimeout 是 ShutdownTimeout 与 StopTimeout 共用的
 	// 校验区间（1 秒 ~ 5 分钟）。
 	MinTimeout = 1 * time.Second
@@ -41,10 +43,10 @@ var (
 	ErrStopTimeoutTooLarge = errors.New("stop timeout must be at most 5 minutes")
 	// ErrDrainTimeoutInvalid 表示 DrainTimeout 为负值（排水窗口不允许负值）。
 	ErrDrainTimeoutInvalid = errors.New("drain timeout must not be negative")
-	// ErrDrainHookTimeoutInvalid 表示 DrainHookTimeout 为负值。
-	ErrDrainHookTimeoutInvalid = errors.New("drain hook timeout must not be negative")
 	// ErrBusReadyTimeoutInvalid 表示 BusReadyTimeout 为负值（就绪等待预算不允许负值）。
 	ErrBusReadyTimeoutInvalid = errors.New("bus ready timeout must not be negative")
+	// ErrCleanupTimeoutInvalid 表示 CleanupTimeout 为负值（收尾预算不允许负值）。
+	ErrCleanupTimeoutInvalid = errors.New("cleanup timeout must not be negative")
 )
 
 // Options 是 App 应用的核心配置项。
@@ -63,24 +65,28 @@ type Options struct {
 	// 会折叠为默认值，无法显式表达"禁用上界"（注意与 server 侧
 	// ShutdownTimeout=0 的"无上界"语义不同）。
 	StopTimeout time.Duration `json:"stop_timeout"`
-	// DrainTimeout 是关停排水（drain）窗口时长：0 表示不启用排水（默认，
-	// 向后兼容，关停行为与 v1.0 完全一致）。启用后，关停流程先让
-	// readiness 失败（LB 摘流），等待该窗口结束后才执行后续关停。
-	// DrainTimeout 与 ShutdownTimeout 是两段独立预算，总关停时长上界 =
-	// DrainTimeout + ShutdownTimeout + 各服务 StopTimeout 叠加的既有上界。
+	// DrainTimeout 是关停排水（drain）窗口时长，v1.10.0 起同时是
+	// OnDrain 钩子的总预算（DrainHookTimeout 已并入）：关停时先让
+	// readiness 失败（LB 摘流），OnDrain 钩子（如从服务目录注销）与
+	// 窗口睡眠并发执行，窗口结束时无论钩子是否完成都继续后续关停。
+	// 0（默认）表示不启用排水——整段（窗口与钩子）禁用；此时注册了
+	// OnDrain 钩子会在 Run() 启动期返回 ErrDrainHooksRequireDrainTimeout。
+	// 与 ShutdownTimeout 是独立预算：总关停时长上界 =
+	// DrainTimeout + ShutdownTimeout + 各服务 StopTimeout 叠加 + CleanupTimeout。
 	// 取值任意 ≥0，无下限约束（1ms 等小值合法）。
 	DrainTimeout time.Duration `json:"drain_timeout"`
-	// DrainHookTimeout 是 OnDrain 钩子的总预算（默认 3 秒）。OnDrain 钩子在
-	// 排水置位后与 DrainTimeout 睡眠并发执行（如从服务目录注销）：有钩子
-	// 时关停时长上界 = max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout
-	// + 各服务 StopTimeout；无钩子（默认）时该项不计入，行为与之前一致。
-	DrainHookTimeout time.Duration `json:"drain_hook_timeout"`
 	// BusReadyTimeout 是 newLynx 构造应用时等待消息总线就绪
 	// （CheckHealth 通过）的总预算，默认 10 秒：Watermill+Kafka 等
 	// 慢启动后端需要比 1 秒级硬编码更宽的就绪窗口。0 表示使用默认值
 	//（无法显式禁用等待——总线就绪是构造成功的硬前提）；负值在
 	// Validate 时报错。
 	BusReadyTimeout time.Duration `json:"bus_ready_timeout"`
+	// CleanupTimeout 是 OnPostStop 收尾钩子的总预算（默认 10 秒）：
+	// 所有服务与总线停止之后、Run 返回前，逆序执行收尾钩子（关闭
+	// DB/Redis 连接池等 DI 底层资源）。与 ShutdownTimeout 是独立预算：
+	// 总关停时长上界 = 排水段 + ShutdownTimeout + 各服务 StopTimeout
+	// 叠加 + CleanupTimeout。0 表示使用默认值；负值在 Validate 时报错。
+	CleanupTimeout time.Duration `json:"cleanup_timeout"`
 	// disableConfigFlags 标记用户显式关闭默认 flags（WithDisableConfigFlags）。
 	// EnsureDefaults 在 NewOptions 与 newLynx 间可能被多次调用，需要该
 	// 标记保持关闭语义不被默认值覆盖。
@@ -117,11 +123,11 @@ func (o *Options) Validate() error {
 	if o.DrainTimeout < 0 {
 		return ErrDrainTimeoutInvalid
 	}
-	if o.DrainHookTimeout < 0 {
-		return ErrDrainHookTimeoutInvalid
-	}
 	if o.BusReadyTimeout < 0 {
 		return ErrBusReadyTimeoutInvalid
+	}
+	if o.CleanupTimeout < 0 {
+		return ErrCleanupTimeoutInvalid
 	}
 	return nil
 }
@@ -145,12 +151,12 @@ func (o *Options) EnsureDefaults() {
 		o.StopTimeout = DefaultStopTimeout
 	}
 
-	if o.DrainHookTimeout == 0 {
-		o.DrainHookTimeout = DefaultDrainHookTimeout
-	}
-
 	if o.BusReadyTimeout == 0 {
 		o.BusReadyTimeout = DefaultBusReadyTimeout
+	}
+
+	if o.CleanupTimeout == 0 {
+		o.CleanupTimeout = DefaultCleanupTimeout
 	}
 
 	if len(o.ExitSignals) == 0 {
@@ -254,23 +260,16 @@ func WithStopTimeout(timeout time.Duration) Option {
 }
 
 // WithDrainTimeout 设置关停排水（drain）窗口时长：关停信号到达后先让
-// readiness 失败（LB 摘流），等待该窗口结束后才真正关停。0（默认）表示
-// 不启用排水，关停行为与 v1.0 完全一致。DrainTimeout 与 ShutdownTimeout
-// 是两段独立预算：总关停时长上界 = DrainTimeout + ShutdownTimeout + 各服务
-// StopTimeout 叠加的既有上界。取值任意 ≥0，无下限约束。
+// readiness 失败（LB 摘流），等待该窗口结束后才真正关停。窗口同时是
+// OnDrain 钩子的总预算（钩子与窗口睡眠并发执行，窗口结束即继续关停）。
+// 0（默认）表示不启用排水——整段（窗口与钩子）禁用；此时注册了
+// OnDrain 钩子会在 Run() 启动期返回 ErrDrainHooksRequireDrainTimeout。
+// 与 ShutdownTimeout 是独立预算：总关停时长上界 =
+// DrainTimeout + ShutdownTimeout + 各服务 StopTimeout 叠加 + CleanupTimeout。
+// 取值任意 ≥0，无下限约束。
 func WithDrainTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.DrainTimeout = timeout
-	}
-}
-
-// WithDrainHookTimeout 设置 OnDrain 钩子的总预算（默认 3 秒）。钩子在
-// 排水置位后与 DrainTimeout 睡眠并发执行；注册 OnDrain 钩子时，关停
-// 时长上界 = max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout +
-// 各服务 StopTimeout。负值会在 Validate 时报错。
-func WithDrainHookTimeout(timeout time.Duration) Option {
-	return func(o *Options) {
-		o.DrainHookTimeout = timeout
 	}
 }
 
@@ -280,6 +279,17 @@ func WithDrainHookTimeout(timeout time.Duration) Option {
 func WithBusReadyTimeout(timeout time.Duration) Option {
 	return func(o *Options) {
 		o.BusReadyTimeout = timeout
+	}
+}
+
+// WithCleanupTimeout 设置 OnPostStop 收尾钩子的总预算（默认 10 秒）：
+// 所有服务与总线停止之后、Run 返回前，逆序执行收尾钩子（如 Wire
+// cleanup 关闭 DB/Redis 连接池）。超时记日志并跳过剩余钩子，不阻塞
+// 进程退出。与 ShutdownTimeout 是独立预算。0 表示回退默认值，
+// 负值会在 Validate 时报错。
+func WithCleanupTimeout(timeout time.Duration) Option {
+	return func(o *Options) {
+		o.CleanupTimeout = timeout
 	}
 }
 

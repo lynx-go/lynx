@@ -91,18 +91,18 @@ func TestNewLoggerAndMustNewLogger(t *testing.T) {
 	}
 }
 
-func TestSyncOnStop(t *testing.T) {
+func TestSyncOnPreStop(t *testing.T) {
 	ctx := newFakeCtx(t)
 	l, err := NewSyncableLogger(ctx)
 	if err != nil {
 		t.Fatalf("NewSyncableLogger() error = %v", err)
 	}
-	hook := SyncOnStop(l)
+	hook := SyncOnPreStop(l)
 	if hook == nil {
-		t.Fatal("SyncOnStop() returned nil")
+		t.Fatal("SyncOnPreStop() returned nil")
 	}
 	if err := hook(context.Background()); err != nil {
-		t.Errorf("SyncOnStop() error = %v", err)
+		t.Errorf("SyncOnPreStop() error = %v", err)
 	}
 }
 

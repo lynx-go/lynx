@@ -168,8 +168,8 @@ type SyncableLogger struct {
 // 标准流同步时的良性 errno 被忽略：Linux 上 fsync(/dev/stdout) 恒失败
 // 返回 EINVAL（zap 已知问题 uber-go/zap#328），macOS 对不可 seek 的
 // 标准流返回 EBADF/ENOTTY，只读文件系统返回 EROFS——这些失败由环境
-// 固有特性决定，不代表日志丢失，不过滤会让 SyncOnStop 钩子每次关停都
-// 误报错误。文件类输出不受影响。
+// 固有特性决定，不代表日志丢失，不过滤会让 SyncOnPreStop 钩子每次
+// 关停都误报错误。文件类输出不受影响。
 func (l *SyncableLogger) Sync() error {
 	err := l.zapLogger.Sync()
 	if err == nil {
@@ -194,11 +194,13 @@ func isBenignSyncErrno(err error) bool {
 	return false
 }
 
-// SyncOnStop 返回一个 OnStop 钩子，在应用关闭前刷新缓冲的 zap 日志，
-// 避免进程退出时丢失未落盘的日志记录。
+// SyncOnPreStop 返回一个 OnPreStop 钩子，在应用关闭前（服务 Stop 之前）
+// 刷新缓冲的 zap 日志，避免进程退出时丢失未落盘的日志记录。
 //
-//	app.OnStop(zap.SyncOnStop(logger))
-func SyncOnStop(l *SyncableLogger) lynx.HookFunc {
+//	app.OnPreStop(zap.SyncOnPreStop(logger))
+//
+// v1.10.0 前名为 SyncOnStop，随生命周期钩子改名（OnStop → OnPreStop）。
+func SyncOnPreStop(l *SyncableLogger) lynx.HookFunc {
 	return func(ctx context.Context) error {
 		return l.Sync()
 	}

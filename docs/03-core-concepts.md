@@ -9,20 +9,21 @@
 1. `lynx.NewRunner(setup, opts...)` 创建应用实例（返回 `*Runner`）：先调用 `EnsureDefaults` 补全 Options，再解析命令行参数、读取配置文件，最后把应用名称、ID、版本注入应用 Context（见 3.5 节）。
 2. `cli.Run()` 首先调用 `setup` 回调：在这里注册服务和钩子。服务的 `Init(ctx AppContext)` 在注册时（即 `app.Register` 调用时）同步执行，返回 error 会被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
 3. `setup` 返回后进入 `Run()`：启动所有服务的 `Start(ctx)`，并阻塞等待退出信号。
-4. 收到退出信号（或某个执行单元结束）后进入关闭流程，依次执行 `OnStop` 钩子并调用各服务的 `Stop(ctx)`。
+4. 收到退出信号（或某个执行单元结束）后进入关闭流程：依次执行 `OnPreStop` 钩子、调用各服务的 `Stop(ctx)`，最后在一切停止后执行 `OnPostStop` 收尾钩子（完整顺序见 3.2 节）。
 
 即每个服务遵循 `Init → Start → Stop` 的调用顺序：
 
 - `Init(ctx AppContext)`：注册服务时同步调用，用于初始化依赖。参数是 `lynx.AppContext`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），服务不依赖完整的 `App` 接口（见 3.6 节 AppContext 接口说明）。
 - `Start`：`Run()` 启动后并发调用，通常是阻塞式的（如监听端口、消费消息），其 `ctx` 被取消时应返回。
-- `Stop(ctx) error`：关闭阶段调用，用于释放资源；返回的错误由框架收集，与 OnStop 钩子错误一起随 `Run()` 上抛。
+- `Stop(ctx) error`：关闭阶段调用，用于释放资源；返回的错误由框架收集，与 OnPreStop 钩子错误一起随 `Run()` 上抛。
 
 ### 并发模型：run group
 
-Lynx 使用 oklog/run 的 `run.Group` 管理所有并发执行单元。每个通过 `app.Register` / `app.RegisterFactories` 注册的服务是一个 actor；此外 `Run()` 还会注册一个信号 actor。
+Lynx 使用 oklog/run 的 `run.Group` 管理所有并发执行单元。每个通过 `app.Register` / `app.RegisterFactories` 注册的服务是一个 actor；此外 `Run()` 还会注册一个信号 actor 和一个 post-start actor。
 
-- `OnStart` 钩子不占用 run group actor：在 `Run()` 中、服务启动前按注册顺序串行执行，全部成功后才启动服务（见 3.2 节）。
-- 信号 actor：监听退出信号（见 3.6 节）或应用 Context 取消。一旦触发，先在 actor 内按顺序执行所有 `OnStop` 钩子，然后返回，run group 随之中断各服务。
+- `OnPreStart` 钩子不占用 run group actor：在 `Run()` 中、服务启动前按注册顺序串行执行，全部成功后才启动服务（见 3.2 节）。
+- 信号 actor：监听退出信号（见 3.7 节）或应用 Context 取消。一旦触发，先在 actor 内按顺序执行所有 `OnPreStop` 钩子，然后返回，run group 随之中断各服务。
+- post-start actor：等待所有服务 actor 进入执行体后执行 `OnPostStart` 钩子（见 3.2 节）。
 
 run group 的语义是：所有服务 actor 并发运行；一旦有任何一个 actor 返回——服务 `Start` 出错、CLI 命令执行完毕（`app.Command` 注册的命令结束时调用 `app.Close()`）、或信号 actor 返回——框架会中断其余所有 actor，整个应用随之进入统一关闭流程。这意味着任何一个服务失败都会触发整体优雅关闭，不会出现"半个应用还在跑"的状态。
 
@@ -30,32 +31,65 @@ run group 的语义是：所有服务 actor 并发运行；一旦有任何一个
 
 ## 3.2 Hooks 与错误聚合
 
-钩子函数的类型是 `HookFunc`：
+钩子函数有两种类型：`HookFunc` 与 `CleanupFunc`：
 
 ```go
 type HookFunc func(ctx context.Context) error
+type CleanupFunc func()
 ```
 
-通过 `app.OnStart` / `app.OnStop` 直接注册：
+v1.10.0 起钩子阶段按触发顺序命名为（Pre/Post 锚定**服务组**的启停）：
 
 ```go
-app.OnStart(func(ctx context.Context) error {
-	// 启动时执行，例如预热缓存、释放 setup 阶段的临时资源
+app.OnPreStart(func(ctx context.Context) error {
+	// 服务启动前：预热缓存、执行 schema 迁移等
 	return nil
 })
-app.OnStop(func(ctx context.Context) error {
-	// 关闭时执行，例如 flush 数据、注销服务发现
+app.OnPostStart(func(ctx context.Context) error {
+	// 所有服务进入运行态后：启动计时、上报"应用已运行"等
 	return nil
 })
-return nil
+app.OnDrain(func(ctx context.Context) error {
+	// 排水窗口内（readiness 已摘流）：从服务目录注销等
+	return nil
+})
+app.OnPreStop(func(ctx context.Context) error {
+	// 服务 Stop 之前（仍在服务在途请求）：停止接收前的最后冲刷
+	return nil
+})
+app.OnPostStop(func() {
+	// 一切停止后：关闭 DB/Redis 连接池等 DI 底层资源
+})
 ```
 
-两类钩子的执行时机和语义不同：
+```
+Run()
+├─ OnPreStart    服务启动前，串行，首错中止启动
+├─ 服务并发启动
+├─ OnPostStart   所有服务进入运行态后，串行
+│
+│    … 运行期 …
+│
+├─ 关停发起：readiness 置为失败（LB 摘流）
+├─ OnDrain       排水窗口内并发执行
+├─ 取消应用 Context
+├─ OnPreStop     服务 Stop 之前
+├─ 服务逐个 Stop（各自 StopTimeout 预算）
+├─ 总线 Stop
+└─ OnPostStop    一切停止后、Run 返回前，逆序（LIFO）
+```
 
-- `OnStart`：在 `Run()` 启动阶段、服务启动前按注册顺序串行执行，收到的 `ctx` 是应用 Context。任何一个钩子返回 error，`Run()` 立即返回该错误，服务不会启动。
-- `OnStop`：在关闭阶段、服务 `Stop` 之前按注册顺序串行执行，收到带有 `ShutdownTimeout` 超时的 `ctx`（见 3.6 节）；单个钩子阻塞超过时限会被判定超时并继续执行后续钩子，不会挂起整个关闭流程。
+各阶段的语义：
 
-`OnStop` 钩子的错误处理使用 `errors.go` 中的 `ShutdownErrors` 做聚合：某个钩子出错不会中断后续钩子的执行，所有错误被收集后以分号连接成一条日志输出。`ShutdownErrors` 的 API：
+- `OnPreStart`：在 `Run()` 启动阶段、服务启动前按注册顺序串行执行，收到的 `ctx` 是应用 Context。任何一个钩子返回 error，`Run()` 立即返回该错误，服务不会启动。
+- `OnPostStart`：**运行通知**钩子。所有服务 actor 进入执行体（`Start` 调用紧随其后，可能与钩子的最初几条指令并发）、run group 进入运行态后按注册顺序串行执行，与应用并发运行。阻塞型服务（HTTP/gRPC server）的 `Start` 直到关停才返回，不存在"所有 `Start` 已返回"的时刻——钩子触发不代表端口已监听或就绪（就绪语义用健康检查表达）。钩子错误视为启动失败：触发整个应用的关停并随 `Run()` 上抛；关停打断未执行完的钩子时记日志跳过，不注入新错误。
+- `OnDrain`：排水窗口内与 `DrainTimeout` 睡眠并发执行（如从服务目录注销），窗口即钩子总预算——窗口结束（无论钩子是否完成）即继续关停。必须启用排水（`WithDrainTimeout` > 0）；`DrainTimeout=0` 时注册钩子会在 `Run()` 启动期返回 `ErrDrainHooksRequireDrainTimeout`（见 3.7 节）。
+- `OnPreStop`：在关闭阶段、服务 `Stop` 之前按注册顺序串行执行，收到带有 `ShutdownTimeout` 超时的 `ctx`（见 3.7 节）；单个钩子阻塞超过时限会被判定超时并继续执行后续钩子，不会挂起整个关闭流程。此时服务仍在服务在途请求，适合"停止接收前的最后冲刷"。
+- `OnPostStop`：**进程收尾清理**钩子。所有服务 `Stop`、总线关停之后、`Run()` 返回前**逆序**执行（LIFO，与 defer/Wire cleanup 语义一致），总预算 `CleanupTimeout`（默认 10 秒，`WithCleanupTimeout` 调整）；超时记日志并跳过剩余钩子，不阻塞进程退出。签名是无错误返回的 `CleanupFunc`——终局阶段错误没有消费者，实现方自行记日志。`Run()` 的所有退出路径（含服务 Init 失败、OnPreStart 失败）都会执行它；`Run()` 从未调用时由 `Close()` 兜底，且整个生命周期恰好执行一次。
+
+**资源释放放哪个阶段**是常见坑：Wire injector 返回的 `cleanup`（关闭 DB/Redis 连接池等 DI 底层资源）必须挂 `OnPostStop`——这类资源在排水/关停期间仍被在途请求使用，放 `OnPreStop` 会在服务还在服务时就关掉连接池。`OnPreStop` 只放"服务仍在运行时才有意义"的清理（flush 缓冲、最后一批落盘）；两者都放的判断标准：**在途请求还需要这个资源吗？**
+
+`OnPreStop` 钩子的错误处理使用 `errors.go` 中的 `ShutdownErrors` 做聚合：某个钩子出错不会中断后续钩子的执行，所有错误被收集后以分号连接成一条日志输出。`ShutdownErrors` 的 API：
 
 - `Add(err)`：追加错误，nil 会被忽略。
 - `HasErrors()`：是否收集到错误。
@@ -64,7 +98,7 @@ return nil
 
 该类型内部使用互斥锁保护，可并发使用。框架自身只在关闭流程中用到它：聚合结果只记录日志，不会向上传递——进程此时已经在退出路径上。
 
-`_examples/boot/main.go` 中有 `OnStop` 的实际用例：Wire 构建的依赖图返回了 `cleanup` 函数，示例把它放在 `OnStop` 钩子里执行，在应用优雅关闭时释放资源。
+`_examples/boot/main.go` 中有 `OnPostStop` 的实际用例：Wire 构建的依赖图返回了 `cleanup` 函数，示例直接 `app.OnPostStop(cleanup)` 注册（签名原生对齐，零适配），在一切停止后释放底层资源。
 
 ## 3.3 Options
 
@@ -79,8 +113,10 @@ return nil
 | `WithBindConfigFunc(f)` | 自定义配置绑定逻辑（见 3.4 节） |
 | `WithDisableConfigFlags()` | 关闭默认的命令行参数声明与绑定（默认开启） |
 | `WithExitSignals(signals...)` | 自定义触发优雅关闭的信号列表 |
-| `WithShutdownTimeout(d)` | OnStop 钩子关闭超时，默认 5 秒 |
+| `WithDrainTimeout(d)` | 关停排水窗口时长，同时是 OnDrain 钩子总预算，默认 0（整段禁用） |
+| `WithShutdownTimeout(d)` | OnPreStop 钩子关闭超时，默认 5 秒 |
 | `WithStopTimeout(d)` | 单个服务 Stop 最长等待时长，默认 5 秒 |
+| `WithCleanupTimeout(d)` | OnPostStop 收尾钩子总预算，默认 10 秒 |
 | `WithBusReadyTimeout(d)` | 构造应用时等待总线就绪的预算，默认 10 秒（慢启动的 Watermill/Kafka 总线不再受旧的 1 秒硬编码限制） |
 
 `NewOptions` 自身已经填充了部分默认值：`ID` 取 `os.Hostname()`，`Name` 为 `DefaultName`，`ShutdownTimeout` 为 5 秒，`StopTimeout` 为 5 秒，`ExitSignals` 为默认信号列表，并默认启用内置配置 flags（`BindFlagsFunc`/`BindConfigFunc` 默认取 `DefaultBindFlagsFunc`/`DefaultBindConfigFunc`）。
@@ -206,7 +242,7 @@ type AppContext interface {
 }
 ```
 
-`App` 是 `AppContext` 的超集（`App` 内嵌 `AppContext`，额外提供 `Register`/`OnStart`/`OnStop`/`Command`/`Run`/`SetLogger`）。服务在 `Init` 中只依赖 `AppContext` 的五个方法：读取配置、取日志、访问应用元信息（经 Context）、获取健康检查快照、或请求关闭应用（如一次性命令执行完毕）。测试时只需实现这五个方法，无需为 `App` 的其余方法写空实现。
+`App` 是 `AppContext` 的超集（`App` 内嵌 `AppContext`，额外提供 `Register`/`OnPreStart`/`OnPostStart`/`OnDrain`/`OnPreStop`/`OnPostStop`/`Command`/`Run`/`SetLogger`）。服务在 `Init` 中只依赖 `AppContext` 的五个方法：读取配置、取日志、访问应用元信息（经 Context）、获取健康检查快照、或请求关闭应用（如一次性命令执行完毕）。测试时只需实现这五个方法，无需为 `App` 的其余方法写空实现。
 
 框架的职责边界：服务不能通过 `AppContext` 注册其他服务或修改生命周期钩子——`Init` 阶段（注册时同步执行）只允许"读取环境、准备资源"。
 
@@ -228,10 +264,12 @@ opts := lynx.NewOptions(
 
 关闭按固定步骤执行：
 
-0. **排水窗口（可选）**：配置 `WithDrainTimeout` 后，关停信号到达先置位框架内部的 `drainChecker`，使 readiness 聚合（`app.HealthCheckers()`）立即失败——负载均衡器开始摘流；排水期间检查器返回导出的 `lynx.ErrDraining`（可用 `errors.Is` 匹配，供 contrib 模块在排水边沿做注销等动作）；随后等待 `DrainTimeout` 窗口结束，服务在此期间保持运行供在途请求收尾。通过 `app.OnDrain` 注册的**排水钩子**与排水睡眠**并发**执行（如从服务目录注销），总预算为 `DrainHookTimeout`（默认 3 秒，`WithDrainHookTimeout` 调整），钩子错误/超时不打断排水；
-1. 取消应用 Context，通知所有监听它的逻辑（包括 OnStart 钩子 actor）退出；
-2. 以 `ShutdownTimeout` 为超时创建新 Context，按注册顺序串行执行所有 `OnStop` 钩子，错误通过 `ShutdownErrors` 聚合；
-3. run group 中断所有服务 actor：对每个服务先调用 `Stop(ctx)`，再取消其 Context（使 `Start` 中的 `<-ctx.Done()` 解除阻塞）。服务 `Stop` 返回的错误与超时错误同样聚合进 `ShutdownErrors`。
+0. **排水窗口（可选）**：配置 `WithDrainTimeout` 后，关停信号到达先置位框架内部的 `drainChecker`，使 readiness 聚合（`app.HealthCheckers()`）立即失败——负载均衡器开始摘流；排水期间检查器返回导出的 `lynx.ErrDraining`（可用 `errors.Is` 匹配，供 contrib 模块在排水边沿做注销等动作）；随后等待 `DrainTimeout` 窗口结束，服务在此期间保持运行供在途请求收尾。通过 `app.OnDrain` 注册的**排水钩子**与排水睡眠**并发**执行（如从服务目录注销），**窗口即钩子总预算**（v1.10.0 起 `DrainHookTimeout` 已并入 `DrainTimeout`）——窗口结束时未完成的钩子记超时错误并继续，不打断关停。`DrainTimeout=0` 时整段禁用；此时注册了排水钩子会在 `Run()` 启动期返回 `ErrDrainHooksRequireDrainTimeout`（快失败，好过关停期静默跳过注销）；
+1. 取消应用 Context，通知所有监听它的逻辑（包括 OnPreStart 钩子与仍在运行的 OnPostStart 钩子）退出；
+2. 以 `ShutdownTimeout` 为超时创建新 Context，按注册顺序串行执行所有 `OnPreStop` 钩子，错误通过 `ShutdownErrors` 聚合；
+3. run group 中断所有服务 actor：对每个服务先调用 `Stop(ctx)`，再取消其 Context（使 `Start` 中的 `<-ctx.Done()` 解除阻塞）。服务 `Stop` 返回的错误与超时错误同样聚合进 `ShutdownErrors`；
+4. 消息总线 Stop；
+5. **收尾钩子**：以 `CleanupTimeout` 为总预算**逆序**执行所有 `OnPostStop` 钩子（关闭 DB/Redis 连接池等 DI 底层资源）；单个钩子挂起超时后记日志跳过剩余钩子，不阻塞进程退出。该步骤覆盖 `Run()` 的所有退出路径（含服务 Init 失败、OnPreStart 失败），`Run()` 从未调用时由 `Close()` 兜底。
 
 文字时序图：
 
@@ -239,24 +277,26 @@ opts := lynx.NewOptions(
 关停信号 / 中断 / app.Close()
   │
   ├─ 置位 drainChecker → readiness 立即失败（LB 摘流）
-  ├─ [DrainTimeout] 排水窗口（0 = 跳过，行为与 v1.0 一致）
-  │    ├─ 并发：[DrainHookTimeout] 串行执行 OnDrain 钩子（无钩子则跳过）
+  ├─ [DrainTimeout] 排水窗口（0 = 整段跳过，含钩子）
+  │    ├─ 并发：串行执行 OnDrain 钩子，窗口即预算（无钩子则只睡眠）
   ├─ 取消应用 Context
-  ├─ [ShutdownTimeout] 串行执行 OnStop 钩子
-  └─ 服务 Stop（单个最长 [StopTimeout]，挂死跳过）
+  ├─ [ShutdownTimeout] 串行执行 OnPreStop 钩子
+  ├─ 服务 Stop（单个最长 [StopTimeout]，挂死跳过）
+  ├─ 总线 Stop
+  └─ [CleanupTimeout] 逆序执行 OnPostStop 收尾钩子（挂起跳过）
 ```
 
-`ShutdownTimeout` 默认 5 秒（`DefaultShutdownTimeout`），可通过 `WithShutdownTimeout` 调整，合法区间为 1 秒到 5 分钟（见 3.3 节校验规则）。它约束的是 `OnStop` 钩子的总执行时间。服务 `Stop` 的单个最长等待由 `Options.StopTimeout`（默认 5 秒）约束：挂死（如等待 `ctx.Done()`）的 `Stop` 超时后跳过并记录错误，不会阻塞整个关停流程。
+`ShutdownTimeout` 默认 5 秒（`DefaultShutdownTimeout`），可通过 `WithShutdownTimeout` 调整，合法区间为 1 秒到 5 分钟（见 3.3 节校验规则）。它约束的是 `OnPreStop` 钩子的总执行时间。服务 `Stop` 的单个最长等待由 `Options.StopTimeout`（默认 5 秒）约束：挂死（如等待 `ctx.Done()`）的 `Stop` 超时后跳过并记录错误，不会阻塞整个关停流程。`CleanupTimeout`（默认 10 秒）约束 `OnPostStop` 收尾钩子的总执行时间。
 
-`DrainTimeout`（`WithDrainTimeout` 设置）是**独立的第二段预算**，默认 0 表示不启用排水（关停行为与 v1.0 完全一致），取值任意 ≥0 无下限约束。所有关停入口（信号、服务中断、`app.Close()`）统一生效。**总关停时长上界**：未注册 `OnDrain` 钩子时 = `DrainTimeout` + `ShutdownTimeout` + 各服务 `StopTimeout` 叠加的既有上界（例如 `DrainTimeout=30s` + 默认值约 40 秒）；注册了 `OnDrain` 钩子时 = `max(DrainTimeout, DrainHookTimeout)` + `ShutdownTimeout` + 各服务 `StopTimeout`——钩子与排水睡眠并发，不叠加。K8s 场景下 `terminationGracePeriodSeconds` 需覆盖该上界，否则进程会在排水窗口内被 SIGKILL，服务来不及优雅停止。
+`DrainTimeout`（`WithDrainTimeout` 设置）是**独立的第二段预算**，默认 0 表示不启用排水——整段（窗口与钩子）禁用，取值任意 ≥0 无下限约束。所有关停入口（信号、服务中断、`app.Close()`）统一生效。**总关停时长上界** = `DrainTimeout` + `ShutdownTimeout` + 各服务 `StopTimeout` 叠加 + `CleanupTimeout`（OnDrain 钩子与排水睡眠并发、共享窗口预算，不叠加）。K8s 场景下 `terminationGracePeriodSeconds` 需覆盖该上界，否则进程会在排水窗口内被 SIGKILL，服务来不及优雅停止。
 
 排水只影响 **readiness**（HTTP `/healthz/readiness` 与 gRPC health 探测）：HTTP 的 `/healthz/liveness` 恒返回 200、不消费检查器聚合，排水期间存活探针不受影响（见 5.1 节）。
 
-`Run()` 返回时会把关停相关错误聚合上抛（`errors.Join`）：run group 的首个 actor 错误、OnDrain/OnStop 钩子错误（含超时）、服务 Stop 错误（含超时）——调用方（如 K8s）可以感知关停失败。
+`Run()` 返回时会把关停相关错误聚合上抛（`errors.Join`）：run group 的首个 actor 错误、OnDrain/OnPreStop 钩子错误（含超时）、服务 Stop 错误（含超时）——调用方（如 K8s）可以感知关停失败。OnPostStop 收尾钩子无错误返回（`CleanupFunc`），超时只记日志。
 
 ## 3.8 综合示例
 
-下面这个完整示例把本章的概念串起来：自定义 `ShutdownTimeout`、注册 `OnStart`/`OnStop` 钩子、注册一个服务、通过 Context 辅助函数读取应用元信息。运行后按 `Ctrl+C` 可以观察完整的优雅关闭过程。
+下面这个完整示例把本章的概念串起来：自定义 `ShutdownTimeout`、注册 `OnPreStart`/`OnPreStop` 钩子、注册一个服务、通过 Context 辅助函数读取应用元信息。运行后按 `Ctrl+C` 可以观察完整的优雅关闭过程。
 
 ```go
 package main
@@ -270,17 +310,17 @@ import (
 
 func main() {
 	cli := lynx.NewRunner(func(app lynx.App) error {
-		app.OnStart(func(ctx context.Context) error {
+		app.OnPreStart(func(ctx context.Context) error {
 			meta := lynx.Meta(app.Context())
-			app.Logger().Info("on-start hook",
+			app.Logger().Info("on-pre-start hook",
 				"name", meta.Name,
 				"id", meta.ID,
 				"version", meta.Version,
 			)
 			return nil
 		})
-		app.OnStop(func(ctx context.Context) error {
-			app.Logger().Info("on-stop hook")
+		app.OnPreStop(func(ctx context.Context) error {
+			app.Logger().Info("on-pre-stop hook")
 			return nil
 		})
 		app.Register(&myService{})

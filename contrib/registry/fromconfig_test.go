@@ -223,9 +223,11 @@ func (f *fakeApp) Logger(...any) *slog.Logger     { return slog.Default() }
 func (f *fakeApp) HealthCheckers() []lynx.Checker { return nil }
 func (f *fakeApp) Close()                         {}
 func (f *fakeApp) Command(lynx.CommandFunc) error { return nil }
-func (f *fakeApp) OnStart(...lynx.HookFunc)       {}
+func (f *fakeApp) OnPreStart(...lynx.HookFunc)    {}
 func (f *fakeApp) OnDrain(fns ...lynx.HookFunc)   { f.drainHooks = append(f.drainHooks, fns...) }
-func (f *fakeApp) OnStop(...lynx.HookFunc)        {}
+func (f *fakeApp) OnPreStop(...lynx.HookFunc)     {}
+func (f *fakeApp) OnPostStart(...lynx.HookFunc)   {}
+func (f *fakeApp) OnPostStop(...lynx.CleanupFunc) {}
 func (f *fakeApp) Register(services ...lynx.Service) {
 	f.registered = append(f.registered, services...)
 }

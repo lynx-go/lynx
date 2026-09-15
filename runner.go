@@ -73,9 +73,15 @@ func (b *Runner) setupApp() (App, error) {
 // 实例与错误统一经 setupApp 获取：built/err 的读取全部落在 mu 保护内，
 // 消除此前的无锁裸读（Run 的单次语义已阻止并发重入，锁主要保证
 // setup 回调只执行一次的既有契约）。
+// setup 失败时通过 Close 释放应用（兜底执行 OnPostStop 钩子、停止
+// 提前启动的总线）：setup 可能已注册服务/钩子后才失败，不释放会泄漏
+// ——与 torchwood 时代"cleanup 赋值后无论 RunE 成败都执行"的语义对齐。
 func (b *Runner) RunE() error {
 	app, err := b.setupApp()
 	if err != nil {
+		if b.app != nil {
+			b.app.Close()
+		}
 		return err
 	}
 	// 防御零值 Runner / 外部构造的非法状态（公开路径不可达：newLynx

@@ -1,8 +1,8 @@
 package main
 
 import (
-	"context"
 	"log"
+
 	gohttp "net/http"
 
 	"github.com/lynx-go/lynx"
@@ -18,10 +18,12 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		app.OnStop(func(ctx context.Context) error {
-			cleanup()
-			return nil
-		})
+		// Wire 的 cleanup（释放 DB/Redis 连接池等 DI 底层资源）挂
+		// OnPostStop：所有服务 Stop、总线关停之后才执行，自带
+		// CleanupTimeout 预算。不要放 OnPreStop——它先于服务 Stop 执行，
+		// 排水/关停期间在途请求还要用这些资源（v1.10.0 前本示例挂在
+		// OnStop 上，正是这个坑）。
+		app.OnPostStop(cleanup)
 		boot.Bind(app)
 		return nil
 	},

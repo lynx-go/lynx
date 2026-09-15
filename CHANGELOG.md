@@ -1,5 +1,78 @@
 # Changelog
 
+## v1.10.0 (2026-09-15)
+
+本次发布 tag：根 `v1.10.0`、`contrib/zap` 破坏性改名（`SyncOnStop` → `SyncOnPreStop`）。
+`boot` 包随根模块发布。内部消费方（torchwood）随发版迁移，无兼容别名。
+
+### 破坏性变更：`DrainHookTimeout` 并入 `DrainTimeout`
+
+OnDrain 钩子的独立预算 `DrainHookTimeout`（默认 3s）移除：**排水窗口
+`DrainTimeout` 即钩子总预算**——钩子与窗口睡眠并发执行，窗口结束时
+未完成的钩子记超时错误并继续关停。关停上界公式从
+`max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout + Σ StopTimeout`
+简化为 `DrainTimeout + ShutdownTimeout + Σ StopTimeout + CleanupTimeout`
+（钩子与睡眠并发，不叠加）。
+
+`DrainTimeout=0` 语义收紧为**整段禁用**（窗口与钩子）：此时注册了
+OnDrain 钩子属于配置错误，`Run()` 启动期返回新哨兵
+`ErrDrainHooksRequireDrainTimeout` 并逆序停止已 Init 的服务——快失败
+好过关停期静默跳过注销的延迟暴露。旧行为（`DrainTimeout=0` 时钩子仍以
+3s 预算执行）不再保留；迁移：依赖 OnDrain 钩子的应用（如
+`registry.Bind`）显式设置 `WithDrainTimeout`（Registrar 注销 RPC 自身
+有 3s 内部上界，窗口 ≥3s 即可覆盖）。
+
+移除符号：`Options.DrainHookTimeout`、`WithDrainHookTimeout`、
+`DefaultDrainHookTimeout`、`ErrDrainHookTimeoutInvalid`。
+
+### 破坏性变更：生命周期钩子补齐为五阶段并按 Pre/Post 命名
+
+钩子阶段补齐为 `OnPreStart → OnPostStart → OnDrain → OnPreStop → OnPostStop`
+（Pre/Post 锚定**服务组**的启停），`OnStart`/`OnStop` 更名，并新增两个阶段：
+
+| 旧（≤ v1.9.0） | 新（v1.10.0） | 触发时机 | 签名 / 预算 |
+|---|---|---|---|
+| `app.OnStart` | `app.OnPreStart` | 服务启动前，串行，首错中止启动 | `HookFunc` / 无 |
+| —（新增） | `app.OnPostStart` | 所有服务 actor 进入执行体（`Start` 调用紧随其后；阻塞型服务以 actor 进入为界，**非就绪语义**），串行，与运行中的应用并发；钩子错误触发关停 | `HookFunc` / 无 |
+| `app.OnDrain` | `app.OnDrain`（不变，预算语义变更） | 排水窗口内与 `DrainTimeout` 睡眠并发，**窗口即钩子总预算** | `HookFunc` / `DrainTimeout`（见下方合并说明） |
+| `app.OnStop` | `app.OnPreStop` | 服务 Stop 之前（仍在服务在途请求） | `HookFunc` / `ShutdownTimeout`（默认 5s） |
+| —（新增） | `app.OnPostStop` | 所有服务与总线停止之后、`Run()` 返回前，逆序（LIFO）；覆盖 `Run()` 全部退出路径（含服务 Init 失败、`OnPreStart` 失败），`Run()` 未调用时由 `Close()` 兜底，恰好执行一次 | `CleanupFunc`（`func()`）/ `CleanupTimeout`（默认 10s） |
+
+`OnPostStop` 的动机：Wire injector 返回的 `cleanup`（关闭 DB/Redis 连接池等
+DI 底层资源）此前没有正确归宿——放 `OnPreStop` 会在服务还在服务时就关掉
+连接池（排水/关停期间在途请求失败），消费方只能在 `RunE()` 返回后手写
+goroutine + 超时兜底样板。现在 `app.OnPostStop(cleanup)` 一行接入（签名与
+Wire 生成的 `func()` 原生对齐），超时跳过、逆序、全路径覆盖由框架保证。
+
+同批更名（无兼容别名）：
+
+- `lynx.CleanupFunc` 新类型（`func()`）。
+- `Options.CleanupTimeout` / `WithCleanupTimeout`（0 = 默认 10s，负值
+  `Validate` 报 `ErrCleanupTimeoutInvalid`）。
+- `boot.OnStartHooks` → `boot.PreStartHooks`，`boot.OnStopHooks` →
+  `boot.PreStopHooks`，新增 `boot.DrainHooks`（原 `WithDrainHooks` setter
+  折叠进 `New`）与 `boot.PostStopHooks`。`boot.New` 参数顺序修正为与字段
+  声明一致：`New(preStarts, drains, preStops, postStops, services,
+  serviceFactories)`——历史上 drains 因 Wire injector 兼容被挤成 setter，
+  本次为不兼容版本，顺带修正。**全部 Wire injector 需重新生成。**
+- `contrib/zap.SyncOnStop` → `SyncOnPreStop`。
+- `Runner.RunE` 在 setup 失败时调用 `app.Close()` 释放应用（兜底执行
+  `OnPostStop` 钩子、停止提前启动的总线），与"cleanup 赋值后无论成败都
+  执行"的手写语义对齐。
+- 内部错误信息随更名：`"on-stop hook timed out"` →
+  `"on-pre-stop hook timed out"` 等。
+
+### 迁移对照
+
+```go
+// v1.9.0                          // v1.10.0
+app.OnStart(hook)                  app.OnPreStart(hook)
+app.OnStop(hook)                   app.OnPreStop(hook)
+// wire cleanup 原手写超时样板：    app.OnPostStop(cleanup)
+boot.New(starts, stops, svcs, f)   boot.New(preStarts, drains, preStops, postStops, svcs, f)
+zap.SyncOnStop(l)                  zap.SyncOnPreStop(l)
+```
+
 ## v1.9.0 (2026-09-13)
 
 本次发布 tag：根 `v1.9.0`（唯一变更模块，contrib 无改动不重复打 tag）。

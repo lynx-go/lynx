@@ -311,11 +311,11 @@ app.Register(telemetry.New())
 app.SetLogger(zap.MustNewLogger(app))
 ```
 
-如果需要在退出前 flush 缓冲日志，可以改用 `NewSyncableLogger`，并用 `zap.SyncOnStop(logger)` 生成一个 `OnStop` 钩子注册进应用：
+如果需要在退出前 flush 缓冲日志，可以改用 `NewSyncableLogger`，并用 `zap.SyncOnPreStop(logger)` 生成一个 `OnPreStop` 钩子注册进应用：
 
 ```go
 logger, _ := zap.NewSyncableLogger(app)
-app.OnStop(zap.SyncOnStop(logger))
+app.OnPreStop(zap.SyncOnPreStop(logger))
 ```
 
 ## 4.6 下一步

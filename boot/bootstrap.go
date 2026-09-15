@@ -6,59 +6,63 @@ import (
 	"github.com/lynx-go/lynx"
 )
 
-// OnStartHooks 是一组启动钩子函数。
-// 独立命名类型用于 Wire 依赖注入时区分启动钩子与停止钩子。
-type OnStartHooks []lynx.HookFunc
+// PreStartHooks 是一组启动前钩子函数（对应 app.OnPreStart）。
+// 独立命名类型用于 Wire 依赖注入时区分各生命周期阶段的钩子。
+type PreStartHooks []lynx.HookFunc
 
-// OnDrainHooks 是一组排水钩子函数：关停时 drainChecker 置位后与
-// DrainTimeout 睡眠并发执行（如从服务目录注销），预算为 DrainHookTimeout。
-type OnDrainHooks []lynx.HookFunc
+// DrainHooks 是一组排水钩子函数（对应 app.OnDrain）：关停时
+// drainChecker 置位后与 DrainTimeout 窗口睡眠并发执行（如从服务目录
+// 注销），窗口即钩子总预算（启用排水须设置 WithDrainTimeout）。
+type DrainHooks []lynx.HookFunc
 
-// OnStopHooks 是一组停止钩子函数。
-type OnStopHooks []lynx.HookFunc
+// PreStopHooks 是一组停止前钩子函数（对应 app.OnPreStop）：先于服务
+// Stop 执行，此时服务仍在服务在途请求。
+type PreStopHooks []lynx.HookFunc
+
+// PostStopHooks 是一组收尾清理钩子（对应 app.OnPostStop）：所有服务
+// 与总线停止之后、Run 返回前逆序执行，总预算 CleanupTimeout。
+// 典型来源是 Wire injector 返回的 cleanup 函数（关闭 DB/Redis 连接池）。
+type PostStopHooks []lynx.CleanupFunc
 
 // Bootstrap 聚合应用启动所需的钩子函数、服务与服务工厂。
 type Bootstrap struct {
-	StartHooks       OnStartHooks
-	DrainHooks       OnDrainHooks
-	StopHooks        OnStopHooks
+	PreStartHooks    PreStartHooks
+	DrainHooks       DrainHooks
+	PreStopHooks     PreStopHooks
+	PostStopHooks    PostStopHooks
 	Services         []lynx.Service
 	ServiceFactories []lynx.ServiceFactory
 }
 
-// New 创建 Bootstrap 实例。
-// 参数顺序（onStarts、onStops、services、serviceFactories）与 Bootstrap
-// 字段声明顺序不同（中间隔着 DrainHooks）——这是历史固定的 Wire 兼容
-// 取舍：签名被既有 wire 生成的 injector 代码引用，调整参数顺序会破坏
-// 全部 injector 的可编译性；后加入的排水钩子因此走可选的
-// WithDrainHooks setter（不改 New 签名），而非插入新参数。
+// New 创建 Bootstrap 实例。参数顺序与字段声明顺序一致。
+// v1.10.0 起不再保留历史参数顺序（drains 曾因 Wire injector 兼容被
+// 挤成 WithDrainHooks setter）：本版本为不兼容重命名版本，全部
+// injector 需重新生成，顺带修正了该顺序取舍。
 func New(
-	onStarts OnStartHooks,
-	onStops OnStopHooks,
+	preStarts PreStartHooks,
+	drains DrainHooks,
+	preStops PreStopHooks,
+	postStops PostStopHooks,
 	services []lynx.Service,
 	serviceFactories []lynx.ServiceFactory,
 ) *Bootstrap {
 	return &Bootstrap{
-		StartHooks:       onStarts,
-		StopHooks:        onStops,
+		PreStartHooks:    preStarts,
+		DrainHooks:       drains,
+		PreStopHooks:     preStops,
+		PostStopHooks:    postStops,
 		Services:         services,
 		ServiceFactories: serviceFactories,
 	}
 }
 
-// WithDrainHooks 设置排水钩子（可选 setter，不改 New 签名以保持
-// 既有 Wire injector 可编译），返回 Bootstrap 自身以便链式调用。
-func (b *Bootstrap) WithDrainHooks(h OnDrainHooks) *Bootstrap {
-	b.DrainHooks = h
-	return b
-}
-
 // Bind 将 Bootstrap 中的钩子函数、服务与服务工厂注册到 Lynx 应用。
 // 注册阶段产生的错误（如服务 Init 失败）由 app.Run() 统一返回。
 func (b *Bootstrap) Bind(app lynx.App) {
-	app.OnStart(b.StartHooks...)
+	app.OnPreStart(b.PreStartHooks...)
 	app.OnDrain(b.DrainHooks...)
-	app.OnStop(b.StopHooks...)
+	app.OnPreStop(b.PreStopHooks...)
+	app.OnPostStop(b.PostStopHooks...)
 	app.Register(b.Services...)
 	app.RegisterFactories(b.ServiceFactories...)
 }

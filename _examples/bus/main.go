@@ -99,8 +99,8 @@ func main() {
 		// lifecycleCoordinator 需最先注册，以便捕获后续服务的 Registered/Started 事件
 		app.Register(&lifecycleCoordinator{}, &orderService{}, &auditService{}, &inventoryService{})
 
-		// 演示：OnStart 中发布事件，所有订阅者（同进程）即时收到
-		app.OnStart(func(ctx context.Context) error {
+		// 演示：OnPreStart 中发布事件，所有订阅者（同进程）即时收到
+		app.OnPreStart(func(ctx context.Context) error {
 			// 方式1：类型化发布（Topic.Publish）
 			_ = OrderCreatedTopic.Publish(ctx, OrderCreated{OrderID: "123", UserID: "u1"})
 			// 方式2：原始/字符串 topic 发布

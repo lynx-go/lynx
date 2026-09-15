@@ -377,14 +377,14 @@ telemetry.New(
 
 ### 5.4.2 高阶自定义：手动创建 provider
 
-不使用 `contrib/telemetry` 服务时，exporter 与 provider 的初始化、shutdown **都是调用方的职责**——典型的做法是在应用初始化函数里创建 provider，并通过服务器 `WithTracerProvider`/`WithMeterProvider`/`WithPropagator` 传入、把 shutdown 注册进 `OnStop` 钩子：
+不使用 `contrib/telemetry` 服务时，exporter 与 provider 的初始化、shutdown **都是调用方的职责**——典型的做法是在应用初始化函数里创建 provider，并通过服务器 `WithTracerProvider`/`WithMeterProvider`/`WithPropagator` 传入、把 shutdown 注册进 `OnPreStop` 钩子：
 
 ```go
 shutdown, tp, mp, propagator, err := setupOTel()
 if err != nil {
 	return err
 }
-app.OnStop(func(ctx context.Context) error {
+app.OnPreStop(func(ctx context.Context) error {
 	return shutdown(ctx)
 })
 ```

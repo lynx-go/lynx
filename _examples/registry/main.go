@@ -61,9 +61,9 @@ func main() {
 			c.Transport = registry.NewHTTPTransport(rslv).Wrap(c.Transport)
 		}))
 
-		// 演示调用须等 HTTP 开始监听、Registrar 完成注册，而 OnStart 先于
+		// 演示调用须等 HTTP 开始监听、Registrar 完成注册，而 OnPreStart 先于
 		// 各服务 Start 执行，因此放后台 goroutine，不阻塞启动流程。
-		app.OnStart(func(ctx context.Context) error {
+		app.OnPreStart(func(ctx context.Context) error {
 			go demoClient(logger, wr, cli, hs)
 			return nil
 		})
@@ -73,6 +73,9 @@ func main() {
 			f.StringP("config", "c", "./config.yaml", "config file path")
 			f.String("addr", "", "http listen address")
 		}),
+		// Bind 挂了 OnDrain 注销钩子，必须启用排水窗口（窗口即钩子总预算，
+		// v1.10.0 起两者合并）：关停时先摘流再注销，窗口内服务保持运行。
+		lynx.WithDrainTimeout(3*time.Second),
 		lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
 			if cf, _ := f.GetString("config"); cf != "" {
 				c.SetFile(cf)

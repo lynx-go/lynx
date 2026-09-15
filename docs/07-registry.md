@@ -113,7 +113,7 @@ runner := lynx.NewRunner(func(app lynx.App) error {
   开销**，`Bind(app, nil)` 是 no-op，同一套代码可在启用/未启用两种
   环境运行。
 - Registrar 的注册发生在 `Start`（所有服务并发启动之后），并通过
-  Advertiser 等待真实监听地址，因此**不要**在 `OnStart` 里手动注册。
+  Advertiser 等待真实监听地址，因此**不要**在 `OnPreStart` 里手动注册。
 
 ## 7.4 配置参考
 
@@ -301,21 +301,25 @@ env:
 
 1. 关停信号 → `SetDraining(true)`：readiness 聚合立即失败，
    检查器返回导出的 `lynx.ErrDraining`；
-2. **并发**两段预算：排水睡眠 `DrainTimeout` 与 OnDrain 钩子
-   （总预算 `DrainHookTimeout`，默认 3s，`WithDrainHookTimeout`
-   调整）；钩子错误/超时记入 `ShutdownErrors` 并继续，不打断排水；
-3. 窗口结束 → cancel ctx → OnStop → 各服务 Stop（Registrar.Stop 幂等，
+2. **并发共享窗口预算**：OnDrain 钩子与排水睡眠 `DrainTimeout` 并发，
+   窗口即钩子总预算（v1.10.0 起 `DrainHookTimeout` 已并入
+   `DrainTimeout`）；钩子错误/超时记入 `ShutdownErrors` 并继续，
+   不打断关停；
+3. 窗口结束 → cancel ctx → OnPreStop → 各服务 Stop（Registrar.Stop 幂等，
    已注销则只关闭 Registry）。
 
 关停时长上界（`terminationGracePeriodSeconds` 必须覆盖）：
 
 | 情况 | 上界 |
 | --- | --- |
-| 无 `OnDrain` 钩子 | `DrainTimeout + ShutdownTimeout + Σ StopTimeout` |
-| 有钩子 | `max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout + Σ StopTimeout` |
+| `DrainTimeout=0`（整段禁用） | `ShutdownTimeout + Σ StopTimeout` |
+| `DrainTimeout > 0` | `DrainTimeout + ShutdownTimeout + Σ StopTimeout`（钩子与睡眠并发，不叠加） |
 
-注意 `DrainTimeout=0` 且注册了钩子时，上界比纯 v1.1 行为多出最多
-3s——这是有意的：注销从排水置位就开始，通常在 3s 内结束。
+注意 `DrainTimeout=0` 时注册了 OnDrain 钩子（如 `registry.Bind`）会在
+`Run()` 启动期返回 `ErrDrainHooksRequireDrainTimeout`——窗口即钩子预算，
+禁用窗口则钩子没有执行预算，快失败好过关停期静默跳过注销。使用
+`registry.Bind` 的应用必须显式 `WithDrainTimeout`（注销 RPC 自身另有
+3s 的 `rpcTimeout` 内部上界，窗口 ≥3s 即可覆盖）。
 
 安全网：即使用户忘了 `Bind`、只 `app.Register(reg)`，只要
 `DrainTimeout > 0`（drainChecker 在健康检查聚合里），Registrar 内部的
@@ -448,7 +452,7 @@ DNS 后端无 version/tag/weight 概念；`IncludeUnhealthy` 对 DNS 无意义
 | --- | --- | --- | --- |
 | 启动时注册中心不可达 | 高 | 默认 `fail_fast: true`，`Start` 返回 error → 应用退出 | `fail_fast: false` 时 Start 继续阻塞、后台退避重试，成功前 readiness 红 |
 | 运行中心跳失败 | 中 | 打点 + warn；连续 ≥3 次 → readiness 503（`affect_readiness` 可关） | TTL 到期目录摘除；不碰 liveness |
-| 注销失败（关停） | 中 | 日志 + `ShutdownErrors`；依赖 TTL / `deregister_after` 兜底 | `DrainHookTimeout` 内一次 RPC + `Stop` 再试一次 |
+| 注销失败（关停） | 中 | 日志 + `ShutdownErrors`；依赖 TTL / `deregister_after` 兜底 | `DrainTimeout` 窗口内一次 RPC + `Stop` 再试一次 |
 | 脑裂 / 网络分区 | 高 | 分区侧心跳失败、TTL 后消失；客户端 Watch 断开后最多再用 stale 60s，其后 `ErrNoInstance` | Consul 默认 consistent；跨 DC 显式配置 |
 | 同 ID 双副本互盖 | 高 | last-write-wins，无 fencing；客户端见地址抖动 | Downward API `metadata.name`；不要共用 hostname |
 | 进程被 SIGKILL | 高 | 来不及注销 | TTL 30s + `DeregisterCriticalServiceAfter` 60s |

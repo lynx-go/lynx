@@ -65,4 +65,10 @@ var (
 	ErrNotInitialized = errors.New("service not initialized")
 	// ErrSetupFuncNil 表示 NewRunner 未提供初始化回调。
 	ErrSetupFuncNil = errors.New("setup func is nil")
+	// ErrDrainHooksRequireDrainTimeout 表示注册了 OnDrain 钩子但未启用
+	// 排水窗口（DrainTimeout=0）。v1.10.0 起排水窗口即 OnDrain 钩子的
+	// 总预算（DrainHookTimeout 已并入 DrainTimeout）：窗口未启用时钩子
+	// 没有执行预算，注册即配置错误——Run() 启动期快失败，好过关停期
+	// 静默跳过注销的延迟暴露。
+	ErrDrainHooksRequireDrainTimeout = errors.New("on-drain hooks require DrainTimeout > 0 (set WithDrainTimeout); DrainTimeout=0 disables the entire drain phase")
 )

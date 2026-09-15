@@ -17,7 +17,7 @@ func main() {
 	runner := lynx.NewRunner(func(app lynx.App) error {
 		app.SetLogger(zap.MustNewLogger(app))
 		task1 := &task{}
-		app.OnStart(func(ctx context.Context) error {
+		app.OnPreStart(func(ctx context.Context) error {
 			return task1.HandlerFunc()(ctx)
 		})
 		scheduler, err := schedule.NewScheduler([]schedule.Task{task1}, schedule.WithLogger(app.Logger()))

@@ -73,11 +73,6 @@ func TestOptionsValidate(t *testing.T) {
 			wantErr: ErrDrainTimeoutInvalid,
 		},
 		{
-			name:    "drain hook timeout negative",
-			options: Options{DrainHookTimeout: -time.Millisecond},
-			wantErr: ErrDrainHookTimeoutInvalid,
-		},
-		{
 			name:    "bus ready timeout zero is allowed",
 			options: Options{BusReadyTimeout: 0},
 			wantErr: nil,
@@ -86,6 +81,16 @@ func TestOptionsValidate(t *testing.T) {
 			name:    "bus ready timeout negative",
 			options: Options{BusReadyTimeout: -time.Millisecond},
 			wantErr: ErrBusReadyTimeoutInvalid,
+		},
+		{
+			name:    "cleanup timeout zero is allowed",
+			options: Options{CleanupTimeout: 0},
+			wantErr: nil,
+		},
+		{
+			name:    "cleanup timeout negative",
+			options: Options{CleanupTimeout: -time.Millisecond},
+			wantErr: ErrCleanupTimeoutInvalid,
 		},
 	}
 	for _, tt := range tests {
@@ -112,16 +117,17 @@ func TestOptionsEnsureDefaults(t *testing.T) {
 	if o.ShutdownTimeout != DefaultShutdownTimeout {
 		t.Errorf("ShutdownTimeout = %v, want %v", o.ShutdownTimeout, DefaultShutdownTimeout)
 	}
-	// DrainTimeout 无默认值：0 = 不启用排水（与 v1.0 行为一致的回归红线）。
+	// DrainTimeout 无默认值：0 = 不启用排水（整段禁用的回归红线）。
 	if o.DrainTimeout != 0 {
 		t.Errorf("DrainTimeout = %v, want 0 (no default)", o.DrainTimeout)
-	}
-	if o.DrainHookTimeout != DefaultDrainHookTimeout {
-		t.Errorf("DrainHookTimeout = %v, want %v", o.DrainHookTimeout, DefaultDrainHookTimeout)
 	}
 	// BusReadyTimeout 默认 10s（CORE-02：取代 newLynx 硬编码的 1 秒预算）。
 	if o.BusReadyTimeout != DefaultBusReadyTimeout {
 		t.Errorf("BusReadyTimeout = %v, want %v", o.BusReadyTimeout, DefaultBusReadyTimeout)
+	}
+	// CleanupTimeout 默认 10s（OnPostStop 收尾钩子总预算）。
+	if o.CleanupTimeout != DefaultCleanupTimeout {
+		t.Errorf("CleanupTimeout = %v, want %v", o.CleanupTimeout, DefaultCleanupTimeout)
 	}
 	if len(o.ExitSignals) == 0 {
 		t.Error("ExitSignals should not be empty")
@@ -173,6 +179,7 @@ func TestOptionFuncs(t *testing.T) {
 		WithExitSignals(syscall.SIGTERM),
 		WithDrainTimeout(2*time.Second),
 		WithBusReadyTimeout(30*time.Second),
+		WithCleanupTimeout(15*time.Second),
 	)
 	if o.ID != "id-1" {
 		t.Errorf("ID = %q, want %q", o.ID, "id-1")
@@ -191,6 +198,9 @@ func TestOptionFuncs(t *testing.T) {
 	}
 	if o.BusReadyTimeout != 30*time.Second {
 		t.Errorf("BusReadyTimeout = %v, want %v", o.BusReadyTimeout, 30*time.Second)
+	}
+	if o.CleanupTimeout != 15*time.Second {
+		t.Errorf("CleanupTimeout = %v, want %v", o.CleanupTimeout, 15*time.Second)
 	}
 	if len(o.ExitSignals) != 1 {
 		t.Errorf("ExitSignals = %v, want 1 entry", o.ExitSignals)

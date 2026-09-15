@@ -450,6 +450,12 @@ sequenceDiagram
 
 `runOnDrainHooks` 照抄 `runOnStopHooks`（`lynx.go` 588–624）：持锁拷贝切片；`context.WithTimeout(context.Background(), DrainHookTimeout)`——**禁止**把尚未取消、也没有 deadline 的 `app.ctx` 传给钩子；逐个钩子在该 ctx 下执行，超时记入 `ShutdownErrors` 并继续；钩子错误不打断排水。无钩子时整段跳过，不增加任何等待。
 
+> **v1.10.0 更新**：独立预算 `DrainHookTimeout` 已移除，排水窗口
+> `DrainTimeout` 即 OnDrain 钩子总预算（窗口开启时创建 ctx 并传入
+> runOnDrainHooks，deadline 即窗口结束）；`DrainTimeout=0` 时整段禁用，
+> 注册钩子由 `Run()` 启动期返回 `ErrDrainHooksRequireDrainTimeout`。
+> 本节及下方公式按 v1.1 设计原貌保留。
+
 `Options.DrainHookTimeout`：默认 **3s**（与 Registrar `Deregister` 单次预算相同）；`EnsureDefaults` 在为 0 且存在挂钩需求时填 3s，实现上「无钩子则不启动定时器」。`WithDrainHookTimeout(d)`；负值 `Validate` 失败（对齐 `ErrDrainTimeoutInvalid`）。
 
 关停时长上界（更新后的公式，必须写进 `docs/03` §3.7）：
@@ -919,6 +925,10 @@ type Bootstrap struct {
 ```
 
 `New` 增加参数会破坏 Wire 现有 injector。为保持 `_examples/boot` 可编译，采用 **可选 setter** 而非改 `New` 签名：
+
+> **v1.10.0 更新**：生命周期钩子改名（`OnStart`→`OnPreStart`、`OnStop`→`OnPreStop`）
+> 并补齐五阶段后，本版本为不兼容重命名版本，`DrainHooks` 已折叠回 `New` 的正式
+> 参数（参数顺序与字段声明一致），setter 移除；下述签名仅作历史决策记录。
 
 ```go
 func (b *Bootstrap) WithDrainHooks(h OnDrainHooks) *Bootstrap

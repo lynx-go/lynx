@@ -162,7 +162,7 @@ func main() {
 go run main.go
 ```
 
-输出 `hello cli` 后进程自动退出。`app.Command` 注册的命令同样运行在 Lynx 的生命周期管理中，可以与 `OnStart`/`OnStop` 钩子及其他服务（如 PubSub Broker）配合使用，完整示例见 `_examples/cli/main.go`。
+输出 `hello cli` 后进程自动退出。`app.Command` 注册的命令同样运行在 Lynx 的生命周期管理中，可以与 `OnPreStart`/`OnPreStop` 钩子及其他服务（如 PubSub Broker）配合使用，完整示例见 `_examples/cli/main.go`。
 
 ## 2.5 健康检查端点
 

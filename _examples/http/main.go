@@ -38,13 +38,13 @@ func main() {
 			return err
 		}
 
-		app.OnStart(func(ctx context.Context) error {
-			app.Logger().Info("on start")
+		app.OnPreStart(func(ctx context.Context) error {
+			app.Logger().Info("on pre-start")
 			return nil
 		})
 
-		app.OnStop(func(ctx context.Context) error {
-			app.Logger().Info("on stop")
+		app.OnPreStop(func(ctx context.Context) error {
+			app.Logger().Info("on pre-stop")
 			return nil
 		})
 		router := gohttp.NewServeMux()
@@ -78,7 +78,7 @@ func main() {
 			http.WithMiddleware(latencyMiddleware),
 		))
 
-		app.OnStart(func(ctx context.Context) error {
+		app.OnPreStart(func(ctx context.Context) error {
 			time.Sleep(1 * time.Second)
 			return nil
 		})

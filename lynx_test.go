@@ -153,8 +153,8 @@ func (c *initAppAccessorService) Name() string { return "accessor" }
 func (c *initAppAccessorService) Init(ctx AppContext) error {
 	ctx.HealthCheckers()
 	app := ctx.(App)
-	app.OnStart(func(ctx context.Context) error { return nil })
-	app.OnStop(func(ctx context.Context) error { return nil })
+	app.OnPreStart(func(ctx context.Context) error { return nil })
+	app.OnPreStop(func(ctx context.Context) error { return nil })
 	ctx.Config()
 	ctx.Context()
 	return nil
@@ -279,16 +279,16 @@ func TestInitFailureStopsPreviouslyInitializedServices(t *testing.T) {
 	}
 }
 
-func TestOnStartHookErrorStopsInitializedServices(t *testing.T) {
+func TestOnPreStartHookErrorStopsInitializedServices(t *testing.T) {
 	stopped := make(chan string, 10)
 	comp := &stopRecorder{name: "comp", stopped: stopped}
 	runner := NewRunner(func(app App) error {
 		app.Register(comp)
-		app.OnStart(func(ctx context.Context) error { return errors.New("hook boom") })
+		app.OnPreStart(func(ctx context.Context) error { return errors.New("hook boom") })
 		return nil
 	})
 	if err := runner.RunE(); err == nil {
-		t.Fatal("expected on-start hook error")
+		t.Fatal("expected on-pre-start hook error")
 	}
 	select {
 	case name := <-stopped:
@@ -296,14 +296,14 @@ func TestOnStartHookErrorStopsInitializedServices(t *testing.T) {
 			t.Fatalf("stopped %q, want comp", name)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Service was not stopped after on-start hook failure")
+		t.Fatal("Service was not stopped after on-pre-start hook failure")
 	}
 }
 
-func TestRunReturnsOnStopHookErrors(t *testing.T) {
+func TestRunReturnsOnPreStopHookErrors(t *testing.T) {
 	runner := NewRunner(func(app App) error {
 		app.Register(&blockingService{name: "c"})
-		app.OnStop(func(ctx context.Context) error { return errors.New("drain failed") })
+		app.OnPreStop(func(ctx context.Context) error { return errors.New("drain failed") })
 		return nil
 	})
 	app, err := runner.setupApp()
@@ -527,8 +527,8 @@ func TestRunLifecycleStartStopOrdering(t *testing.T) {
 	c1 := &blockingService{name: "c1", record: rec.record}
 	c2 := &blockingService{name: "c2", record: rec.record}
 	app.Register(c1, c2)
-	app.OnStop(func(ctx context.Context) error {
-		rec.record("onstop")
+	app.OnPreStop(func(ctx context.Context) error {
+		rec.record("onprestop")
 		return nil
 	})
 
@@ -565,15 +565,15 @@ func TestRunLifecycleStartStopOrdering(t *testing.T) {
 		t.Errorf("events = %v, want both Services started", events)
 	}
 
-	// Shutdown ordering is deterministic: OnStop hooks run before Services
+	// Shutdown ordering is deterministic: OnPreStop hooks run before Services
 	// stop, and Services stop in registration order.
 	var stops []string
 	for _, e := range events {
-		if e == "stop:c1" || e == "stop:c2" || e == "onstop" {
+		if e == "stop:c1" || e == "stop:c2" || e == "onprestop" {
 			stops = append(stops, e)
 		}
 	}
-	want := []string{"onstop", "stop:c1", "stop:c2"}
+	want := []string{"onprestop", "stop:c1", "stop:c2"}
 	if len(stops) != len(want) {
 		t.Fatalf("stop events = %v, want %v", stops, want)
 	}
@@ -584,14 +584,14 @@ func TestRunLifecycleStartStopOrdering(t *testing.T) {
 	}
 }
 
-func TestRunOnStartHookError(t *testing.T) {
+func TestRunOnPreStartHookError(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 
-	wantErr := errors.New("on-start failed")
-	app.OnStart(func(ctx context.Context) error {
+	wantErr := errors.New("on-pre-start failed")
+	app.OnPreStart(func(ctx context.Context) error {
 		return wantErr
 	})
 
@@ -614,7 +614,7 @@ func TestRunServiceStartError(t *testing.T) {
 	}
 }
 
-func TestRunOnStopHooksAllExecutedDespiteErrors(t *testing.T) {
+func TestRunOnPreStopHooksAllExecutedDespiteErrors(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
@@ -633,7 +633,7 @@ func TestRunOnStopHooksAllExecutedDespiteErrors(t *testing.T) {
 			return nil
 		}
 	}
-	app.OnStop(record("hook1"), record("hook2"), record("hook3"))
+	app.OnPreStop(record("hook1"), record("hook2"), record("hook3"))
 
 	runErr := make(chan error, 1)
 	go func() {
@@ -646,7 +646,7 @@ func TestRunOnStopHooksAllExecutedDespiteErrors(t *testing.T) {
 
 	select {
 	case err := <-runErr:
-		// A4: OnStop 错误随 Run() 上抛，让调用方（如 K8s）感知关停失败。
+		// A4: OnPreStop 错误随 Run() 上抛，让调用方（如 K8s）感知关停失败。
 		if err == nil {
 			t.Fatalf("Run() error = nil, want shutdown errors to surface")
 		}
@@ -754,24 +754,24 @@ func TestRegisterAfterRunRejected(t *testing.T) {
 	}
 }
 
-// TestRunJoinsOnStopErrorsWithStartFailure 回归：服务 Start 先失败时，
-// oklog/run 只返回首个 actor 错误，OnStop 钩子错误必须与之一并上抛，
+// TestRunJoinsOnPreStopErrorsWithStartFailure 回归：服务 Start 先失败时，
+// oklog/run 只返回首个 actor 错误，OnPreStop 钩子错误必须与之一并上抛，
 // 不得只落日志。
-func TestRunJoinsOnStopErrorsWithStartFailure(t *testing.T) {
+func TestRunJoinsOnPreStopErrorsWithStartFailure(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 
 	app.Register(&failStartService{name: "bad", err: errors.New("start boom")})
-	app.OnStop(func(ctx context.Context) error { return errors.New("onstop boom") })
+	app.OnPreStop(func(ctx context.Context) error { return errors.New("onprestop boom") })
 
 	err = app.Run()
 	if err == nil {
-		t.Fatal("Run() error = nil, want both start and on-stop errors")
+		t.Fatal("Run() error = nil, want both start and on-pre-stop errors")
 	}
-	if !strings.Contains(err.Error(), "start boom") || !strings.Contains(err.Error(), "onstop boom") {
-		t.Fatalf("Run() error = %v, want both start boom and onstop boom", err)
+	if !strings.Contains(err.Error(), "start boom") || !strings.Contains(err.Error(), "onprestop boom") {
+		t.Fatalf("Run() error = %v, want both start boom and onprestop boom", err)
 	}
 }
 
@@ -989,7 +989,7 @@ func TestDrainTimeoutZeroSkipsDrainWindow(t *testing.T) {
 }
 
 // TestOnDrainHooksRunBeforeOnStopWithinDrainWindow 验证 OnDrain 语义：
-// 钩子在排水置位后与 DrainTimeout 睡眠并发执行，且在 OnStop 之前完成。
+// 钩子在排水置位后与 DrainTimeout 睡眠并发执行，且在 OnPreStop 之前完成。
 func TestOnDrainHooksRunBeforeOnStopWithinDrainWindow(t *testing.T) {
 	const drain = 300 * time.Millisecond
 	app, err := newLynx(NewOptions(WithDrainTimeout(drain)))
@@ -1004,9 +1004,9 @@ func TestOnDrainHooksRunBeforeOnStopWithinDrainWindow(t *testing.T) {
 		close(drainRan)
 		return nil
 	})
-	// OnStop 执行时 OnDrain 必须已完成（shutdown 在 cancelCtx 前等待钩子收尾）。
+	// OnPreStop 执行时 OnDrain 必须已完成（shutdown 在 cancelCtx 前等待钩子收尾）。
 	stopSawDrain := atomic.Bool{}
-	app.OnStop(func(ctx context.Context) error {
+	app.OnPreStop(func(ctx context.Context) error {
 		select {
 		case <-drainRan:
 			stopSawDrain.Store(true)
@@ -1045,11 +1045,11 @@ func TestOnDrainHooksRunBeforeOnStopWithinDrainWindow(t *testing.T) {
 	}
 }
 
-// TestOnDrainHookTimeoutDoesNotHangShutdown 验证阻塞的 OnDrain 钩子不会
-// 挂死关停：超过 DrainHookTimeout 后记录错误并继续，Run 按时返回。
-func TestOnDrainHookTimeoutDoesNotHangShutdown(t *testing.T) {
-	const hookTimeout = 150 * time.Millisecond
-	app, err := newLynx(NewOptions(WithDrainHookTimeout(hookTimeout)))
+// TestOnDrainHookBoundedByDrainWindow 验证阻塞的 OnDrain 钩子不会
+// 挂死关停：排水窗口即钩子总预算，窗口结束时记录错误并继续，Run 按时返回。
+func TestOnDrainHookBoundedByDrainWindow(t *testing.T) {
+	const drain = 150 * time.Millisecond
+	app, err := newLynx(NewOptions(WithDrainTimeout(drain)))
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
@@ -1076,15 +1076,16 @@ func TestOnDrainHookTimeoutDoesNotHangShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run() did not return after Close()")
 	}
-	// 上界由 DrainHookTimeout 决定，而非钩子的 10s 阻塞。
+	// 上界由排水窗口决定，而非钩子的 10s 阻塞。
 	if elapsed := time.Since(closeAt); elapsed >= 5*time.Second {
-		t.Errorf("shutdown elapsed %v, want bounded by drain hook timeout %v", elapsed, hookTimeout)
+		t.Errorf("shutdown elapsed %v, want bounded by drain window %v", elapsed, drain)
 	}
 }
 
-// TestOnDrainHookErrorSurfacesInRun 验证 OnDrain 钩子返回的错误随 Run() 上抛。
+// TestOnDrainHookErrorSurfacesInRun 验证 OnDrain 钩子返回的错误随 Run() 上抛
+// （排水窗口即钩子预算，需启用排水）。
 func TestOnDrainHookErrorSurfacesInRun(t *testing.T) {
-	app, err := newLynx(NewOptions())
+	app, err := newLynx(NewOptions(WithDrainTimeout(300 * time.Millisecond)))
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
@@ -1106,6 +1107,33 @@ func TestOnDrainHookErrorSurfacesInRun(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run() did not return after Close()")
+	}
+}
+
+// TestDrainHooksWithoutDrainTimeoutRejectedAtRun 锁定合并语义的快失败：
+// 排水窗口即 OnDrain 钩子总预算，DrainTimeout=0（整段禁用）时注册钩子
+// 是配置错误——Run() 启动期返回 ErrDrainHooksRequireDrainTimeout 并
+// 逆序停止已 Init 的服务，好过关停期静默跳过注销的延迟暴露。
+func TestDrainHooksWithoutDrainTimeoutRejectedAtRun(t *testing.T) {
+	stopped := make(chan string, 10)
+	svc := &stopRecorder{name: "svc", stopped: stopped}
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	app.Register(svc)
+	app.OnDrain(func(ctx context.Context) error { return nil })
+
+	if err := app.Run(); !errors.Is(err, ErrDrainHooksRequireDrainTimeout) {
+		t.Fatalf("Run() error = %v, want ErrDrainHooksRequireDrainTimeout", err)
+	}
+	select {
+	case name := <-stopped:
+		if name != "svc" {
+			t.Fatalf("stopped %q, want svc", name)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Service was not stopped after drain config rejection")
 	}
 }
 
@@ -1190,8 +1218,8 @@ func TestDefaultFlagsDisabled(t *testing.T) {
 	}
 }
 
-// TestOnStartRunsBeforeServicesStart 验证 OnStart hooks 在服务启动前顺序执行。
-func TestOnStartRunsBeforeServicesStart(t *testing.T) {
+// TestOnPreStartRunsBeforeServicesStart 验证 OnPreStart hooks 在服务启动前顺序执行。
+func TestOnPreStartRunsBeforeServicesStart(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
@@ -1200,11 +1228,11 @@ func TestOnStartRunsBeforeServicesStart(t *testing.T) {
 	rec := &eventRecorder{}
 	c := &blockingService{name: "c1", record: rec.record}
 	app.Register(c)
-	app.OnStart(func(ctx context.Context) error {
+	app.OnPreStart(func(ctx context.Context) error {
 		if c.started.Load() {
-			t.Error("OnStart hook ran after Service had already started")
+			t.Error("OnPreStart hook ran after Service had already started")
 		}
-		rec.record("onstart")
+		rec.record("onprestart")
 		return nil
 	})
 
@@ -1226,14 +1254,14 @@ func TestOnStartRunsBeforeServicesStart(t *testing.T) {
 	}
 
 	events := rec.snapshot()
-	if len(events) == 0 || events[0] != "onstart" {
-		t.Fatalf("events = %v, want onstart recorded before Service start", events)
+	if len(events) == 0 || events[0] != "onprestart" {
+		t.Fatalf("events = %v, want onprestart recorded before Service start", events)
 	}
 }
 
-// TestOnStopHookBlockingBoundedByTimeout 验证忽略 ctx 的阻塞 OnStop hook
+// TestOnPreStopHookBlockingBoundedByTimeout 验证忽略 ctx 的阻塞 OnPreStop hook
 // 不会挂起关闭流程，总时长受 ShutdownTimeout 约束。
-func TestOnStopHookBlockingBoundedByTimeout(t *testing.T) {
+func TestOnPreStopHookBlockingBoundedByTimeout(t *testing.T) {
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
@@ -1241,7 +1269,7 @@ func TestOnStopHookBlockingBoundedByTimeout(t *testing.T) {
 	// 白盒收紧超时，避免 Options.Validate 的 MinTimeout 限制。
 	app.(*lynx).o.ShutdownTimeout = 100 * time.Millisecond
 
-	app.OnStop(func(ctx context.Context) error {
+	app.OnPreStop(func(ctx context.Context) error {
 		time.Sleep(5 * time.Second) // 故意忽略 ctx
 		return nil
 	})
@@ -1257,11 +1285,11 @@ func TestOnStopHookBlockingBoundedByTimeout(t *testing.T) {
 	select {
 	case err := <-runErr:
 		// A4: 超时错误随 Run() 上抛，调用方可感知关停失败。
-		if err == nil || !strings.Contains(err.Error(), "on-stop hook timed out") {
-			t.Fatalf("Run() error = %v, want on-stop hook timed out", err)
+		if err == nil || !strings.Contains(err.Error(), "on-pre-stop hook timed out") {
+			t.Fatalf("Run() error = %v, want on-pre-stop hook timed out", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run() did not return; blocking OnStop hook was not bounded")
+		t.Fatal("Run() did not return; blocking OnPreStop hook was not bounded")
 	}
 
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
@@ -1449,14 +1477,14 @@ func newLynxWithConfig(c ConfigSource) (App, error) {
 	f := pflag.NewFlagSet(os.Args[0], pflag.ContinueOnError)
 	f.ParseErrorsAllowlist.UnknownFlags = true
 	app := &lynx{
-		o:        o,
-		c:        viper.New(),
-		f:        f,
-		runG:     &run.Group{},
-		logger:   slog.Default(),
-		onStarts: []HookFunc{},
-		onStops:  []HookFunc{},
-		bus:      o.Bus,
+		o:           o,
+		c:           viper.New(),
+		f:           f,
+		runG:        &run.Group{},
+		logger:      slog.Default(),
+		onPreStarts: []HookFunc{},
+		onPreStops:  []HookFunc{},
+		bus:         o.Bus,
 	}
 	app.ctx, app.cancelCtx = context.WithCancel(context.Background())
 	app.services = []Service{}

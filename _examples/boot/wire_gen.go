@@ -15,12 +15,14 @@ import (
 // Injectors from wire.go:
 
 func wireBootstrap(app lynx.App, slogger *slog.Logger) (*boot.Bootstrap, func(), error) {
-	onStartHooks := NewOnStarts(app)
-	onStopHooks := NewOnStops(app)
+	preStartHooks := NewPreStarts(app)
+	drainHooks := NewDrains()
+	preStopHooks := NewPreStops(app)
+	postStopHooks := NewPostStops()
 	server := NewHttpServer(app)
 	v := NewServices(server)
 	v2 := NewServiceFactories()
-	bootstrap := boot.New(onStartHooks, onStopHooks, v, v2)
+	bootstrap := boot.New(preStartHooks, drainHooks, preStopHooks, postStopHooks, v, v2)
 	return bootstrap, func() {
 	}, nil
 }

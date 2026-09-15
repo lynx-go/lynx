@@ -370,7 +370,7 @@ Run
 - 注意 Watermill：最后一个 handler 停止可能触发 Router 自 Close；关停应由 App 统一 `Bus.Stop`，避免收尾事件窗口被提前掐断。
 - `Bus.Stop` 继续走有界 `StopTimeout`。
 
-时长上界：`max(DrainTimeout, DrainHookTimeout) + ShutdownTimeout + Σ StopTimeout + Bus.Stop`。
+时长上界：`DrainTimeout + ShutdownTimeout + Σ StopTimeout + CleanupTimeout + Bus.Stop`（v1.10.0 起 OnDrain 钩子与排水窗口共享预算，`DrainHookTimeout` 已并入 `DrainTimeout`）。
 
 ---
 

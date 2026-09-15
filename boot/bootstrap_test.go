@@ -13,16 +13,24 @@ import (
 
 // fakeLynx is a minimal lynx.App implementation that records registration calls.
 type fakeLynx struct {
-	onStarts  []lynx.HookFunc
-	onDrains  []lynx.HookFunc
-	onStops   []lynx.HookFunc
-	services  []lynx.Service
-	factories []lynx.ServiceFactory
+	onPreStarts  []lynx.HookFunc
+	onDrains     []lynx.HookFunc
+	onPreStops   []lynx.HookFunc
+	onPostStarts []lynx.HookFunc
+	onPostStops  []lynx.CleanupFunc
+	services     []lynx.Service
+	factories    []lynx.ServiceFactory
 }
 
-func (f *fakeLynx) OnStart(fns ...lynx.HookFunc) { f.onStarts = append(f.onStarts, fns...) }
-func (f *fakeLynx) OnDrain(fns ...lynx.HookFunc) { f.onDrains = append(f.onDrains, fns...) }
-func (f *fakeLynx) OnStop(fns ...lynx.HookFunc)  { f.onStops = append(f.onStops, fns...) }
+func (f *fakeLynx) OnPreStart(fns ...lynx.HookFunc) { f.onPreStarts = append(f.onPreStarts, fns...) }
+func (f *fakeLynx) OnDrain(fns ...lynx.HookFunc)    { f.onDrains = append(f.onDrains, fns...) }
+func (f *fakeLynx) OnPreStop(fns ...lynx.HookFunc)  { f.onPreStops = append(f.onPreStops, fns...) }
+func (f *fakeLynx) OnPostStart(fns ...lynx.HookFunc) {
+	f.onPostStarts = append(f.onPostStarts, fns...)
+}
+func (f *fakeLynx) OnPostStop(fns ...lynx.CleanupFunc) {
+	f.onPostStops = append(f.onPostStops, fns...)
+}
 func (f *fakeLynx) Register(cs ...lynx.Service) {
 	f.services = append(f.services, cs...)
 }
@@ -38,42 +46,52 @@ func (f *fakeLynx) Run() error                         { return nil }
 func (f *fakeLynx) SetLogger(logger *slog.Logger)      {}
 func (f *fakeLynx) Logger(kwargs ...any) *slog.Logger  { return slog.Default() }
 func (f *fakeLynx) HealthCheckers() []lynx.Checker     { return nil }
-func (f *fakeLynx) Bus() eventbus.Bus                       { return eventbus.NewMemoryBus(eventbus.Options{}) }
+func (f *fakeLynx) Bus() eventbus.Bus                  { return eventbus.NewMemoryBus(eventbus.Options{}) }
 
 var _ lynx.App = (*fakeLynx)(nil)
 
 func TestNew(t *testing.T) {
-	onStarts := boot.OnStartHooks{func(ctx context.Context) error { return nil }}
-	onStops := boot.OnStopHooks{func(ctx context.Context) error { return nil }}
+	preStarts := boot.PreStartHooks{func(ctx context.Context) error { return nil }}
+	drains := boot.DrainHooks{func(ctx context.Context) error { return nil }}
+	preStops := boot.PreStopHooks{func(ctx context.Context) error { return nil }}
+	postStops := boot.PostStopHooks{func() {}}
 
-	b := boot.New(onStarts, onStops, nil, nil)
+	b := boot.New(preStarts, drains, preStops, postStops, nil, nil)
 	if b == nil {
 		t.Fatal("New() returned nil")
 	}
-	if len(b.StartHooks) != 1 {
-		t.Errorf("len(StartHooks) = %d, want 1", len(b.StartHooks))
+	if len(b.PreStartHooks) != 1 {
+		t.Errorf("len(PreStartHooks) = %d, want 1", len(b.PreStartHooks))
 	}
-	if len(b.StopHooks) != 1 {
-		t.Errorf("len(StopHooks) = %d, want 1", len(b.StopHooks))
+	if len(b.DrainHooks) != 1 {
+		t.Errorf("len(DrainHooks) = %d, want 1", len(b.DrainHooks))
+	}
+	if len(b.PreStopHooks) != 1 {
+		t.Errorf("len(PreStopHooks) = %d, want 1", len(b.PreStopHooks))
+	}
+	if len(b.PostStopHooks) != 1 {
+		t.Errorf("len(PostStopHooks) = %d, want 1", len(b.PostStopHooks))
 	}
 }
 
 func TestBindRegistersAll(t *testing.T) {
-	var startRan, stopRan bool
-	onStarts := boot.OnStartHooks{func(ctx context.Context) error { startRan = true; return nil }}
-	onStops := boot.OnStopHooks{func(ctx context.Context) error { stopRan = true; return nil }}
-	b := boot.New(onStarts, onStops, nil, nil)
+	var preStartRan, preStopRan, postStopRan bool
+	preStarts := boot.PreStartHooks{func(ctx context.Context) error { preStartRan = true; return nil }}
+	preStops := boot.PreStopHooks{func(ctx context.Context) error { preStopRan = true; return nil }}
+	postStops := boot.PostStopHooks{func() { postStopRan = true }}
+	b := boot.New(preStarts, nil, preStops, postStops, nil, nil)
 	app := &fakeLynx{}
 
 	b.Bind(app)
 
-	if len(app.onStarts) != 1 || len(app.onStops) != 1 {
-		t.Fatalf("Bind() registered %d starts / %d stops, want 1/1",
-			len(app.onStarts), len(app.onStops))
+	if len(app.onPreStarts) != 1 || len(app.onPreStops) != 1 || len(app.onPostStops) != 1 {
+		t.Fatalf("Bind() registered %d pre-starts / %d pre-stops / %d post-stops, want 1/1/1",
+			len(app.onPreStarts), len(app.onPreStops), len(app.onPostStops))
 	}
-	_ = app.onStarts[0](context.Background())
-	_ = app.onStops[0](context.Background())
-	if !startRan || !stopRan {
+	_ = app.onPreStarts[0](context.Background())
+	_ = app.onPreStops[0](context.Background())
+	app.onPostStops[0]()
+	if !preStartRan || !preStopRan || !postStopRan {
 		t.Error("registered hooks should run")
 	}
 }
@@ -81,17 +99,18 @@ func TestBindRegistersAll(t *testing.T) {
 // TestBindNilSlices is a regression test: Bind must not panic when all
 // providers are nil (modules with nothing to register).
 func TestBindNilSlices(t *testing.T) {
-	b := boot.New(nil, nil, nil, nil)
+	b := boot.New(nil, nil, nil, nil, nil, nil)
 	app := &fakeLynx{}
 
 	b.Bind(app)
 }
 
-// TestWithDrainHooks 验证排水钩子的可选 setter 与 Bind 注册。
-func TestWithDrainHooks(t *testing.T) {
+// TestBindDrainHooks 验证排水钩子经 New 直接传入并注册（v1.10.0 起
+// drains 是 New 的正式参数，不再需要 setter）。
+func TestBindDrainHooks(t *testing.T) {
 	var drainRan bool
-	onDrains := boot.OnDrainHooks{func(ctx context.Context) error { drainRan = true; return nil }}
-	b := boot.New(nil, nil, nil, nil).WithDrainHooks(onDrains)
+	drains := boot.DrainHooks{func(ctx context.Context) error { drainRan = true; return nil }}
+	b := boot.New(nil, drains, nil, nil, nil, nil)
 	if len(b.DrainHooks) != 1 {
 		t.Fatalf("len(DrainHooks) = %d, want 1", len(b.DrainHooks))
 	}

@@ -17,8 +17,10 @@ var ProviderSet = wire.NewSet(
 	NewConfig,
 	NewServices,
 	NewServiceFactories,
-	NewOnStarts,
-	NewOnStops,
+	NewPreStarts,
+	NewDrains,
+	NewPreStops,
+	NewPostStops,
 )
 
 func NewConfig(app lynx.App) (*AppConfig, error) {
@@ -37,8 +39,8 @@ func NewServiceFactories() []lynx.ServiceFactory {
 	return []lynx.ServiceFactory{}
 }
 
-func NewOnStarts(app lynx.App) boot.OnStartHooks {
-	return boot.OnStartHooks{
+func NewPreStarts(app lynx.App) boot.PreStartHooks {
+	return boot.PreStartHooks{
 		func(ctx context.Context) error {
 			app.Logger().Info("starting")
 			return nil
@@ -46,11 +48,19 @@ func NewOnStarts(app lynx.App) boot.OnStartHooks {
 	}
 }
 
-func NewOnStops(app lynx.App) boot.OnStopHooks {
-	return boot.OnStopHooks{
+func NewDrains() boot.DrainHooks {
+	return boot.DrainHooks{}
+}
+
+func NewPreStops(app lynx.App) boot.PreStopHooks {
+	return boot.PreStopHooks{
 		func(ctx context.Context) error {
 			app.Logger().Info("stopping")
 			return nil
 		},
 	}
+}
+
+func NewPostStops() boot.PostStopHooks {
+	return boot.PostStopHooks{}
 }

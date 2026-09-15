@@ -222,12 +222,14 @@ type Service interface {
 ### 钩子与排水
 
 ```go
-app.OnStart(func(ctx context.Context) error { return nil })
-app.OnDrain(func(ctx context.Context) error { /* 如从注册中心注销 */ return nil })
-app.OnStop(func(ctx context.Context) error { return nil })
+app.OnPreStart(func(ctx context.Context) error { /* 服务启动前：迁移/预热 */ return nil })
+app.OnPostStart(func(ctx context.Context) error { /* 所有服务 Start 已调用：运行通知 */ return nil })
+app.OnDrain(func(ctx context.Context) error { /* 排水窗口：如从注册中心注销 */ return nil })
+app.OnPreStop(func(ctx context.Context) error { /* 服务 Stop 前：最后冲刷 */ return nil })
+app.OnPostStop(func() { /* 一切停止后：关闭 DB/Redis 连接池（Wire cleanup） */ })
 ```
 
-`WithDrainTimeout` 开启排水窗口：就绪检查立即失败（`lynx.ErrDraining`），便于 LB 摘流；`OnDrain` 与排水睡眠并发，受 `WithDrainHookTimeout`（默认 3s）约束。
+`WithDrainTimeout` 开启排水窗口：就绪检查立即失败（`lynx.ErrDraining`），便于 LB 摘流；`OnDrain` 与排水睡眠并发执行，**窗口即钩子总预算**（`DrainTimeout=0` 时注册钩子会在启动期报 `ErrDrainHooksRequireDrainTimeout`）；`OnPostStop` 收尾钩子受 `WithCleanupTimeout`（默认 10s）约束。
 
 ### Wire
 
