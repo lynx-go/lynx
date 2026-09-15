@@ -2,8 +2,18 @@
 
 ## v1.10.0 (2026-09-15)
 
-本次发布 tag：根 `v1.10.0`、`contrib/zap` 破坏性改名（`SyncOnStop` → `SyncOnPreStop`）。
-`boot` 包随根模块发布。内部消费方（torchwood）随发版迁移，无兼容别名。
+本次发布 tag：根 `v1.10.0`、`contrib/zap/v1.4.0`（破坏性改名
+`SyncOnStop` → `SyncOnPreStop`）。`boot` 包随根模块发布；
+`contrib/registry` 仅测试文件适配新接口，无源码变更，不重复打 tag。
+内部消费方（torchwood）随发版迁移，无兼容别名。
+
+### 依赖
+
+- **grpc** `v1.83.0` → `v1.83.2`（根、`contrib/registry`、`contrib/consul`、
+  `_examples`）：修复 CVE-2026-84303（xDS RBAC HTTP Filter 混合大小写
+  头匹配绕过，medium）、CVE-2026-84304（HTTP/2 DATA 分片导致堆内存
+  耗尽，high）、CVE-2026-84445（xDS server 缺失 `:authority`/`Host`
+  头导致崩溃 DoS，high）。连带 `golang.org/x/net`、`x/text` 小版本。
 
 ### 破坏性变更：`DrainHookTimeout` 并入 `DrainTimeout`
 

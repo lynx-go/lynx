@@ -119,8 +119,8 @@ v1.0 API 已冻结并保持向后兼容，本阶段只做增量（来源：2026-
 
 - [ ] 配置热更新（viper WatchConfig）与运行时日志级别调整
 - [ ] Go runtime metrics 开箱接入（goroutine/GC/内存）
-- [ ] 关停排水语义显式化（readiness 先变 not-ready → 等 LB 摘流 →
-      再关监听）
+- [x] 关停排水语义显式化（readiness 先变 not-ready → 等 LB 摘流 →
+      再关监听；v1.1 引入，v1.10.0 将 OnDrain 钩子预算并入 `DrainTimeout` 窗口）
 
 ### E3 定位选择（按需评估，默认不做）
 
