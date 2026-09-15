@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.11.0 (2026-09-15)
+
+本次发布 tag：根 `v1.11.0`、`contrib/registry/v1.7.0`（两处 `Bind`
+更名 `Apply`）。其余 contrib 无源码变更，不重复打 tag。
+
+### 破坏性变更：`boot.Bind` / `registry.Bind` 更名 `Apply`
+
+「把聚合好的钩子/服务注册进应用」的两个入口统一从 `Bind` 更名为
+`Apply`：
+
+- 根模块：`(*boot.Bootstrap).Bind(app)` → `(*boot.Bootstrap).Apply(app)`；
+- `contrib/registry`：`registry.Bind(app, r)` → `registry.Apply(app, r)`
+  （推荐入口：Register 服务 + 挂 OnDrain 注销钩子；nil no-op 语义不变）。
+
+动机：`Bind` 在同一生态三重撞名——google/wire 的 `wire.Bind`（接口
+绑定实现，而 `boot` 包正是 Wire 引导）、lynx 配置域的
+`BindEnv`/`BindPFlags`（数据绑定），且 `b.Bind(app)` 读作「把 app 绑到
+b 上」，方向与实际语义相反；`Apply` 主宾方向明确、无撞名。无兼容
+别名，迁移为机械重命名（示例与文档已同步）。
+
 ## v1.10.0 (2026-09-15)
 
 本次发布 tag：根 `v1.10.0`、`contrib/zap/v1.7.0`（破坏性改名
