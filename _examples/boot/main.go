@@ -24,7 +24,7 @@ func main() {
 		// 排水/关停期间在途请求还要用这些资源（v1.10.0 前本示例挂在
 		// OnStop 上，正是这个坑）。
 		app.OnPostStop(cleanup)
-		boot.Bind(app)
+		boot.Apply(app)
 		return nil
 	},
 		lynx.WithBindFlagsFunc(func(f *pflag.FlagSet) {

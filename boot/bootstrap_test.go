@@ -74,7 +74,7 @@ func TestNew(t *testing.T) {
 	}
 }
 
-func TestBindRegistersAll(t *testing.T) {
+func TestApplyRegistersAll(t *testing.T) {
 	var preStartRan, preStopRan, postStopRan bool
 	preStarts := boot.PreStartHooks{func(ctx context.Context) error { preStartRan = true; return nil }}
 	preStops := boot.PreStopHooks{func(ctx context.Context) error { preStopRan = true; return nil }}
@@ -82,10 +82,10 @@ func TestBindRegistersAll(t *testing.T) {
 	b := boot.New(preStarts, nil, preStops, postStops, nil, nil)
 	app := &fakeLynx{}
 
-	b.Bind(app)
+	b.Apply(app)
 
 	if len(app.onPreStarts) != 1 || len(app.onPreStops) != 1 || len(app.onPostStops) != 1 {
-		t.Fatalf("Bind() registered %d pre-starts / %d pre-stops / %d post-stops, want 1/1/1",
+		t.Fatalf("Apply() registered %d pre-starts / %d pre-stops / %d post-stops, want 1/1/1",
 			len(app.onPreStarts), len(app.onPreStops), len(app.onPostStops))
 	}
 	_ = app.onPreStarts[0](context.Background())
@@ -96,18 +96,18 @@ func TestBindRegistersAll(t *testing.T) {
 	}
 }
 
-// TestBindNilSlices is a regression test: Bind must not panic when all
+// TestApplyNilSlices is a regression test: Apply must not panic when all
 // providers are nil (modules with nothing to register).
-func TestBindNilSlices(t *testing.T) {
+func TestApplyNilSlices(t *testing.T) {
 	b := boot.New(nil, nil, nil, nil, nil, nil)
 	app := &fakeLynx{}
 
-	b.Bind(app)
+	b.Apply(app)
 }
 
-// TestBindDrainHooks 验证排水钩子经 New 直接传入并注册（v1.10.0 起
+// TestApplyDrainHooks 验证排水钩子经 New 直接传入并注册（v1.10.0 起
 // drains 是 New 的正式参数，不再需要 setter）。
-func TestBindDrainHooks(t *testing.T) {
+func TestApplyDrainHooks(t *testing.T) {
 	var drainRan bool
 	drains := boot.DrainHooks{func(ctx context.Context) error { drainRan = true; return nil }}
 	b := boot.New(nil, drains, nil, nil, nil, nil)
@@ -116,10 +116,10 @@ func TestBindDrainHooks(t *testing.T) {
 	}
 	app := &fakeLynx{}
 
-	b.Bind(app)
+	b.Apply(app)
 
 	if len(app.onDrains) != 1 {
-		t.Fatalf("Bind() registered %d drain hooks, want 1", len(app.onDrains))
+		t.Fatalf("Apply() registered %d drain hooks, want 1", len(app.onDrains))
 	}
 	_ = app.onDrains[0](context.Background())
 	if !drainRan {

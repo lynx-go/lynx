@@ -49,7 +49,7 @@ type fileConfig struct {
 //     http://127.0.0.1:8500，测试用）。
 //
 // 由应用 setup 调用（registry.NewBackendFromConfig 对 backend=consul
-// 会返回指向本函数的错误），不要 Bind 到 CLI 一次性命令。
+// 会返回指向本函数的错误），不要 Apply 到 CLI 一次性命令。
 func NewFromConfig(cfg lynx.Config) (*Client, error) {
 	if cfg.Get("registry") == nil {
 		return nil, nil

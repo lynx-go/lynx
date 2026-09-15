@@ -32,9 +32,9 @@ http://127.0.0.1:8080/healthz/readiness 查看聚合健康状态（含 Registrar
 - `main.go` `registry.NewFromConfig` + `registry.HTTP(hs, ...)`：构造
   Registrar，HTTP 服务器作为 Advertiser 提供宣告地址（Start 后读
   `Addr()`，Registrar 最多等 `advertise_timeout`）。
-- `main.go` `registry.Bind(app, reg)`：注册 Registrar 服务并挂
+- `main.go` `registry.Apply(app, reg)`：注册 Registrar 服务并挂
   `OnDrain` 注销钩子（排水开始即从目录删除实例）；nil 时 no-op。
-  CLI（`app.Command`）的 setup 约定**不要**调用 `Bind`。
+  CLI（`app.Command`）的 setup 约定**不要**调用 `Apply`。
 - `main.go` `registry.NewResolver` + `NewHTTPTransport(rslv).Wrap(...)`：
   客户端发现。`registry://<service>/<path>` 由 Transport 改写为具体
   实例地址，每次请求（含重试）重新解析选实例。

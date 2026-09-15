@@ -179,7 +179,7 @@ The `boot` package provides a structured way to organize application initializat
 2. Define a Wire injector function with `//go:build wireinject` tag
 3. Register providers in a ProviderSet
 4. Wire generates the dependency graph
-5. Bootstrap.Bind(app) registers all hooks/services with the app
+5. Bootstrap.Apply(app) registers all hooks/services with the app
 
 This pattern is particularly useful for complex applications with many services.
 

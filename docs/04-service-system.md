@@ -63,7 +63,7 @@ app.RegisterFactories(myFactory)
 
 也就是说，`Instances: 3` 等价于注册三个互不影响的服务实例，`New()` 必须每次返回新对象，各实例之间不应共享会互相干扰的状态。
 
-`boot` 包的 Wire 引导流程（`boot.Bind`）会把聚合好的服务与工厂一次性注册进应用，用法见 `_examples/boot/provides.go`。
+`boot` 包的 Wire 引导流程（`boot.Apply`）会把聚合好的服务与工厂一次性注册进应用，用法见 `_examples/boot/provides.go`。
 
 ## 4.3 Checker 与健康检查扩展接口
 

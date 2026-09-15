@@ -56,9 +56,11 @@ func New(
 	}
 }
 
-// Bind 将 Bootstrap 中的钩子函数、服务与服务工厂注册到 Lynx 应用。
+// Apply 将 Bootstrap 中的钩子函数、服务与服务工厂注册到 Lynx 应用。
 // 注册阶段产生的错误（如服务 Init 失败）由 app.Run() 统一返回。
-func (b *Bootstrap) Bind(app lynx.App) {
+// v1.11.0 前名为 Bind：与 wire.Bind（接口绑定实现）及配置域的
+// BindEnv/BindPFlags 撞名，且「b.Bind(app)」读作反向绑定，故更名。
+func (b *Bootstrap) Apply(app lynx.App) {
 	app.OnPreStart(b.PreStartHooks...)
 	app.OnDrain(b.DrainHooks...)
 	app.OnPreStop(b.PreStopHooks...)

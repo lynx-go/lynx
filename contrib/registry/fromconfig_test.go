@@ -235,18 +235,18 @@ func (f *fakeApp) RegisterFactories(...lynx.ServiceFactory) {}
 func (f *fakeApp) Run() error                               { return nil }
 func (f *fakeApp) SetLogger(*slog.Logger)                   {}
 
-func TestBind(t *testing.T) {
+func TestApply(t *testing.T) {
 	t.Run("nil registrar is no-op", func(t *testing.T) {
 		app := &fakeApp{}
-		Bind(app, nil)
+		Apply(app, nil)
 		if len(app.registered) != 0 || len(app.drainHooks) != 0 {
-			t.Fatalf("Bind(nil) must be no-op, got %+v", app)
+			t.Fatalf("Apply(nil) must be no-op, got %+v", app)
 		}
 	})
 	t.Run("registers service and drain hook", func(t *testing.T) {
 		app := &fakeApp{}
 		r := NewRegistrar(NewMemory(), WithServiceName("svc"))
-		Bind(app, r)
+		Apply(app, r)
 		if len(app.registered) != 1 || app.registered[0] != r {
 			t.Fatalf("Register not called with registrar: %+v", app.registered)
 		}

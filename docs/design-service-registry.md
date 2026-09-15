@@ -85,7 +85,7 @@ Lynx 当前把进程生命周期、健康检查和关停排水（`DrainTimeout`�
 7. 完全可选：不 import `contrib/registry` 的应用二进制与依赖图零变化。
 8. HTTP 与 gRPC 均可宣告；同一进程一条 Instance、多个 Endpoint。
 9. 与 `ServiceFactory` 的关系写清楚：默认 **一进程一 Instance**，工厂展开的 worker 不自动注册。
-10. CLI / `lynx.Command` 进程**按约定不调用 `Bind`**，避免短命令污染目录。这不是库级配置开关。
+10. CLI / `lynx.Command` 进程**按约定不调用 `Apply`**，避免短命令污染目录。这不是库级配置开关。
 
 ### Non-Goals（本设计明确不做）
 
@@ -106,7 +106,7 @@ Lynx 当前把进程生命周期、健康检查和关停排水（`DrainTimeout`�
 | --- | --- | --- | --- |
 | D1 | 模块切分 | **薄核心增量 + `contrib/registry` 门面 + `contrib/consul` 后端** | 对齐 pubsub/kafka：接口与零依赖实现放轻模块，重客户端独立 `go.mod`。不用的应用零成本。 |
 | D2 | 首个生产后端 | **Consul**（DNS 作为内置只读后端） | 服务目录 + TTL/HTTP/gRPC check + blocking query 与本模型 1:1；官方 Go client 成熟；kratos/go-kit/kitex 均 Consul 优先。K8s 主路径用 DNS，不必先做 EndpointSlice。Nacos 作 CN 生态第二后端，不进 v1。 |
-| D3 | 推 vs 拉 | **推（注册+心跳）与拉（DNS）并存，同一套 Discovery 接口** | 非 K8s 需要推；K8s/网格需要拉。`backend: dns` 只返回 Discovery，**不** Bind Registrar。 |
+| D3 | 推 vs 拉 | **推（注册+心跳）与拉（DNS）并存，同一套 Discovery 接口** | 非 K8s 需要推；K8s/网格需要拉。`backend: dns` 只返回 Discovery，**不** Apply Registrar。 |
 | D4 | 进程 vs 网格 | **进程内库，网格是外部替代而非依赖** | Lynx 定位轻框架。Istio/Connect 用户不启用本模块即可。 |
 | D5 | 注册粒度 | **一进程一条 Instance，挂多 Endpoint** | 与 `lynx.Metadata` 对齐。`ServiceFactory` 用于 Kafka worker，不是对外身份。 |
 | D6 | 注销时机 | **排水置位后立即跑 `OnDrain`，与 `DrainTimeout` 睡眠并发**；独立 `DrainHookTimeout`（默认 3s）；`Stop` 幂等补刀 | `OnStop` 在 DrainTimeout 之后，对发现客户端偏晚。同步无超时的 `OnDrain` 会挂死关停 actor。并发 + 超时既立刻开始注销，又不在已有排水窗口上再叠一段（有钩子时上界变为 `max(DrainTimeout, DrainHookTimeout) + …`）。 |
@@ -116,9 +116,9 @@ Lynx 当前把进程生命周期、健康检查和关停排水（`DrainTimeout`�
 | D10 | 客户端 LB | **Picker 钩子 + gRPC 标准 resolver**，不改 `client/http`/`client/grpc` 核心 | v1.1 客户端语义已约定。发现是 opt-in Transport / `grpc.WithResolvers`。v1 Picker **忽略 Weight**。 |
 | D11 | 注册失败策略 | **启动默认 fail-fast**（`Start` 返回 error，应用退出）。`fail_fast: false`：**`Start` 仍必须阻塞到 Stop**；首次 Register 失败只启动后台重试，`CheckHealth` 在成功前为 `ErrNotRegistered` | `oklog/run` 里 `Start` 返回任意值（含 nil）都会拆掉整个 group（`lynx.go` 427–429、564）。重试循环停在内部 `stopping` 旗标上，不得把「等 Start ctx」当退出条件（该 ctx 在 `Stop` 之后才取消）。 |
 | D12 | 默认 TTL | 心跳 **10s**，TTL **30s**，critical 后注销 **60s**；Resolver stale 上限 **2×TTL（60s）** | 3 次心跳窗口；与 gRPC `DefaultHealthCheckPeriod=10s` 同量级。分区 Watch 不得无限提供死实例。 |
-| D13 | Command / CLI | **用法约定，不是配置键**：长期服务 `Bind`；CLI/`app.Command` 的 setup **不要** `Bind` | `App` 无法查询「即将跑 Command」（`Command()` 只是再 `Register` 一个名为 `"command"` 的服务）。库级 `registry.command: false` 会连服务器也注册不上。短命令写目录只有 TTL 残渣。 |
+| D13 | Command / CLI | **用法约定，不是配置键**：长期服务 `Apply`；CLI/`app.Command` 的 setup **不要** `Apply` | `App` 无法查询「即将跑 Command」（`Command()` 只是再 `Register` 一个名为 `"command"` 的服务）。库级 `registry.command: false` 会连服务器也注册不上。短命令写目录只有 TTL 残渣。 |
 | D14 | URI scheme | **`registry`**（`registry://<svc>/…` / `registry:///<svc>`） | 不用 `lynx`：避免与未来其它 lynx 资源争用；scheme 一经 tag 再改是 breaking。 |
-| D15 | 后端装配 | **`contrib/registry.NewBackendFromConfig` 只构造 `memory` / `dns`**。Consul 由应用调用 `consul.NewFromConfig`（`contrib/consul` → `contrib/registry`，与 kafka→pubsub 同方向） | 门面模块依赖「根 lynx + 标准库」。若它 import consul 会形成模块环。`backend: consul` 时工厂返回明确错误。`Bind(app, nil)` 是 no-op。 |
+| D15 | 后端装配 | **`contrib/registry.NewBackendFromConfig` 只构造 `memory` / `dns`**。Consul 由应用调用 `consul.NewFromConfig`（`contrib/consul` → `contrib/registry`，与 kafka→pubsub 同方向） | 门面模块依赖「根 lynx + 标准库」。若它 import consul 会形成模块环。`backend: consul` 时工厂返回明确错误。`Apply(app, nil)` 是 no-op。 |
 
 ---
 
@@ -179,7 +179,7 @@ contrib/registry/                  # module github.com/lynx-go/lynx/contrib/regi
   picker.go                        # Random / RoundRobin / Picker 接口
   memory.go                        # 进程内 Registry+Discovery（测试）
   dns.go                           # 只读 Discovery（net.Resolver）
-  fromconfig.go                    # NewBackendFromConfig (memory/dns only) / NewFromConfig / Bind
+  fromconfig.go                    # NewBackendFromConfig (memory/dns only) / NewFromConfig / Apply
   http_transport.go                # 可选 http.RoundTripper
   grpc_resolver.go                 # 可选 grpc resolver.Builder
   errors.go
@@ -322,7 +322,7 @@ reg := registry.NewRegistrar(mem, registry.WithAdvertisers(httpAdv, grpcAdv))
 
 应用 setup（或 Wire provider）按 `registry.backend` 分支，见「使用示例」。`registry.NewFromConfig(cfg, nil, …)` 在需要写目录的 backend（memory/consul）时返回 `backend requires a Registry`。
 
-`Bind(app, nil)` 与 `Bind(app, (*Registrar)(nil))` 均为 **no-op**。
+`Apply(app, nil)` 与 `Apply(app, (*Registrar)(nil))` 均为 **no-op**。
 
 ### Registrar：生命周期服务
 
@@ -333,10 +333,10 @@ type Registrar struct { /* ... */ }
 
 func NewRegistrar(r Registry, opts ...RegistrarOption) *Registrar
 func NewFromConfig(cfg lynx.Config, r Registry, advertisers ...Advertiser) (*Registrar, error)
-// Bind 是推荐入口：Register 服务 + 挂 OnDrain 注销钩子。
+// Apply 是推荐入口：Register 服务 + 挂 OnDrain 注销钩子。
 // r == nil 时 no-op。通过 type-assert interface{ OnDrain(...) } 调用，
 // 以便测试 fake 未实现新方法时仍能编译；生产 go.mod 仍 require 含 OnDrain 的根版本。
-func Bind(app lynx.App, r *Registrar)
+func Apply(app lynx.App, r *Registrar)
 
 func (r *Registrar) Name() string            // "registry"
 func (r *Registrar) Init(ctx lynx.AppContext) error
@@ -348,11 +348,11 @@ func (r *Registrar) DeregisterHook() lynx.HookFunc
 
 `NewFromConfig` 约定对齐 `kafka.NewFromConfig`：
 
-- `registry` 段缺失、`registry.enabled: false`、或 `backend: ""` → 返回 `(nil, nil)`，**调用方不得 Register**（`Bind` 已对 nil 做 no-op）。
+- `registry` 段缺失、`registry.enabled: false`、或 `backend: ""` → 返回 `(nil, nil)`，**调用方不得 Register**（`Apply` 已对 nil 做 no-op）。
 - `backend: dns` → 返回 `(nil, nil)`（DNS 只读，不要 Registrar）。调用方只用 Discovery 建 Resolver。
 - 需要写目录（memory/consul）且 `r == nil` → error。
 - 段存在但字段类型非法 → 返回 error，由 `Run()` 暴露。
-- **没有** `registry.command` 键。`NewFromConfig` / `Bind` 不根据「是不是 CLI」决定是否注册。长期服务 setup 调用 `Bind`；`app.Command` / 一次性 CLI 的 setup **不要**调用 `Bind`。`App` 没有「将跑 Command」的探测 API。
+- **没有** `registry.command` 键。`NewFromConfig` / `Apply` 不根据「是不是 CLI」决定是否注册。长期服务 setup 调用 `Apply`；`app.Command` / 一次性 CLI 的 setup **不要**调用 `Apply`。`App` 没有「将跑 Command」的探测 API。
 
 `Init`（只读 `AppContext`，不注册钩子——这是 `docs/03-core-concepts.md` 3.6 的硬边界）：
 
@@ -404,7 +404,7 @@ _ = c.BindEnv("registry.consul.token", "LYNX_REGISTRY_CONSUL_TOKEN")
 
 `Registrar` **不是**对外服务。心跳连续失败 **不** 把 HTTP liveness 打成 503。默认 `affect_readiness: true` 时 Registrar 实现 `Checker` 并进入 `app.HealthCheckers()`，从而让 **readiness** 变红。设 `false` 时 **不** 实现/不注册为 Checker（构造时不满足 `Checker` 断言，或 `CheckHealth` 恒 nil 且不加入列表——实现选前者：一个不实现 `Checker` 的包装，避免误进聚合）。
 
-`affect_readiness: true` 时，`command.go` 会在跑业务 fn 前重试等待全部 Checker（含 Registrar）。因此 CLI setup **不要** `Bind` Registrar，否则命令会空等注册中心或写下一条短命目录。这是文档约定，不是 `NewFromConfig` 里的开关。
+`affect_readiness: true` 时，`command.go` 会在跑业务 fn 前重试等待全部 Checker（含 Registrar）。因此 CLI setup **不要** `Apply` Registrar，否则命令会空等注册中心或写下一条短命目录。这是文档约定，不是 `NewFromConfig` 里的开关。
 
 ### 与 Drain / 健康检查的时序
 
@@ -478,8 +478,8 @@ K8s `terminationGracePeriodSeconds` 必须覆盖**新公式**。注销从排水�
 | 组件 | 要求 |
 | --- | --- |
 | `contrib/registry` `go.mod` | `require github.com/lynx-go/lynx` ≥ 含 `OnDrain`/`ErrDraining` 的根 tag；`replace => ../../` 与 `contrib/watermill-kafka/go.mod` 相同 |
-| `Bind` | `app.Register(r)` + type-assert `interface{ OnDrain(fns ...lynx.HookFunc) }`。老测试 fake 没有该方法时只 Register，不挂钩 |
-| `watchDrain` | **同一版本**的安全网：用户忘了 `Bind`、只 `Register(reg)`，且 `DrainTimeout > 0`（`drainChecker` 在 `HealthCheckers` 里）时，50ms 轮询 `errors.Is(..., lynx.ErrDraining)` 后注销 |
+| `Apply` | `app.Register(r)` + type-assert `interface{ OnDrain(fns ...lynx.HookFunc) }`。老测试 fake 没有该方法时只 Register，不挂钩 |
+| `watchDrain` | **同一版本**的安全网：用户忘了 `Apply`、只 `Register(reg)`，且 `DrainTimeout > 0`（`drainChecker` 在 `HealthCheckers` 里）时，50ms 轮询 `errors.Is(..., lynx.ErrDraining)` 后注销 |
 | `DrainTimeout=0` | `drainChecker` **不**进聚合（`lynx.go` 645–651 红线）。此时没有 `ErrDraining` 可见，只能靠 `OnDrain` 或 `Stop` |
 
 `watchDrain` **不能**让新 contrib 编过旧根模块：它依赖已导出的 `ErrDraining`。PR1 的回归测试必须锁住：导出该变量 **不得**在 `DrainTimeout=0` 时把 checker 塞进列表。
@@ -762,7 +762,7 @@ registry:
 
 ### DNS 后端要点
 
-- 只实现 `Discovery`。`NewBackendFromConfig` 在 `backend: dns` 时返回 `(nil, dnsDiscovery, nil)`。**不要** `Bind` Registrar。
+- 只实现 `Discovery`。`NewBackendFromConfig` 在 `backend: dns` 时返回 `(nil, dnsDiscovery, nil)`。**不要** `Apply` Registrar。
 - 查询名：`{name}.{namespace}.{domain}`。
 - **端口**：先查 SRV（`_http._tcp.{name}.{ns}.{domain}` 等，按 Filter.Protocol 选服务标签 `_http`/`_https`/`_grpc`）。有 SRV 则用记录里的 port + target。无 SRV 再查 A/AAAA，端口来自 `registry.dns.ports`（缺省 http=8080、https=8443、grpc=9090）。一条 A 记录 + 多协议 = 多条 Endpoint（同一 host、不同 port）。
 - Watch = poll；NXDOMAIN 负缓存 TTL 钳制 [5s, 30s]。
@@ -807,7 +807,7 @@ runner := lynx.NewRunner(func(app lynx.App) error {
     ); err != nil {
         return err
     } else {
-        registry.Bind(app, reg) // wr==nil 时 NewFromConfig 返回 nil；Bind no-op
+        registry.Apply(app, reg) // wr==nil 时 NewFromConfig 返回 nil；Apply no-op
     }
     _ = disc
 
@@ -851,7 +851,7 @@ func ProvideServices(hs *http.Server, r *registry.Registrar) []lynx.Service {
 }
 ```
 
-`OnDrain` 由 `registry.Bind` 或 `NewOnDrains` provider 挂上，不能在服务 `Init` 里挂。CLI / `app.Command` 的 setup **不要**调用 `Bind`（约定，无配置键）。
+`OnDrain` 由 `registry.Apply` 或 `NewOnDrains` provider 挂上，不能在服务 `Init` 里挂。CLI / `app.Command` 的 setup **不要**调用 `Apply`（约定，无配置键）。
 
 ### 失败模式
 
@@ -932,7 +932,7 @@ type Bootstrap struct {
 
 ```go
 func (b *Bootstrap) WithDrainHooks(h OnDrainHooks) *Bootstrap
-func (b *Bootstrap) Bind(app lynx.App) {
+func (b *Bootstrap) Apply(app lynx.App) {
     app.OnStart(b.StartHooks...)
     app.OnDrain(b.DrainHooks...)
     app.OnStop(b.StopHooks...)
@@ -952,7 +952,7 @@ func (s *Server) AdvertiseAddr() string
 
 ### 新模块导出表面（稳定承诺从首次 tag 开始）
 
-见上文 `Registry` / `Discovery` / `Registrar` / `Resolver` / `Picker`。`registry.NewBackendFromConfig` 只建 memory/dns；Consul 走 `consul.NewFromConfig`。未启用时返回 nil；`Bind(app, nil)` no-op。`contrib/registry` 的 `require` 必须指向含 `OnDrain`/`ErrDraining` 的根版本，且 **不得** require `contrib/consul`。
+见上文 `Registry` / `Discovery` / `Registrar` / `Resolver` / `Picker`。`registry.NewBackendFromConfig` 只建 memory/dns；Consul 走 `consul.NewFromConfig`。未启用时返回 nil；`Apply(app, nil)` no-op。`contrib/registry` 的 `require` 必须指向含 `OnDrain`/`ErrDraining` 的根版本，且 **不得** require `contrib/consul`。
 
 ### 不改
 
@@ -969,7 +969,7 @@ func (s *Server) AdvertiseAddr() string
 
 **迁移**：新功能，无存量数据。Consul 中若已有手工注册的同名 ServiceID，启动时 upsert。建议运维在启用前清理冲突 ID。
 
-**回滚**：去掉 `registry.Bind` / 设 `registry.enabled: false`，进程不再写入目录；TTL/critical 后旧记录自行消失（≤60s）。无需迁移脚本。
+**回滚**：去掉 `registry.Apply` / 设 `registry.enabled: false`，进程不再写入目录；TTL/critical 后旧记录自行消失（≤60s）。无需迁移脚本。
 
 ---
 
@@ -1119,7 +1119,7 @@ Trace：Register/Deregister/GetService 作为内部 span（可选，`otel.Tracer
 | OQ1 `OnDrain` vs 只轮询 | **做 `OnDrain`**，带 `DrainHookTimeout`（默认 3s），与排水睡眠并发。PR2 保留。 |
 | OQ4 `affect_readiness` | **默认 `true`**。注册中心续约失败进入 readiness；抖动敏感的环境再关。 |
 | OQ5 scheme | **`registry`**。一经 tag 即稳定；不用 `lynx` 以免占未来资源。 |
-| OQ7 Command | **用法约定**：服务器 `Bind`，CLI 不 `Bind`。无 `registry.command` 配置键。 |
+| OQ7 Command | **用法约定**：服务器 `Apply`，CLI 不 `Apply`。无 `registry.command` 配置键。 |
 
 ### Deferred（不挡 v1 实现）
 
@@ -1183,9 +1183,9 @@ Trace：Register/Deregister/GetService 作为内部 span（可选，`otel.Tracer
 ### PR5 — Registrar 生命周期
 
 - **标题**：`contrib/registry: Registrar service with idempotent deregister`
-- **影响**：`registrar.go`、`fromconfig.go`（`NewBackendFromConfig` / `NewFromConfig` / `Bind`）、`advertiser.go`、测试
+- **影响**：`registrar.go`、`fromconfig.go`（`NewBackendFromConfig` / `NewFromConfig` / `Apply`）、`advertiser.go`、测试
 - **依赖**：PR4；Advertiser 等端口依赖 PR3。**可以先于 PR2 合并**：注销走 `Stop` 即可用。PR2 合入后补一条集成测试（`OnDrain` 在睡眠结束前已 Deregister），并把 `go.mod` `require` 升到该根版本。
-- **说明**：段缺失 → `(nil, nil)`；`Bind(nil)` no-op；type-assert `OnDrain`。`NewBackendFromConfig` 只处理 memory/dns，`backend: consul` 返回明确错误。覆盖 Stop-before-Start、幂等注销、`fail_fast: false` 时 `Start` **阻塞** + `stopping` 重试、advertise 缺失失败、IPv6 `JoinHostPort`。不实现 `registry.command` 开关。`watchDrain` 仅当 `ErrDraining` 可 `errors.Is` 时编译（故 require 新根）。
+- **说明**：段缺失 → `(nil, nil)`；`Apply(nil)` no-op；type-assert `OnDrain`。`NewBackendFromConfig` 只处理 memory/dns，`backend: consul` 返回明确错误。覆盖 Stop-before-Start、幂等注销、`fail_fast: false` 时 `Start` **阻塞** + `stopping` 重试、advertise 缺失失败、IPv6 `JoinHostPort`。不实现 `registry.command` 开关。`watchDrain` 仅当 `ErrDraining` 可 `errors.Is` 时编译（故 require 新根）。
 
 ### PR6a — Resolver（仅 memory）
 
@@ -1220,7 +1220,7 @@ Trace：Register/Deregister/GetService 作为内部 span（可选，`otel.Tracer
 - **标题**：`docs: service registry tutorial and example`
 - **影响**：`docs/07-registry.md`、`README.md`、`ROADMAP.md` **仅 E3**、`_examples/registry/`、`CLAUDE.md`、`CHANGELOG.md`
 - **依赖**：PR5+PR6c；Consul 段落依赖 PR7
-- **说明**：K8s「ClusterIP + DrainTimeout」对照「裸机 Consul」。debug 端口不宣告。gRPC-only 必须 TTL。CLI 示例不调用 `Bind`（约定）。setup 用 `switch backend` 区分 `consul.NewFromConfig` 与 `registry.NewBackendFromConfig`。不要改写 E2 排水条目。
+- **说明**：K8s「ClusterIP + DrainTimeout」对照「裸机 Consul」。debug 端口不宣告。gRPC-only 必须 TTL。CLI 示例不调用 `Apply`（约定）。setup 用 `switch backend` 区分 `consul.NewFromConfig` 与 `registry.NewBackendFromConfig`。不要改写 E2 排水条目。
 
 ### PR9（可选后续，不阻塞 v1）
 

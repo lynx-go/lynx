@@ -423,7 +423,7 @@ func (r *Registrar) heartbeatLoop() {
 	}
 }
 
-// startWatchDrain 启动排水观察（安全网）：用户忘了 Bind 挂 OnDrain、只
+// startWatchDrain 启动排水观察（安全网）：用户忘了 Apply 挂 OnDrain、只
 // Register(reg) 且 DrainTimeout > 0（drainChecker 进入 HealthCheckers）
 // 时，50ms 轮询到 errors.Is(err, lynx.ErrDraining) 即注销。没有
 // drainChecker 时该循环永远空转，不产生任何副作用。

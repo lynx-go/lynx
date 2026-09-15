@@ -327,7 +327,7 @@ func TestRegistrarWatchDrain(t *testing.T) {
 	}()
 	waitFor(t, time.Second, func() bool { return r.CheckHealth() == nil })
 
-	// 排水置位 → watchDrain 安全网自动注销（用户忘了 Bind 的场景）。
+	// 排水置位 → watchDrain 安全网自动注销（用户忘了 Apply 的场景）。
 	drain.on.Store(true)
 	waitFor(t, 2*time.Second, func() bool {
 		got, _ := mem.GetService(context.Background(), "svc", Filter{})

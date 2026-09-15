@@ -50,9 +50,9 @@ func main() {
 		if err != nil {
 			return err
 		}
-		// Bind = app.Register(reg) + 挂 OnDrain 注销钩子；reg 为 nil 时 no-op。
-		// 注意：CLI（app.Command）的 setup 不要调用 Bind。
-		registry.Bind(app, reg)
+		// Apply = app.Register(reg) + 挂 OnDrain 注销钩子；reg 为 nil 时 no-op。
+		// 注意：CLI（app.Command）的 setup 不要调用 Apply。
+		registry.Apply(app, reg)
 		app.Register(hs)
 
 		// 客户端侧：Resolver（缓存 + watch）+ registry:// Transport。
@@ -73,7 +73,7 @@ func main() {
 			f.StringP("config", "c", "./config.yaml", "config file path")
 			f.String("addr", "", "http listen address")
 		}),
-		// Bind 挂了 OnDrain 注销钩子，必须启用排水窗口（窗口即钩子总预算，
+		// Apply 挂了 OnDrain 注销钩子，必须启用排水窗口（窗口即钩子总预算，
 		// v1.10.0 起两者合并）：关停时先摘流再注销，窗口内服务保持运行。
 		lynx.WithDrainTimeout(3*time.Second),
 		lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
