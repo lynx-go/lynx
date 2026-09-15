@@ -2,7 +2,7 @@
 
 ## v1.10.0 (2026-09-15)
 
-本次发布 tag：根 `v1.10.0`、`contrib/zap/v1.4.0`（破坏性改名
+本次发布 tag：根 `v1.10.0`、`contrib/zap/v1.7.0`（破坏性改名
 `SyncOnStop` → `SyncOnPreStop`）。`boot` 包随根模块发布；
 `contrib/registry` 仅测试文件适配新接口，无源码变更，不重复打 tag。
 内部消费方（torchwood）随发版迁移，无兼容别名。
