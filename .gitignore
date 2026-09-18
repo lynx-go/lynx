@@ -24,3 +24,9 @@
 *.log
 
 .claude/settings.local.json
+
+# mise 本地覆盖
+mise.local.toml
+
+# 本地 agent 状态
+.zcode/

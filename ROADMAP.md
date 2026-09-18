@@ -56,7 +56,7 @@ Lynx 目前为团队内部使用的 Go 微服务框架，计划对外推广开�
 - [x] `_examples` 各示例补 README，补完 `_examples/boot` 中空的 `AppConfig`
 - [x] GoDoc 全覆盖；README 与代码现状对齐（如 `cli/`、`command/` 目录描述）
 - [x] 全量 API 审查并冻结（含 `CLI` 命名、接口残留注释清理）
-- [x] Taskfile release 变量参数化，补 `RELEASE.md` 说明多模块打 tag 流程
+- [x] 发版任务参数化（Taskfile → mise），补 `RELEASE.md` 说明多模块打 tag 流程
 
 ## Phase D — v1.0 发布前审查修复（2026-08-05）
 

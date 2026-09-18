@@ -26,17 +26,19 @@ go generate ./...
 
 ### Release Management
 
-Uses Task (taskfile) for releases:
+Uses mise for releases:
 
 ```bash
 # Release all modules at once (tags main repo and all contrib modules)
-task release-all Version=v1.2.0 Comment="release v1.2.0"
+mise run release-all -- v1.2.0 "release v1.2.0"
 
 # Individual module releases
-task release-tag Version=v0.5.8 Comment="release message"
+mise run release-tag -- v0.5.8 "release message"
+# contrib 模块的前缀由 version 参数携带：
+mise run release-tag -- contrib/watermill-kafka/v0.5.8 "release message"
 ```
 
-Note: Task ≥3.9 passes CLI variables as `VAR=value` args; the older `--Version=v0.5.8` flag form is no longer supported.
+`VERSION` / `COMMENT` 环境变量可替代位置参数（如 `VERSION=v1.2.0 COMMENT="release v1.2.0" mise run release-all`）。
 
 The project uses a multi-module release strategy. When releasing, you must tag:
 - Main repo: `v{version}`

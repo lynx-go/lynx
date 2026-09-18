@@ -1,0 +1,40 @@
+# Lynx 开发环境与任务（mise-en-place）
+#
+#   mise install     安装 [tools] 钉版工具（go / golangci-lint）
+#   mise tasks       列出全部任务
+#   mise run <task>  执行任务
+#
+# 任务统一用 sh 执行：Linux 自带，Windows 需 Git Bash 的 sh 在 PATH。
+# 发布流程见 RELEASE.md。
+
+[tools]
+go = "1.26.5"              # go.mod / go.work 的 `go 1.26.5`
+golangci-lint = "2.12.2"   # 与 CI 原钉版一致
+
+[task_config]
+shell = "sh -o errexit -c"
+
+[tasks."release-tag"]
+description = "打单个模块的 annotated tag 并推送"
+usage = '''
+arg "<version>" env="VERSION" help="tag 版本；contrib 模块传 contrib/<name>/vX.Y.Z"
+arg "<comment>" env="COMMENT" help="annotated tag 说明"
+'''
+run = '''
+git tag -a "$usage_version" -m "$usage_comment"
+git push origin "$usage_version"
+'''
+
+[tasks."release-all"]
+description = "按固定顺序为根模块与 9 个 contrib 模块打 tag 并推送"
+usage = '''
+arg "<version>" env="VERSION" help="版本号，如 v1.10.0"
+arg "<comment>" env="COMMENT" help="annotated tag 说明"
+'''
+run = '''
+for prefix in "" contrib/zap contrib/watermill contrib/watermill-kafka contrib/telemetry contrib/schedule contrib/registry contrib/consul contrib/cluster contrib/cluster-redis; do
+  tag="${prefix:+$prefix/}$usage_version"
+  git tag -a "$tag" -m "$usage_comment"
+  git push origin "$tag"
+done
+'''

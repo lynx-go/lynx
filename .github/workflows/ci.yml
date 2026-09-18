@@ -8,9 +8,6 @@ on:
 permissions:
   contents: read
 
-env:
-  GO_VERSION: "1.26.5"
-
 jobs:
   test:
     name: test (${{ matrix.module }})
@@ -33,9 +30,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      # 工具链唯一来源：mise.toml（go 1.26.5 / golangci-lint 2.12.2）
+      - uses: jdx/mise-action@v4
         with:
-          go-version: ${{ env.GO_VERSION }}
+          version: 2026.9.5
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ matrix.module }}-${{ hashFiles('go.work.sum', '**/go.sum') }}
+          restore-keys: go-${{ runner.os }}-${{ matrix.module }}-
 
       # go.work and go.work.sum are tracked in version control (b95b49a);
       # the checked-out workspace resolves all modules, no re-init needed.
@@ -77,12 +83,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      # 工具链唯一来源：mise.toml（go 1.26.5 / golangci-lint 2.12.2）
+      - uses: jdx/mise-action@v4
         with:
-          go-version: ${{ env.GO_VERSION }}
+          version: 2026.9.5
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ matrix.module }}-${{ hashFiles('go.work.sum', '**/go.sum') }}
+          restore-keys: go-${{ runner.os }}-${{ matrix.module }}-
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: v2.12.2
-          working-directory: ${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
+        run: golangci-lint run

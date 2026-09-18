@@ -24,25 +24,25 @@
 一次打出全部 10 个 tag 并推送：
 
 ```bash
-task release-all Version=vX.Y.Z Comment="release vX.Y.Z"
+mise run release-all -- vX.Y.Z "release vX.Y.Z"
 ```
 
-命令行为（已通过 `task --dry` 验证）：
+命令行为（`mise run -n release-all -- vX.Y.Z "release vX.Y.Z"` 可预演）：
 
-1. 按 `Version` 逐个执行 `git tag -a` + `git push origin`，共 10 次（根 + 9 个 contrib）；
-2. CLI 传入的 `Version` / `Comment` 会**覆盖** `Taskfile.yml` 中 `vars` 的默认值，无需改文件；
+1. 按固定顺序逐个执行 `git tag -a` + `git push origin`，共 10 次（根 + 9 个 contrib）；
+2. `version` / `comment` 为必填参数（也可用 `VERSION` / `COMMENT` 环境变量），无默认值，无需改文件；
 3. 各 tag 均带注释（annotated tag）。
 
 只打单个模块的 tag 也可用 `release-tag`：
 
 ```bash
-task release-tag Version=vX.Y.Z Comment="release vX.Y.Z"                       # 根模块
-task release-tag Version=contrib/watermill-kafka/vX.Y.Z Comment="release vX.Y.Z" # 单个 contrib
+mise run release-tag -- vX.Y.Z "release vX.Y.Z"                          # 根模块
+mise run release-tag -- contrib/watermill-kafka/vX.Y.Z "release vX.Y.Z"  # 单个 contrib
 ```
 
 ## 打 tag 顺序（依赖约束）
 
-`task release-all` 内部按固定顺序执行，但由于 Git 只记录 tag 而模块代理在
+`mise run release-all` 内部按固定顺序执行，但由于 Git 只记录 tag 而模块代理在
 解析 `require` 时按版本号取 tag，**contrib 模块之间的 require 交叉引用要求
 被依赖方先发布**，否则代理在无 replace 时解析不到（unknown revision）。
 当前依赖关系：
@@ -79,5 +79,5 @@ lynx（根） ──────────┬──> contrib/zap
 
 ## 发版后
 
-- [ ] 更新 `Taskfile.yml` 顶部 `vars` 的 `Version` / `Comment` 默认值为本次发布版本
+- [ ] 无需修改版本默认值：`mise run release-*` 的版本经参数 / `VERSION` 环境变量传入
 - [ ] 如发布的是里程碑版本（如 v1.0.0），同步更新 `ROADMAP.md` 状态

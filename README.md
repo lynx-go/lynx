@@ -284,7 +284,7 @@ github.com/lynx-go/lynx/contrib/schedule
 github.com/lynx-go/lynx/contrib/zap
 ```
 
-多模块发布时需分别打 tag（主仓 `v{version}`，contrib 为 `contrib/<name>/{version}`）。详见 Taskfile / `task release-all`。
+多模块发布时需分别打 tag（主仓 `v{version}`，contrib 为 `contrib/<name>/{version}`）。详见 `RELEASE.md` / `mise run release-all -- vX.Y.Z "release vX.Y.Z"`。
 
 ## 文档与示例
 
