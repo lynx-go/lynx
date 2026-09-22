@@ -1,118 +1,119 @@
-// cli 示例：使用 github.com/lynx-go/commands 构建子命令式 CLI，
-// 在命令的 Run 中启动 lynx 应用（默认内存 Bus 的事件发布/订阅）。
+// cli 示例：多命令 + Wire（boot）组合。
+//
+// 演示 v1.12.0 的 CLI 模式三件套：
+//   - 子命令调度由 lynx-go/commands 承担，参数（含 -c/--config）由其
+//     解析，lynx.WithConfigFile 声明配置路径并关闭框架内置 flags；
+//   - Wire 图返回双聚合 App{*boot.Bootstrap; *Deps}（app.go）：Bootstrap
+//     管框架要托管的（Store 服务的生命周期 + hooks），Deps 管命令要
+//     调用的（类型化业务对象）——命令选择留在图外，多命令扩展线性；
+//   - runLynx helper（runner.go）缝合两者：新增命令 = 新 cmd 类型 +
+//     一个函数，Wire 图与 helper 零改动。
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 
 	"github.com/lynx-go/commands"
-	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/zap"
-	"github.com/lynx-go/lynx/eventbus"
 )
-
-// HelloTopic 是 CLI 示例的类型化主题（默认内存 Bus）。
-var HelloTopic = eventbus.NewTopic[map[string]any]("hello")
-
-type Config struct {
-	Addr string `json:"addr"`
-}
 
 func main() {
 	app := commands.New()
-	app.HelpHeader = "cli-example：基于 lynx-go/commands 的子命令式 CLI"
+	app.HelpHeader = "cli 示例：多命令 + Wire 双聚合（boot 模式）"
 	app.HelpFooter = `使用 "help <命令>" 查看单个命令的用法。`
-	app.Register(&helloCmd{}, &versionCmd{})
+	app.Register(&versionCmd{}, &setCmd{}, &getCmd{}, &listCmd{})
 
 	env := &commands.Environment{Stdout: os.Stdout, Stderr: os.Stderr}
 	os.Exit(app.Run(context.Background(), env, os.Args[1:]))
 }
 
-// versionCmd 打印示例版本：commands 的裸命令（无 flags、不依赖 lynx）。
+// versionCmd 打印示例版本：commands 的裸命令（无 flags、不启动 lynx）——
+// 不是每个子命令都需要拉起框架。
 type versionCmd struct{}
 
-func (c *versionCmd) Name() string     { return "version" }
-func (c *versionCmd) Synopsis() string { return "打印示例版本" }
-func (c *versionCmd) Usage() string    { return "version" }
-
-func (c *versionCmd) Run(ctx context.Context, env *commands.Environment, args []string) error {
-	fmt.Fprintln(env.Stdout, "cli-example v1.7.0")
+func (c *versionCmd) Name() string             { return "version" }
+func (c *versionCmd) Synopsis() string         { return "打印示例版本（裸命令，不启动 lynx）" }
+func (c *versionCmd) Usage() string            { return "version" }
+func (c *versionCmd) SetFlags(_ *flag.FlagSet) {}
+func (c *versionCmd) Run(_ context.Context, env *commands.Environment, _ []string) error {
+	fmt.Fprintln(env.Stdout, "cli-example v1.12.0")
 	return nil
 }
 
-// helloCmd 启动 lynx 应用：Init 期订阅 hello 主题，app.Command 里发布一条
-// 事件后退出。配置文件路径由 commands 的 -c/--config 传入。
-type helloCmd struct {
+// setCmd 写入键值对：经 runLynx 拉起 Wire 图，Store 在优雅关停的 Stop
+// 里落盘——演示"命令完成 → 框架关停 → 服务 Stop"的完整生命周期。
+type setCmd struct {
 	configFile string
 }
 
-func (c *helloCmd) Name() string { return "hello" }
-func (c *helloCmd) Synopsis() string {
-	return "启动 lynx 应用，发布一条 hello 事件后退出"
+func (c *setCmd) Name() string { return "set" }
+func (c *setCmd) Synopsis() string {
+	return "写入键值对（经 Wire 图的 Store，关停时落盘）"
 }
-func (c *helloCmd) Usage() string { return "hello [-c config.yaml]" }
-
-func (c *helloCmd) SetFlags(fs *flag.FlagSet) {
+func (c *setCmd) Usage() string { return "set <key> <value> [-c config.yaml]" }
+func (c *setCmd) SetFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.configFile, "config", "", "配置文件路径")
 	fs.StringVar(&c.configFile, "c", "", "配置文件路径（--config 的简写）")
 }
-
-func (c *helloCmd) Run(ctx context.Context, env *commands.Environment, args []string) error {
-	return newRunner(c.configFile).RunE()
+func (c *setCmd) Run(_ context.Context, env *commands.Environment, args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("set 需要 <key> <value> 两个参数")
+	}
+	key, value := args[0], args[1]
+	return runLynx(c.configFile, func(_ context.Context, a *App) error {
+		a.Store.Set(key, value)
+		fmt.Fprintf(env.Stdout, "set %s=%s\n", key, value)
+		return nil
+	})
 }
 
-// newRunner 构建 lynx Runner。WithConfigFile 声明参数已由 commands 解析：
-// 关闭框架内置的 os.Args 解析，配置文件路径直接绑定（未指定时回退搜索
-// 工作目录）——单一选项取代手工组合 WithDisableConfigFlags +
-// WithBindConfigFunc（两者顺序敏感，写反会静默丢失绑定）。
-func newRunner(configFile string) *lynx.Runner {
-	return lynx.NewRunner(func(app lynx.App) error {
-		logLevel := app.Config().GetString("log-level")
-		if logLevel == "" {
-			logLevel = "debug"
-		}
-		zlogger, err := zap.NewZapLogger(logLevel, "cli.out")
-		if err != nil {
-			return err
-		}
-		slogger, err := zap.NewSLogger(zlogger, logLevel)
-		if err != nil {
-			return err
-		}
-		app.SetLogger(slogger)
+// getCmd 读取键值对：与 setCmd 共享同一个 Wire 图与 helper，只有 fn 不同。
+type getCmd struct {
+	configFile string
+}
 
-		config := &Config{}
-		if err := app.Config().Unmarshal(config); err != nil {
-			return err
+func (c *getCmd) Name() string     { return "get" }
+func (c *getCmd) Synopsis() string { return "读取键值对（图在构造期加载 store 文件）" }
+func (c *getCmd) Usage() string    { return "get [-c config.yaml] <key>" }
+func (c *getCmd) SetFlags(fs *flag.FlagSet) {
+	fs.StringVar(&c.configFile, "config", "", "配置文件路径")
+	fs.StringVar(&c.configFile, "c", "", "配置文件路径（--config 的简写）")
+}
+func (c *getCmd) Run(_ context.Context, env *commands.Environment, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("get 需要 <key> 一个参数")
+	}
+	key := args[0]
+	return runLynx(c.configFile, func(_ context.Context, a *App) error {
+		value, ok := a.Store.Get(key)
+		if !ok {
+			return fmt.Errorf("key %q not found", key)
 		}
+		fmt.Fprintf(env.Stdout, "%s=%s\n", key, value)
+		return nil
+	})
+}
 
-		logger := app.Logger()
-		logger.Info("parsed config", "config", config)
+// listCmd 列出全部键：第三个复用同一图的命令——多命令扩展的线性成本。
+type listCmd struct {
+	configFile string
+}
 
-		// 默认内存 Bus 已由框架注入；Init 期订阅即可。
-		if err := HelloTopic.Subscribe(app.Context(),
-			func(ctx context.Context, e *eventbus.Event[map[string]any]) error {
-				slog.InfoContext(ctx, "recv hello event", "payload", e.Payload)
-				return nil
-			}); err != nil {
-			return err
+func (c *listCmd) Name() string     { return "list" }
+func (c *listCmd) Synopsis() string { return "列出全部键值对" }
+func (c *listCmd) Usage() string    { return "list [-c config.yaml]" }
+func (c *listCmd) SetFlags(fs *flag.FlagSet) {
+	fs.StringVar(&c.configFile, "config", "", "配置文件路径")
+	fs.StringVar(&c.configFile, "c", "", "配置文件路径（--config 的简写）")
+}
+func (c *listCmd) Run(_ context.Context, env *commands.Environment, _ []string) error {
+	return runLynx(c.configFile, func(_ context.Context, a *App) error {
+		for _, key := range a.Store.Keys() {
+			value, _ := a.Store.Get(key)
+			fmt.Fprintf(env.Stdout, "%s=%s\n", key, value)
 		}
-
-		fmt.Println("hello cli")
-
-		return app.Command(func(ctx context.Context) error {
-			if err := HelloTopic.Publish(ctx, map[string]any{"message": "hello world"}); err != nil {
-				return err
-			}
-			logger.Info("command executed successfully")
-			return nil
-		})
-	},
-		lynx.WithName("cli-example"),
-		lynx.WithConfigFile(configFile),
-	)
+		return nil
+	})
 }

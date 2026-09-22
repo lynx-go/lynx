@@ -13,7 +13,7 @@ Lynx is a lightweight Go microservice framework built on Go 1.26+ that provides 
 ```bash
 # Run examples
 cd _examples/http && go run main.go --addr=:8080
-cd _examples/cli && go run main.go
+cd _examples/cli && go run . set -c config.yaml a 1   # 多命令 + Wire 双聚合示例（version/set/get/list）
 cd _examples/bus && go run main.go
 cd _examples/schedule && go run main.go
 cd _examples/boot && go run main.go
