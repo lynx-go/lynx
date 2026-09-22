@@ -256,13 +256,18 @@ type Server struct {
 	// started 守卫 Start 重入（SC-14）：二次 Start 会覆盖 httpServer/
 	// listener 造成旧 listener 泄漏，必须直接报错。Init 会复位本标志
 	//（SC-15，重启语义留口；当前生命周期内不支持 restart）。
-	started   atomic.Bool
-	logger    *slog.Logger
-	o         Options
-	handler   http.Handler
-	bus       eventbus.Bus
-	ready     chan struct{}
-	readyOnce sync.Once
+	started atomic.Bool
+	// stopRequested 标记 Stop 已请求（SC-02 的 HTTP 侧对称面）：Stop 在
+	// 读取 httpServer 之前置位；Start 在进入 Serve 之前检查——已中断后
+	// 不再 Serve，避免"Stop 见 httpServer 为 nil 先返回、Start 随后
+	// Listen 并永久 Serve"的启动期交错（与 gRPC 侧同名标志语义一致）。
+	stopRequested atomic.Bool
+	logger        *slog.Logger
+	o             Options
+	handler       http.Handler
+	bus           eventbus.Bus
+	ready         chan struct{}
+	readyOnce     sync.Once
 }
 
 // Name 返回服务名称 "http"。
@@ -356,10 +361,20 @@ func (s *Server) Start(ctx context.Context) error {
 	// 监听就绪后才打印 listening 日志（SC-16）：提前打印会在 Listen 失败
 	// （如端口占用）时留下误导性的"正在监听"记录，且与 listening 事件
 	// 的语义对齐。
-	s.logger.InfoContext(ctx, "starting HTTP server, listening on "+ln.Addr().String())
 	s.mu.Lock()
 	s.listener = ln
 	s.mu.Unlock()
+	// Stop 已先行（启动期中断交错）：不进入 Serve。Stop 若在 httpServer
+	// 存储之后执行，其 Shutdown 会经 srv.inShutdown 让 Serve 立即返回
+	// ErrServerClosed（下方归一化兜底）；此处覆盖 Stop 见 httpServer 为
+	// nil 先返回的交错——关闭监听器（含 WithListener 注入的实例）后返回。
+	if s.stopRequested.Load() {
+		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			s.logger.WarnContext(ctx, "error closing listener after interrupted start", "error", err)
+		}
+		return nil
+	}
+	s.logger.InfoContext(ctx, "starting HTTP server, listening on "+ln.Addr().String())
 	s.publishEvent(eventbus.TopicHTTPListening, eventbus.ServerEvent{Service: "http", Addr: ln.Addr().String(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
 	s.closeReady()
 	var serveErr error
@@ -518,6 +533,10 @@ func checkOne(c lynx.Checker) (err error) {
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "stopping HTTP server")
 	s.publishEvent(eventbus.TopicHTTPStopping, eventbus.ServerEvent{Service: "http", Addr: s.Addr(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
+	// 读取 httpServer 之前置位（SC-02 的 HTTP 侧对称面）：Start 侧据此在
+	// 进入 Serve 前中止，避免 Stop 见 httpServer 为 nil 先返回、Start
+	// 随后 Listen 并永久 Serve 的启动期交错。
+	s.stopRequested.Store(true)
 	s.mu.RLock()
 	hs := s.httpServer
 	s.mu.RUnlock()

@@ -449,7 +449,10 @@ func (s *Server) Start(ctx context.Context) error {
 	// 正常关停：Stop 先关 listener 再 GracefulStop，Accept 因 listener 已
 	// 关闭而失败——这是关停流程的一部分而非启动失败，归一化为 nil
 	//（SC-02）。仅在 Stop 已请求时归一化，真实监听错误仍然上报。
-	if serveErr != nil && s.stopRequested.Load() && isClosedConnError(serveErr) {
+	// ErrServerStopped 覆盖 Stop-wins 交错：GracefulStop 先于 Serve 执行
+	// 时（如启动期中断），Serve 入口直接返回该哨兵错误（D4）。
+	if serveErr != nil && s.stopRequested.Load() &&
+		(isClosedConnError(serveErr) || errors.Is(serveErr, grpc.ErrServerStopped)) {
 		return nil
 	}
 	return serveErr

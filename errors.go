@@ -71,4 +71,9 @@ var (
 	// 没有执行预算，注册即配置错误——Run() 启动期快失败，好过关停期
 	// 静默跳过注销的延迟暴露。
 	ErrDrainHooksRequireDrainTimeout = errors.New("on-drain hooks require DrainTimeout > 0 (set WithDrainTimeout); DrainTimeout=0 disables the entire drain phase")
+	// ErrAppClosed 表示 Close 之后调用 Run。Close 在 Run 尚未被调度时
+	// 到达（如测试的快速失败路径、宿主提前释放）即置位 closed：Run 入口
+	// 直接返回本错误，不再执行任何钩子与服务——闭合"Run 从未启动时以
+	// Close 释放"的契约，消除 Close 之后的僵尸生命周期。
+	ErrAppClosed = errors.New("lynx: app has been closed")
 )

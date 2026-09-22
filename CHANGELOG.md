@@ -2,8 +2,29 @@
 
 ## Unreleased
 
-测试套件（testkit）与框架可测性增强。全部为增量 API（新增符号与
-Option），默认行为零变化；详细设计见 `docs/design-testkit.md`。
+### 修复：启动期关停交错竞态族（D1-D4）
+
+oklog/run 的 interrupt 可先于服务 actor 的 execute 执行，`Close` 可先于
+后台 `Run` goroutine 调度到达——四类实证缺口（详见
+`docs/design-startup-race.md`）：
+
+- **D1**：首个服务 Start 快速失败触发中断时，兄弟监听服务的 Stop 可能
+  先于其 Start 执行，Start 仍会执行并永久 Serve、Run 挂死。修复：服务
+  actor 的 execute 闭包在 Start 前检查中断（已中断不再 Start）；
+- **D2**：`Close` 先于 `Run` 调度执行时，Run 仍完整执行僵尸生命周期
+  （订阅已关闭总线报错等）。修复：新增 `closed` 状态与哨兵错误
+  `lynx.ErrAppClosed`——Close 持锁置位（幂等），Run 入口同域检查直接
+  返回；
+- **D3**：HTTP server 在 Stop-wins 交错下 Start 进入永久 Serve。修复：
+  新增 `stopRequested` 标志（Stop 先置位再读 httpServer；Start 在 Serve
+  前检查，已中断则关闭监听器返回 nil）；
+- **D4**：gRPC server 在 Stop-wins 交错下 `Serve` 返回
+  `grpc.ErrServerStopped` 未归一化，正常关停被误报为服务失败。修复：
+  归一化分支补识别该哨兵错误（仅 `stopRequested` 已置位时）。
+
+生产影响：启动期收到 SIGTERM 的进程此前可能无法退出（D3）或误发
+`lynx.service.failed` 虚假事件（D4）。`lynxtest` 的 cleanup 将
+`ErrAppClosed` 视为合法交错不报失败。
 
 ### 新增：`lynxtest` 测试套件
 

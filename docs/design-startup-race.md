@@ -5,7 +5,7 @@
 | 标题 | 启动期关停交错（Close/interrupt 与服务 Start 的竞态族）修复 |
 | 作者 | TBD |
 | 日期 | 2026-09-22 |
-| 状态 | **Draft**（未实施；来源为 testkit 独立评审 B/C 的实证发现，修复触碰生命周期不变量，需专门评审后实施） |
+| 状态 | **Implemented**（2026-09-22 实施，R-D/R-C/R-A/R-B 全部落地并附竞态回归测试；见第 7 节实施记录） |
 | 适用版本 | v1.12+ |
 | 相关讨论 | oklog/run interrupt 语义、`service.go` 的 Stop 容忍契约、testkit 负向启动测试场景、K8s SIGTERM-at-startup |
 
@@ -81,3 +81,16 @@
 - 不为 oklog/run 换替代并发原语；
 - 不在本方案内做 `WithExitSignals` 显式清空等无关修正（见
   design-testkit.md 的可选项清单）。
+
+---
+
+## 7. 实施记录（2026-09-22）
+
+四个修复点全部落地：
+
+- **R-D**：`server/grpc/server.go` 归一化分支补 `errors.Is(serveErr, grpc.ErrServerStopped)`（仅 `stopRequested` 已置位时生效）。
+- **R-C**：`server/http/server.go` 新增 `stopRequested atomic.Bool`：Stop 在读取 httpServer 之前置位；Start 在存入 listener 之后、listening 日志/事件与 Serve 之前检查，命中则关闭监听器（含 WithListener 注入实例）并返回 nil，Ready 不关闭。与 `http.Server` 自身的 inShutdown 语义互补，两层共同闭合 Stop-wins 窗口。
+- **R-A**：`lynx.go` 新增 `closed` 字段（受 app.mu 保护）：Close 持锁置位并幂等（二次 Close 直接返回）；Run 入口在同一互斥域内检查，命中返回新增哨兵错误 `ErrAppClosed`（errors.go），不再执行任何钩子与服务。`lynxtest` 的 cleanup 将 `ErrAppClosed` 视为合法交错（Close 先于后台 Run goroutine 调度）不报失败。
+- **R-B**：`lynx.go` addServices 的 execute 闭包在 `startWG.Done()` 之后、发布 Starting 事件之前增加 `ctx.Done()` 快速检查：中断已先行则跳过 Start 直接返回 nil（服务契约"Stop 容忍先于 Start"的对称面）。检查之后、Start 之前的残余窗口由 R-C/R-D 的 server 侧守卫兜底——实施中 D1 回归测试的第一版恰好复现了该残余窗口（仅 R-B 不足以闭合），据此确认双层守卫缺一不可。
+
+竞态回归测试：`startup_race_test.go`（Close→Run 返回 ErrAppClosed；fail-fast 兄弟服务 ×10 循环，迷你监听服务完整镜像两层守卫——根包测试不能 import server/*，导入环）、`server/http/stopstart_test.go`（Stop→Start 快速返回 nil 不进入永久 Serve）、`server/grpc/stopstart_test.go`（Stop→Start 的 ErrServerStopped 归一化）。全仓 11 模块 `-race -shuffle=on` 通过，存量生命周期测试无语义漂移。

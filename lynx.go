@@ -131,6 +131,12 @@ type lynx struct {
 	// running 标记 Run 已开始：此后 Register/RegisterFactories 为禁止操作，
 	// Run 侧无需再与注册侧并发争用 run.G 的 actors。
 	running atomic.Bool
+	// closed 标记 Close 已执行（受 app.mu 保护）：Close 之后的 Run 直接
+	// 返回 ErrAppClosed，不执行任何钩子与服务。闭合"Run 从未启动时以
+	// Close 释放"契约的对称面——Close 先于 Run 调度到达时，消除 Close
+	// 之后的僵尸生命周期（总线已停、post-stop 已清，而 Run 仍完整跑一
+	// 遍启动/关停）。
+	closed bool
 
 	onPreStarts []HookFunc
 	// onDrains 是排水钩子：SetDraining 之后与 DrainTimeout 睡眠并发执行，
@@ -285,8 +291,20 @@ func (app *lynx) Command(cmd CommandFunc) error {
 }
 
 func (app *lynx) Close() {
+	app.mu.Lock()
+	if app.closed {
+		// 幂等：二次 Close 无操作。
+		app.mu.Unlock()
+		return
+	}
+	// closed 与 Run 入口的 running.Swap 在同一互斥域内完成置位/检查：
+	// Close 与尚未调度的 Run 竞争时只有一个语义胜出——要么 Run 入口
+	// 看到 closed 返回 ErrAppClosed，要么本函数看到 running 走既有路径。
+	app.closed = true
+	running := app.running.Load()
+	app.mu.Unlock()
 	app.cancelCtx()
-	if app.running.Load() {
+	if running {
 		// Run 已启动：post-stop 钩子与总线由 Run 的 defer 持有执行权，
 		// 此处不抢先（runPostStopHooks 取走即清空，即使随后 Run 收尾
 		// 调用也不会重复执行）。
@@ -550,6 +568,18 @@ func (app *lynx) addServices(services ...Service) error {
 			// 已进入执行体"为触发界（阻塞型服务的 Start 关停前不返回，
 			// 不存在"所有 Start 已返回"的时刻）。
 			app.startWG.Done()
+			// 中断已先行（首个 actor 失败/关停触发时，本 actor 的 interrupt
+			// 可能在 execute 尚未调度前已执行 Stop）：跳过 Start。服务契约
+			// 本就要求 Stop 容忍先于 Start；此处补上对称面——已中断后不再
+			// Start，避免监听类服务启动后无人关闭。检查之后、Start 之前的
+			// 窗口由 server 侧 stopRequested 守卫兜底。
+			select {
+			case <-ctx.Done():
+				app.logger.InfoContext(ctx, "service start skipped, interrupted before start",
+					"service", service.Name())
+				return nil
+			default:
+			}
 			app.logger.InfoContext(ctx, "starting service", "service", service.Name())
 			app.publishEvent(eventbus.TopicServiceStarting, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
 			// Started 事件契约：语义是"已进入运行"，不是"Start 已成功返回"。
@@ -625,6 +655,12 @@ func (app *lynx) Run() error {
 	// 兜底调用不会重复执行。
 	defer app.runPostStopHooks()
 	app.mu.Lock()
+	if app.closed {
+		// Close 已先行（Run goroutine 尚未被调度时被释放）：不再执行任何
+		// 钩子与服务。post-stop 钩子已由 Close 清空，此处 defer 是空转。
+		app.mu.Unlock()
+		return ErrAppClosed
+	}
 	initErr := app.initErr
 	// running 在持 app.mu 时置位——与 Register 侧持锁登记事务的 running
 	// 检查互斥，形成"检查与 runG.Add 同事务"的闭合判定。

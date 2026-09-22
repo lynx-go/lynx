@@ -20,7 +20,7 @@
 | 2026-08-24 | [EventBus 一等消息总线](design-eventbus.md) | Implemented | 进程内协同与领域事件共用 Bus，Watermill Transport 扩展 |
 | 2026-08-25 | [服务注册中心](design-service-registry.md) | Implemented | Registrar/Discovery/Resolver 与 consul/memory 后端 |
 | 2026-09-22 | [测试套件 testkit](design-testkit.md) | Implemented | lynxtest 包 + R1-R5 可测性小幅重构，三层测试模型 |
-| 2026-09-22 | [启动期竞态修复](design-startup-race.md) | Draft | Close/interrupt 与服务 Start 交错竞态族的四点修复方案（未实施） |
+| 2026-09-22 | [启动期竞态修复](design-startup-race.md) | Implemented | Close/interrupt 与服务 Start 交错竞态族的四点修复（closed 标志 + 双层守卫） |
 
 ## 评审记录
 

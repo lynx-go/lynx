@@ -20,6 +20,7 @@
 package lynxtest
 
 import (
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -224,8 +225,10 @@ func Run(t testing.TB, setup lynx.SetupFunc, opts ...Option) *App {
 			if runStarted {
 				select {
 				case <-handle.exited:
-					if handle.Err() != nil {
-						t.Errorf("lynxtest: app Run() = %v, want nil", handle.Err())
+					// ErrAppClosed 是合法交错：Close（本清理）先于后台 Run
+					// goroutine 被调度时，Run 入口直接返回该哨兵错误。
+					if err := handle.Err(); err != nil && !errors.Is(err, lynx.ErrAppClosed) {
+						t.Errorf("lynxtest: app Run() = %v, want nil", err)
 					}
 				case <-time.After(runStopWait):
 					t.Errorf("lynxtest: app Run() did not return within %s after Close", runStopWait)
