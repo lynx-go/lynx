@@ -1,0 +1,21 @@
+# bus 段：watermill Bus 的逻辑 topic 路由与选项。
+# route.transport 引用 Transport 标识；route.key 映射到 kafka 段的同名
+# 条目（物理 topic 集与两侧客户端都定义在那里）。逐消息的 Kafka 分区
+# 键由发布侧 WithMessageKey 决定（见 main.go）。
+bus:
+  topics:
+    order.created:
+      route: { transport: kafka, key: order.created }
+
+# kafka 段：route.key 引用的条目——物理 topic 映射与客户端配置。
+# consumer.group_id 相同的多实例构成消费组（组内竞争消费，每条消息
+# 只投递给一个实例）；广播改用不同 group_id。
+kafka:
+  order.created:
+    brokers: ["127.0.0.1:9092"]
+    topics: [orders_v1]
+    consumer:
+      group_id: bus-kafka-example
+      instances: 1
+    producer:
+      log_message: true
