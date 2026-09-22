@@ -1,6 +1,6 @@
 # Lynx 路线图
 
-> 最后更新：2026-08-25
+> 最后更新：2026-09-22（对账 E1/E2 已实现项，制定 Phase G）
 
 ## 定位与目标
 
@@ -94,6 +94,7 @@ v1.0 发布前全量审查（功能缺失/设计缺陷/实现缺陷）的修复�
       schedule 时区、consul index 回绕与挂死 agent、watcher 错误退避
 - [ ] 后续工作：Kafka testcontainers 集成测试（WK-19）；Resolver 订阅 API
       （消除 gRPC 5s 轮询）；command 健康等待上界可配化
+      （三项均移入 Phase G，见 G4/G5）
 
 ## Phase E — v1.0 后的能力补全（v1.1+）
 
@@ -106,19 +107,23 @@ v1.0 API 已冻结并保持向后兼容，本阶段只做增量（来源：2026-
 - [x] **EventBus 一等化**（设计见 `docs/design-eventbus.md`）：核心 `eventbus`
       （Bus/Topic/Event + wire/`Delivery`）；删 `contrib/pubsub`；`contrib/kafka`
       → `contrib/watermill-kafka`；Watermill Bus 动态订阅 + `lynx.*` 内存路由锁
-- [ ] Debug/pprof 管理服务：可选 Service，挂载 `/debug/pprof/*` 与
-      运行时日志级别调整，绑定内网地址/独立端口
-- [ ] HTTP/gRPC client 组件：otel 插装、trace 与 `request_id`/日志属性
-      传播（复用 `logging` 包）、超时/重试/错误映射默认值
-- [ ] gRPC TLS 一等选项（`grpc.WithTLS`，与 HTTP 侧对齐；当前仅
-      `WithServerOptions` 逃生口）
-- [ ] 统一错误约定：可选 HTTP 错误响应规范 + 状态码映射 handler
-- [ ] 流量治理中间件：HTTP 侧 recovery、基础限流；熔断按需
+- [x] Debug/pprof 管理服务（v1.1.0，新包 `debug`）：挂载 `/debug/pprof/*`
+      与 `/healthz`，缺省仅本机回环 `127.0.0.1:6060`；
+      运行时日志级别调整未包含，移入 G1
+- [x] HTTP/gRPC client 组件（v1.1.0）：otel 插装、trace 与 `request_id`/
+      `user_id` 日志属性传播、默认超时与重试（HTTP 侧指数退避）；
+      遗留 gRPC 服务端 request_id 还原闭环，移入 G3
+- [x] gRPC TLS 一等选项（v1.1.0）：server/client 两侧 `WithTLSConfig`，
+      与 HTTP 侧对齐
+- [x] 统一错误约定（v1.1.0）：`server/http` 的 `StatusError` +
+      `DefaultErrorHandler`，统一 JSON 错误体与状态码映射
+- [x] 流量治理中间件（v1.1.0）：HTTP 侧 recovery、基础限流（`RateLimit`），
+      gRPC 侧 Recovery 拦截器；熔断自 G2 转正立项
 
 ### E2 运维增强（v1.x 中后期）
 
-- [ ] 配置热更新（viper WatchConfig）与运行时日志级别调整
-- [ ] Go runtime metrics 开箱接入（goroutine/GC/内存）
+- [ ] 配置热更新（viper WatchConfig）与运行时日志级别调整（移入 G1）
+- [ ] Go runtime metrics 开箱接入（goroutine/GC/内存）（移入 G1）
 - [x] 关停排水语义显式化（readiness 先变 not-ready → 等 LB 摘流 →
       再关监听；v1.1 引入，v1.10.0 将 OnDrain 钩子预算并入 `DrainTimeout` 窗口）
 
@@ -131,9 +136,60 @@ v1.0 API 已冻结并保持向后兼容，本阶段只做增量（来源：2026-
 - 数据层（DB/Redis）：保持"不碰数据层"定位，docs 明确说明
 - 配置中心（apollo/nacos）：按团队需要以 contrib 提供
 - 脚手架 CLI（kratos-cli 类）：属开源推广工具，非框架组件
+- 动态插件机制：保持编译期 Service/ServiceFactory + contrib module 的
+  扩展方式，不做运行时插件加载
+
+## Phase G — v1.13+ 能力补全（2026-09-22 制定）
+
+对账说明：v1.2~v1.12 的特性演进（watermill-kafka、registry/consul、
+schedule、telemetry、cluster、boot/registry `Apply` 更名、lynxtest 可测性
+套件等）未在本路线图逐期立 Phase，明细见 `CHANGELOG.md`。本阶段基于
+2026-09-22 的能力面盘点，延续"生命周期 + 通信 + 可观测"主干做补全，
+不开新的大模块。建议推进顺序：G1 → G5 → G2 → G3 → G4。
+
+### G1 运行时可调性（服务跑起来之后还能调）
+
+- [ ] 运行时日志级别调整：挂 `debug/` 服务端点（与 pprof 同域，复用
+      既有本机回环安全边界）
+- [ ] 配置热更新：viper WatchConfig 桥接 eventbus（发 `lynx.*` 主题，
+      沿用框架生命周期事件先例），订阅方自行选择响应粒度
+- [ ] Go runtime metrics 开箱接入：otel `instrument/runtime` 接进
+      `contrib/telemetry`（goroutine/GC/内存）
+
+### G2 出站韧性
+
+- [ ] 熔断器：`client/http` 已有超时 + 重试退避，补熔断（E1 "按需"
+      转正）
+- [ ] gRPC client 侧重试/负载策略评估（可先只出结论不动代码）
+
+### G3 开发体验
+
+- [ ] gRPC ServerReflection 开发期开关（grpcurl 调试可用）
+- [ ] `/metrics` 一等挂载选项（当前每个示例手写 promhttp 挂载）
+- [ ] contrib 文档债：9 个 contrib 模块补 README（对齐 `docs/` 教程
+      写法；watermill-kafka 可用 `_examples/bus-kafka` 改写）
+- [ ] gRPC 服务端 request_id 还原闭环（client 已写入 metadata，
+      服务端还原目前标注为 backlog）
+
+### G4 测试面（延续 v1.12 lynxtest 方向）
+
+- [ ] schedule/bus 测试假件或时钟注入（测定时任务与消费者无需真等）
+- [ ] Kafka testcontainers 集成测试（WK-19，Phase F 遗留承接），
+      模式沉淀为 contrib 可复用的测试辅助
+
+### G5 存量质量债（Phase F 遗留转正）
+
+- [ ] Resolver 订阅 API：消除 gRPC 发现 5s 轮询
+- [ ] command 健康等待上界可配化
+
+### 按需 contrib（只立原则，不立项）
+
+etcd registry、Nacos/Apollo 配置中心、RabbitMQ/NATS transport 等：
+有真实使用需求再以 contrib 收录，不做能力面竞赛。
 
 ## 原则
 
 - 先还债再扩展：v1.0 前不新增 contrib 模块
 - 每修一个 bug 尽量配一个回归测试
 - 保持核心精简：Lynx 的价值在生命周期与服务抽象，不做大而全
+- contrib 按需收录：有真实需求才新增 contrib 模块，不做 catalogue 竞赛
