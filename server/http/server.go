@@ -43,8 +43,12 @@ type Options struct {
 	// AdvertiseAddr 是服务对外宣告的地址（host:port），由
 	// WithAdvertiseAddr 设置，仅原样保存该字符串；为空表示未显式指定。
 	AdvertiseAddr string
-	Timeout       time.Duration
-	IdleTimeout   time.Duration
+	// Listener 非 nil 时 Start 直接在其上提供服务（WithListener 注入），
+	// 跳过 net.Listen；Addr()/Ready() 反映该监听器。用于测试注入
+	// bufconn 等非 TCP 监听器或宿主接管监听的场景。
+	Listener    net.Listener
+	Timeout     time.Duration
+	IdleTimeout time.Duration
 	// ShutdownTimeout 是优雅关停的上限；0 表示无上界（仅受调用方 Stop
 	// ctx 约束，SC-17），与调用方 deadline 并存时取较小者（SC-05）。
 	ShutdownTimeout time.Duration
@@ -87,6 +91,18 @@ func WithAddr(addr string) Option {
 func WithAdvertiseAddr(hostPort string) Option {
 	return func(o *Options) {
 		o.AdvertiseAddr = hostPort
+	}
+}
+
+// WithListener 注入现成监听器：Start 跳过 net.Listen 直接在其上提供服务，
+// Addr() 返回该监听器的实际地址（":0" 语义由注入监听器决定）。用于测试
+// 注入 bufconn（免 TCP 端口、可并行）与宿主接管监听的场景。注意：Stop
+// 会经由 Shutdown 关闭该监听器，注入方不应复用已停止的实例。
+func WithListener(ln net.Listener) Option {
+	return func(o *Options) {
+		if ln != nil {
+			o.Listener = ln
+		}
 	}
 }
 
@@ -327,11 +343,15 @@ func (s *Server) Start(ctx context.Context) error {
 	s.httpServer = srv
 	s.mu.Unlock()
 
-	ln, err := net.Listen("tcp", s.o.Addr)
-	if err != nil {
-		// Listen 失败不算已启动：复位守卫，允许换地址重试。
-		s.started.Store(false)
-		return err
+	ln := s.o.Listener
+	if ln == nil {
+		var err error
+		ln, err = net.Listen("tcp", s.o.Addr)
+		if err != nil {
+			// Listen 失败不算已启动：复位守卫，允许换地址重试。
+			s.started.Store(false)
+			return err
+		}
 	}
 	// 监听就绪后才打印 listening 日志（SC-16）：提前打印会在 Listen 失败
 	// （如端口占用）时留下误导性的"正在监听"记录，且与 listening 事件
@@ -550,3 +570,5 @@ func (s *Server) Stop(ctx context.Context) error {
 var _ lynx.Service = (*Server)(nil)
 
 var _ lynx.Ready = (*Server)(nil)
+
+var _ lynx.Server = (*Server)(nil)

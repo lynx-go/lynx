@@ -52,6 +52,22 @@ type Ready interface {
 	Ready() <-chan struct{}
 }
 
+// Server 是网络服务型 Service 的可选接口：在 Service 之上暴露实际监听
+// 地址与就绪信号，供测试辅助（等就绪后拨号）与注册发现侧消费。
+// 框架内 server/http 与 server/grpc 均实现该接口（debug 服务无宣告地址，
+// 仅实现 Addr/Ready 部分）。
+type Server interface {
+	Service
+	// Addr 返回实际监听地址：Start 前（或 Listen 失败时）返回空字符串；
+	// 使用随机端口（如 ":0"）时返回 Listen 成功后的实际地址。
+	Addr() string
+	// AdvertiseAddr 返回 WithAdvertiseAddr 设置的对外宣告地址；未设置时
+	// 返回空字符串。
+	AdvertiseAddr() string
+	// Ready 在 Listen 成功之后、Serve 之前关闭（语义同 Ready 接口）。
+	Ready() <-chan struct{}
+}
+
 // ServiceFactory 按 FactoryOptions 描述的方式构建服务实例。
 type ServiceFactory interface {
 	New() Service

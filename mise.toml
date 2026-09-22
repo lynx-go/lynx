@@ -14,6 +14,26 @@ golangci-lint = "2.12.2"   # 与 CI 原钉版一致
 [task_config]
 shell = "sh -o errexit -c"
 
+# 单元 + 组装测试：与 CI 的 Test 步骤同参数（-race -shuffle=on）。
+# 注意 workspace 根下的 ./... 只匹配根模块，须逐模块遍历（对齐 ci.yml matrix）。
+[tasks.test]
+description = "跑全部 workspace 模块的单元与组装测试（-race -shuffle=on，与 CI 同参）"
+run = '''
+for module in . _examples contrib/watermill contrib/watermill-kafka contrib/telemetry contrib/schedule contrib/zap contrib/registry contrib/consul contrib/cluster contrib/cluster-redis; do
+  echo "== $module =="
+  ( cd "$module" && go test -race -shuffle=on ./... )
+done
+'''
+
+# 集成测试：需要本地/容器后端（consul 等），无后端时用例自动 skip。
+[tasks.test-integration]
+description = "跑集成测试（-tags integration；需要本地/容器后端，无后端自动 skip）"
+run = '''
+for module in . _examples contrib/watermill contrib/watermill-kafka contrib/telemetry contrib/schedule contrib/zap contrib/registry contrib/consul contrib/cluster contrib/cluster-redis; do
+  ( cd "$module" && go test -race -tags integration ./... )
+done
+'''
+
 [tasks."release-tag"]
 description = "打单个模块的 annotated tag 并推送"
 usage = '''

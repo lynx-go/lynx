@@ -91,6 +91,14 @@ type Options struct {
 	// EnsureDefaults 在 NewOptions 与 newLynx 间可能被多次调用，需要该
 	// 标记保持关闭语义不被默认值覆盖。
 	disableConfigFlags bool
+	// Config 非 nil 时作为应用配置直接采用（WithConfig 注入）：构造期跳过
+	// flags 解析与配置文件装配（BindFlagsFunc/BindConfigFunc 不再执行），
+	// os.Args 与工作目录不参与配置。用于测试与宿主进程注入。
+	Config Config `json:"-"`
+	// isolated 标记 WithIsolated：应用不触碰进程级全局（构造时不执行
+	// eventbus.SetDefault 与 lynx.Set，SetLogger/日志级别不同步
+	// slog.SetDefault）。用于同进程多 App（并行测试、宿主内嵌）场景。
+	isolated bool
 }
 
 // String 返回 Options 的 JSON 字符串表示（函数类字段不参与序列化）。
@@ -297,6 +305,30 @@ func WithCleanupTimeout(timeout time.Duration) Option {
 func WithBus(b eventbus.Bus) Option {
 	return func(o *Options) {
 		o.Bus = b
+	}
+}
+
+// WithConfig 注入现成的应用配置：构造期跳过 flags 解析、配置文件搜索与
+// BindPFlags（BindFlagsFunc/BindConfigFunc 不再执行），os.Args 与工作目录
+// 不再参与装配。init 仍从该配置读取 service.name/id/version 元数据并应用
+// logging.level 日志级别。nil 传入无效（保持默认装配路径）。
+// 典型用于测试（配合 lynxtest）与宿主进程内嵌场景。
+func WithConfig(c Config) Option {
+	return func(o *Options) {
+		if c != nil {
+			o.Config = c
+		}
+	}
+}
+
+// WithIsolated 使应用不触碰进程级全局状态：构造时不执行 eventbus.SetDefault
+// 与 lynx.Set，SetLogger 与日志级别应用不再同步 slog.SetDefault。用于同一
+// 进程内构造多个 App（表驱动/并行测试、宿主内嵌）互不污染全局。
+// 代价：依赖全局取值的代码（eventbus.Default()、lynx.Get()、裸 slog 调用）
+// 看不到该实例，需要改用注入的 AppContext/Bus。默认关闭。
+func WithIsolated() Option {
+	return func(o *Options) {
+		o.isolated = true
 	}
 }
 

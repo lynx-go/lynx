@@ -1,0 +1,4 @@
+service:
+  name: testing-example
+http:
+  addr: ":8080"

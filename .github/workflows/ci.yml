@@ -52,7 +52,7 @@ jobs:
 
       - name: Test
         working-directory: ${{ matrix.module }}
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        run: go test -race -shuffle=on -coverprofile=coverage.out -covermode=atomic ./...
 
       # ROADMAP v1.0 标准：CI 强制覆盖率门槛。根与 contrib 模块统一
       # 70% 门槛（实测各模块现状 77%-85%，留有余量），低于则失败。

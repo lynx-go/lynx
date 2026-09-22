@@ -44,6 +44,10 @@ type Options struct {
 	// AdvertiseAddr 是服务对外宣告的地址（host:port），由
 	// WithAdvertiseAddr 设置，仅原样保存该字符串；为空表示未显式指定。
 	AdvertiseAddr string
+	// Listener 非 nil 时 Start 直接在其上提供服务（WithListener 注入），
+	// 跳过 net.Listen；Addr()/Ready() 反映该监听器。用于测试注入
+	// bufconn 等非 TCP 监听器或宿主接管监听的场景。
+	Listener net.Listener
 	// Timeout 是优雅关停的上限（历史名——gRPC 侧语义是关停而非读写
 	// 超时，见 WithShutdownTimeout 别名，SC-05）；0 表示无上界。
 	Timeout            time.Duration
@@ -88,6 +92,18 @@ func WithAddr(addr string) Option {
 func WithAdvertiseAddr(hostPort string) Option {
 	return func(o *Options) {
 		o.AdvertiseAddr = hostPort
+	}
+}
+
+// WithListener 注入现成监听器：Start 跳过 net.Listen 直接在其上提供服务，
+// Addr() 返回该监听器的实际地址（":0" 语义由注入监听器决定）。用于测试
+// 注入 bufconn（免 TCP 端口、可并行）与宿主接管监听的场景。注意：Stop
+// 会关闭该监听器，注入方不应复用已停止的实例。
+func WithListener(ln net.Listener) Option {
+	return func(o *Options) {
+		if ln != nil {
+			o.Listener = ln
+		}
 	}
 }
 
@@ -397,11 +413,15 @@ func (s *Server) Start(ctx context.Context) error {
 		return errors.New("grpc server: Start called more than once")
 	}
 
-	lis, err := net.Listen("tcp", s.o.Addr)
-	if err != nil {
-		// Listen 失败不算已启动：复位守卫，允许换地址重试。
-		s.started.Store(false)
-		return err
+	lis := s.o.Listener
+	if lis == nil {
+		var err error
+		lis, err = net.Listen("tcp", s.o.Addr)
+		if err != nil {
+			// Listen 失败不算已启动：复位守卫，允许换地址重试。
+			s.started.Store(false)
+			return err
+		}
 	}
 	// 监听就绪后才打印 listening 日志（SC-16）：提前打印会在 Listen 失败
 	//（如端口占用）时留下误导性的"正在监听"记录，且与 listening 事件
@@ -437,12 +457,17 @@ func (s *Server) Start(ctx context.Context) error {
 
 // isClosedConnError 判定错误是否为"连接/监听器已被主动关闭"类：net 包
 // 标准错误经 errors.Is 匹配，字符串兜底覆盖 grpc 内部未包装的路径
-// （如 Windows 上的 Accept 错误文案）。
+// （如 Windows 上的 Accept 错误文案）。"closed" 精确匹配 bufconn：
+// 其 Accept 返回裸 errors.New("closed")，不包装 net.ErrClosed
+// （WithListener 注入 bufconn 的正常关停路径）。
 func isClosedConnError(err error) bool {
 	if err == nil {
 		return false
 	}
 	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	if err.Error() == "closed" {
 		return true
 	}
 	return strings.Contains(err.Error(), "use of closed network connection")
@@ -653,3 +678,5 @@ var _ lynx.Service = (*Server)(nil)
 var _ lynx.Checker = (*Server)(nil)
 
 var _ lynx.Ready = (*Server)(nil)
+
+var _ lynx.Server = (*Server)(nil)

@@ -114,10 +114,13 @@ func Meta(ctx context.Context) Metadata {
 }
 
 type lynx struct {
-	mu             sync.Mutex
-	o              *Options
-	f              *pflag.FlagSet
-	c              *viper.Viper
+	mu sync.Mutex
+	o  *Options
+	f  *pflag.FlagSet
+	c  *viper.Viper
+	// cfg 是权威的配置读取接口：默认路径在 initConfigure 完成后由 c 包装
+	// 而成；WithConfig 注入时直接采用注入实例（跳过 flags/文件装配）。
+	cfg            Config
 	ctx            context.Context
 	cancelCtx      context.CancelFunc
 	runG           *run.Group
@@ -244,9 +247,11 @@ func (app *lynx) recordInitError(err error) {
 var errRunStarted = errors.New("lynx: registration after Run() has started")
 
 // SetLogger 设置 logger，并同步 slog.SetDefault 使全局默认 logger 与应用
-// 一致（全局副作用见 App 接口注释）。
+// 一致（全局副作用见 App 接口注释；WithIsolated 可关闭该副作用）。
 func (app *lynx) SetLogger(logger *slog.Logger) {
-	slog.SetDefault(logger)
+	if !app.o.isolated {
+		slog.SetDefault(logger)
+	}
 	app.logger = logger
 }
 
@@ -299,14 +304,17 @@ func (app *lynx) Close() {
 }
 
 func (app *lynx) init() error {
-	if err := app.initConfigure(); err != nil {
-		return err
+	if app.cfg == nil {
+		if err := app.initConfigure(); err != nil {
+			return err
+		}
+		app.cfg = NewViperConfig(app.c)
 	}
 
 	meta := Metadata{
-		Name:    app.c.GetString("service.name"),
-		ID:      app.c.GetString("service.id"),
-		Version: app.c.GetString("service.version"),
+		Name:    app.cfg.GetString("service.name"),
+		ID:      app.cfg.GetString("service.id"),
+		Version: app.cfg.GetString("service.version"),
 	}
 	if meta.Name == "" {
 		meta.Name = app.o.Name
@@ -343,7 +351,10 @@ func (app *lynx) applyLogLevel() {
 	levelVar.Set(level)
 	app.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &levelVar}))
 	// 与应用日志保持单通道：--log-level 对框架与应用日志一致生效。
-	slog.SetDefault(app.logger)
+	// WithIsolated 下不触碰进程全局默认 logger。
+	if !app.o.isolated {
+		slog.SetDefault(app.logger)
+	}
 }
 
 // LogLevelFromConfig 从配置中解析日志级别字符串，优先级：
@@ -463,6 +474,10 @@ func (app *lynx) addServiceFactories(factories ...ServiceFactory) error {
 }
 
 func (app *lynx) Config() Config {
+	if app.cfg != nil {
+		return app.cfg
+	}
+	// 手构实例（如测试辅助）可能未经 init：保持既有行为，按需包装内部 viper。
 	return NewViperConfig(app.c)
 }
 
@@ -944,6 +959,21 @@ func (s busService) Init(ctx AppContext) error       { return s.b.Init(ctx) }
 func (s busService) Start(ctx context.Context) error { return s.b.Start(ctx) }
 func (s busService) Stop(ctx context.Context) error  { return s.b.Stop(ctx) }
 
+// NewApp 按选项构造 Lynx 应用并返回 App 实例，不经 Runner 包装：
+// 适用于测试（配合 lynxtest）与把 Lynx 嵌入宿主进程的场景。构造语义与
+// NewRunner 严格一致（opts 应用在空 Options 上，再由 newLynx 做
+// EnsureDefaults/Validate、配置装配、总线提前 Start 与就绪等待——顺序
+// 敏感的 Option 如 WithBusOptions 依赖 Bus 尚未填充默认值的空 Options），
+// 初始化错误经返回值给出。调用方随后 Register 组装服务并 Run；Run 从未
+// 启动时以 Close 释放（停止总线并兜底 post-stop 钩子）。
+func NewApp(opts ...Option) (App, error) {
+	o := &Options{}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return newLynx(o)
+}
+
 func newLynx(o *Options) (App, error) {
 	o.EnsureDefaults()
 	if err := o.Validate(); err != nil {
@@ -955,6 +985,7 @@ func newLynx(o *Options) (App, error) {
 	app := &lynx{
 		o:            o,
 		c:            viper.New(),
+		cfg:          o.Config,
 		f:            f,
 		runG:         &run.Group{},
 		logger:       slog.Default(),
@@ -1008,8 +1039,14 @@ func newLynx(o *Options) (App, error) {
 		return nil, fmt.Errorf("lynx: bus failed to become ready within %s: %w", o.BusReadyTimeout, err)
 	}
 	app.publishEvent(eventbus.TopicServiceStarted, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
-	eventbus.SetDefault(app.bus)
+	// WithIsolated：跳过进程级全局注册，同进程多 App（测试/宿主内嵌）
+	// 互不污染。ctx 内嵌总线保留——那是请求作用域而非进程全局。
+	if !o.isolated {
+		eventbus.SetDefault(app.bus)
+	}
 	app.ctx = eventbus.ContextWithBus(app.ctx, app.bus)
-	Set(app)
+	if !o.isolated {
+		Set(app)
+	}
 	return app, nil
 }

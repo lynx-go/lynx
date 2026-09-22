@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+测试套件（testkit）与框架可测性增强。全部为增量 API（新增符号与
+Option），默认行为零变化；详细设计见 `docs/design-testkit.md`。
+
+### 新增：`lynxtest` 测试套件
+
+- `lynxtest.Run`：L2 组装测试——以与生产 main 相同的 Setup 在测试进程内
+  拉起完整应用；配置分层注入（`WithConfigFile` 基线 → `WithConfigYAML` →
+  `WithConfigMap` 覆盖，裸调用注入空配置，不读 os.Args/工作目录）、快速
+  超时基线、`t.Cleanup` 走生产同源关停序列并恢复进程级全局；
+  `WithTBLogger()` 可把应用日志接到测试输出；
+- 句柄 `App.WaitReady/Exited/Err`：应用先于就绪退出时立即带出 `Run`
+  实际错误；
+- 拨号辅助：`HTTPClient`/`GRPCConn`（直连回环、绕过代理环境变量，就绪
+  预算与 gRPC 拨号选项可调）与 `BufconnHTTPClient`/`BufconnGRPCConn`
+  （配合 `WithListener` 注入 bufconn，免 TCP 端口）；
+- `NewContext`：L1 服务单元测试的可用 `AppContext`（真内存总线 + 注入
+  配置 + 接测试日志），配套 `ContextWithConfig/ConfigMap/ConfigYAML/Bus/
+  Logger/BusReadyTimeout`；
+- 配套：`docs/08-testing.md` 使用章节、`_examples/testing` 可运行示例。
+
+### 框架侧可测性 API（增量）
+
+- `lynx.NewApp(opts...)`：不经 Runner 直接构造 App，opts 应用顺序与
+  `NewRunner` 严格一致；
+- `lynx.WithConfig(cfg)`：注入 `Config` 实例，构造期跳过 flags/文件装配；
+- `lynx.WithIsolated()`：不触碰进程级全局（`lynx.Set`/
+  `eventbus.SetDefault`/`slog.SetDefault`），同进程多 App 场景；
+- `lynx.Server` 接口：`Service` + `Addr/AdvertiseAddr/Ready`，
+  `server/http`、`server/grpc` 均实现；
+- `http.WithListener(net.Listener)` / `grpc.WithListener(net.Listener)`：
+  注入监听器；gRPC 关停归一化顺带识别 bufconn 的裸 `"closed"` 错误。
+
+### 工程化
+
+- CI Test 步骤加 `-shuffle=on`；`mise.toml` 新增 `test`/`test-integration`
+  任务（逐 workspace 模块遍历，与 CI 同参数）。
+
 ## v1.11.0 (2026-09-15)
 
 本次发布 tag：根 `v1.11.0`、`contrib/registry/v1.7.0`（两处 `Bind`
