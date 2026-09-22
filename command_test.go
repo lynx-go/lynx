@@ -3,11 +3,15 @@ package lynx
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lynx-go/lynx/eventbus"
 )
 
 // sequenceChecker fails CheckHealth for the first `failures` calls, then succeeds.
@@ -33,13 +37,67 @@ func (c *sequenceChecker) Calls() int {
 	return c.calls
 }
 
+// depService 把 Checker 适配为可注册服务：注册路径会在 addServices 收集
+// Checker 进健康聚合，命令的依赖等待经服务快照按三级优先命中 Checker 层
+// ——与生产路径一致（直接改 healthCheckers 字段绕过了服务快照）。
+type depService struct {
+	name    string
+	checker Checker
+}
+
+func (s *depService) Name() string                    { return s.name }
+func (s *depService) Init(ctx AppContext) error       { return nil }
+func (s *depService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (s *depService) Stop(ctx context.Context) error  { return nil }
+func (s *depService) CheckHealth() error              { return s.checker.CheckHealth() }
+
+// readyService 实现三级优先的 Ready 层（可选同时实现 Checker 以验证
+// 层级偏好：Ready 优先时 healthCalled 应保持 0）。delay 后关闭 channel；
+// never 置位则永不关闭。
+type readyService struct {
+	name         string
+	never        bool
+	health       Checker // 非 nil 时 CheckHealth 委托给它
+	ready        chan struct{}
+	closeOnce    sync.Once
+	healthCalled atomic.Int32
+}
+
+func newReadyService(name string, delay time.Duration, never bool, health Checker) *readyService {
+	s := &readyService{name: name, never: never, health: health, ready: make(chan struct{})}
+	if !never {
+		time.AfterFunc(delay, func() {
+			s.closeOnce.Do(func() { close(s.ready) })
+		})
+	}
+	return s
+}
+
+func (s *readyService) Name() string          { return s.name }
+func (s *readyService) Init(AppContext) error { return nil }
+func (s *readyService) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+func (s *readyService) Stop(ctx context.Context) error { return nil }
+func (s *readyService) Ready() <-chan struct{}         { return s.ready }
+func (s *readyService) CheckHealth() error {
+	s.healthCalled.Add(1)
+	if s.health == nil {
+		return nil
+	}
+	return s.health.CheckHealth()
+}
+
 func newAppWithCheckers(t *testing.T, checkers ...Checker) App {
 	t.Helper()
 	app, err := newLynx(NewOptions())
 	if err != nil {
 		t.Fatalf("newLynx() error = %v", err)
 	}
-	app.(*lynx).healthCheckers = checkers
+	for i, c := range checkers {
+		app.Register(&depService{name: fmt.Sprintf("dep-%d", i), checker: c})
+	}
 	return app
 }
 
@@ -149,8 +207,8 @@ func TestCommandStartExhaustsRetries(t *testing.T) {
 	if err == nil {
 		t.Fatal("Start() error = nil, want retry exhaustion error")
 	}
-	if !strings.Contains(err.Error(), "timed out waiting for dependencies to be healthy") {
-		t.Errorf("Start() error = %v, want it to mention %q", err, "timed out waiting for dependencies to be healthy")
+	if !strings.Contains(err.Error(), "timed out waiting for dependencies to become ready") {
+		t.Errorf("Start() error = %v, want it to mention %q", err, "timed out waiting for dependencies to become ready")
 	}
 	if got := checker.Calls(); got != 3 {
 		t.Errorf("health checked %d times, want 3 (MaxTries)", got)
@@ -291,7 +349,7 @@ func TestCommandStartHungCheckerTimesOut(t *testing.T) {
 	if err == nil {
 		t.Fatal("Start() error = nil, want retry exhaustion error")
 	}
-	if !strings.Contains(err.Error(), "timed out waiting for dependencies to be healthy") {
+	if !strings.Contains(err.Error(), "timed out waiting for dependencies to become ready") {
 		t.Errorf("Start() error = %v, want dependency wait error", err)
 	}
 	if !strings.Contains(err.Error(), "health check timed out") {
@@ -309,5 +367,203 @@ func TestCommandStartHungCheckerTimesOut(t *testing.T) {
 	}
 	if got := ran.Load(); got != 0 {
 		t.Errorf("command ran %d times, want 0", got)
+	}
+}
+
+// TestCommandStartWaitsForReadyService：仅实现 Ready（无 Checker）的依赖，
+// 命令等 channel 关闭后执行——Ready 层独立成立，不依赖健康检查。
+func TestCommandStartWaitsForReadyService(t *testing.T) {
+	app := newAppWithCheckers(t)
+	rs := newReadyService("ready-dep", 100*time.Millisecond, false, nil)
+	app.Register(rs)
+
+	var ran atomic.Int32
+	cmd := NewCommand(func(ctx context.Context) error {
+		ran.Add(1)
+		return nil
+	}, WithMaxTries(10), WithBackoff(10*time.Millisecond, 50*time.Millisecond))
+	if err := cmd.Init(app); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	start := time.Now()
+	if err := cmd.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v, want nil", err)
+	}
+	if got := ran.Load(); got != 1 {
+		t.Errorf("command ran %d times, want 1", got)
+	}
+	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
+		t.Errorf("Start() took %v, want to wait for Ready channel", elapsed)
+	}
+}
+
+// TestCommandStartReadyTierPreferred：同时实现 Ready 与 Checker 的服务走
+// Ready 层——即使其 checker 永远不健康，命令仍在 channel 关闭后执行，
+// 且 checker 从未被轮询。
+func TestCommandStartReadyTierPreferred(t *testing.T) {
+	app := newAppWithCheckers(t)
+	unhealthy := &sequenceChecker{failures: 100}
+	rs := newReadyService("both-dep", 50*time.Millisecond, false, unhealthy)
+	app.Register(rs)
+
+	var ran atomic.Int32
+	cmd := NewCommand(func(ctx context.Context) error {
+		ran.Add(1)
+		return nil
+	}, WithMaxTries(10), WithBackoff(10*time.Millisecond, 50*time.Millisecond))
+	if err := cmd.Init(app); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := cmd.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v, want nil via Ready tier", err)
+	}
+	if got := ran.Load(); got != 1 {
+		t.Errorf("command ran %d times, want 1", got)
+	}
+	if got := rs.healthCalled.Load(); got != 0 {
+		t.Errorf("CheckHealth called %d times, want 0 (Ready tier must win)", got)
+	}
+	if got := unhealthy.Calls(); got != 0 {
+		t.Errorf("underlying checker called %d times, want 0", got)
+	}
+}
+
+// TestCommandStartReadyNeverClosesExhausts：永不关闭的 Ready 按单次上界
+// 视为未就绪参与重试，预算耗尽后报依赖等待超时。
+func TestCommandStartReadyNeverClosesExhausts(t *testing.T) {
+	app := newAppWithCheckers(t)
+	app.Register(newReadyService("never-dep", 0, true, nil))
+
+	var ran atomic.Int32
+	cmd := NewCommand(func(ctx context.Context) error {
+		ran.Add(1)
+		return nil
+	}, WithMaxTries(1), WithBackoff(time.Millisecond, 5*time.Millisecond))
+	if err := cmd.Init(app); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	start := time.Now()
+	err := cmd.Start(context.Background())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Start() error = nil, want wait timeout")
+	}
+	if !strings.Contains(err.Error(), "ready signal not closed") {
+		t.Errorf("Start() error = %v, want per-wait bound to be the cause", err)
+	}
+	if !strings.Contains(err.Error(), "timed out waiting for dependencies to become ready") {
+		t.Errorf("Start() error = %v, want dependency wait error", err)
+	}
+	if elapsed < 3*time.Second {
+		t.Errorf("Start() took %v, want per-wait bound to actually engage", elapsed)
+	}
+	if got := ran.Load(); got != 0 {
+		t.Errorf("command ran %d times, want 0", got)
+	}
+}
+
+// TestCommandStartReadyAbortsOnCtxCancel：依赖未就绪期间 ctx 取消（组
+// 中断）→ 立即退出并报 aborted，不再等待单次上界或重试预算。
+func TestCommandStartReadyAbortsOnCtxCancel(t *testing.T) {
+	app := newAppWithCheckers(t)
+	app.Register(newReadyService("never-dep", 0, true, nil))
+
+	var ran atomic.Int32
+	cmd := NewCommand(func(ctx context.Context) error {
+		ran.Add(1)
+		return nil
+	}, WithMaxTries(10), WithBackoff(time.Second, 5*time.Second))
+	if err := cmd.Init(app); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+
+	start := time.Now()
+	err := cmd.Start(ctx)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Start() error = nil, want abort on cancelled context")
+	}
+	if !strings.Contains(err.Error(), "aborted waiting for dependencies") {
+		t.Errorf("Start() error = %v, want aborted message", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Start() took %v, want prompt abort on ctx cancel", elapsed)
+	}
+	if got := ran.Load(); got != 0 {
+		t.Errorf("command ran %d times, want 0", got)
+	}
+}
+
+// TestCommandStartReadyAlreadyClosedWithCancelledContext：已就绪的 Ready
+// 在 ctx 已取消时仍立即放行（"首查即就绪即运行"语义，与 Checker 层的
+// 既有取舍对齐）。channel 在 Start 之前确保已闭合，避免竞态。
+func TestCommandStartReadyAlreadyClosedWithCancelledContext(t *testing.T) {
+	app := newAppWithCheckers(t)
+	rs := newReadyService("closed-dep", 0, false, nil)
+	app.Register(rs)
+	select {
+	case <-rs.Ready():
+	case <-time.After(time.Second):
+		t.Fatal("ready channel should close after delay")
+	}
+
+	var ran atomic.Int32
+	cmd := NewCommand(func(ctx context.Context) error {
+		ran.Add(1)
+		return nil
+	}, WithMaxTries(3), WithBackoff(time.Millisecond, 5*time.Millisecond))
+	if err := cmd.Init(app); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := cmd.Start(ctx); err != nil {
+		t.Errorf("Start() error = %v, want nil for already-ready dependency", err)
+	}
+	if got := ran.Load(); got != 1 {
+		t.Errorf("command ran %d times, want 1", got)
+	}
+}
+
+// fakeAppCtx 是外部 AppContext 实现的最小假件：验证非 *lynx 实现回退
+// 健康检查聚合的既有路径。
+type fakeAppCtx struct{ checkers []Checker }
+
+func (f *fakeAppCtx) Context() context.Context   { return context.Background() }
+func (f *fakeAppCtx) Config() Config             { return nil }
+func (f *fakeAppCtx) Logger(...any) *slog.Logger { return slog.Default() }
+func (f *fakeAppCtx) Bus() eventbus.Bus          { return nil }
+func (f *fakeAppCtx) HealthCheckers() []Checker  { return f.checkers }
+func (f *fakeAppCtx) Close()                     {}
+
+// TestCommandFallbackExternalAppContext：appctx 非 *lynx（外部 AppContext
+// 实现）时，依赖等待回退 HealthCheckers 聚合，行为与既有 Checker 轮询
+// 一致。
+func TestCommandFallbackExternalAppContext(t *testing.T) {
+	checker := &sequenceChecker{failures: 1}
+	var ran atomic.Int32
+	cmd := NewCommand(func(ctx context.Context) error {
+		ran.Add(1)
+		return nil
+	}, WithMaxTries(5), WithBackoff(time.Millisecond, 5*time.Millisecond))
+	if err := cmd.Init(&fakeAppCtx{checkers: []Checker{checker}}); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := cmd.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v, want nil after retry", err)
+	}
+	if got := ran.Load(); got != 1 {
+		t.Errorf("command ran %d times, want 1", got)
+	}
+	if got := checker.Calls(); got != 2 {
+		t.Errorf("health checked %d times, want 2 (1 failure + 1 success)", got)
 	}
 }

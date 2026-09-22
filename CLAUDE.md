@@ -231,8 +231,8 @@ This pattern is particularly useful for complex applications with many services.
 - Adapters: Memory; Consul Session+KV (`ttl >= 10s`); Redis SET NX (`contrib/cluster-redis`)
 
 **Command** (command.go)
-- CLI command execution with health check dependency
-- Retries waiting for services to be healthy before executing (per-check bounded to 3s so a hung checker cannot stall the wait loop)
+- CLI command execution with dependency readiness wait
+- Readiness resolution mirrors OrderedServices' three-tier precedence: `Ready()` channel (event-driven; sibling failure interrupts the run group and aborts the wait promptly) → `Checker` poll fallback (per-check bounded to 3s so a hung checker cannot stall the wait loop) → no signal = ready on invoke. MaxTries/WithBackoff remain the total budget
 - Auto-closes application after command completes
 
 ### Health Checks

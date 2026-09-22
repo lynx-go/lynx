@@ -164,8 +164,12 @@ type Transport struct {
 	// stopped 标记 Stop 已执行：Stop 后 Publish 返回框架级错误，
 	// 而非命中缓存的已关闭客户端报 sarama "client is closed"（P2-4）。
 	stopped atomic.Bool
-	ctx     context.Context
-	cancel  context.CancelFunc
+	// ready 在 Start 跨过启动门槛（置位 running）后关闭一次性里程碑，
+	// 供命令依赖等待等 Ready 消费者事件驱动地等待；未启动不关闭。
+	ready     chan struct{}
+	readyOnce sync.Once
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // subscriberParams 是 newSubscriber seam 的参数：sarama.Config 之外的
@@ -212,6 +216,7 @@ func NewTransport(opts Options) (*Transport, error) {
 		},
 	}
 	t.ctx, t.cancel = context.WithCancel(context.Background())
+	t.ready = make(chan struct{})
 	return t, nil
 }
 
@@ -266,14 +271,24 @@ func (t *Transport) Init(ctx lynx.AppContext) error {
 // Start 标记运行并阻塞至停止：双监听传入 ctx 与内部 ctx（Stop 取消），
 // 对齐全库"Start 尊重调用方 ctx"的契约——框架中断时取消传入 ctx 即可
 // 使 Start 返回；内部订阅/fan-in goroutine 对 t.ctx 的依赖保持不变。
+// 客户端是惰性建立的（首次 Publish/Subscribe 时创建），运行标志即启动
+// 里程碑：置位后关闭 Ready，与 CheckHealth 的翻转时刻一致。
 func (t *Transport) Start(ctx context.Context) error {
 	t.running.Store(true)
+	t.readyOnce.Do(func() { close(t.ready) })
 	select {
 	case <-ctx.Done():
 	case <-t.ctx.Done():
 	}
 	t.running.Store(false)
 	return nil
+}
+
+// Ready 在 Start 置位运行标志后关闭（仅成功跨过启动门槛时；未启动或
+// Init 失败不关闭，等待方经 Start/Init 返回的错误结束——与 lynx.Ready
+// 契约一致）。命令依赖等待经此获得事件驱动信号，无需轮询。
+func (t *Transport) Ready() <-chan struct{} {
+	return t.ready
 }
 
 // Stop 关闭全部客户端并取消服务上下文；关闭错误聚合返回。
@@ -910,3 +925,4 @@ func fanIn(ctx context.Context, chans []<-chan *message.Message, done func()) <-
 var _ eventbus.Transport = (*Transport)(nil)
 var _ lynx.Service = (*Transport)(nil)
 var _ lynx.Checker = (*Transport)(nil)
+var _ lynx.Ready = (*Transport)(nil)

@@ -511,6 +511,15 @@ func (app *lynx) Bus() eventbus.Bus {
 	return app.bus
 }
 
+// serviceSnapshot 返回已注册服务的快照（command 的依赖等待按三级
+// 优先逐服务解析就绪信号）。注册先于 Run 的契约保证快照集合在
+// Run 期间不变，取一次即稳定。
+func (app *lynx) serviceSnapshot() []Service {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	return append([]Service(nil), app.services...)
+}
+
 // publishEvent 发布内建生命周期事件，失败仅记 debug 日志，不影响主流程。
 func (app *lynx) publishEvent(topic string, payload any) {
 	if app.bus == nil {

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### 改进：命令依赖等待切换三级就绪解析，kafka Transport 补 `Ready`
+
+命令（`app.Command`）执行前的依赖等待从"轮询 HealthCheckers"改为与
+`OrderedServices` 启动排序相同的三级优先：实现 `lynx.Ready` 的服务等待
+channel 关闭（边沿信号：单调、失败不关闭）；否则实现 `Checker` 的有界
+轮询（既有行为，单次 3s 上界不变）；两者皆无视为随启动即就绪。
+
+语义修正：
+
+- 依赖 `Start` 失败时命令经 run group 中断**即时**退出并报
+  `aborted waiting for dependencies`——此前要烧完 MaxTries 预算后误报
+  "timed out waiting"（真实错误在失败方）；
+- Ready 等待无轮询延迟、无 `checkHealthBounded` 式挂死取舍；已就绪的
+  信号即使 ctx 已取消也放行（保持"首查即就绪即运行"语义）；
+- `MaxTries`/`WithBackoff` 保持轮次预算语义；外部 `AppContext` 实现回
+  退健康检查聚合（既有行为）；错误信息从 "to be healthy" 改为
+  "to become ready"。
+
+配套：`contrib/watermill-kafka` Transport 补 `Ready()`（Start 置位运行
+标志后关闭，与 CheckHealth 翻转时刻一致；连接仍惰性建立）；http/grpc/
+debug 服务已有 Ready，无需改动。
+
 ### 新增：`lynx.WithBusProvider`——配置驱动的总线构造
 
 总线依赖配置（`bus:`/`kafka:` 段）时，此前必须在 `NewRunner` 之前自行

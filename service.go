@@ -44,7 +44,9 @@ type Service interface {
 
 // Ready 是可选接口：服务在进入可工作状态时关闭返回的 channel
 // （例如 Listen 成功之后、Serve 之前）。
-// OrderedServices 若检测到该接口，会在启动下一个子服务前等待其关闭；
+// OrderedServices 与 command 服务的依赖等待在检测到该接口时优先采用：
+// 前者在启动下一个子服务前等待其关闭；后者（三级优先 Ready → Checker
+// 轮询 → 无信号即就绪）以此为命令起跑的边沿信号。
 // 未实现则回退到 Checker 轮询，再否则视为已 invoke 即就绪。
 // 仅在成功跨过启动门槛后关闭；Listen/Start 失败不得关闭，以便等待方
 // 通过 Start 返回的错误结束，而不会误判为已就绪。

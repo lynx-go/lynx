@@ -97,6 +97,7 @@ func newTestTransport(opts Options, pub pubSubClient) *Transport {
 		},
 	}
 	t.ctx, t.cancel = context.WithCancel(context.Background())
+	t.ready = make(chan struct{})
 	return t
 }
 
@@ -964,7 +965,7 @@ func newFakeApp() *fakeApp { return &fakeApp{} }
 
 func (a *fakeApp) Context() context.Context       { return context.Background() }
 func (a *fakeApp) Config() lynx.Config            { return lynx.NewViperConfig(viper.New()) }
-func (a *fakeApp) Bus() eventbus.Bus                   { return eventbus.NewMemoryBus(eventbus.Options{}) }
+func (a *fakeApp) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
 func (a *fakeApp) HealthCheckers() []lynx.Checker { return nil }
 func (a *fakeApp) Close()                         {}
 func (a *fakeApp) Logger(_ ...any) *slog.Logger {
@@ -972,3 +973,47 @@ func (a *fakeApp) Logger(_ ...any) *slog.Logger {
 }
 
 var _ lynx.AppContext = (*fakeApp)(nil)
+
+// TestTransportReadyClosesOnStart 锁定 Ready 契约：Start 置位运行标志后
+// 关闭（一次性里程碑，sync.Once 保证幂等），未启动前不关闭——命令依赖
+// 等待经此获得事件驱动信号。
+func TestTransportReadyClosesOnStart(t *testing.T) {
+	tr, err := NewTransport(Options{})
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	defer func() { _ = tr.Stop(context.Background()) }()
+
+	select {
+	case <-tr.Ready():
+		t.Fatal("Ready should not be closed before Start")
+	default:
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- tr.Start(ctx) }()
+
+	select {
+	case <-tr.Ready():
+	case <-time.After(time.Second):
+		t.Fatal("Ready should close after Start sets running")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start() should return after ctx cancel")
+	}
+
+	// 关闭后 Ready 保持闭合（单调信号）。
+	select {
+	case <-tr.Ready():
+	default:
+		t.Fatal("Ready must stay closed after being closed once")
+	}
+}
