@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v1.12.0 (2026-09-22)
+
+本次发布 tag：根 `v1.12.0`、`contrib/watermill-kafka/v1.7.0`（Transport
+补 `Ready`）。其余 contrib 无源码变更，不重复打 tag。
 
 ### 改进：命令依赖等待切换三级就绪解析，kafka Transport 补 `Ready`
 
