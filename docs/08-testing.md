@@ -58,7 +58,7 @@ func TestHelloEndpoint(t *testing.T) {
 `Run` 的行为：
 
 - **配置默认封闭**：总是注入内存配置，不解析 os.Args、不搜索工作目录——测试二进制的参数和包目录里的 `config.yaml` 不会隐式生效；
-- 配置可**分层叠加**（低→高）：`WithConfigFile(path)`（生产 yaml 基线）→ `WithConfigYAML` → `WithConfigMap`（最常用，覆盖少数键即可，不必复制整份配置）；
+- 配置可**分层叠加**（低→高）：`WithConfigBaseline(path)`（生产 yaml 基线）→ `WithConfigYAML` → `WithConfigMap`（最常用，覆盖少数键即可，不必复制整份配置）；
 - 基线超时压到下限（Stop/Shutdown/BusReady/Cleanup 各 1s、Drain 100ms），只约束最坏情况。**关闭真实资源（DB 连接池等）的 OnPostStop 钩子在 1s CleanupTimeout 下可能被截断**，重服务用 `WithOptions(lynx.WithCleanupTimeout(...))` 放宽；慢启动总线（Kafka）同理放宽 `WithBusReadyTimeout`；
 - 后台 `Run`，`t.Cleanup` 里 `Close` 并等待退出——走与生产信号关停**完全相同的序列**；`Run` 返回错误会以 `t.Errorf` 报告；setup 失败或 panic 同样释放应用并恢复全局；
 - 进程级全局（`lynx.Set`/`eventbus.SetDefault`/`slog.SetDefault`）在清理时恢复先前值；

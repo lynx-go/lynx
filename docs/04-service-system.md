@@ -228,22 +228,37 @@ kafka:
 ```
 
 ```go
-kafkaT, _ := wmkafka.NewFromConfig(cfg) // 段缺失返回 (nil, nil)
-memT := watermill.NewMemoryTransport()
-transports := map[string]eventbus.Transport{"memory": memT}
-if kafkaT != nil {
-    transports["kafka"] = kafkaT
-}
-bus, err := watermill.NewFromConfig(cfg, transports)
-// lynx.NewRunner(setup, lynx.WithBus(bus), ...)
+// 总线依赖配置，经 WithBusProvider 在框架装配好配置后构造：
+// 不必在 NewRunner 之前自行读配置；Transport 生命周期由框架托管。
+lynx.NewRunner(setup,
+    lynx.WithName("my-app"),
+    lynx.WithBusProvider(func(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
+        kafkaT, err := wmkafka.NewFromConfig(cfg) // 段缺失返回 (nil, nil)
+        if err != nil {
+            return nil, nil, err
+        }
+        transports := map[string]eventbus.Transport{"memory": watermill.NewMemoryTransport()}
+        var svcs []lynx.Service
+        if kafkaT != nil {
+            transports["kafka"] = kafkaT
+            svcs = append(svcs, kafkaT)
+        }
+        bus, err := watermill.NewFromConfig(cfg, transports)
+        if err != nil {
+            return nil, nil, err
+        }
+        return bus, svcs, nil
+    }),
+).Run()
 ```
 
 要点：
 
 - `lynx.*` 生命周期事件强制内存 Transport，配置路由到 Kafka 时 Init 失败。
 - Kafka Transport 仍按 brokers 分组、（组 × 物理 topic × instances）fan-in；record Key = `MessageKey` / `Event.Key`。
-- `wmkafka.NewFromConfig` 段缺失/为空返回 `(nil, nil)`——**不得 Register nil**。
+- `wmkafka.NewFromConfig` 段缺失/为空返回 `(nil, nil)`——**不得 Register nil**（provider 里按非 nil 判定后加入 svcs）。
 - 收发日志：`bus.log_message` / `bus.topics.*.log_message` 与 `kafka.*.consumer|producer.log_message` 各管一层。
+- 已有现成总线实例（非配置驱动）仍用 `lynx.WithBus(bus)`；显式实例优先于 provider。
 
 > 详细设计见 `docs/design-eventbus.md`；完整 kafka 配置键与 SASL/TLS 说明见 `contrib/watermill-kafka` 包注释与测试。
 

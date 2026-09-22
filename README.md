@@ -73,7 +73,7 @@ go run main.go
 
 ### 配置
 
-默认已绑定常用 flags（可用 `WithDisableConfigFlags()` 关闭）：
+默认已绑定常用 flags（可用 `WithDisableConfigFlags()` 关闭；子命令框架等外部解析场景用 `WithConfigFile(path)` 绑定路径并关闭默认解析）：
 
 ```bash
 -c, --config string       配置文件路径
@@ -115,7 +115,9 @@ err = UserCreated.Publish(ctx, User{Name: "alice"},
 
 ### Watermill Bus + Kafka
 
-跨进程时注入 Watermill Bus，用配置装配 `bus:` + `kafka:`：
+跨进程时用配置装配 Watermill Bus（`bus:` + `kafka:` 段）。总线依赖配置，
+经 `WithBusProvider` 在框架装配好配置后构造——不必在 `NewRunner` 之前
+自行读配置；返回的 Transport 由框架托管生命周期：
 
 ```go
 import (
@@ -125,15 +127,23 @@ import (
 	"github.com/lynx-go/lynx/eventbus"
 )
 
-kafkaT, err := wmkafka.NewFromConfig(cfg) // nil = kafka 段未启用
-memT := watermill.NewMemoryTransport()
-transports := map[string]eventbus.Transport{"memory": memT}
-if kafkaT != nil {
-	transports["kafka"] = kafkaT
-}
-bus, err := watermill.NewFromConfig(cfg, transports)
-
-lynx.NewRunner(setup, lynx.WithBus(bus), lynx.WithName("my-app")).Run()
+lynx.NewRunner(setup,
+	lynx.WithName("my-app"),
+	lynx.WithBusProvider(func(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
+		kafkaT, err := wmkafka.NewFromConfig(cfg) // nil = kafka 段未启用
+		if err != nil {
+			return nil, nil, err
+		}
+		transports := map[string]eventbus.Transport{"memory": watermill.NewMemoryTransport()}
+		var svcs []lynx.Service
+		if kafkaT != nil {
+			transports["kafka"] = kafkaT
+			svcs = append(svcs, kafkaT)
+		}
+		bus, err := watermill.NewFromConfig(cfg, transports)
+		return bus, svcs, err
+	}),
+).Run()
 ```
 
 ```yaml

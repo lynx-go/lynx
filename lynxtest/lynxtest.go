@@ -4,14 +4,14 @@
 //
 //   - Run：L2 组装测试——用与生产 main 相同的 Setup 函数在测试进程内拉起
 //     完整应用（服务、hooks、总线、关停序列），环境差异全部经配置注入
-//     （WithConfigFile/WithConfigYAML/WithConfigMap，低→高叠加），组装代码
+//     （WithConfigBaseline/WithConfigYAML/WithConfigMap，低→高叠加），组装代码
 //     不写测试分支。
 //   - NewContext：L1 单元测试——提供可用的 lynx.AppContext（真内存总线 +
 //     注入配置 + 接 testing.TB 的日志），替代手写 fake。
 //
 // 配置默认封闭：Run 总是注入内存配置，不解析 os.Args、不搜索工作目录，
 // 测试二进制的参数与包目录里的 config.yaml 不会隐式生效；需要以生产配置
-// 为基线时用 WithConfigFile 显式加载。
+// 为基线时用 WithConfigBaseline 显式加载。
 //
 // 并行限制：Run 默认不隔离进程级全局（lynx.Set / eventbus.SetDefault /
 // slog.SetDefault），用例结束后恢复先前值。因此同包内存在任何
@@ -54,16 +54,19 @@ type runOpts struct {
 // Option 配置 lynxtest.Run 的行为。
 type Option func(*runOpts)
 
-// WithConfigFile 以配置文件为基线加载（如生产 config.yaml），叠加顺序：
+// WithConfigBaseline 以配置文件为基线加载（如生产 config.yaml），叠加顺序：
 // 文件（低）→ WithConfigYAML → WithConfigMap（高）。复用生产配置、只覆盖
 // 少数键时使用，避免整份复制 YAML 造成漂移。
-func WithConfigFile(path string) Option {
+// 注意与 lynx.WithConfigFile 的区分：那是生产入口，声明配置文件路径并
+// 关闭默认 flags（子命令框架等外部解析场景）；本选项在测试侧构造期即时
+// 读入文件并参与分层叠加。
+func WithConfigBaseline(path string) Option {
 	return func(o *runOpts) {
 		o.cfgFile = path
 	}
 }
 
-// WithConfigYAML 以 YAML 字符串注入配置（优先级高于 WithConfigFile、
+// WithConfigYAML 以 YAML 字符串注入配置（优先级高于 WithConfigBaseline、
 // 低于 WithConfigMap），适合结构较深或需要注释的场景。
 func WithConfigYAML(s string) Option {
 	return func(o *runOpts) {
@@ -163,14 +166,14 @@ func Run(t testing.TB, setup lynx.SetupFunc, opts ...Option) *App {
 		lynx.WithDrainTimeout(baseDrain),
 	}
 
-	// 配置叠加（低→高）：WithConfigFile → WithConfigYAML → WithConfigMap
+	// 配置叠加（低→高）：WithConfigBaseline → WithConfigYAML → WithConfigMap
 	//（viper Set 优先级高于文件）。未提供任何源时注入空配置——裸 Run
 	// 不读 os.Args、不搜工作目录。
 	v := viper.New()
 	if o.cfgFile != "" {
 		v.SetConfigFile(o.cfgFile)
 		if err := v.ReadInConfig(); err != nil {
-			t.Fatalf("lynxtest: WithConfigFile read error: %v", err)
+			t.Fatalf("lynxtest: WithConfigBaseline read error: %v", err)
 		}
 	}
 	if o.cfgYAML != "" {

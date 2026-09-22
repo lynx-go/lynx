@@ -1044,6 +1044,24 @@ func newLynx(o *Options) (App, error) {
 	if err := app.init(); err != nil {
 		return nil, err
 	}
+	// WithBusProvider：依赖配置的总线（如 watermill NewFromConfig）在配置
+	// 装配完成后、总线初始化前解析；仅当 WithBus 未显式注入时咨询（显式
+	// 实例优先；WithBusOptions 物化的内存总线可被 provider 覆盖，顺序无关）。
+	// 配套服务延后到总线就绪、ctx 内嵌完成之后再注册：注册期的服务生命
+	// 周期事件（publishEvent 固定打 app.bus）应落在已启动的总线上，服务
+	// ctx 也应携带最终总线。
+	var busServices []Service
+	if o.BusProvider != nil && (o.Bus == nil || o.busFromOptions) {
+		bus, services, err := o.BusProvider(app.cfg)
+		if err != nil {
+			return nil, fmt.Errorf("lynx: bus provider failed: %w", err)
+		}
+		if bus == nil {
+			return nil, errors.New("lynx: bus provider returned nil bus")
+		}
+		app.bus = bus
+		busServices = services
+	}
 	// 总线单独初始化并提前 Start（不经 addServices 健康聚合）：
 	// Component Init 中即可 Subscribe（Watermill: AddConsumerHandler+RunHandlers）并收到 Publish。
 	// Start/Stop 以 last-actor 语义在 Run 收尾托管。
@@ -1083,6 +1101,15 @@ func newLynx(o *Options) (App, error) {
 	app.ctx = eventbus.ContextWithBus(app.ctx, app.bus)
 	if !o.isolated {
 		Set(app)
+	}
+	// provider 配套服务最后注册（构造收尾）：Init 同步执行，Start/Stop 由
+	// 生命周期托管，逆序 Stop 时最后停止（总线 Stop 在所有服务之后，即
+	// Transport 先于 Bus 关闭）。注册失败与就绪超时同样以 busCancel 收尾。
+	if len(busServices) > 0 {
+		if err := app.addServices(busServices...); err != nil {
+			busCancel()
+			return nil, err
+		}
 	}
 	return app, nil
 }

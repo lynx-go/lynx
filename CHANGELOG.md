@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### 新增：`lynx.WithBusProvider`——配置驱动的总线构造
+
+总线依赖配置（`bus:`/`kafka:` 段）时，此前必须在 `NewRunner` 之前自行
+读取配置再经 `WithBus` 注入（该约束此前未在任何文档中写明）。新增
+`WithBusProvider(fn)`：框架在构造序列内、配置装配完成后以装配好的
+`lynx.Config` 调用 fn 构造总线，与 `WithBus` 注入走完全相同的后续链路
+（Init → 提前 Start → BusReadyTimeout 就绪等待 → SetDefault → ctx 内嵌
+→ 生命周期事件 → Run 收尾 Stop）：
+
+```go
+lynx.NewRunner(setup,
+    lynx.WithBusProvider(func(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
+        kt, err := wmkafka.NewFromConfig(cfg)
+        if err != nil {
+            return nil, nil, err
+        }
+        bus, err := watermill.NewFromConfig(cfg, transportsOf(kt))
+        return bus, servicesOf(kt), err // Transport 生命周期由框架托管
+    }),
+)
+```
+
+- 返回的 `[]Service`（如 kafka Transport）按 `Register` 语义注册：Init
+  同步执行、Start/Stop 纳入生命周期、实现 `Checker` 的进入健康聚合
+  （CLI 命令的健康等待因此能等 Transport 就绪）；
+- 优先级：显式 `WithBus` > provider > `WithBusOptions`/默认内存总线，
+  且与 `WithBusOptions` 的先后顺序无关（provider 不会被静默击败）；
+- provider 错误或返回 nil 总线视为构造失败，经 `RunE`/`NewApp` 返回。
+
+### 新增：`lynx.WithConfigFile`——CLI 配置桥接
+
+子命令式 CLI（如 lynx-go/commands）的参数已由外部解析，此前需要手工
+组合 `WithDisableConfigFlags()` + `WithBindConfigFunc(...)` 把解析出的
+配置路径接进框架——两选项顺序敏感（写反会静默丢失绑定）。新增单一
+选项 `WithConfigFile(path)`：关闭框架内置的 os.Args 解析、路径直接
+绑定配置文件，空路径回退搜索工作目录（与 `DefaultBindConfigFunc`
+一致）。`_examples/cli` 已改用该写法。测试场景的分层配置注入见
+`lynxtest`（`WithConfigBaseline` 系列）。
+
+### 更名：`lynxtest.WithConfigFile` → `WithConfigBaseline`
+
+避免与新增的 `lynx.WithConfigFile`（生产入口：声明配置路径并关闭默认
+flags）同名混淆。语义不变：测试侧构造期即时读入文件作为分层基线
+（基线 → `WithConfigYAML` → `WithConfigMap`）。属未发布 API 更名，
+无迁移成本。
+
 ### 修复：启动期关停交错竞态族（D1-D4）
 
 oklog/run 的 interrupt 可先于服务 actor 的 execute 执行，`Close` 可先于
@@ -29,7 +75,7 @@ oklog/run 的 interrupt 可先于服务 actor 的 execute 执行，`Close` 可�
 ### 新增：`lynxtest` 测试套件
 
 - `lynxtest.Run`：L2 组装测试——以与生产 main 相同的 Setup 在测试进程内
-  拉起完整应用；配置分层注入（`WithConfigFile` 基线 → `WithConfigYAML` →
+  拉起完整应用；配置分层注入（`WithConfigBaseline` 基线 → `WithConfigYAML` →
   `WithConfigMap` 覆盖，裸调用注入空配置，不读 os.Args/工作目录）、快速
   超时基线、`t.Cleanup` 走生产同源关停序列并恢复进程级全局；
   `WithTBLogger()` 可把应用日志接到测试输出；

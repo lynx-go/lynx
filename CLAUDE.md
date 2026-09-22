@@ -163,7 +163,7 @@ Configuration flow:
 2. `BindConfigFunc` - Bind flags to the app ConfigSource, set config file paths
 3. Flags are parsed, config file is read, env vars are bound
 
-Default flags are enabled by default (`Options.EnsureDefaults` sets `DefaultBindFlagsFunc`/`DefaultBindConfigFunc`); opt out with `WithDisableConfigFlags()`. Unknown flags are ignored (test binaries' `-test.*` args). `--help` returns an init error handled by `Runner.Run` exit code.
+Default flags are enabled by default (`Options.EnsureDefaults` sets `DefaultBindFlagsFunc`/`DefaultBindConfigFunc`); opt out with `WithDisableConfigFlags()`. For externally-parsed args (subcommand CLIs), `lynx.WithConfigFile(path)` binds the config file path AND disables default flags in one option (order-trap-free replacement for the manual `WithDisableConfigFlags` + `WithBindConfigFunc` pair). Unknown flags are ignored (test binaries' `-test.*` args). `--help` returns an init error handled by `Runner.Run` exit code.
 
 Default flags (see `DefaultBindFlagsFunc` in lynx.go):
 - `--config/-c` - Config file path
@@ -202,7 +202,7 @@ This pattern is particularly useful for complex applications with many services.
 **EventBus** (eventbus/)
 - 一等消息总线：`Bus` / `Topic[T]` / `Event[T]`；默认 `NewMemoryBus`，`app.Bus()` / Context / Default 解析
 - 业务主路径：`Topic.Publish` / `Topic.Subscribe`（不必手传 Bus）
-- `lynx.WithBus(watermill.NewFromConfig(...))` 注入跨进程 Bus；配置 `bus:` + `kafka:`
+- `lynx.WithBusProvider(fn)` 配置驱动构造跨进程 Bus：框架装配好配置后调用 fn（cfg → bus + 配套 Services，如 kafka Transport 托管生命周期），是 watermill `NewFromConfig` 的推荐注入路径；已有现成实例仍用 `lynx.WithBus(bus)`（显式实例优先）
 
 **Watermill Bus** (contrib/watermill/)
 - Watermill Router 驱动的 `eventbus.Bus`；`lynx.*` 生命周期强制内存 Transport

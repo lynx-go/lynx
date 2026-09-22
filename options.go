@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx/eventbus"
+	"github.com/spf13/pflag"
 )
 
 // Options 的默认值与校验区间。
@@ -51,14 +52,24 @@ var (
 
 // Options 是 App 应用的核心配置项。
 type Options struct {
-	ID              string         `json:"id"`
-	Name            string         `json:"name"`
-	Version         string         `json:"version"`
-	BindFlagsFunc   BindFlagsFunc  `json:"-"`
-	BindConfigFunc  BindConfigFunc `json:"-"`
-	ExitSignals     []os.Signal    `json:"-"`
-	Bus             eventbus.Bus   `json:"-"`
-	ShutdownTimeout time.Duration  `json:"shutdown_timeout"`
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Version        string         `json:"version"`
+	BindFlagsFunc  BindFlagsFunc  `json:"-"`
+	BindConfigFunc BindConfigFunc `json:"-"`
+	ExitSignals    []os.Signal    `json:"-"`
+	Bus            eventbus.Bus   `json:"-"`
+	// BusProvider 非 nil 且 WithBus 未注入时，在配置装配完成后由框架调用
+	// 以构造应用总线（依赖配置的总线如 watermill.NewFromConfig）及其配套
+	// 服务（如 kafka Transport）。与 WithBus 并存时 WithBus 优先。
+	BusProvider func(cfg Config) (eventbus.Bus, []Service, error) `json:"-"`
+	// busFromOptions 标记 Bus 由框架填充（EnsureDefaults 默认或 WithBusOptions
+	// 物化），而非显式 WithBus 注入：provider 咨询条件放宽为"Bus 为 nil 或
+	// 仅由框架填充"，使 NewOptions 先跑 EnsureDefaults 的路径与 Option 顺序
+	// 都不会静默击败 provider；显式 WithBus 注入时本标记被清除，维持
+	// "WithBus 优先于 provider"的既有规则。
+	busFromOptions  bool
+	ShutdownTimeout time.Duration `json:"shutdown_timeout"`
 	// StopTimeout 是单个服务 Stop 的最长等待时长，超过后跳过并记录错误，
 	// 防止挂死的服务阻塞整个关停流程。
 	// ShutdownTimeout 与 StopTimeout 的 0 均表示"未设置"：EnsureDefaults
@@ -174,8 +185,13 @@ func (o *Options) EnsureDefaults() {
 		}
 	}
 
-	if o.Bus == nil {
+	// BusProvider 存在时不预填内存默认总线：总线在配置装配完成后由
+	// provider 构造（见 newLynx）；provider 与 WithBus 均未设置时才落默认。
+	// 经 NewOptions 先跑 EnsureDefaults 的路径，默认总线在此已被填充并带
+	// busFromOptions 标记——newLynx 仍会让 provider 覆盖它。
+	if o.Bus == nil && o.BusProvider == nil {
 		o.Bus = eventbus.NewMemoryBus(eventbus.Options{})
+		o.busFromOptions = true
 	}
 
 	// 默认启用框架内置的命令行 flags：不传任何 flags 相关 Option 时
@@ -237,6 +253,30 @@ func WithDisableConfigFlags() Option {
 func WithBindConfigFunc(f BindConfigFunc) Option {
 	return func(o *Options) {
 		o.BindConfigFunc = f
+	}
+}
+
+// WithConfigFile 设置配置文件路径并关闭默认的命令行 flags，用于参数由
+// 外部解析的场景（典型如子命令框架已解析 -c/--config）：路径直接绑定为
+// 配置文件，path 为空时回退搜索工作目录（与 DefaultBindConfigFunc 的
+// 回退一致）。
+// 等价于按序应用 WithDisableConfigFlags 与 WithBindConfigFunc——顺序敏感
+// （前者会清空 BindConfigFunc），封装为单一选项消除该陷阱。与其他选项
+// 同用时遵循 Option 后到者胜的通用语义。
+// 测试场景的配置注入（分层叠加、构造期即时读入）见 lynxtest 包的
+// WithConfigBaseline 系列选项。
+func WithConfigFile(path string) Option {
+	return func(o *Options) {
+		o.disableConfigFlags = true
+		o.BindFlagsFunc = nil
+		o.BindConfigFunc = func(_ *pflag.FlagSet, c ConfigSource) error {
+			if path != "" {
+				c.SetFile(path)
+				return nil
+			}
+			c.AddSearchPath(".")
+			return nil
+		}
 	}
 }
 
@@ -305,6 +345,21 @@ func WithCleanupTimeout(timeout time.Duration) Option {
 func WithBus(b eventbus.Bus) Option {
 	return func(o *Options) {
 		o.Bus = b
+		o.busFromOptions = false
+	}
+}
+
+// WithBusProvider 设置配置驱动的总线构造器：框架在构造序列内、配置装配
+// 完成后以装配好的 Config 调用，用于依赖配置的总线（如
+// watermill.NewFromConfig——此前这类总线必须在 NewRunner 之前自行读取
+// 配置再经 WithBus 注入）。返回的服务（如 kafka Transport）按 Register
+// 语义托管：Init 同步执行、Start/Stop 纳入生命周期、实现 Checker 的进入
+// 健康聚合（CLI 命令的健康等待因此能等 Transport 就绪）。
+// 与 WithBus 并存时 WithBus 优先（provider 仅在 Bus 为 nil 时被咨询）；
+// provider 返回 nil 总线视为构造错误。
+func WithBusProvider(fn func(cfg Config) (eventbus.Bus, []Service, error)) Option {
+	return func(o *Options) {
+		o.BusProvider = fn
 	}
 }
 
@@ -333,9 +388,12 @@ func WithIsolated() Option {
 }
 
 // WithBusOptions 以选项配置默认内存总线（Bus 为 nil 时生效；已注入 Bus 时无视）。
+// BusProvider 已设置时同样无视：配置驱动的总线由 provider 构造，内存总线
+// 选项无意义。若本选项先于 WithBusProvider 应用（此时物化了内存总线），
+// provider 仍会覆盖物化结果——两个选项对顺序不敏感，provider 不会被静默击败。
 func WithBusOptions(opts ...eventbus.Option) Option {
 	return func(o *Options) {
-		if o.Bus != nil {
+		if o.Bus != nil || o.BusProvider != nil {
 			return
 		}
 		bo := eventbus.Options{}
@@ -343,6 +401,7 @@ func WithBusOptions(opts ...eventbus.Option) Option {
 			fn(&bo)
 		}
 		o.Bus = eventbus.NewMemoryBus(bo)
+		o.busFromOptions = true
 	}
 }
 

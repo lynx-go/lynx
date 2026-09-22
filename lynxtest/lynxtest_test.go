@@ -114,7 +114,7 @@ func TestRun_ConfigLayering(t *testing.T) {
 	}
 
 	app := lynxtest.Run(t, func(a lynx.App) error { return nil },
-		lynxtest.WithConfigFile(file),
+		lynxtest.WithConfigBaseline(file),
 		lynxtest.WithConfigMap(map[string]any{"service.name": "map-app"}))
 
 	// Map 覆盖文件值，未覆盖的键沿用文件基线。

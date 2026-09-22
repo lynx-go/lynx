@@ -19,8 +19,10 @@ go run . hello -c config.yaml
   （0 成功 / 1 命令错误 / 2 用法错误）。
 - `helloCmd`：在 commands 的 `Run` 里经 `newRunner` 启动 lynx；
   `SetFlags` 用标准库 `flag` 声明 `-c/--config`。
-- `newRunner`：`lynx.WithDisableConfigFlags()` 关闭框架内置的 `os.Args`
-  解析（参数已由 commands 解析），`WithBindConfigFunc` 把 commands 传来的
-  配置路径绑定到配置源；未指定时搜索工作目录。
+- `newRunner`：`lynx.WithConfigFile(c.configFile)` 声明参数已由 commands
+  解析——关闭框架内置的 `os.Args` 解析并把配置路径直接绑定到配置源
+  （未指定时搜索工作目录）。单一选项取代手工组合
+  `WithDisableConfigFlags` + `WithBindConfigFunc`（顺序敏感，写反会
+  静默丢失绑定）。
 - `HelloTopic.Subscribe`：Init 期订阅 `hello`（Bus 由框架注入）；
   `app.Command` 里 `HelloTopic.Publish` 后结束。

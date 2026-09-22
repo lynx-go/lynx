@@ -285,3 +285,113 @@ func TestOptionsString(t *testing.T) {
 		t.Errorf("String() = %q, want it to contain bus_ready_timeout", s)
 	}
 }
+
+// recordingConfigSource 记录写入型绑定调用，验证 WithConfigFile 的绑定
+// 行为（读侧方法不参与，嵌入的 Config 仅用于满足接口）。
+type recordingConfigSource struct {
+	Config
+	files  []string
+	search []string
+}
+
+func (r *recordingConfigSource) Set(path string, value any)               {}
+func (r *recordingConfigSource) SetFile(path string)                      { r.files = append(r.files, path) }
+func (r *recordingConfigSource) AddSearchPath(dir string)                 { r.search = append(r.search, dir) }
+func (r *recordingConfigSource) SetFileFormat(format string)              {}
+func (r *recordingConfigSource) SetEnvPrefix(prefix string)               {}
+func (r *recordingConfigSource) SetEnvKeyReplacer(repl *strings.Replacer) {}
+func (r *recordingConfigSource) AutomaticEnv()                            {}
+func (r *recordingConfigSource) BindEnv(path string, env ...string) error { return nil }
+
+// TestWithConfigFileBindsPath：路径直接绑定为配置文件，默认 flags 关闭
+// 且 EnsureDefaults 二次调用（newLynx 路径）不得回填。
+func TestWithConfigFileBindsPath(t *testing.T) {
+	o := NewOptions(WithConfigFile("prod.yaml"))
+	if o.BindFlagsFunc != nil {
+		t.Fatal("WithConfigFile should disable default flags (BindFlagsFunc nil)")
+	}
+	if o.BindConfigFunc == nil {
+		t.Fatal("WithConfigFile should install a BindConfigFunc")
+	}
+	o.EnsureDefaults()
+	if o.BindFlagsFunc != nil {
+		t.Fatal("EnsureDefaults must not re-enable flags disabled by WithConfigFile")
+	}
+	src := &recordingConfigSource{}
+	if err := o.BindConfigFunc(nil, src); err != nil {
+		t.Fatalf("BindConfigFunc returned error: %v", err)
+	}
+	if len(src.files) != 1 || src.files[0] != "prod.yaml" {
+		t.Errorf("SetFile calls = %v, want [prod.yaml]", src.files)
+	}
+	if len(src.search) != 0 {
+		t.Errorf("AddSearchPath calls = %v, want none with explicit path", src.search)
+	}
+}
+
+// TestWithConfigFileEmptyPathFallsBackToWorkDir：空路径回退搜索工作目录
+// （与 DefaultBindConfigFunc 的回退一致）。
+func TestWithConfigFileEmptyPathFallsBackToWorkDir(t *testing.T) {
+	o := NewOptions(WithConfigFile(""))
+	src := &recordingConfigSource{}
+	if err := o.BindConfigFunc(nil, src); err != nil {
+		t.Fatalf("BindConfigFunc returned error: %v", err)
+	}
+	if len(src.files) != 0 {
+		t.Errorf("SetFile calls = %v, want none with empty path", src.files)
+	}
+	if len(src.search) != 1 || src.search[0] != "." {
+		t.Errorf("AddSearchPath calls = %v, want [.]", src.search)
+	}
+}
+
+// TestWithConfigFileEquivalence：单一选项 ≡ 手工正确顺序（先 Disable
+// 后 Bind）的两选项组合。顺序敏感：两者写反会静默丢失自定义绑定。
+func TestWithConfigFileEquivalence(t *testing.T) {
+	fused := NewOptions(WithConfigFile("cfg.yaml"))
+	manual := NewOptions(
+		WithDisableConfigFlags(),
+		WithBindConfigFunc(func(_ *pflag.FlagSet, c ConfigSource) error {
+			c.SetFile("cfg.yaml")
+			return nil
+		}),
+	)
+	if fused.BindFlagsFunc != nil || manual.BindFlagsFunc != nil {
+		t.Fatal("both forms should have BindFlagsFunc disabled")
+	}
+	fusedSrc, manualSrc := &recordingConfigSource{}, &recordingConfigSource{}
+	if err := fused.BindConfigFunc(nil, fusedSrc); err != nil {
+		t.Fatalf("fused BindConfigFunc error: %v", err)
+	}
+	if err := manual.BindConfigFunc(nil, manualSrc); err != nil {
+		t.Fatalf("manual BindConfigFunc error: %v", err)
+	}
+	if len(fusedSrc.files) != 1 || fusedSrc.files[0] != "cfg.yaml" {
+		t.Errorf("fused SetFile calls = %v, want [cfg.yaml]", fusedSrc.files)
+	}
+	if len(manualSrc.files) != 1 || manualSrc.files[0] != "cfg.yaml" {
+		t.Errorf("manual SetFile calls = %v, want [cfg.yaml]", manualSrc.files)
+	}
+}
+
+// TestWithConfigFileLastWins：与其他选项遵循后到者胜——用户随后
+// 设置的 BindConfigFunc 胜出，且 flags 保持关闭。
+func TestWithConfigFileLastWins(t *testing.T) {
+	custom := false
+	o := NewOptions(
+		WithConfigFile("cfg.yaml"),
+		WithBindConfigFunc(func(_ *pflag.FlagSet, c ConfigSource) error {
+			custom = true
+			return nil
+		}),
+	)
+	if o.BindFlagsFunc != nil {
+		t.Fatal("flags should stay disabled")
+	}
+	if err := o.BindConfigFunc(nil, &recordingConfigSource{}); err != nil {
+		t.Fatalf("BindConfigFunc returned error: %v", err)
+	}
+	if !custom {
+		t.Error("later WithBindConfigFunc should win over WithConfigFile's binding")
+	}
+}

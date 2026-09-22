@@ -13,7 +13,6 @@ import (
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/zap"
 	"github.com/lynx-go/lynx/eventbus"
-	"github.com/spf13/pflag"
 )
 
 // HelloTopic 是 CLI 示例的类型化主题（默认内存 Bus）。
@@ -66,9 +65,10 @@ func (c *helloCmd) Run(ctx context.Context, env *commands.Environment, args []st
 	return newRunner(c.configFile).RunE()
 }
 
-// newRunner 构建 lynx Runner。WithDisableConfigFlags 关闭框架内置的
-// os.Args 解析（子命令式 CLI 的参数已由 commands 解析），改用 commands
-// 传入的配置路径绑定配置源。
+// newRunner 构建 lynx Runner。WithConfigFile 声明参数已由 commands 解析：
+// 关闭框架内置的 os.Args 解析，配置文件路径直接绑定（未指定时回退搜索
+// 工作目录）——单一选项取代手工组合 WithDisableConfigFlags +
+// WithBindConfigFunc（两者顺序敏感，写反会静默丢失绑定）。
 func newRunner(configFile string) *lynx.Runner {
 	return lynx.NewRunner(func(app lynx.App) error {
 		logLevel := app.Config().GetString("log-level")
@@ -113,15 +113,6 @@ func newRunner(configFile string) *lynx.Runner {
 		})
 	},
 		lynx.WithName("cli-example"),
-		lynx.WithDisableConfigFlags(),
-		lynx.WithBindConfigFunc(func(_ *pflag.FlagSet, c lynx.ConfigSource) error {
-			if configFile != "" {
-				c.SetFile(configFile)
-				return nil
-			}
-			// 未指定配置文件时搜索工作目录（与框架默认行为一致）。
-			c.AddSearchPath(".")
-			return nil
-		}),
+		lynx.WithConfigFile(configFile),
 	)
 }

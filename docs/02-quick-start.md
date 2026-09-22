@@ -127,7 +127,7 @@ addr := app.Config().GetString("addr")
 
 配置来源的优先级遵循 Viper 的规则：命令行参数、环境变量、配置文件可以组合使用。上面的示例同时演示了三种来源——`--addr` 命令行参数、`LYNX_ADDR` 环境变量和 `config.yaml` 文件。
 
-如果只需要框架内置的配置参数（`--config`、`--config-type`、`--config-dir`、`--log-level`），无需任何配置：默认启用框架内置的参数声明与绑定。不需要命令行参数时可显式关闭：`lynx.WithDisableConfigFlags()`。
+如果只需要框架内置的配置参数（`--config`、`--config-type`、`--config-dir`、`--log-level`），无需任何配置：默认启用框架内置的参数声明与绑定。不需要命令行参数时可显式关闭：`lynx.WithDisableConfigFlags()`；参数由子命令框架等外部解析时用 `lynx.WithConfigFile(path)`（见 2.4 节）。
 
 ## 2.4 CLI 模式
 
@@ -163,6 +163,55 @@ go run main.go
 ```
 
 输出 `hello cli` 后进程自动退出。`app.Command` 注册的命令同样运行在 Lynx 的生命周期管理中，可以与 `OnPreStart`/`OnPreStop` 钩子及其他服务（如 PubSub Broker）配合使用，完整示例见 `_examples/cli/main.go`。
+
+### 子命令式 CLI 与配置桥接
+
+子命令调度由外部库承担（如 [`lynx-go/commands`](https://github.com/lynx-go/commands)），命令参数（含 `-c/--config`）已由其解析。此时用 `lynx.WithConfigFile(path)` 声明配置文件路径并关闭框架内置的 `os.Args` 解析：
+
+```go
+func (c *helloCmd) Run(ctx context.Context, env *commands.Environment, args []string) error {
+	return lynx.NewRunner(func(app lynx.App) error {
+		// setup：logger、订阅等
+		return app.Command(func(ctx context.Context) error {
+			return doWork(ctx)
+		})
+	},
+		lynx.WithName("cli-example"),
+		lynx.WithConfigFile(c.configFile), // 空路径回退搜索工作目录
+	).RunE()
+}
+```
+
+它等价于按序应用 `WithDisableConfigFlags()` 与 `WithBindConfigFunc(...)`——两选项顺序敏感（前者会清空后者的绑定，写反时静默失效），单一选项消除该陷阱。
+
+### Wire 组合的 CLI
+
+命令需要依赖图里的业务对象时，**命令不放图里**（多命令会在 Wire 类型系统撞车或需要 N 份 injector），而是让注入器返回双聚合：`*boot.Bootstrap`（框架托管的服务与 hooks，如 Kafka Transport）+ 类型化的 `*Deps`（命令直接调用的业务对象），子命令层只提供命令函数：
+
+```go
+type Deps struct{ Repo *postgres.Repo }
+
+type App struct {
+	*boot.Bootstrap // 框架管的：Transport/消费者等服务的生命周期 + hooks
+	*Deps           // 命令调的：类型化业务对象
+}
+
+// 整个二进制写一次的 helper：新增命令 = 新 cmd 类型 + 一个函数，图零改动。
+func runLynx(configFile string, fn func(ctx context.Context, a *App) error) error {
+	return lynx.NewRunner(func(app lynx.App) error {
+		app.SetLogger(zap.MustNewLogger(app))
+		a, cleanup, err := wireApp(app)
+		if err != nil {
+			return err
+		}
+		app.OnPostStop(cleanup) // Wire cleanup 属于终局阶段（同 _examples/boot）
+		a.Apply(app)            // Transport 等服务注册：Start/Stop 归框架
+		return app.Command(func(ctx context.Context) error { return fn(ctx, a) })
+	}, lynx.WithConfigFile(configFile)).RunE()
+}
+```
+
+依赖配置的总线（如 watermill/kafka）经 `lynx.WithBusProvider` 在框架装配好配置后构造（用法见第 4 章 Watermill 节与 README），命令经 ctx 发布即命中该总线，无需逐调用传递。
 
 ## 2.5 健康检查端点
 

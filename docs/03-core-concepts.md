@@ -112,6 +112,8 @@ Run()
 | `WithBindFlagsFunc(f)` | 自定义命令行参数声明（见 3.4 节） |
 | `WithBindConfigFunc(f)` | 自定义配置绑定逻辑（见 3.4 节） |
 | `WithDisableConfigFlags()` | 关闭默认的命令行参数声明与绑定（默认开启） |
+| `WithConfigFile(path)` | CLI/外部解析场景：绑定配置文件路径并关闭默认 flags（见 2.4 节） |
+| `WithBusProvider(fn)` | 配置驱动的总线构造：框架装配好配置后调用 fn，返回的服务托管生命周期 |
 | `WithExitSignals(signals...)` | 自定义触发优雅关闭的信号列表 |
 | `WithDrainTimeout(d)` | 关停排水窗口时长，同时是 OnDrain 钩子总预算，默认 0（整段禁用） |
 | `WithShutdownTimeout(d)` | OnPreStop 钩子关闭超时，默认 5 秒 |
@@ -159,7 +161,7 @@ Lynx 的配置体系基于 Viper（读取与合并）加 pflag（命令行参数
 
 ### 内置参数
 
-默认启用框架内置的四个参数（`DefaultBindFlagsFunc`）及其绑定逻辑（`DefaultBindConfigFunc`），无需任何选项；不需要命令行参数时可显式关闭（`WithDisableConfigFlags`）：
+默认启用框架内置的四个参数（`DefaultBindFlagsFunc`）及其绑定逻辑（`DefaultBindConfigFunc`），无需任何选项；不需要命令行参数时可显式关闭（`WithDisableConfigFlags`）。参数由外部解析的场景（如子命令框架已解析 `-c/--config`）用 `WithConfigFile(path)`：关闭默认参数解析、路径直接绑定配置文件（空路径回退搜索工作目录）：
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
