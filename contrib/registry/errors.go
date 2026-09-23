@@ -11,4 +11,7 @@ var (
 	ErrNotRegistered = errors.New("registry: instance not registered")
 	// ErrHeartbeatFailed 表示心跳连续失败达到阈值（3 次）。
 	ErrHeartbeatFailed = errors.New("registry: heartbeat failed")
+	// ErrWatcherStopped 表示 Subscribe 返回的 Watcher 已被 Stop，
+	// 后续 Next 不再推送（区别于 ErrResolverClosed 的整个 Resolver 关闭）。
+	ErrWatcherStopped = errors.New("registry: watch stopped")
 )

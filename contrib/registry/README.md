@@ -8,9 +8,9 @@
 
 - 数据模型：一进程一条 `Instance`（可挂多条 `Endpoint`，`registry.go:99`）；`Filter` 零值即安全默认（只保留 `StatusPassing`），`MatchFilter` 是全部后端与 Resolver 共用的过滤实现（`registry.go:121`）；接口 `Registry`（写，`registry.go:146`）、`Discovery`（读，`registry.go:155`）、`Watcher`（推送）、`Advertiser`（宣告地址，`registry.go:169`）
 - `*Registrar`：实现 `lynx.Service` + `lynx.Checker`（`registrar.go:155`）。`Start` 注册并维持心跳（默认 10s）后阻塞；`Stop` 幂等注销；`DeregisterHook()` 供 `OnDrain` 排水即摘除（`registrar.go:495`）。心跳连续失败 ≥3 次只影响 readiness，不影响 liveness
-- `*Resolver`：进程内缓存 + 每服务名一个后台 watch goroutine（断开按 1s–30s 退避重连、Watch 不可用回退轮询）；分区期间继续供应最后一次快照，超过 stale 上限（默认 60s）丢弃并返回 `ErrNoInstance`（`resolver.go:74`）
+- `*Resolver`：进程内缓存 + 每服务名一个后台 watch goroutine（断开按 1s–30s 退避重连、Watch 不可用回退轮询）；分区期间继续供应最后一次快照，超过 stale 上限（默认 60s）丢弃并返回 `ErrNoInstance`（`resolver.go:74`）；`Subscribe(name)` 消费侧订阅缓存变化（与 `Discovery.Watcher` 同构：首个 Next 立即返回当前快照、信号合并只保最新、Stop 后 `ErrWatcherStopped`），订阅者对后端形态无感（设计见 [docs/design-resolver-subscribe.md](../../docs/design-resolver-subscribe.md)）
 - Picker：`RoundRobinPicker()`（Resolver 默认）与 `RandomPicker()`（`picker.go`），v1 均忽略 `Instance.Weight`；后端：`NewMemory()` 进程内 Registry + Discovery（`memory.go:34`）、`NewDNSDiscovery(...)` 只读 DNS（SRV 优先，A/AAAA 回落，`dns.go:115`，适配 K8s Headless Service）
-- 客户端接入：`NewHTTPTransport(rslv).Wrap(base)` 把 `registry://<service>/<path>` 请求改写为实例地址（`http_transport.go:29`）；`NewGRPCBuilder(rslv)` 提供 scheme 为 `registry` 的 gRPC resolver Builder（`grpc_resolver.go:59`）。两者都必须吃 `*Resolver`，共享同一套缓存
+- 客户端接入：`NewHTTPTransport(rslv).Wrap(base)` 把 `registry://<service>/<path>` 请求改写为实例地址（`http_transport.go:29`）；`NewGRPCBuilder(rslv)` 提供 scheme 为 `registry` 的 gRPC resolver Builder（`grpc_resolver.go:59`），由 `Subscribe` 订阅驱动——实例变化毫秒级反映到 `UpdateState`，订阅终止退回 30s 兜底轮询。两者都必须吃 `*Resolver`，共享同一套缓存
 - Advertiser：`HTTP(hs, protocol)` / `GRPC(gs)` / `Static(protocol, hostPort)`（`advertiser.go:12`），`AdvertiseAddr()` 非空优先、否则回落 `Addr()`
 
 ## 快速开始

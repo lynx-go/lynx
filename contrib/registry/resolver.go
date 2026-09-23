@@ -308,21 +308,130 @@ func (r *Resolver) sleep(d time.Duration) bool {
 	}
 }
 
-// cacheEntry 是单个服务名的缓存条目：最近一次成功快照及其时间。
+// cacheEntry 是单个服务名的缓存条目：最近一次成功快照及其时间，
+// 外加消费侧订阅（Subscribe）的信号通道表。
 type cacheEntry struct {
 	mu        sync.RWMutex
 	instances []Instance // 全量快照（含非 Passing），Filter 在读路径应用
 	updatedAt time.Time
 	filled    bool
+	// subs 是订阅者的信号通道（容量 1，信号量语义）：store 时非阻塞
+	// 发送，未消费的旧信号被新信号合并——慢订阅者总是拿到最新快照，
+	// 不排队陈旧快照。nextSubID 自增分配、不复用。
+	subs      map[uint64]chan struct{}
+	nextSubID uint64
 }
 
 // store 写入新快照。空切片也是合法快照（服务下线），立即生效。
+// store 是缓存变更的唯一入口（watchLoop 推送、轮询回退、ensureFilled
+// 同步首填全部经此），因此也是订阅通知的唯一触发点。
 func (e *cacheEntry) store(insts []Instance) {
 	e.mu.Lock()
 	e.instances = insts
 	e.filled = true
 	e.updatedAt = time.Now()
+	for _, sig := range e.subs {
+		select {
+		case sig <- struct{}{}:
+		default:
+			// 订阅者尚未消费上一枚信号：合并（总是最新）。
+		}
+	}
 	e.mu.Unlock()
+}
+
+// addSub 注册订阅者并返回其信号通道；缓存已填充时预发一枚首推信号
+// （Subscribe 契约：首个 Next 立即返回当前快照）。
+func (e *cacheEntry) addSub() (uint64, chan struct{}) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.subs == nil {
+		e.subs = make(map[uint64]chan struct{})
+	}
+	e.nextSubID++
+	id := e.nextSubID
+	sig := make(chan struct{}, 1)
+	e.subs[id] = sig
+	if e.filled {
+		sig <- struct{}{}
+	}
+	return id, sig
+}
+
+// removeSub 注销订阅者（Stop 路径），此后 store 不再向其发信号。
+func (e *cacheEntry) removeSub(id uint64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.subs, id)
+}
+
+// Subscribe 订阅服务实例集变化（缓存层订阅）：后端 Watch 推送/轮询
+// 兜底已由 Resolver 内部维护，订阅者对后端形态无感（DNS 后端下缓存由
+// 轮询维护，同样触发通知）。契约与 Discovery.Watcher 同构：
+//
+//   - 缓存已填充时首个 Next 立即返回当前快照；
+//   - 后续 Next 返回最近一次快照变化；慢消费者不排队陈旧快照（信号
+//     合并，总是最新）；空切片同样是合法推送（服务下线立即生效）；
+//   - 返回全量快照（含非 Passing），消费方自行 MatchFilter——与
+//     GetAll 读路径一致，每个服务名共享一条缓存与通知通道；
+//   - 返回切片只读、不拷贝（与后端 Watcher.Next 一致）；
+//   - Stop 退订且幂等，之后 Next 返回 ErrWatcherStopped；
+//     Resolver.Close 后 Next 返回 ErrResolverClosed。
+//
+// stale 丢弃（快照超龄）不触发通知：与 gRPC resolver"解析出错保留
+// 上次状态"的惯例一致，由消费方自行处理。
+func (r *Resolver) Subscribe(name string) (Watcher, error) {
+	if name == "" {
+		return nil, ErrBadName
+	}
+	e, ok := r.entryFor(name)
+	if !ok {
+		return nil, ErrResolverClosed
+	}
+	id, sig := e.addSub()
+	return &subscription{r: r, e: e, id: id, sig: sig, stopped: make(chan struct{})}, nil
+}
+
+// subscription 是 Subscribe 返回的缓存订阅，实现 Watcher。
+type subscription struct {
+	r   *Resolver
+	e   *cacheEntry
+	id  uint64
+	sig chan struct{}
+	// stopped 由 Stop 关闭（close 广播）：既作停止标记，也唤醒阻塞在
+	// Next 的等待者——Stop 不唤醒会让消费方（如 grpcResolver 的订阅
+	// goroutine）无法随 Close 退出。
+	stopped  chan struct{}
+	stopOnce sync.Once
+}
+
+// Next 阻塞至缓存变化并返回最新快照（语义见 Subscribe）。
+func (s *subscription) Next() ([]Instance, error) {
+	select {
+	case <-s.stopped:
+		return nil, ErrWatcherStopped
+	case <-s.r.done:
+		return nil, ErrResolverClosed
+	case <-s.sig:
+	}
+	select {
+	case <-s.stopped:
+		// Stop 与已入队信号交错：以 Stop 结果为准。
+		return nil, ErrWatcherStopped
+	default:
+	}
+	s.e.mu.RLock()
+	defer s.e.mu.RUnlock()
+	return s.e.instances, nil
+}
+
+// Stop 注销订阅并唤醒阻塞中的 Next；幂等，返回 nil。
+func (s *subscription) Stop() error {
+	s.stopOnce.Do(func() {
+		close(s.stopped)
+		s.e.removeSub(s.id)
+	})
+	return nil
 }
 
 // EndpointOf 在已选 Instance 上按协议取地址：稳定顺序（切片下标）下

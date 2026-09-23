@@ -65,7 +65,7 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./contrib/schedule` - Cron scheduler；`Exclusive` 任务经 `cluster.TryOnce` 按格子互斥
 - `./contrib/cluster` - 进程间协调：`Coordinator`（Claim/Acquire）、`TryOnce`、`Campaign`、`Singleton`
 - `./contrib/cluster-redis` - Redis 实现 `cluster.Coordinator`（仅协调，不是业务 Redis 客户端）
-- `./contrib/registry` - Service registry/discovery: types, Registrar, Resolver, Pickers, memory/DNS backends, `registry://` HTTP transport & gRPC resolver
+- `./contrib/registry` - Service registry/discovery: types, Registrar, Resolver (with consumer-side `Subscribe`), Pickers, memory/DNS backends, `registry://` HTTP transport & subscription-driven gRPC resolver
 - `./contrib/consul` - Consul registry/discovery backend（`consul.NewFromConfig`），并提供 `Client.Coordinator()` 实现 `cluster.Coordinator`
 
 Server implementations (within main module):

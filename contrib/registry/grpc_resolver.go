@@ -12,15 +12,11 @@ import (
 	"google.golang.org/grpc/resolver"
 )
 
-// grpcDefaultPollInterval 是 gRPC resolver 轮询 Resolver 缓存的默认间隔。
-// Resolver 内部已有 Watch 推送缓存，这里只需按较慢周期把缓存变化
-// 翻译成 resolver.State。
-//
-// 已知缺口（后续工作，不在 v1 修复）：gRPC 侧没有订阅 Resolver 缓存变化
-// 的 API，只能 5s 轮询——实例增删最多延迟一个轮询周期才反映到连接地址。
-// 完整方案是给 Resolver 增加OnChange 回调（cacheEntry 变更通知），届时
-// 轮询仅作兜底。
-const grpcDefaultPollInterval = 5 * time.Second
+// grpcFallbackPollInterval 是订阅链路失效时的兜底轮询间隔。
+// 正常路径由 Resolver.Subscribe 的缓存订阅驱动：实例变化在一个信号
+// 内反映到 UpdateState（毫秒级）。兜底轮询仅覆盖订阅终止后的退化场景
+// （理论仅 Resolver 关闭），30s 内自愈。
+const grpcFallbackPollInterval = 30 * time.Second
 
 // grpcResolveTimeout 是单次 GetAll 的预算。Resolver 缓存命中时 GetAll
 // 无网络 IO，但缓存未填充（或已 stale 被丢弃）时会同步走 Discovery 的
@@ -57,7 +53,7 @@ type grpcBuilder struct {
 // resolver.Register(b) 是进程全局副作用（测试与多 resolver 进程会撞
 // scheme），仅作可选便利，不作为唯一入口。
 func NewGRPCBuilder(rslv *Resolver) resolver.Builder {
-	return &grpcBuilder{rslv: rslv, pollInterval: grpcDefaultPollInterval}
+	return &grpcBuilder{rslv: rslv, pollInterval: grpcFallbackPollInterval}
 }
 
 // Scheme 返回 "registry"。
@@ -90,14 +86,24 @@ func (b *grpcBuilder) Build(target resolver.Target, cc resolver.ClientConn, _ re
 		pollInterval: b.pollInterval,
 		resolveNow:   make(chan struct{}, 1),
 		done:         make(chan struct{}),
+		subCh:        make(chan subEvent, 1),
+	}
+	if sub, err := b.rslv.Subscribe(name); err != nil {
+		// Subscribe 仅在 Resolver 关闭后失败：退化为纯兜底轮询，
+		// Build 不因此失败（连接仍可由 lastState 服务）。
+		b.rslv.logger.Debug("registry: grpc subscribe failed, falling back to polling only",
+			"service", name, "error", err)
+	} else {
+		gr.sub = sub
 	}
 	gr.wg.Add(1)
 	go gr.loop()
 	return gr, nil
 }
 
-// grpcResolver 是 Build 返回的 resolver.Resolver：轮询 Resolver 缓存，
-// 把实例的 grpc Endpoint 翻译成 resolver.Address 后 UpdateState。
+// grpcResolver 是 Build 返回的 resolver.Resolver：订阅 Resolver 缓存变化
+// （Subscribe），把实例的 grpc Endpoint 翻译成 resolver.Address 后
+// UpdateState；订阅终止后退回兜底轮询。
 type grpcResolver struct {
 	rslv         *Resolver
 	cc           resolver.ClientConn
@@ -105,21 +111,36 @@ type grpcResolver struct {
 	filter       Filter
 	pollInterval time.Duration
 
+	// sub 是缓存订阅（Build 时建立）；nil 表示纯兜底轮询模式。
+	sub   Watcher
+	subCh chan subEvent
+
 	resolveNow chan struct{}
 	done       chan struct{}
 	once       sync.Once
 	wg         sync.WaitGroup
 
 	// lastAddrs 是上一次 UpdateState 的地址集（已排序），hasState 标记
-	// 是否已建立基线：无变化的轮询不再 UpdateState（RC-07）。
+	// 是否已建立基线：无变化不再 UpdateState（RC-07）。
 	lastAddrs []resolver.Address
 	hasState  bool
 }
 
-// loop 立即解析一次，随后按 pollInterval 或 ResolveNow 触发再解析。
+// subEvent 是订阅消费 goroutine 向主循环投递的事件：insts 为新快照，
+// done 标记订阅终止（退回兜底轮询，主循环不退出）。
+type subEvent struct {
+	insts []Instance
+	done  bool
+}
+
+// loop 建立基线后由订阅推送驱动；兜底轮询与 ResolveNow 走 GetAll 路径。
 func (gr *grpcResolver) loop() {
 	defer gr.wg.Done()
-	gr.resolve()
+	if gr.sub != nil {
+		gr.wg.Add(1)
+		go gr.consumeSub()
+	}
+	gr.resolveViaGetAll()
 	t := time.NewTicker(gr.pollInterval)
 	defer t.Stop()
 	for {
@@ -127,24 +148,50 @@ func (gr *grpcResolver) loop() {
 		case <-gr.done:
 			return
 		case <-t.C:
-			gr.resolve()
+			gr.resolveViaGetAll()
 		case <-gr.resolveNow:
-			gr.resolve()
+			gr.resolveViaGetAll()
+		case ev := <-gr.subCh:
+			if ev.done {
+				continue
+			}
+			gr.resolveFromSnapshot(ev.insts)
 		}
 	}
 }
 
-// resolve 经 Resolver.GetAll 取实例（同一套空快照 / stale 上限 /
-// 默认 Filter），翻译为 resolver.Address 后 UpdateState。
-// 解析出错（如快照超 stale 上限被丢弃、GetAll 超时）时保留上一次状态、
-// 不清空地址，这是 gRPC resolver 对暂态错误的惯例。
-//
+// consumeSub 消费缓存订阅直至订阅终止或 resolver 关闭。
+func (gr *grpcResolver) consumeSub() {
+	defer gr.wg.Done()
+	for {
+		insts, err := gr.sub.Next()
+		if err != nil {
+			select {
+			case <-gr.done:
+			default:
+				// 订阅终止（Stop/Resolver 关闭）：通知主循环退回兜底轮询。
+				select {
+				case gr.subCh <- subEvent{done: true}:
+				case <-gr.done:
+				}
+			}
+			return
+		}
+		select {
+		case gr.subCh <- subEvent{insts: insts}:
+		case <-gr.done:
+			return
+		}
+	}
+}
+
+// resolveViaGetAll 经 Resolver.GetAll 取实例（基线建立、ResolveNow、
+// 兜底轮询路径），随后与订阅推送共用翻译逻辑。
 // GetAll 自带 grpcResolveTimeout 预算：Discovery 网络调用挂死时本方法
 // 在预算内返回错误，轮询 goroutine 不会无限期阻塞（RC-07）。
-// 地址集与上次相同（排序后比较）则跳过 UpdateState：Resolver 缓存快照
-// 顺序不稳定（map 遍历），无 diff 时每次轮询都会触发无意义的
-// UpdateState / 重新建连。首个快照（含空列表）始终发布，建立基线。
-func (gr *grpcResolver) resolve() {
+// 解析出错（如快照超 stale 上限被丢弃、超时）时保留上一次状态、
+// 不清空地址，这是 gRPC resolver 对暂态错误的惯例。
+func (gr *grpcResolver) resolveViaGetAll() {
 	ctx, cancel := context.WithTimeout(context.Background(), grpcResolveTimeout)
 	insts, err := gr.rslv.GetAll(ctx, gr.name, gr.filter)
 	cancel()
@@ -153,9 +200,21 @@ func (gr *grpcResolver) resolve() {
 			"service", gr.name, "error", err)
 		return
 	}
-	// 空列表同样 UpdateState：服务下线立即生效（空快照语义）。
-	addrs := make([]resolver.Address, 0, len(insts))
-	for _, inst := range insts {
+	gr.resolveFromSnapshot(insts)
+}
+
+// resolveFromSnapshot 把实例快照（订阅推送为全量含非 Passing，GetAll
+// 为已过滤集——统一先过 MatchFilter）翻译为地址集并按需 UpdateState。
+// 空列表同样 UpdateState：服务下线立即生效（空快照语义）。
+// 地址集与上次相同（排序后比较）则跳过 UpdateState：Resolver 缓存快照
+// 顺序不稳定（map 遍历），无 diff 时重复 UpdateState 会触发无意义的
+// 重新建连。首个快照（含空列表）始终发布，建立基线。
+func (gr *grpcResolver) resolveFromSnapshot(all []Instance) {
+	addrs := make([]resolver.Address, 0, len(all))
+	for _, inst := range all {
+		if !MatchFilter(gr.filter, inst) {
+			continue
+		}
 		for _, ep := range inst.Endpoints {
 			if ep.Protocol != gr.filter.Protocol {
 				continue
@@ -200,10 +259,14 @@ func (gr *grpcResolver) ResolveNow(resolver.ResolveNowOptions) {
 	}
 }
 
-// Close 停掉后台 goroutine；幂等。
+// Close 停掉后台 goroutine 并退订缓存订阅（任何退出路径都 Stop，
+// RC-04 教训）；幂等。
 func (gr *grpcResolver) Close() {
 	gr.once.Do(func() {
 		close(gr.done)
+		if gr.sub != nil {
+			_ = gr.sub.Stop() // 解除 consumeSub 的 Next 阻塞
+		}
 		gr.wg.Wait()
 	})
 }
