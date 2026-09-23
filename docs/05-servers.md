@@ -202,7 +202,7 @@ Recovery 置于最外层：链内任意一环（含用户拦截器）的 panic �
 ### 健康检查与反射
 
 - **健康检查**：`NewServer` 时自动注册 `grpc.health.v1` 标准健康检查服务；`Start` 时将服务名 `"grpc"` 与标准的空服务名 `""`（大多数 gRPC 健康探针使用）置为 `SERVING`，`Stop` 时均置为 `NOT_SERVING`。负载均衡器/k8s 可以直接使用标准 gRPC 健康检查协议探测。接入 app 级检查器（`WithHealthCheckers`）后，按 `HealthCheckPeriod`（默认 10 秒）轮询聚合并同步：任一依赖不健康即置 `NOT_SERVING`。检查器并发执行且单个限时（`WithHealthCheckTimeout`，默认 3s，与 HTTP 侧同名同义）——阻塞型 checker 不再冻结轮询状态。配置 `WithDrainTimeout` 时，排水窗口内 `drainChecker` 进入聚合，探测在下一个轮询周期内转为 `NOT_SERVING`（摘流延迟受 `HealthCheckPeriod` 约束，需要更快摘流可调小周期）。
-- **反射**：`NewServer` 时自动注册 reflection 服务，因此可以直接用 `grpcurl localhost:9090 list` 之类的工具调试，无需额外配置。
+- **反射**：`NewServer` 时自动注册 reflection 服务，因此可以直接用 `grpcurl localhost:9090 list` 之类的工具调试，无需额外配置。取舍：反射**无条件注册且不提供开关**——服务描述（方法/消息 schema）对可拨号到的调用方可见，属已知暴露面；内网/调试场景收益大于风险，公网暴露的服务应依赖网络层（TLS/鉴权/入口隔离）控制可达性。
 
 ### 完整示例
 
