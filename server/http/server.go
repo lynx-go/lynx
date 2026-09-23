@@ -63,10 +63,15 @@ type Options struct {
 	HealthCheckers     lynx.HealthCheckersFunc
 	Logger             *slog.Logger
 	RequestLog         bool
-	TracerProvider     trace.TracerProvider
-	MeterProvider      metric.MeterProvider
-	Propagator         propagation.TextMapPropagator
-	Middlewares        []Middleware
+	// ErrorHandler 是服务器级默认错误处理器（WithErrorHandler 设置）：
+	// 经 Server.NewErrorHandler(h, fn) 使用，h 传 nil 时的兜底改取它
+	//（未配置时回退包级 DefaultErrorHandler）——包级 NewErrorHandler
+	// 无法访问服务器配置，服务器级注入走该方法。
+	ErrorHandler   ErrorHandler
+	TracerProvider trace.TracerProvider
+	MeterProvider  metric.MeterProvider
+	Propagator     propagation.TextMapPropagator
+	Middlewares    []Middleware
 	// TLSConfig 非 nil 时以 TLS 提供服务（需包含 Certificates 或由
 	// ServerOptions 填充）。
 	TLSConfig *tls.Config
@@ -169,6 +174,20 @@ func WithHealthCheckers(hc lynx.HealthCheckersFunc) Option {
 func WithLogger(l *slog.Logger) Option {
 	return func(o *Options) {
 		o.Logger = l
+	}
+}
+
+// WithErrorHandler 设置服务器级默认错误处理器：Server.NewErrorHandler
+// 的 h 传 nil 时的兜底改取它（未设置时保持包级 DefaultErrorHandler）。
+// 典型用法是接入服务日志实例：
+//
+//	WithErrorHandler(DefaultErrorHandlerWithLogger(srvLogger))
+//
+// 仅影响 Server.NewErrorHandler 包装的 handler；包级 NewErrorHandler
+// 与显式传入非 nil h 的调用不受影响。
+func WithErrorHandler(h ErrorHandler) Option {
+	return func(o *Options) {
+		o.ErrorHandler = h
 	}
 }
 

@@ -44,11 +44,10 @@ func defaultRateLimitHandler(w http.ResponseWriter, _ *http.Request) {
 // 429 + JSON 错误体）。rps 必须 > 0，否则构造期直接 panic（配置错误应当
 // 在启动阶段暴露，而非运行期静默放行/拒绝全部请求）。
 //
-// v1.1 只提供服务器级全局限流（全部请求共享同一 limiter）；按路由、按
-// IP/用户维度限流定位 v1.2。
-//
 // 建议与 Recovery 中间件搭配：Recovery 声明在最外层（WithMiddleware 的
 // 第一个参数），RateLimit 随后——限流 handler 抛 panic 时同样能被恢复。
+// 按路由 / IP / 用户维度限流见 RateLimitPerKey（可与本中间件叠放：
+// 先服务器级总量、再维度级分桶）。
 func RateLimit(rps float64, opts ...RateLimitOption) Middleware {
 	if rps <= 0 {
 		panic(fmt.Sprintf("http: RateLimit rps must be > 0, got %v", rps))

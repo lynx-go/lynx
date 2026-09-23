@@ -100,9 +100,10 @@ type HandleFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request
 // 检测到响应已开始后不再改写响应、仅记日志，不会触发 superfluous
 // WriteHeader；自定义 h 需自行处理该情形。
 //
-// 服务器级默认 ErrorHandler（WithErrorHandler 选项，h 传 nil 时的兜底
-// 改取服务器级默认）不在 v1.1 范围内，定位 v1.2；当前 h 传 nil 一律使用
-// 包级 DefaultErrorHandler。
+// 服务器级默认 ErrorHandler（WithErrorHandler 选项）：经本方法接入，
+// h 传 nil 时的兜底依次取服务器级默认 → 包级 DefaultErrorHandler。
+// 包级 NewErrorHandler 无法访问服务器配置，其 nil 兜底始终是包级
+// DefaultErrorHandler（行为不变）。
 func NewErrorHandler(h ErrorHandler, fn HandleFunc) http.Handler {
 	if h == nil {
 		h = DefaultErrorHandler
@@ -113,6 +114,22 @@ func NewErrorHandler(h ErrorHandler, fn HandleFunc) http.Handler {
 			h(r.Context(), tw, r, err)
 		}
 	})
+}
+
+// NewErrorHandler 是 NewErrorHandler 的服务器版本（嵌入 Server 使用）：
+// h 传 nil 时的兜底改取 WithErrorHandler 设置的服务器级默认（未设置时
+// 回退包级 DefaultErrorHandler）。服务器级注入的典型用法：
+//
+//	srv := NewServer(WithErrorHandler(DefaultErrorHandlerWithLogger(logger)))
+//	mux.Handle("/api", srv.NewErrorHandler(nil, apiHandler))
+func (s *Server) NewErrorHandler(h ErrorHandler, fn HandleFunc) http.Handler {
+	if h == nil {
+		h = s.o.ErrorHandler
+		if h == nil {
+			h = DefaultErrorHandler
+		}
+	}
+	return NewErrorHandler(h, fn)
 }
 
 // errorResponse 是默认错误响应体结构：{"error":{"message":...}}。
