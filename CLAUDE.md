@@ -232,8 +232,9 @@ This pattern is particularly useful for complex applications with many services.
 
 **Cluster** (contrib/cluster)
 - `Coordinator.Claim` (one-shot occupancy, TTL expiry, no release) and `Coordinator.Acquire` (renewed lease)
+- Claim/Acquire 骨架唯一归属 `cluster/lease.go`：`ValidateCall`（公共入参校验）、`RenewInterval`/`RunRenewLoop`（ttl/3 续约循环）供全部适配器共用；TTL 下限经可选能力 `cluster.TTLAware`/`cluster.MinTTL` 查询（Consul 10s，内存/Redis 无下限），schedule 的 Exclusive 触发会自动钳制
 - Recipes: `TryOnce`, `Campaign`, `Singleton(lynx.Service)`
-- Adapters: Memory; Consul Session+KV (`ttl >= 10s`); Redis SET NX (`contrib/cluster-redis`)
+- Adapters: Memory; Consul Session+KV (`ttl >= 10s`, 声明 MinTTL); Redis SET NX (`contrib/cluster-redis`)
 
 **Command** (command.go)
 - CLI command execution with dependency readiness wait

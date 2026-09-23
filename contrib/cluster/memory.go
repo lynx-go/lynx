@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,14 +32,8 @@ func NewMemory(opts ...Option) Coordinator {
 }
 
 func (m *memory) Claim(ctx context.Context, name string, ttl time.Duration) (bool, error) {
-	if err := ctx.Err(); err != nil {
+	if err := ValidateCall(ctx, name, ttl); err != nil {
 		return false, err
-	}
-	if name == "" {
-		return false, ErrEmptyName
-	}
-	if ttl <= 0 {
-		return false, ErrInvalidTTL
 	}
 	now := time.Now()
 	key := m.opts.key(name)
@@ -53,14 +48,8 @@ func (m *memory) Claim(ctx context.Context, name string, ttl time.Duration) (boo
 }
 
 func (m *memory) Acquire(ctx context.Context, name string, ttl time.Duration) (Lease, bool, error) {
-	if err := ctx.Err(); err != nil {
+	if err := ValidateCall(ctx, name, ttl); err != nil {
 		return nil, false, err
-	}
-	if name == "" {
-		return nil, false, ErrEmptyName
-	}
-	if ttl <= 0 {
-		return nil, false, ErrInvalidTTL
 	}
 	now := time.Now()
 	key := m.opts.key(name)
@@ -82,7 +71,7 @@ func (m *memory) Acquire(ctx context.Context, name string, ttl time.Duration) (L
 	m.mu.Unlock()
 
 	l := &memLease{m: m, key: key, gen: gen, ctx: leaseCtx, cancel: cancel, ttl: ttl}
-	go l.renewLoop()
+	go RunRenewLoop(l.ctx, l.cancel, RenewInterval(l.ttl), l.renew)
 	return l, true, nil
 }
 
@@ -118,27 +107,19 @@ func (l *memLease) Release(ctx context.Context) error {
 	return nil
 }
 
-func (l *memLease) renewLoop() {
-	interval := max(l.ttl/3, time.Millisecond)
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-l.ctx.Done():
-			return
-		case <-t.C:
-			now := time.Now()
-			l.m.mu.Lock()
-			sl, ok := l.m.slots[l.key]
-			if !ok || sl.gen != l.gen {
-				l.m.mu.Unlock()
-				l.cancel()
-				return
-			}
-			sl.exp = now.Add(l.ttl)
-			l.m.mu.Unlock()
-		}
+// errLost 标记租约槽已被取代/清除（renew 返回它触发引擎退出）。
+var errLost = errors.New("cluster: lease lost")
+
+// renew 刷新槽位过期时间；槽丢失（被覆盖或清除）返回 errLost。
+func (l *memLease) renew() error {
+	l.m.mu.Lock()
+	defer l.m.mu.Unlock()
+	sl, ok := l.m.slots[l.key]
+	if !ok || sl.gen != l.gen {
+		return errLost
 	}
+	sl.exp = time.Now().Add(l.ttl)
+	return nil
 }
 
 var _ Coordinator = (*memory)(nil)

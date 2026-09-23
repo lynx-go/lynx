@@ -344,6 +344,15 @@ func (s *Scheduler) fireTask(task Task, exclusive bool, loc *time.Location) {
 			s.reportTaskError(ctx, task, err)
 			return
 		}
+		// 后端 TTL 下限（如 Consul Session ≥10s）经 cluster.MinTTL 可见：
+		// 触发 TTL（间隔 + 1s）低于下限时钳制并 Warn，而非每次触发都
+		// 撞后端下限报错。钳制只延长同一格子占位的存活期——格子名含
+		// 时槽，不影响后续格子的抢占（cron 与 Trigger 共用本路径）。
+		if min := cluster.MinTTL(s.options.Coordinator); min > 0 && ttl < min {
+			s.logger.WarnContext(ctx, "schedule exclusive fire ttl raised to coordinator minimum",
+				"task_name", task.Name(), "fire", name, "ttl", ttl.String(), "min", min.String())
+			ttl = min
+		}
 		skipped, err := cluster.TryOnce(ctx, s.options.Coordinator, name, ttl, run)
 		if skipped {
 			s.logger.DebugContext(ctx, "schedule exclusive fire skipped",

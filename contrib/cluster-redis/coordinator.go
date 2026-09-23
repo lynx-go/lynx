@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"time"
 
 	"github.com/lynx-go/lynx/contrib/cluster"
@@ -28,11 +29,8 @@ func NewCoordinator(rdb redis.Cmdable, opts ...cluster.Option) cluster.Coordinat
 }
 
 func (s *coordinator) Claim(ctx context.Context, name string, ttl time.Duration) (bool, error) {
-	if name == "" {
-		return false, cluster.ErrEmptyName
-	}
-	if ttl <= 0 {
-		return false, cluster.ErrInvalidTTL
+	if err := cluster.ValidateCall(ctx, name, ttl); err != nil {
+		return false, err
 	}
 	key := cluster.FormatKey(name, s.opts...)
 	owner := cluster.Owner(s.opts...)
@@ -44,11 +42,8 @@ func (s *coordinator) Claim(ctx context.Context, name string, ttl time.Duration)
 }
 
 func (s *coordinator) Acquire(ctx context.Context, name string, ttl time.Duration) (cluster.Lease, bool, error) {
-	if name == "" {
-		return nil, false, cluster.ErrEmptyName
-	}
-	if ttl <= 0 {
-		return nil, false, cluster.ErrInvalidTTL
+	if err := cluster.ValidateCall(ctx, name, ttl); err != nil {
+		return nil, false, err
 	}
 	key := cluster.FormatKey(name, s.opts...)
 	token := newToken()
@@ -68,7 +63,7 @@ func (s *coordinator) Acquire(ctx context.Context, name string, ttl time.Duratio
 		ctx:    leaseCtx,
 		cancel: cancel,
 	}
-	go l.renewLoop()
+	go cluster.RunRenewLoop(l.ctx, l.cancel, cluster.RenewInterval(l.ttl), l.renew)
 	return l, true, nil
 }
 
@@ -88,23 +83,21 @@ func (l *redisLease) Release(ctx context.Context) error {
 	return l.rdb.Eval(ctx, delScript, []string{l.key}, l.token).Err()
 }
 
-func (l *redisLease) renewLoop() {
-	interval := max(l.ttl/3, time.Millisecond)
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	ms := l.ttl.Milliseconds()
-	for {
-		select {
-		case <-l.ctx.Done():
-			return
-		case <-t.C:
-			n, err := l.rdb.Eval(context.Background(), renewScript, []string{l.key}, l.token, ms).Int()
-			if err != nil || n == 0 {
-				l.cancel()
-				return
-			}
-		}
+// errLost 标记键已被他人持有或过期删除（续约脚本返回 0，renew 返回它
+// 触发引擎退出）。
+var errLost = errors.New("clusterredis: lease lost")
+
+// renew 经 Lua 脚本条件续约：token 匹配才延长，否则视为丢失。
+// 刻意用 Background：续约不受调用侧取消影响，仅由丢失退出。
+func (l *redisLease) renew() error {
+	n, err := l.rdb.Eval(context.Background(), renewScript, []string{l.key}, l.token, l.ttl.Milliseconds()).Int()
+	if err != nil {
+		return err
 	}
+	if n == 0 {
+		return errLost
+	}
+	return nil
 }
 
 func newToken() string {

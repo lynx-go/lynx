@@ -153,3 +153,14 @@ func TestCoordinatorEmptyName(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// TestCoordinatorMinTTLCapability 钉住 TTL 下限进入接缝契约：
+// cluster.MinTTL 能看到 Consul Session 的 10s 下限（schedule 的 Exclusive
+// 触发据此钳制，不再靠注释传达）。
+func TestCoordinatorMinTTLCapability(t *testing.T) {
+	_, srv := newFakeLock(t)
+	c := newTestClient(t, srv)
+	if got := cluster.MinTTL(c.Coordinator()); got != MinSessionTTL {
+		t.Fatalf("cluster.MinTTL = %s, want %s", got, MinSessionTTL)
+	}
+}

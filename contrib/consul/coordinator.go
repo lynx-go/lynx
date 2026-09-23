@@ -21,8 +21,10 @@ type kvCoordinator struct {
 }
 
 // Coordinator 返回基于本 Client 的 cluster.Coordinator（KV + Session）。
-// 与 Registry 共用同一 Consul 连接与 token。Session TTL 最短 10s，
-// 短间隔任务请用 contrib/cluster-redis。
+// 与 Registry 共用同一 Consul 连接与 token。Session TTL 最短 10s（经
+// cluster.TTLAware / cluster.MinTTL 对调用方可见；schedule 的 Exclusive
+// 触发会自动把短 TTL 钳制到下限）；无 TTL 下限需求的短间隔任务仍推荐
+// contrib/cluster-redis。
 func (c *Client) Coordinator(opts ...cluster.Option) cluster.Coordinator {
 	return &kvCoordinator{c: c, opts: opts}
 }
@@ -31,6 +33,9 @@ func (c *Client) Coordinator(opts ...cluster.Option) cluster.Coordinator {
 func NewCoordinator(c *Client, opts ...cluster.Option) cluster.Coordinator {
 	return c.Coordinator(opts...)
 }
+
+// MinTTL 实现 cluster.TTLAware：Consul Session 的官方下限。
+func (s *kvCoordinator) MinTTL() time.Duration { return MinSessionTTL }
 
 func (s *kvCoordinator) Claim(ctx context.Context, name string, ttl time.Duration) (bool, error) {
 	_, err := s.createLock(ctx, name, ttl)
@@ -58,7 +63,7 @@ func (s *kvCoordinator) Acquire(ctx context.Context, name string, ttl time.Durat
 		ctx:     leaseCtx,
 		cancel:  cancel,
 	}
-	go l.renewLoop(sessionTTL(ttl))
+	go cluster.RunRenewLoop(l.ctx, l.cancel, cluster.RenewInterval(sessionTTL(ttl)), l.renew)
 	return l, true, nil
 }
 
@@ -68,17 +73,11 @@ func (s *kvCoordinator) createLock(ctx context.Context, name string, ttl time.Du
 	if err := s.c.checkOpen(); err != nil {
 		return "", err
 	}
-	if name == "" {
-		return "", cluster.ErrEmptyName
-	}
-	if ttl <= 0 {
-		return "", cluster.ErrInvalidTTL
+	if err := cluster.ValidateCall(ctx, name, ttl); err != nil {
+		return "", err
 	}
 	if ttl < MinSessionTTL {
 		return "", fmt.Errorf("%w: got %s", errTTLTooShort, ttl)
-	}
-	if err := ctx.Err(); err != nil {
-		return "", err
 	}
 	sttl := sessionTTL(ttl)
 	entry := &api.SessionEntry{
@@ -135,25 +134,10 @@ func (l *sessionLease) Release(ctx context.Context) error {
 	return err
 }
 
-func (l *sessionLease) renewLoop(ttl time.Duration) {
-	interval := ttl / 3
-	if interval < time.Second {
-		interval = time.Second
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-l.ctx.Done():
-			return
-		case <-t.C:
-			_, _, err := l.c.api.Session().Renew(l.session, nil)
-			if err != nil {
-				l.cancel()
-				return
-			}
-		}
-	}
+// renew 续期 Session；Session 失效（过期/销毁）时 Renew 返回错误。
+func (l *sessionLease) renew() error {
+	_, _, err := l.c.api.Session().Renew(l.session, nil)
+	return err
 }
 
 var (

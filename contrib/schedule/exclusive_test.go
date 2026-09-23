@@ -3,6 +3,7 @@ package schedule
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,6 +117,65 @@ func (e errCoordinator) Claim(ctx context.Context, name string, ttl time.Duratio
 
 func (e errCoordinator) Acquire(ctx context.Context, name string, ttl time.Duration) (cluster.Lease, bool, error) {
 	return nil, false, e.err
+}
+
+// minTTLCoord 包装 Coordinator 声明 TTL 下限（模拟 Consul Session ≥10s），
+// 并记录 Claim 实际收到的 ttl。
+type minTTLCoord struct {
+	cluster.Coordinator
+	min time.Duration
+
+	mu  sync.Mutex
+	got []time.Duration
+}
+
+func (m *minTTLCoord) MinTTL() time.Duration { return m.min }
+
+func (m *minTTLCoord) Claim(ctx context.Context, name string, ttl time.Duration) (bool, error) {
+	m.mu.Lock()
+	m.got = append(m.got, ttl)
+	m.mu.Unlock()
+	return m.Coordinator.Claim(ctx, name, ttl)
+}
+
+// TestExclusiveFireTTLClampedToCoordinatorMin：@every 1s 的触发 TTL 为
+// 间隔 + 1s = 2s，低于后端下限 10s 时必须钳制到下限（此前每次触发都撞
+// Consul errTTLTooShort 报错）。
+func TestExclusiveFireTTLClampedToCoordinatorMin(t *testing.T) {
+	var runs atomic.Int32
+	coord := &minTTLCoord{Coordinator: cluster.NewMemory(cluster.WithNamespace("sched-clamp")), min: 10 * time.Second}
+	s, err := NewScheduler(
+		[]Task{Exclusive(&testTask{name: "clamp", cron: "@every 1s", handler: func(ctx context.Context) error {
+			runs.Add(1)
+			return nil
+		}})},
+		WithLogger(discardLogger()),
+		WithCoordinator(coord),
+		WithLocation(time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = s.Start(ctx) }()
+	if !pollUntil(3*time.Second, 20*time.Millisecond, func() bool { return runs.Load() >= 1 }) {
+		cancel()
+		_ = s.Stop(context.Background())
+		t.Fatal("task did not run")
+	}
+	_ = s.Stop(context.Background())
+	cancel()
+
+	coord.mu.Lock()
+	defer coord.mu.Unlock()
+	if len(coord.got) == 0 {
+		t.Fatal("Claim never invoked")
+	}
+	for _, ttl := range coord.got {
+		if ttl != coord.min {
+			t.Fatalf("Claim ttl = %s, want clamped to %s", ttl, coord.min)
+		}
+	}
 }
 
 func TestExclusiveClaimErrorGoesToHandler(t *testing.T) {
