@@ -9,10 +9,11 @@ Lynx 目前为团队内部使用的 Go 微服务框架，计划对外推广开�
 **v1.0 完成标准：**
 
 - 测试齐全：核心包与主要 contrib 模块具备单元测试，CI 强制 `-race`（全部 7 模块）与覆盖率门槛（根与 5 个 contrib 均 70%，`_examples` 除外）
+      （v1.0 时点口径；现已扩至 11 模块/9 个 contrib，见 ci.yml）
 - 文档完整：GoDoc 全覆盖、`docs/` 教程补齐、示例自带 README
 - API 冻结：导出符号经过全量审查，v1.0 后保持向后兼容
 
-## Phase A — 还债（v0.8.0）
+## Phase A — 还债（计划 v0.8.0，实际随 v1.0.0 发布）
 
 目标：清掉存量 bug 与技术债，建立测试与 CI 安全网。
 
@@ -41,7 +42,7 @@ Lynx 目前为团队内部使用的 Go 微服务框架，计划对外推广开�
 
 - [x] 移除 `pkg/errors`（与根 `errors.go` 职责重叠，仅示例引用），示例改用标准错误处理
 
-## Phase B — 可观测性（v0.9.0）
+## Phase B — 可观测性（计划 v0.9.0，实际随 v1.0.0 发布）
 
 目标：让框架从"能跑"变成"能上线"。
 
@@ -78,7 +79,8 @@ v1.0 发布前全量审查（功能缺失/设计缺陷/实现缺陷）的修复�
 
 ## Phase F — 全量审查修复（v1.6.0，2026-08-25）
 
-全量架构与代码审查（83 项发现：2 Critical / 12 High / 24 Medium / 45+ Low），
+全量架构与代码审查（83 项发现：81 修复 + 2 约定不修；2 Critical /
+12 High / 24 Medium，Low 计数以 `docs/review-2026-08-25.md` 终态为准），
 两轮修复 + 复审闭环，逐项明细见 `docs/review-2026-08-25.md`，摘要见
 `CHANGELOG.md` v1.6.0。
 
@@ -99,14 +101,17 @@ v1.0 发布前全量审查（功能缺失/设计缺陷/实现缺陷）的修复�
 ## Phase E — v1.0 后的能力补全（v1.1+）
 
 目标：围绕"服务间调用、流量治理、运维诊断"补齐生产通用能力。
-v1.0 API 已冻结并保持向后兼容，本阶段只做增量（来源：2026-08-07
-封版评审的缺口分析，参照 kratos/go-zero 等成熟框架的能力面）。
+核心生命周期 API 自 v1.0 冻结；历史上另有若干破坏性更名（v1.10 钩子
+更名、v1.11 `Bind`→`Apply` 等），均在 CHANGELOG 明示且无兼容别名，
+政策见文末"原则"节。（来源：2026-08-07 封版评审的缺口分析，参照
+kratos/go-zero 等成熟框架的能力面。）
 
-### E1 生产通用刚需（v1.1~v1.2，按优先级排序）
+### E1 生产通用刚需（v1.1+，按优先级排序）
 
-- [x] **EventBus 一等化**（设计见 `docs/design-eventbus.md`）：核心 `eventbus`
-      （Bus/Topic/Event + wire/`Delivery`）；删 `contrib/pubsub`；`contrib/kafka`
-      → `contrib/watermill-kafka`；Watermill Bus 动态订阅 + `lynx.*` 内存路由锁
+- [x] **EventBus 一等化**（v1.5.0 落地，设计见 `docs/design-eventbus.md`）：
+      核心 `eventbus`（Bus/Topic/Event + wire/`Delivery`）；删 `contrib/pubsub`；
+      `contrib/kafka` → `contrib/watermill-kafka`；Watermill Bus 动态订阅 +
+      `lynx.*` 内存路由锁
 - [x] Debug/pprof 管理服务（v1.1.0，新包 `debug`）：挂载 `/debug/pprof/*`
       与 `/healthz`，缺省仅本机回环 `127.0.0.1:6060`；
       运行时日志级别调整未包含，移入 G1
@@ -133,7 +138,8 @@ v1.0 API 已冻结并保持向后兼容，本阶段只做增量（来源：2026-
   Registrar/Resolver + `contrib/consul` 生产后端，见 docs 第 7 章）；
   K8s 环境仍推荐 DNS/Service（ClusterIP + DrainTimeout），headless
   或裸机场景再启用注册发现
-- 数据层（DB/Redis）：保持"不碰数据层"定位，docs 明确说明
+- 数据层（DB/Redis）：保持"不碰数据层"定位（定位边界尚未写入 docs，
+  随 G3 文档债补齐）
 - 配置中心（apollo/nacos）：按团队需要以 contrib 提供
 - 脚手架 CLI（kratos-cli 类）：属开源推广工具，非框架组件
 - 动态插件机制：保持编译期 Service/ServiceFactory + contrib module 的
@@ -142,50 +148,93 @@ v1.0 API 已冻结并保持向后兼容，本阶段只做增量（来源：2026-
 ## Phase G — v1.13+ 能力补全（2026-09-22 制定）
 
 对账说明：v1.2~v1.12 的特性演进（watermill-kafka、registry/consul、
-schedule、telemetry、cluster、boot/registry `Apply` 更名、lynxtest 可测性
-套件等）未在本路线图逐期立 Phase，明细见 `CHANGELOG.md`。本阶段基于
-2026-09-22 的能力面盘点，延续"生命周期 + 通信 + 可观测"主干做补全，
-不开新的大模块。建议推进顺序：G1 → G5 → G2 → G3 → G4。
+cluster、boot/registry `Apply` 更名、lynxtest 可测性套件等）未在本
+路线图逐期立 Phase，明细见 `CHANGELOG.md`。本阶段基于 2026-09-22 的
+能力面盘点与三路独立复核，延续"生命周期 + 通信 + 可观测"主干做
+补全，不开新的大模块；对账同时回收了 v1.1.0 CHANGELOG 与代码注释中
+两个"定位 v1.2"的失联子承诺（按维度限流、服务器级默认 ErrorHandler，
+见 G2/G3）。推进建议：安全网与小项先行——G4 假件、WK-19、G5 小项
+可并行启动；主线 G1 → G2 → G3（内部运维价值优先）；开源推广启动则
+G3 提前，且先启动其"开源准备"子列。
 
-### G1 运行时可调性（服务跑起来之后还能调）
+### G1 运行时可调性与可观测（服务跑起来之后还能调、还能看）
 
-- [ ] 运行时日志级别调整：挂 `debug/` 服务端点（与 pprof 同域，复用
-      既有本机回环安全边界）
+- [ ] 运行时日志级别调整与构建信息：挂 `debug/` 服务端点（与 pprof
+      同域，复用既有本机回环安全边界），含 `/version` 构建信息
+      （ldflags 注入）
 - [ ] 配置热更新：viper WatchConfig 桥接 eventbus（发 `lynx.*` 主题，
-      沿用框架生命周期事件先例），订阅方自行选择响应粒度
+      沿用框架生命周期事件先例），订阅方自行选择响应粒度；
+      设计时注意与三级就绪解析（`lynx.Ready`，v1.12）的语义协同
 - [ ] Go runtime metrics 开箱接入：otel `instrument/runtime` 接进
-      `contrib/telemetry`（goroutine/GC/内存）
+      `contrib/telemetry`（goroutine/GC/内存），含容器 CPU 配额感知
+      （automaxprocs 类，K8s 配额下修正 GOMAXPROCS）
+- [ ] `/metrics` 一等挂载选项（当前需自行手挂 promhttp，
+      `contrib/telemetry` 注释亦如此指引，`_examples/http` 为手挂示例）
+- [ ] 总线消息 trace 上下文传播：消息头带 W3C traceparent，跨进程
+      Bus 追踪不断链（现仅传播 `request_id/user_id` 日志属性白名单）
+- [ ] telemetry 配置驱动与 OTLP：OTLP exporter/采样一等选项、
+      `NewFromConfig` 装配（对齐 bus:/kafka:/registry: 惯例）
+- [ ] Kafka consumer lag 指标导出（watermill-kafka 接入生产后的
+      第一监控诉求）
 
-### G2 出站韧性
+### G2 流量韧性（出站治理与入站 gRPC 对齐）
 
 - [ ] 熔断器：`client/http` 已有超时 + 重试退避，补熔断（E1 "按需"
       转正）
-- [ ] gRPC client 侧重试/负载策略评估（可先只出结论不动代码）
-
-### G3 开发体验
-
-- [ ] gRPC ServerReflection 开发期开关（grpcurl 调试可用）
-- [ ] `/metrics` 一等挂载选项（当前每个示例手写 promhttp 挂载）
-- [ ] contrib 文档债：9 个 contrib 模块补 README（对齐 `docs/` 教程
-      写法；watermill-kafka 可用 `_examples/bus-kafka` 改写）
+- [ ] 按路由/IP/用户维度限流（v1.1.0 CHANGELOG 承诺回收，现仅
+      服务器级单桶）；HTTP 请求体大小上限（MaxBytesReader 类
+      防御默认值）
+- [ ] gRPC server 侧限流/超时拦截器（与 HTTP 侧对齐，现仅
+      Recovery/Logging）
+- [ ] gRPC client 侧重试/负载策略评估（可先只出结论不动代码）；
+      `client/http` Transport/连接池调优逃生口
 - [ ] gRPC 服务端 request_id 还原闭环（client 已写入 metadata，
-      服务端还原目前标注为 backlog）
+      `client/grpc` 注释标注 backlog）
 
-### G4 测试面（延续 v1.12 lynxtest 方向）
+### G3 缺陷清偿与开源准备
 
-- [ ] schedule/bus 测试假件或时钟注入（测定时任务与消费者无需真等）
-- [ ] Kafka testcontainers 集成测试（WK-19，Phase F 遗留承接），
-      模式沉淀为 contrib 可复用的测试辅助
+缺陷清偿（用户可感知）：
 
-### G5 存量质量债（Phase F 遗留转正）
+- [ ] 文档与发布卫生债：9 个 contrib 模块补 README（对齐 `docs/`
+      教程写法；watermill-kafka 可用 `_examples/bus-kafka` 改写）；
+      `_examples/bus` 补 README（v1.5.0 新增示例漏配）；
+      `contrib/watermill` 补 LICENSE（9 个 contrib 中唯一缺失）；
+      docs 补定位边界说明（数据层不做等）
+- [ ] 服务器级默认 ErrorHandler Option（v1.1.0 承诺，
+      `server/http/errors.go` 注释自标待做）
+- [ ] docs 写明 gRPC reflection 常开的取舍（现 NewServer 即注册、
+      无开关；开源后必被问及）
 
-- [ ] Resolver 订阅 API：消除 gRPC 发现 5s 轮询
-- [ ] command 健康等待上界可配化
+开源准备（对外推广启动时优先）：
+
+- [ ] 开源协作基建：CONTRIBUTING.md（面向人的贡献指南，CLAUDE.md
+      面向 agent 不能替代）、SECURITY.md、issue/PR 模板
+      （`.github/` 目前仅 CI）
+- [ ] 若面向国际社区：文档/README 英文化（战略决策，视推广目标
+      而定，另需评估双语维护成本）
+
+### G4 测试与安全网（延续 v1.12 lynxtest 方向）
+
+- [ ] schedule/bus 测试假件或时钟注入（G1 配置热更新的测试前置，
+      建议与 G1 同期或先行）
+- [ ] Kafka testcontainers 集成测试（WK-19，Phase F 遗留承接，
+      已积压月余，建议尽早），模式沉淀为 contrib 可复用的测试辅助
+- [ ] CI 增加 govulncheck 依赖漏洞扫描（开源后供应链关注度陡增，
+      v1.10.0 的 grpc CVE 修复说明风险面真实）
+
+### G5 存量改进（Phase F 遗留转正）
+
+- [ ] Resolver 订阅 API：消除 gRPC 发现 5s 轮询（跨 registry 与
+      gRPC resolver 的设计项，先出设计再动手）
+- [ ] command 健康等待上界可配化（小项，随手带走不占阶段位）
 
 ### 按需 contrib（只立原则，不立项）
 
-etcd registry、Nacos/Apollo 配置中心、RabbitMQ/NATS transport 等：
-有真实使用需求再以 contrib 收录，不做能力面竞赛。
+etcd registry、Nacos/Apollo 配置中心、RabbitMQ/NATS transport、
+认证/鉴权中间件（JWT/API-key/服务间身份，middleware 扩展点已具备）、
+Outbox 发送盒与 DLQ 死信转投（总线故事的自然延伸，watermill 生态有
+forwarder 组件）、CORS/gzip 等通用中间件、OTLP Logs（可观测三支柱
+缺一）：有真实使用需求再以 contrib 收录，不做能力面竞赛。
 
 ## 原则
 
@@ -193,3 +242,9 @@ etcd registry、Nacos/Apollo 配置中心、RabbitMQ/NATS transport 等：
 - 每修一个 bug 尽量配一个回归测试
 - 保持核心精简：Lynx 的价值在生命周期与服务抽象，不做大而全
 - contrib 按需收录：有真实需求才新增 contrib 模块，不做 catalogue 竞赛
+- 破坏性变更政策：核心生命周期 API 保持稳定；确需破坏性更名时，
+  CHANGELOG 明示（不带兼容别名）、示例与 docs 同步更新，集中在
+  minor 版本发布并经评审
+- ROADMAP 随版对账：每次发版时同步勾选/更新对应条目，避免规划文档
+  与代码现状脱节（2026-08-25 后曾滞后月余，2026-09-22 对账时 E1
+  多项已实现未勾选）
