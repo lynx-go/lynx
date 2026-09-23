@@ -24,6 +24,9 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"fmt"
+
+	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"sync/atomic"
 
 	"github.com/lynx-go/lynx"
@@ -47,6 +50,9 @@ type Options struct {
 	res *resource.Resource
 	// stdoutTrace 标记开发调试：无自定义 exporter 时使用 stdout pretty print。
 	stdoutTrace bool
+	// runtimeMetrics 标记是否注册 Go runtime 指标（goroutine/GC/内存，
+	// otel runtime instrument），缺省开启；经 WithoutRuntimeMetrics 关闭。
+	runtimeMetrics bool
 }
 
 // Option 用于配置 telemetry 服务。
@@ -89,6 +95,16 @@ func WithResource(r *resource.Resource) Option {
 	}
 }
 
+// WithoutRuntimeMetrics 关闭 Go runtime 指标注册（goroutine/GC/内存）。
+// 缺省开启：runtime instrument 挂在 MeterProvider 上随指标管线一并
+// 输出，零配置获得进程级可观测基线。注意：进程的 CPU 配额感知
+// （容器环境 GOMAXPROCS 修正）由 Go 1.25+ runtime 内建，与本选项无关。
+func WithoutRuntimeMetrics() Option {
+	return func(o *Options) {
+		o.runtimeMetrics = false
+	}
+}
+
 // New 创建托管 OTel 生命周期的服务：Init 创建 provider 并设置为 otel
 // 全局值，Start 阻塞至应用关闭，Stop 自动 flush 并 shutdown。
 //
@@ -96,7 +112,8 @@ func WithResource(r *resource.Resource) Option {
 // 否则拿到的是 noop meter。
 func New(opts ...Option) lynx.Service {
 	o := &Options{
-		propagator: propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}),
+		propagator:     propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}),
+		runtimeMetrics: true,
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -145,6 +162,14 @@ func (c *otelService) Init(ctx lynx.AppContext) error {
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
 	otel.SetTextMapPropagator(options.propagator)
+	// Go runtime 指标（goroutine/GC/内存）挂到本服务的 MeterProvider：
+	// 在 provider 设置之后注册，业务指标与 runtime 指标同一管线输出。
+	if options.runtimeMetrics {
+		if err := otelruntime.Start(otelruntime.WithMeterProvider(mp)); err != nil {
+			c.inited.Store(false)
+			return fmt.Errorf("register runtime metrics: %w", err)
+		}
+	}
 	c.tp, c.mp = tp, mp
 	return nil
 }

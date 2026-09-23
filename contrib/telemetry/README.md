@@ -12,6 +12,7 @@ import "github.com/lynx-go/lynx/contrib/telemetry"
 - `Init` 创建 provider 并设置为 otel 全局值（`otel.SetTracerProvider` / `otel.SetMeterProvider` / `otel.SetTextMapPropagator`，telemetry.go:145-147）——有意的全局副作用；重复 Init 返回错误（telemetry.go:127-129）。
 - `Start` 阻塞至应用关闭（actor 语义，telemetry.go:153）；`Stop` 自动 flush 并 shutdown，错误经 `lynx.ShutdownErrors` 聚合返回（telemetry.go:166-178）。
 - 默认导出（newProviders，telemetry.go:189-219）：noop trace exporter（span 直接丢弃，生产忘配 exporter 不会向 stdout 倒 trace）+ Prometheus metric reader + W3C TraceContext/Baggage propagator。Prometheus 指标需自行挂载 `/metrics`（如 `promhttp.Handler()`）。
+- Go runtime 指标（goroutine/GC/内存）默认注册到 MeterProvider，随指标管线一并输出，零配置获得进程级可观测基线；`WithoutRuntimeMetrics()` 关闭。容器环境的 CPU 配额感知（GOMAXPROCS 修正）由 Go 1.25+ runtime 内建，无需 automaxprocs。
 - `Init(ctx)` 在 ctx 非 nil 且未显式 `WithResource` 时，自动以应用名（`lynx.Meta(ctx.Context()).Name`）构建 `service.name` 资源属性（telemetry.go:131-137）。
 
 选项（telemetry.go:41-90）：
@@ -23,6 +24,7 @@ import "github.com/lynx-go/lynx/contrib/telemetry"
 | `WithMetricReader(reader sdkmetric.Reader)` | 自定义 metric reader（如 OTLP exporter），默认 Prometheus |
 | `WithPropagator(p propagation.TextMapPropagator)` | 自定义 propagator，默认 TraceContext + Baggage 组合 |
 | `WithResource(r *resource.Resource)` | OTel Resource（如 service.name），nil 时 SDK 默认并自动附加应用名 |
+| `WithoutRuntimeMetrics()` | 关闭 Go runtime 指标注册（goroutine/GC/内存，缺省开启） |
 
 ## 快速开始
 
