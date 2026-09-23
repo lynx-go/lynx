@@ -72,6 +72,10 @@ Server implementations (within main module):
 - `./server/http` - HTTP server using stdlib `net/http` with otelhttp instrumentation
 - `./server/grpc` - gRPC server with interceptors
 
+Client implementations (within main module):
+- `./client/http` - HTTP client: otel instrumentation, request_id/user_id propagation, timeout + retry (backoff/v5), optional circuit breaker (`WithCircuitBreaker`, gobreaker/v2 wrapped behind lynx-owned options)
+- `./client/grpc` - gRPC client: otel, request_id/user_id metadata propagation, per-RPC timeout
+
 Each contrib module has its own `go.mod` with local replace directives pointing to `../../` for the main lynx module.
 
 ## Architecture

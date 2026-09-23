@@ -42,6 +42,9 @@ type Options struct {
 	Logger *slog.Logger
 	// Retry 非 nil 时启用重试（WithRetry 装配）。
 	Retry *RetryOptions
+	// CircuitBreaker 非 nil 时启用出站熔断（WithCircuitBreaker 装配，
+	// 集成于重试之外层，见 circuitbreaker.go）。
+	CircuitBreaker *CircuitBreakerOptions
 	// ClientOptions 透传配置底层 *http.Client 的逃生口。
 	ClientOptions func(*http.Client)
 }
@@ -145,6 +148,15 @@ func WithClientOptions(fn func(*http.Client)) Option {
 type Client struct {
 	client *http.Client
 	o      Options
+	// cb 是熔断实例（CircuitBreaker 启用时于 New 构造），实现类型
+	// 不外泄（见 circuitbreaker.go）。
+	cb twoStepBreaker
+}
+
+// twoStepBreaker 是熔断的两步接口抽象（Allow 判定 + done 上报），
+// 供 Client 集成与测试替身使用；生产实现为 gobreaker 封装。
+type twoStepBreaker interface {
+	Allow() (func(error), error)
 }
 
 // New 创建 HTTP 客户端，零配置可用：整体超时 30s、不重试；
@@ -174,7 +186,11 @@ func New(opts ...Option) *Client {
 	if options.ClientOptions != nil {
 		options.ClientOptions(hc)
 	}
-	return &Client{client: hc, o: options}
+	c := &Client{client: hc, o: options}
+	if options.CircuitBreaker != nil {
+		c.cb = newCircuitBreaker(*options.CircuitBreaker, options.Logger)
+	}
+	return c
 }
 
 // Do 发送请求并返回响应，行为约定如下：
@@ -212,7 +228,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		}
 	}
 	propagateAttrs(req)
-	resp, err := c.do(req)
+	resp, err := c.doBounded(req)
 	if stop == nil {
 		return resp, err
 	}
