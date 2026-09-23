@@ -124,8 +124,13 @@ func WithPublishMarshaler(m Marshaler) PublishOption {
 // SubscribeOptions 是订阅行为的配置项。
 type SubscribeOptions struct {
 	// HandlerName 在 Bus 内全局唯一；为空时实现应回退为 topic。
-	HandlerName     string
-	AutoAck         bool
+	HandlerName string
+	// AutoAck 订阅即确认：先 Ack 后执行 handler，handler 错误仅记日志——
+	// 与重试/重投互斥，两种 Bus 一致（内存侧等于不重试即丢弃；持久化侧
+	// 外层 Retry 看到的一直是成功，终态失败计数也不累积）。仅用于可容忍
+	// 丢失的旁路事件。
+	AutoAck bool
+	// ContinueOnError 处理失败仍确认，不再重试/重投（丢弃语义，两种 Bus 一致）。
 	ContinueOnError bool
 	Group           string
 	Instances       int
@@ -172,12 +177,14 @@ func WithHandlerName(name string) SubscribeOption {
 	return subscribeOptionFunc(func(o *SubscribeOptions) { o.HandlerName = name })
 }
 
-// WithAutoAck 订阅即确认，处理失败不影响 Ack。
+// WithAutoAck 订阅即确认：先 Ack 后执行 handler，错误仅记日志——与重试/
+// 重投互斥（两种 Bus 一致，见 SubscribeOptions.AutoAck）。仅用于可容忍
+// 丢失的旁路事件。
 func WithAutoAck() SubscribeOption {
 	return subscribeOptionFunc(func(o *SubscribeOptions) { o.AutoAck = true })
 }
 
-// WithContinueOnError 处理失败仍确认，不再重投。
+// WithContinueOnError 处理失败仍确认，不再重试/重投（丢弃语义，两种 Bus 一致）。
 func WithContinueOnError() SubscribeOption {
 	return subscribeOptionFunc(func(o *SubscribeOptions) { o.ContinueOnError = true })
 }

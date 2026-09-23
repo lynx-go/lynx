@@ -276,7 +276,7 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 		// 需 --log-level=debug 才可见（WK-18 语义澄清）。
 		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", raw.Key)
 	}
-	return t.Publish(ctx, key, cloneRawEvent(raw))
+	return t.Publish(ctx, key, eventbus.CloneRawEvent(raw))
 }
 
 // PublishRaw 原始发布。
@@ -701,18 +701,6 @@ func FromMessage(msg *message.Message) *eventbus.RawEvent {
 	meta := map[string]string{}
 	maps.Copy(meta, msg.Metadata)
 	return eventbus.DecodeWireMetadata(msg.UUID, msg.Payload, meta)
-}
-
-func cloneRawEvent(e *eventbus.RawEvent) *eventbus.RawEvent {
-	cp := *e
-	if e.Headers != nil {
-		cp.Headers = make(map[string]string, len(e.Headers))
-		maps.Copy(cp.Headers, e.Headers)
-	}
-	if e.Payload != nil {
-		cp.Payload = append([]byte(nil), e.Payload...)
-	}
-	return &cp
 }
 
 type levelFilterHandler struct {

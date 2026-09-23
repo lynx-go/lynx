@@ -447,46 +447,9 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts eventbus.S
 			chans = append(chans, ch)
 		}
 	}
-	return mapDeliveries(subCtx, fanIn(subCtx, chans, cancel), topic), nil
-}
-
-// mapDeliveries 将 watermill 消息 channel 转为 Delivery channel：
-// Event 填入逻辑 topic；Ack/Nack 转达原 *message.Message（Kafka offset 提交依赖此路径）。
-// WK-05：收发两侧均带 ctx 退出分支——下游停读（返回 channel 无人消费）
-// 时裸发送会永久阻塞 goroutine 且 in-flight 消息的确认丢失；ctx 取消时
-// 对手中消息 Nack 交还 Transport（真实 Kafka 侧 ResendLoop 已随自身 ctx
-// 退出，Nack 不会引发再次重投），随后关闭输出释放下游。
-func mapDeliveries(ctx context.Context, in <-chan *message.Message, logicalTopic string) <-chan eventbus.Delivery {
-	out := make(chan eventbus.Delivery)
-	go func() {
-		defer close(out)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case msg, ok := <-in:
-				if !ok {
-					return
-				}
-				raw := lynxwatermill.FromMessage(msg)
-				if raw.Topic == "" {
-					raw.Topic = logicalTopic
-				}
-				wm := msg
-				select {
-				case out <- eventbus.Delivery{
-					Event: raw,
-					Ack:   func() { _ = wm.Ack() },
-					Nack:  func() { wm.Nack() },
-				}:
-				case <-ctx.Done():
-					wm.Nack()
-					return
-				}
-			}
-		}
-	}()
-	return out
+	// 投递泵与 watermill MemoryTransport 共用 PumpMessages（§5.1 单一映射点）：
+	// 消息还原、逻辑 topic 回填、Ack/Nack 转达与下游停读防护（WK-05）一处实现。
+	return lynxwatermill.PumpMessages(subCtx, fanIn(subCtx, chans, cancel), topic), nil
 }
 
 // maxConsumerInstances 是单次订阅展开的实例数上限（WK-15）：每个实例是

@@ -42,7 +42,8 @@ func (t *MemoryTransport) Publish(ctx context.Context, topic string, e *eventbus
 	return t.pubSub.Publish(topic, msg)
 }
 
-// Subscribe 订阅，返回带 Ack/Nack 的 Delivery（转达到底层 gochannel 消息）。
+// Subscribe 订阅，返回带 Ack/Nack 的 Delivery（转达到底层 gochannel 消息；
+// 投递泵与 watermill-kafka 共用 PumpMessages）。
 func (t *MemoryTransport) Subscribe(ctx context.Context, topic string, opts eventbus.SubscribeOptions) (<-chan eventbus.Delivery, error) {
 	// 同 Publish：首次使用置位运行标志（WK-04）。
 	t.running.Store(true)
@@ -50,35 +51,7 @@ func (t *MemoryTransport) Subscribe(ctx context.Context, topic string, opts even
 	if err != nil {
 		return nil, err
 	}
-	out := make(chan eventbus.Delivery)
-	go func() {
-		defer close(out)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case msg, ok := <-ch:
-				if !ok {
-					return
-				}
-				raw := FromMessage(msg)
-				raw.Topic = topic
-				wm := msg
-				d := eventbus.Delivery{
-					Event: raw,
-					Ack:   func() { _ = wm.Ack() },
-					Nack:  func() { wm.Nack() },
-				}
-				select {
-				case out <- d:
-				case <-ctx.Done():
-					wm.Nack()
-					return
-				}
-			}
-		}
-	}()
-	return out, nil
+	return PumpMessages(ctx, ch, topic), nil
 }
 
 // Close 关闭底层 gochannel。

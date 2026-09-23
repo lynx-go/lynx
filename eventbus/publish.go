@@ -10,6 +10,27 @@ import (
 	"github.com/lynx-go/lynx/logging"
 )
 
+// CloneRawEvent 深拷贝 RawEvent：Headers 一律克隆为非 nil，Payload 复制。
+// Bus / Transport 实现转发前隔离副本使用（内存 dispatch 逐订阅者克隆、
+// Watermill Bus 发布前克隆）。
+func CloneRawEvent(e *RawEvent) *RawEvent {
+	cp := *e
+	cp.Headers = cloneHeaders(e.Headers)
+	if e.Payload != nil {
+		cp.Payload = append([]byte(nil), e.Payload...)
+	}
+	return &cp
+}
+
+func cloneHeaders(h map[string]string) map[string]string {
+	if h == nil {
+		return map[string]string{}
+	}
+	cp := make(map[string]string, len(h))
+	maps.Copy(cp, h)
+	return cp
+}
+
 // BuildRawEvent 是发布侧 RawEvent 组装的唯一归属（内存 Bus 与 Watermill Bus
 // 共用，是设计文档 §5.1「单一映射点」在 Bus 层的延伸）：
 // payload 类型分派（*RawEvent 透传 / []byte / nil / 类型化经 Marshaler）、

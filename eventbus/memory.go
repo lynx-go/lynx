@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -161,10 +160,10 @@ func (b *memoryBus) dispatch(ctx context.Context, ev *RawEvent) error {
 		return nil
 	}
 	for _, sub := range subs {
-		// 非阻塞投递，满缓冲时丢弃并告警（状态协同不该反压发布者，
-		// at-most-once 语义见 Bus 接口注释）；日志带事件 ID 便于对账。
-		select {
-		case sub.ch <- cloneRawEvent(ev):
+			// 非阻塞投递，满缓冲时丢弃并告警（状态协同不该反压发布者，
+			// at-most-once 语义见 Bus 接口注释）；日志带事件 ID 便于对账。
+			select {
+			case sub.ch <- CloneRawEvent(ev):
 		default:
 			b.logger.ErrorContext(ctx, "bus dispatch dropped event: subscriber buffer full",
 				"topic", ev.Topic, "handler", sub.handlerName, "id", ev.ID)
@@ -283,24 +282,6 @@ func (b *memoryBus) handleWithRetry(ctx context.Context, sub *subscriber, ev *Ra
 		}
 	}
 	b.logger.ErrorContext(hCtx, "handler failed after retries", "error", err, "handler", sub.handlerName)
-}
-
-func cloneHeaders(h map[string]string) map[string]string {
-	if h == nil {
-		return map[string]string{}
-	}
-	cp := make(map[string]string, len(h))
-	maps.Copy(cp, h)
-	return cp
-}
-
-func cloneRawEvent(e *RawEvent) *RawEvent {
-	cp := *e
-	cp.Headers = cloneHeaders(e.Headers)
-	if e.Payload != nil {
-		cp.Payload = append([]byte(nil), e.Payload...)
-	}
-	return &cp
 }
 
 var _ Bus = (*memoryBus)(nil)
