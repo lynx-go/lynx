@@ -99,3 +99,33 @@ jobs:
       - name: golangci-lint
         working-directory: ${{ matrix.module }}
         run: golangci-lint run
+
+  # 依赖漏洞扫描（ROADMAP G4）：govulncheck 只在"符号可达"漏洞时报错，
+  # module 级不可达漏洞仅提示。单 job 串行遍历全部模块，与 mise 任务
+  # vuln 同源；工具版本钉 v1.8.0（需 go >= 1.26.0，满足 mise 钉版）。
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 工具链唯一来源：mise.toml（go 1.26.5）
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.9.5
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-vuln-${{ hashFiles('go.work.sum', '**/go.sum') }}
+          restore-keys: go-${{ runner.os }}-vuln-
+
+      - name: govulncheck
+        run: |
+          for module in . _examples contrib/watermill contrib/watermill-kafka contrib/telemetry contrib/schedule contrib/zap contrib/registry contrib/consul contrib/cluster contrib/cluster-redis; do
+            echo "::group::govulncheck $module"
+            ( cd "$module" && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./... )
+            echo "::endgroup::"
+          done
