@@ -8,7 +8,8 @@
 # 发布流程见 RELEASE.md。
 
 [tools]
-go = "1.26.5"              # go.mod / go.work 的 `go 1.26.5`
+go = "1.26.8"              # ≥ go.mod/go.work 的 1.26.5 指令；1.26.8 修复
+                           # stdlib 漏洞（net/http 等 6 项，govulncheck 驱动升级）
 golangci-lint = "2.12.2"   # 与 CI 原钉版一致
 
 [task_config]
