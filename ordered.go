@@ -8,10 +8,7 @@ import (
 	"time"
 )
 
-const (
-	defaultOrderedReadyTimeout = 10 * time.Second
-	orderedHealthPollInterval  = 10 * time.Millisecond
-)
+const defaultOrderedReadyTimeout = 10 * time.Second
 
 // OrderedServices 将多个服务包装成一个 Service。
 // Init / Start 按传入顺序执行；Stop 逆序。允许嵌套。
@@ -125,67 +122,10 @@ func (g *orderedServices) Start(ctx context.Context) error {
 }
 
 func (g *orderedServices) waitReady(ctx context.Context, s Service, startErr chan error) error {
-	if r, ok := s.(Ready); ok {
-		return waitReadyChan(ctx, r.Ready(), startErr)
-	}
-	if c, ok := s.(Checker); ok {
-		return g.waitHealthy(ctx, s, c, startErr)
-	}
-	// 无 Ready / Checker：已 invoke 即继续。若 Start 已立刻失败则上抛（放回供收尾等待）。
-	return peekStartErr(startErr)
-}
-
-func waitReadyChan(ctx context.Context, ready <-chan struct{}, startErr chan error) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-startErr:
-		startErr <- err
-		return err
-	case <-ready:
-		// 成功路径：Ready 关闭后 Start 仍阻塞在 Serve。失败路径不得关闭 Ready。
-		return peekStartErr(startErr)
-	}
-}
-
-// peekStartErr 非阻塞读取 Start 结果并放回，供后续收尾等待仍能收到。
-func peekStartErr(startErr chan error) error {
-	select {
-	case err := <-startErr:
-		startErr <- err
-		return err
-	default:
-		return nil
-	}
-}
-
-func (g *orderedServices) waitHealthy(ctx context.Context, s Service, c Checker, startErr chan error) error {
-	deadline := time.Now().Add(g.timeout())
-	ticker := time.NewTicker(orderedHealthPollInterval)
-	defer ticker.Stop()
-
-	var last error
-	for {
-		if err := peekStartErr(startErr); err != nil {
-			return err
-		}
-		last = c.CheckHealth()
-		if last == nil {
-			return peekStartErr(startErr)
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("lynx: OrderedServices %q: waiting for %q health timed out after %s: %w",
-				g.name, s.Name(), g.timeout(), last)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case err := <-startErr:
-			startErr <- err
-			return err
-		case <-ticker.C:
-		}
-	}
+	return awaitServiceReady(ctx, s, g.timeout(), startErr, func(last error) error {
+		return fmt.Errorf("lynx: OrderedServices %q: waiting for %q health timed out after %s: %w",
+			g.name, s.Name(), g.timeout(), last)
+	})
 }
 
 func (g *orderedServices) Stop(ctx context.Context) error {

@@ -1010,19 +1010,15 @@ func newLynx(o *Options) (App, error) {
 	}()
 	// 就绪等待受 BusReadyTimeout 总预算约束（默认 10s，可经
 	// WithBusReadyTimeout 配置）：此前硬编码 1 秒会让 Watermill+Kafka 等
-	// 慢启动后端在正常部署下构造失败。轮询间隔保持 10ms 量级——后端
-	// 就绪无通知机制，忙轮询是唯一手段；预算耗尽仍不健康则快失败，
-	// 优于带病运行。
-	readyDeadline := time.Now().Add(o.BusReadyTimeout)
-	for time.Now().Before(readyDeadline) {
-		if app.bus.CheckHealth() == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err := app.bus.CheckHealth(); err != nil {
+	// 慢启动后端在正常部署下构造失败。轮询机制与 OrderedServices 共用
+	// ready.go 的 awaitHealthy（无 startErr 交错、纯轮询）；预算耗尽仍不
+	// 健康则快失败，优于带病运行。
+	if err := awaitHealthy(context.Background(), app.bus, o.BusReadyTimeout, readinessPollInterval, nil,
+		func(last error) error {
+			return fmt.Errorf("lynx: bus failed to become ready within %s: %w", o.BusReadyTimeout, last)
+		}); err != nil {
 		busCancel()
-		return nil, fmt.Errorf("lynx: bus failed to become ready within %s: %w", o.BusReadyTimeout, err)
+		return nil, err
 	}
 	app.publishEvent(eventbus.TopicServiceStarted, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
 	// WithIsolated：跳过进程级全局注册，同进程多 App（测试/宿主内嵌）
