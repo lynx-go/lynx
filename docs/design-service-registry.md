@@ -44,7 +44,7 @@ Lynx 当前把进程生命周期、健康检查和关停排水（`DrainTimeout`�
 | 监听地址 | HTTP 默认 `:8080`，gRPC 默认 `:9090`，均在 `Start` 内 `net.Listen`。gRPC 已把 `listener` 存进未导出字段，但**没有** `Addr()`；HTTP **不保存** listener，也没有 `Addr()` | `server/http/server.go`、`server/grpc/server.go` |
 | 实际地址先例 | `debug.Service.Addr()` 在 `Start` 后返回 `listener.Addr()`，支持 `:0` | `debug/debug.go` |
 | 健康检查 | `lynx.Checker`；HTTP `/healthz/liveness`（不消费检查器）与 `/healthz/readiness`；gRPC `grpc.health.v1` | `health.go`、`server/http`、`server/grpc` |
-| 关停排水 | `WithDrainTimeout`：置位内部 `drainChecker` → readiness 立即 503 → 睡眠 → `cancelCtx` → `OnStop` → 各服务 `Stop` | `drain.go`、`lynx.go` `Run()` |
+| 关停排水 | `WithDrainTimeout`：置位内部 `drainChecker` → readiness 立即 503 → 睡眠 → `cancelCtx` → `OnStop` → 各服务 `Stop` | `shutdown.go`（drainChecker 与关停钩子执行器）、`lynx.go` `Run()` |
 | 出站调用 | `client/http` 吃绝对 URL；`client/grpc.Dial(target)` 吃静态 target；无 resolver | `client/http/client.go`、`client/grpc/client.go` |
 | 多实例 | `ServiceFactory` 按 `FactoryOptions.Instances` 展开，典型用途是 Kafka 消费组，不是对外服务 | `service.go`、`lynx.go` `addServiceFactories` |
 | 可选服务先例 | `kafka.NewFromConfig`（`contrib/watermill-kafka`）段缺失返回 `(nil, nil)`，调用方不得 `Register` | `contrib/watermill-kafka/fromconfig.go` |

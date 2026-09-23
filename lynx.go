@@ -685,41 +685,8 @@ func (app *lynx) addServices(services ...Service) error {
 	return nil
 }
 
-// stopServiceBounded 有界停止单个服务：超过 StopTimeout 后记录错误并继续，
-// 防止挂死的服务 Stop 阻塞整个关停流程。
-// 注意：超时后服务 Stop 仍在后台 goroutine 运行，若其永久阻塞则该 goroutine
-// 随之泄漏（可接受的取舍——保证关停流程不被挂死优先）。
-// 服务 Stop 返回的错误与超时错误写入 shutdownErrors，由 Run() 统一上抛，
-// 使调用方（如 K8s）能感知服务级关停失败。
-func (app *lynx) stopServiceBounded(ctx context.Context, service Service) {
-	done := make(chan error, 1)
-	go func() {
-		done <- service.Stop(ctx)
-	}()
-	var stopErr error
-	select {
-	case stopErr = <-done:
-	case <-time.After(app.o.StopTimeout):
-		stopErr = fmt.Errorf("service %q stop timed out after %v", service.Name(), app.o.StopTimeout)
-		app.logger.ErrorContext(app.ctx, "service stop timed out",
-			"service", service.Name(), "timeout", app.o.StopTimeout.String())
-	}
-	if stopErr != nil {
-		app.logger.ErrorContext(app.ctx, "service stop error",
-			"service", service.Name(), "error", stopErr)
-		app.shutdownErrors.Add(stopErr)
-	}
-}
-
-// stopServices 逆序停止已注册服务，用于 Init/OnPreStart 失败路径的资源清理。
-func (app *lynx) stopServices(ctx context.Context) {
-	app.mu.Lock()
-	svcs := append([]Service(nil), app.services...)
-	app.mu.Unlock()
-	for i := len(svcs) - 1; i >= 0; i-- {
-		app.stopServiceBounded(ctx, svcs[i])
-	}
-}
+// stopServiceBounded / stopServices / 排水与各阶段钩子执行器已收敛至
+// shutdown.go（关停流水线的唯一归属）。
 
 func (app *lynx) Run() error {
 	// post-stop 收尾最先注册（defer LIFO 最后执行）：晚于本函数内注册的
@@ -935,141 +902,21 @@ func (app *lynx) runOnPostStartHooks(ctx context.Context) error {
 	}
 	app.Logger().Info("run on-post-start hooks")
 	for _, fn := range hooks {
-		done := make(chan error, 1)
-		go func() { done <- fn(ctx) }()
-		select {
-		case err := <-done:
-			if err != nil && ctx.Err() == nil {
-				return err
-			}
-		case <-ctx.Done():
+		hookErr, interrupted := callBounded(ctx, func() error { return fn(ctx) })
+		if interrupted {
 			app.logger.WarnContext(app.ctx, "on-post-start hooks interrupted by shutdown")
 			return nil
+		}
+		if hookErr != nil && ctx.Err() == nil {
+			return hookErr
 		}
 	}
 	<-ctx.Done()
 	return nil
 }
 
-// runPostStopHooks 逆序执行 OnPostStop hooks：进程收尾清理（关闭
-// DB/Redis 连接池等）。取走即清空——Close() 的兜底路径与 Run 的 defer
-// 路径不会重复执行。总预算 CleanupTimeout：单个钩子挂起时记日志跳过
-// 剩余钩子（其 goroutine 仍在后台运行，与 stopServiceBounded 相同的
-// 取舍——不阻塞进程退出优先）。钩子签名为 CleanupFunc（无错误返回）：
-// 终局阶段错误没有消费者，实现方自行记日志。
-func (app *lynx) runPostStopHooks() {
-	app.mu.Lock()
-	fns := app.onPostStops
-	app.onPostStops = nil
-	app.mu.Unlock()
-	if len(fns) == 0 {
-		return
-	}
-	app.Logger().Info("run on-post-stop hooks")
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), app.o.CleanupTimeout)
-	defer cancel()
-loop:
-	for i := len(fns) - 1; i >= 0; i-- {
-		done := make(chan struct{})
-		go func(fn CleanupFunc) {
-			fn()
-			close(done)
-		}(fns[i])
-		select {
-		case <-done:
-		case <-ctx.Done():
-			// 倒序执行：fns[i] 超时，尚未执行的 fns[0..i-1] 共 i 个被跳过。
-			app.logger.ErrorContext(app.ctx, "on-post-stop hook did not complete within cleanup timeout",
-				"timeout", app.o.CleanupTimeout.String(), "skipped", i)
-			break loop
-		}
-	}
-	app.Logger().Info("on-post-stop hooks finished", "elapsed", time.Since(start).Round(time.Millisecond).String())
-}
-
-// hasDrainHooks 报告是否注册了 OnDrain 钩子。无钩子时关停路径整段跳过
-// 钩子执行，不增加任何等待（回归红线：默认关停上界与既有版本一致）。
-func (app *lynx) hasDrainHooks() bool {
-	app.mu.Lock()
-	defer app.mu.Unlock()
-	return len(app.onDrains) > 0
-}
-
-// runOnDrainHooks 在排水窗口预算内顺序执行所有 OnDrain hooks（ctx 由
-// shutdown 闭包在窗口开启时创建，deadline 即窗口结束）。语义对齐
-// runOnPreStopHooks：单个 hook 阻塞不会挂起整个关闭流程，超时记录错误
-// 并继续；钩子错误不打断排水。不传没有 deadline 的 app.ctx。
-func (app *lynx) runOnDrainHooks(ctx context.Context) error {
-	app.mu.Lock()
-	hooks := append([]HookFunc(nil), app.onDrains...)
-	app.mu.Unlock()
-
-	app.Logger().Info("run on-drain hooks")
-
-	var shutdownErrors ShutdownErrors
-	for _, fn := range hooks {
-		if ctx.Err() != nil {
-			shutdownErrors.Add(errors.New("drain hook timeout exceeded while running on-drain hooks"))
-			break
-		}
-		done := make(chan error, 1)
-		go func() { done <- fn(ctx) }()
-		select {
-		case hookErr := <-done:
-			if hookErr != nil {
-				app.logger.ErrorContext(app.ctx, "on-drain hook called error", "error", hookErr)
-				shutdownErrors.Add(hookErr)
-			}
-		case <-ctx.Done():
-			app.logger.ErrorContext(app.ctx, "on-drain hook did not complete within drain hook timeout")
-			shutdownErrors.Add(errors.New("on-drain hook timed out"))
-		}
-	}
-	if shutdownErrors.HasErrors() {
-		app.logger.ErrorContext(app.ctx, "drain hooks completed with errors", "errors", shutdownErrors.Error())
-		return &shutdownErrors
-	}
-	return nil
-}
-
-// runOnPreStopHooks 在 ShutdownTimeout 内顺序执行所有 OnPreStop hooks。
-// 单个 hook 阻塞不会挂起整个关闭流程：超过时限后记录错误并继续。
-// 收集到的错误（含超时）以 *ShutdownErrors 返回，由 Run() 上抛给调用方。
-func (app *lynx) runOnPreStopHooks() error {
-	app.mu.Lock()
-	hooks := append([]HookFunc(nil), app.onPreStops...)
-	app.mu.Unlock()
-
-	app.Logger().Info("run on-pre-stop hooks")
-	ctx, cancel := context.WithTimeout(context.Background(), app.o.ShutdownTimeout)
-	defer cancel()
-
-	var shutdownErrors ShutdownErrors
-	for _, fn := range hooks {
-		if ctx.Err() != nil {
-			shutdownErrors.Add(errors.New("shutdown timeout exceeded while running on-pre-stop hooks"))
-			break
-		}
-		done := make(chan error, 1)
-		go func() { done <- fn(ctx) }()
-		select {
-		case hookErr := <-done:
-			if hookErr != nil {
-				app.logger.ErrorContext(app.ctx, "on-pre-stop hook called error", "error", hookErr)
-				shutdownErrors.Add(hookErr)
-			}
-		case <-ctx.Done():
-			app.logger.ErrorContext(app.ctx, "on-pre-stop hook did not complete within shutdown timeout")
-			shutdownErrors.Add(errors.New("on-pre-stop hook timed out"))
-		}
-	}
-	if shutdownErrors.HasErrors() {
-		app.logger.ErrorContext(app.ctx, "shutdown completed with errors", "errors", shutdownErrors.Error())
-		return &shutdownErrors
-	}
-	return nil
-}
+// runPostStopHooks / hasDrainHooks / runOnDrainHooks / runOnPreStopHooks
+// 已收敛至 shutdown.go。
 
 // busService 是 eventbus.Bus 到 lynx.Service 的适配器：避免 bus 导入 lynx 导致的循环，
 // 且不暴露 CheckHealth 到健康聚合（总线健康不影响 readiness）。
