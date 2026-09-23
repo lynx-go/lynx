@@ -370,6 +370,58 @@ func TestCommandStartHungCheckerTimesOut(t *testing.T) {
 	}
 }
 
+func TestNewCommandProbeTimeout(t *testing.T) {
+	cmd := NewCommand(nil, WithProbeTimeout(250*time.Millisecond))
+	c := cmd.(*command)
+	if c.options.ProbeTimeout != 250*time.Millisecond {
+		t.Errorf("ProbeTimeout = %v, want 250ms", c.options.ProbeTimeout)
+	}
+	// 非法值回落默认上界，与既有钳制风格一致。
+	cmd = NewCommand(nil, WithProbeTimeout(0))
+	c = cmd.(*command)
+	if c.options.ProbeTimeout != defaultProbeTimeout {
+		t.Errorf("ProbeTimeout = %v, want default %v", c.options.ProbeTimeout, defaultProbeTimeout)
+	}
+	cmd = NewCommand(nil)
+	c = cmd.(*command)
+	if c.options.ProbeTimeout != defaultProbeTimeout {
+		t.Errorf("default ProbeTimeout = %v, want %v", c.options.ProbeTimeout, defaultProbeTimeout)
+	}
+}
+
+// TestCommandStartProbeTimeoutShortened：WithProbeTimeout 收紧单次探测上界，
+// 挂死 checker 场景的失败耗时由该值而非默认 3s 决定。
+func TestCommandStartProbeTimeoutShortened(t *testing.T) {
+	checker := &hungChecker{release: make(chan struct{})}
+	defer close(checker.release)
+	app := newAppWithCheckers(t, checker)
+
+	cmd := NewCommand(func(ctx context.Context) error { return nil },
+		WithMaxTries(2), WithBackoff(time.Millisecond, 5*time.Millisecond),
+		WithProbeTimeout(50*time.Millisecond))
+	if err := cmd.Init(app); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	start := time.Now()
+	err := cmd.Start(context.Background())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Start() error = nil, want retry exhaustion error")
+	}
+	if !strings.Contains(err.Error(), "health check timed out after 50ms") {
+		t.Errorf("Start() error = %v, want 50ms probe timeout as the not-ready cause", err)
+	}
+	// 2 次尝试 × 50ms 上界 + 毫秒级 backoff，应远小于默认上界量级。
+	if elapsed > 2*time.Second {
+		t.Errorf("Start() took %v, want bounded by shortened probe timeout", elapsed)
+	}
+	if got := checker.calls.Load(); got != 2 {
+		t.Errorf("health checked %d times, want 2 (MaxTries)", got)
+	}
+}
+
 // TestCommandStartWaitsForReadyService：仅实现 Ready（无 Checker）的依赖，
 // 命令等 channel 关闭后执行——Ready 层独立成立，不依赖健康检查。
 func TestCommandStartWaitsForReadyService(t *testing.T) {
