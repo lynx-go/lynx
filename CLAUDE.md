@@ -108,14 +108,14 @@ type Lifecycle interface {
 
 Services are registered via `app.Register(...)` and automatically managed through their lifecycle. Services implementing `lynx.Checker` (`CheckHealth() error`, defined locally in health.go — no gocloud.dev dependency) are automatically added to health checks; `app.HealthCheckers()` returns the snapshot slice. `Stop` errors are collected (bounded by `Options.StopTimeout`) and surfaced by `Run()` together with OnPreStop hook errors.
 
-Optional `lynx.Ready` (`Ready() <-chan struct{}`): close the channel after the service has entered the running state (HTTP/gRPC/debug: after `Listen`, before `Serve`). Listen/Start failure must not close it.
+Optional `lynx.Ready` (`Ready() <-chan struct{}`): close the channel after the service has entered the running state (HTTP/gRPC/debug: after `Listen`, before `Serve`). Listen/Start failure must not close it. All readiness probes are bounded (ready.go is the single owner): a Ready channel that never closes is a timeout, not a hang.
 
 **OrderedServices**
 `lynx.OrderedServices(name, svcs...)` wraps multiple services as one `Service`. Init/Start run in argument order; Stop is reverse. Nested groups are allowed. Children must not also be `Register`'d.
 
 Start sequencing after launching each child `Start` in its own goroutine:
-1. `Ready` → wait until the channel closes
-2. else `Checker` → poll `CheckHealth` until nil (timeout 10s)
+1. `Ready` → wait until the channel closes, bounded by the same budget (timeout 10s)
+2. else `Checker` → poll `CheckHealth` until nil, each call bounded by the remaining budget (timeout 10s)
 3. else proceed immediately after `Start` is invoked
 
 The wrapper itself implements `Checker` (aggregates children) and `Ready` (closes after all children are ready). Top-level services registered on the App still start concurrently with each other.
@@ -136,16 +136,17 @@ Lifecycle hooks and services are registered via direct methods on the `App` inte
 - `app.OnDrain(fns ...HookFunc)` - Runs concurrently with the drain sleep (e.g. registry deregistration); the drain window IS the hooks' total budget (DrainTimeout, v1.10.0 merged DrainHookTimeout into it). Requires DrainTimeout > 0: registering hooks with DrainTimeout=0 makes Run() fail fast with ErrDrainHooksRequireDrainTimeout
 - `app.OnPreStop(fns ...HookFunc)` - Runs before services Stop, while they still serve in-flight requests (rename of OnStop in v1.10.0); budget ShutdownTimeout
 - `app.OnPostStop(fns ...CleanupFunc)` - Final cleanup AFTER all services and the bus have stopped, before Run returns; LIFO order, budget CleanupTimeout (default 10s, `WithCleanupTimeout`); covers ALL Run exit paths (incl. init failure), Close() is the fallback when Run is never called; runs exactly once per app. `CleanupFunc` is `func()` — terminal-phase errors have no consumer. Wire's generated cleanup (closing DB/Redis pools) belongs HERE, not in OnPreStop (pools are still used by in-flight requests during drain/shutdown)
-- `app.Register(services ...Service)` - Register services (Init runs synchronously at registration; the first error is recorded and returned by `Run()`). All registration must happen before `Run()`: after `Run()` starts, `Register`/`RegisterFactories` panic and `Command` returns an error
+- `app.Register(services ...Service)` - Register services (Init runs synchronously at registration; the first error is recorded and returned by `Run()`). All registration must happen before `Run()` and before `Close()`: after `Run()` starts, `Register`/`RegisterFactories` panic and `Command` returns an error; after `Close()`, the same rejection applies (panic / `ErrAppClosed`)
 - `app.RegisterFactories(factories ...ServiceFactory)` - Register service factories
-- `app.Command(cmd CommandFunc)` - Register a one-shot CLI command
+- `app.Command(cmd CommandFunc, opts ...CommandOption)` - Register a one-shot CLI command (options: `WithMaxTries`/`WithBackoff`/`WithProbeTimeout`/`WithCommandName`)
 
 **Application Lifecycle**
-The main run loop (lynx.go) uses `oklog/run` to manage concurrent goroutines:
+The main run loop lives in lifecycle.go: a lifecycle module owns actor scheduling, phase ordering, registration state, and error aggregation (oklog/run has been removed):
 1. Executes OnPreStart hooks
-2. Runs all services (each service gets its own goroutine); fires OnPostStart hooks once every service actor has entered its execute body
-3. Listens for shutdown signals (SIGTERM, SIGQUIT, SIGINT)
-4. On shutdown: drain window (OnDrain hooks concurrent with DrainTimeout sleep), cancels the context, runs OnPreStop hooks with ShutdownTimeout budget, stops all services and the bus, finally runs OnPostStop cleanup hooks (CleanupTimeout budget, LIFO)
+2. Runs all services concurrently as actors (each service gets its own goroutine); fires OnPostStart hooks once every service actor has entered its execute body
+3. Waits for the first trigger: any actor returning (Start failure, Command completion), a shutdown signal (SIGTERM, SIGQUIT, SIGINT), `Close()`, or an OnPostStart hook error
+4. Shutdown phases in fixed order, independent of actor registration order: drain window (OnDrain hooks concurrent with DrainTimeout sleep) → cancel context → OnPreStop hooks (ShutdownTimeout budget) → services stopped in reverse registration order (LIFO, bounded by StopTimeout) → `AppStopped` event → bus stopped (bounded) → all errors aggregated into the `Run()` return value
+5. OnPostStop cleanup hooks (CleanupTimeout budget, LIFO) run on every exit path; Init/OnPreStart failure paths stop already-initialized services in reverse order and skip the drain/OnPreStop phases (they only run once services have entered the running phase)
 
 Optional drain window (`Options.DrainTimeout`, default 0 = disabled): on shutdown, an internal `drainChecker` is set so readiness aggregation (`app.HealthCheckers()`) fails immediately (LB 摘流), then the app sleeps `DrainTimeout` before cancelling the context and proceeding with the v1.0 shutdown sequence. During the drain window checkers return the exported `lynx.ErrDraining`. `app.OnDrain(fns...)` hooks (e.g. registry deregistration) run **concurrently** with the drain sleep, bounded by the window itself (v1.10.0 removed the separate DrainHookTimeout). Registering OnDrain hooks with DrainTimeout=0 fails fast at Run() start with `ErrDrainHooksRequireDrainTimeout`. DrainTimeout is a separate budget from ShutdownTimeout: total shutdown upper bound = DrainTimeout + ShutdownTimeout + StopTimeout stack + CleanupTimeout. Drain only affects readiness (HTTP `/healthz/liveness` never consumes checkers).
 
@@ -240,7 +241,7 @@ This pattern is particularly useful for complex applications with many services.
 
 **Command** (command.go)
 - CLI command execution with dependency readiness wait
-- Readiness resolution mirrors OrderedServices' three-tier precedence: `Ready()` channel (event-driven; sibling failure interrupts the run group and aborts the wait promptly) → `Checker` poll fallback (per-check bounded to 3s so a hung checker cannot stall the wait loop) → no signal = ready on invoke. MaxTries/WithBackoff remain the total budget
+- Readiness resolution shares ready.go's single three-tier module with OrderedServices (`probeServiceReady`): `Ready()` channel (bounded per-probe wait; sibling failure interrupts the run group and aborts the wait promptly) → `Checker` single bounded check (default 3s, `WithProbeTimeout`; a hung checker cannot stall the wait loop) → no signal = ready on invoke. MaxTries/WithBackoff remain the total budget
 - Auto-closes application after command completes
 
 ### Health Checks

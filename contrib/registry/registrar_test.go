@@ -194,7 +194,7 @@ func TestRegistrarFailSafeRetriesInBackground(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- r.Start(context.Background()) }()
 
-	// Start 必须保持阻塞（oklog/run 里返回会拆掉整个 group）。
+	// Start 必须保持阻塞（lifecycle 里返回会触发整个应用关停）。
 	select {
 	case err := <-done:
 		t.Fatalf("fail_fast=false: Start returned early: %v", err)

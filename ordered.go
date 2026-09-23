@@ -28,7 +28,7 @@ type orderedServices struct {
 	svcs         []Service
 	ready        chan struct{}
 	readyOnce    sync.Once
-	readyTimeout time.Duration // 0 表示使用 defaultOrderedReadyTimeout；仅 Checker 回退路径生效
+	readyTimeout time.Duration // 0 表示使用 defaultOrderedReadyTimeout；Ready 与 Checker 两条路径共用
 }
 
 // Ready 在全部子服务就绪后关闭，使嵌套 OrderedServices 能按序等待整组启动完成。

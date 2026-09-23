@@ -207,7 +207,7 @@ func (s *Service) Start(ctx context.Context) error {
 			s.logger.ErrorContext(ctx, "debug server serve error", "error", err)
 		}
 	}()
-	// 对齐 run.Group actor 语义：等待传入的 ctx 取消（框架在 Stop
+	// 对齐 lifecycle actor 语义：等待传入的 ctx 取消（框架在 Stop
 	// 返回后取消服务 ctx）。
 	<-ctx.Done()
 	s.started.Store(false)

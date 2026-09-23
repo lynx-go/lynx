@@ -87,53 +87,6 @@ type command struct {
 	options *CommandOptions
 }
 
-// defaultProbeTimeout 是单次依赖探测（一次 CheckHealth 或一次 Ready
-// channel 等待）的默认上界。Checker 接口（无 ctx 参数）已冻结，挂死的
-// checker 若不加防护会让单次尝试永久阻塞，MaxTries/MaxBackoff 的重试
-// 上限全部失效；超时按"未就绪"参与重试。可经 WithProbeTimeout 按命令
-// 调整。
-const defaultProbeTimeout = 3 * time.Second
-
-// checkHealthBounded 以调用方给定的上界执行单次健康检查：经 shutdown.go
-// 的 callBounded 原语兜底无 ctx 的 checker。超时后迟到的结果被自然丢弃
-//（goroutine 不因无人接收而阻塞；若 checker 永久挂死，该 goroutine
-// 随之遗留——保证等待循环不挂死优先，与 stopServiceBounded 同一取舍）。
-// 不监听调用侧 ctx：健康的 checker 立即返回即成功（即使 ctx 已取消，
-// 既有语义为"首查健康即运行"）；取消裁决由 backoff.Retry 在重试间完成。
-func checkHealthBounded(checker Checker, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	err, timedOut := callBounded(ctx, checker.CheckHealth)
-	if timedOut {
-		return fmt.Errorf("health check timed out after %v", timeout)
-	}
-	return err
-}
-
-// waitReadyBounded 以调用方给定的上界单次等待 Ready channel：超过上界
-// 视为"本轮未就绪"参与退避重试（与 checkHealthBounded 对称的取舍）。
-// 已闭合的 channel 经先行的非阻塞检查立即成功——即使 ctx 已取消也放行
-// （保持"首查即就绪即运行"的既有语义）；尚未闭合时监听 ctx：组中断
-// （如依赖 Start 失败触发 run group 中断）立即退出，失败裁决归出错方经
-// Run 上抛。Ready 契约保证 channel 只在成功跨过启动门槛后关闭，不会因
-// 失败而误判就绪。
-func waitReadyBounded(ctx context.Context, r Ready, timeout time.Duration) error {
-	ready := r.Ready()
-	select {
-	case <-ready:
-		return nil
-	default:
-	}
-	select {
-	case <-ready:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(timeout):
-		return fmt.Errorf("ready signal not closed within %v", timeout)
-	}
-}
-
 // depProbe 是命令等待的单个依赖探测项：name 供日志定位，probe 单次
 // 探测（nil = 就绪，err = 未就绪或中止）。
 type depProbe struct {
@@ -141,32 +94,21 @@ type depProbe struct {
 	probe func(ctx context.Context) error
 }
 
-// dependencyProbes 按三级优先解析依赖探测项（与 OrderedServices 的启动
-// 顺序解析同款）：实现 Ready 的服务等待 channel（边沿信号：单调、失败
-// 不关闭，失败裁决归 Start 返回值）；否则实现 Checker 的有界轮询；
-// 两者皆无视为 invoke 即就绪，不等待。命令本身两者皆不实现，天然落在
-// 第三级，无需自排除。appctx 为外部 AppContext 实现时回退健康检查
-// 聚合（既有行为）。
+// dependencyProbes 按三级优先解析依赖探测项（三级解析的唯一归属在
+// ready.go 的 probeServiceReady）：实现 Ready 的服务等待 channel 关闭
+// （边沿信号：单调、失败不关闭，失败裁决归 Start 返回值）；否则实现
+// Checker 的单次有界健康检查；两者皆无视为 invoke 即就绪，不等待。
+// 命令本身两者皆不实现，天然落在第三级，无需自排除。appctx 为外部
+// AppContext 实现时回退健康检查聚合（既有行为）。
 func (cmd *command) dependencyProbes() []depProbe {
 	var probes []depProbe
 	if l, ok := cmd.appctx.(*lynx); ok {
 		for _, s := range l.serviceSnapshot() {
-			switch v := s.(type) {
-			case Ready:
-				probes = append(probes, depProbe{
-					name: s.Name(),
-					probe: func(ctx context.Context) error {
-						return waitReadyBounded(ctx, v, cmd.options.ProbeTimeout)
-					},
-				})
-			case Checker:
-				checker := v
-				probes = append(probes, depProbe{
-					name: s.Name(),
-					probe: func(context.Context) error {
-						return checkHealthBounded(checker, cmd.options.ProbeTimeout)
-					},
-				})
+			// Checker 层显式传 context.Background()：探测结果优先于调用侧
+			// 取消（"首查健康即成功"），取消裁决由 backoff.Retry 在重试间
+			// 完成（既有语义，ready.go 的 checkHealthBounded 文档）。
+			if probe := probeServiceReady(s, cmd.options.ProbeTimeout, context.Background()); probe != nil {
+				probes = append(probes, depProbe{name: s.Name(), probe: probe})
 			}
 		}
 		return probes
@@ -174,8 +116,10 @@ func (cmd *command) dependencyProbes() []depProbe {
 	for _, checker := range cmd.appctx.HealthCheckers() {
 		c := checker
 		probes = append(probes, depProbe{
-			name:  "checker",
-			probe: func(context.Context) error { return checkHealthBounded(c, cmd.options.ProbeTimeout) },
+			name: "checker",
+			probe: func(context.Context) error {
+				return checkHealthBounded(context.Background(), c, cmd.options.ProbeTimeout)
+			},
 		})
 	}
 	return probes

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx/eventbus"
-	"github.com/oklog/run"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
@@ -566,14 +565,14 @@ func TestRunLifecycleStartStopOrdering(t *testing.T) {
 	}
 
 	// Shutdown ordering is deterministic: OnPreStop hooks run before Services
-	// stop, and Services stop in registration order.
+	// stop, and Services stop in reverse registration order (LIFO).
 	var stops []string
 	for _, e := range events {
 		if e == "stop:c1" || e == "stop:c2" || e == "onprestop" {
 			stops = append(stops, e)
 		}
 	}
-	want := []string{"onprestop", "stop:c1", "stop:c2"}
+	want := []string{"onprestop", "stop:c2", "stop:c1"}
 	if len(stops) != len(want) {
 		t.Fatalf("stop events = %v, want %v", stops, want)
 	}
@@ -713,7 +712,7 @@ func TestCLICommandRunsAndClosesApp(t *testing.T) {
 
 // TestRegisterAfterRunRejected 回归：Run 开始后注册为禁止操作——
 // Register/RegisterFactories panic 报明确错误，Command 返回错误；
-// 晚到的注册不得触碰 run.Group 的 actors（此前为 data race 且服务
+// 晚到的注册不得触碰 lifecycle 的 actors（此前为 data race 且服务
 // 永不 Start 却被 Stop）。
 func TestRegisterAfterRunRejected(t *testing.T) {
 	app, err := newLynx(NewOptions())
@@ -755,7 +754,7 @@ func TestRegisterAfterRunRejected(t *testing.T) {
 }
 
 // TestRunJoinsOnPreStopErrorsWithStartFailure 回归：服务 Start 先失败时，
-// oklog/run 只返回首个 actor 错误，OnPreStop 钩子错误必须与之一并上抛，
+// lifecycle 只返回首个 actor 错误，OnPreStop 钩子错误必须与之一并上抛，
 // 不得只落日志。
 func TestRunJoinsOnPreStopErrorsWithStartFailure(t *testing.T) {
 	app, err := newLynx(NewOptions())
@@ -807,7 +806,7 @@ func TestRunRejectedTwice(t *testing.T) {
 // TestRegisterRacingRunLeavesNoOrphan 回归 Register/Run 并发裁决：Register
 // 与 Run 并发时，迟到的注册必须在持锁登记事务内被裁决为 panic——不得留下
 // "Init 成功、计入 healthCheckers、永不 Start/Stop" 的孤儿服务，也不得与
-// run.Group 的 actors 产生 data race（-race 下运行）。
+// lifecycle 的 actors 产生 data race（-race 下运行）。
 // 交错是确定性的：slow 的 Init 阻塞期间 Run 先置位 running，随后才放行。
 func TestRegisterRacingRunLeavesNoOrphan(t *testing.T) {
 	app, err := newLynx(NewOptions())
@@ -1480,7 +1479,6 @@ func newLynxWithConfig(c ConfigSource) (App, error) {
 		o:           o,
 		c:           viper.New(),
 		f:           f,
-		runG:        &run.Group{},
 		logger:      slog.Default(),
 		onPreStarts: []HookFunc{},
 		onPreStops:  []HookFunc{},
@@ -1559,6 +1557,50 @@ func TestNewLynxBusReadyTimeoutOption(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("newLynx() took %v, want fast fail near the configured 200ms budget", elapsed)
+	}
+	if !strings.Contains(err.Error(), "200ms") {
+		t.Errorf("newLynx() error = %v, want it to mention the configured budget", err)
+	}
+}
+
+// hungCheckBus 的 CheckHealth 挂死：锁定 newLynx 的总线就绪等待有界
+// （此前同步调用 + context.Background() 可永久挂住构造）。unblock 由用例
+// 收尾关闭，放行遗留的探测 goroutine。
+type hungCheckBus struct {
+	unblock chan struct{}
+}
+
+func (b *hungCheckBus) Name() string                        { return "hung-check-bus" }
+func (b *hungCheckBus) Init(ctx eventbus.InitContext) error { return nil }
+func (b *hungCheckBus) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+func (b *hungCheckBus) Stop(ctx context.Context) error { return nil }
+func (b *hungCheckBus) CheckHealth() error {
+	<-b.unblock
+	return errors.New("unblocked")
+}
+func (b *hungCheckBus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) error {
+	return nil
+}
+func (b *hungCheckBus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
+	return nil
+}
+func (b *hungCheckBus) MarshalerFor(topic string) eventbus.Marshaler { return eventbus.JSONMarshaler{} }
+
+// TestNewLynxHungBusCheckerTimesOut 锁定：挂死的总线 CheckHealth 不能
+// 越过 BusReadyTimeout（此前 newLynx 可永久挂起）。
+func TestNewLynxHungBusCheckerTimesOut(t *testing.T) {
+	bus := &hungCheckBus{unblock: make(chan struct{})}
+	defer close(bus.unblock)
+	start := time.Now()
+	_, err := newLynx(NewOptions(WithBus(bus), WithBusReadyTimeout(200*time.Millisecond)))
+	if err == nil {
+		t.Fatal("newLynx() error = nil, want bus readiness timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("newLynx() took %v, want bounded by BusReadyTimeout", elapsed)
 	}
 	if !strings.Contains(err.Error(), "200ms") {
 		t.Errorf("newLynx() error = %v, want it to mention the configured budget", err)

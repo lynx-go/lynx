@@ -227,9 +227,9 @@ func (r *Registrar) completeEndpoints(endpoints []Endpoint) ([]Endpoint, error) 
 
 // Start 注册实例并维持心跳，随后阻塞至 Stop（或 ctx 取消）。
 //
-// 除 fail_fast=true 且首次 Register 失败外，Start 不得提前返回：框架用
-// oklog/run 管理服务，Start 返回任意值（含 nil）都会拆掉整个 group，
-// HTTP/gRPC 随之停止。
+// 除 fail_fast=true 且首次 Register 失败外，Start 不得提前返回：框架的
+// lifecycle 调度把「actor 返回」视为关停触发，Start 返回任意值（含 nil）
+// 都会触发整个应用关停，HTTP/gRPC 随之停止。
 func (r *Registrar) Start(ctx context.Context) error {
 	r.mu.Lock()
 	if r.stopping.Load() {

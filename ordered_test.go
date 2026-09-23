@@ -3,6 +3,7 @@ package lynx
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,12 +30,14 @@ func (l *orderLog) all() []string {
 }
 
 // readyProbe 阻塞式服务：Start 进入后延迟关闭 Ready，再等 ctx。
+// neverReady 置位则永不关闭 Ready（用于锁定有界就绪等待）。
 type readyProbe struct {
 	name       string
 	log        *orderLog
 	ready      chan struct{}
 	readyDelay time.Duration
 	startErr   error
+	neverReady bool
 }
 
 func newReadyProbe(name string, log *orderLog, delay time.Duration) *readyProbe {
@@ -53,8 +56,10 @@ func (p *readyProbe) Start(ctx context.Context) error {
 	if p.readyDelay > 0 {
 		time.Sleep(p.readyDelay)
 	}
-	close(p.ready)
-	p.log.add("ready:" + p.name)
+	if !p.neverReady {
+		close(p.ready)
+		p.log.add("ready:" + p.name)
+	}
 	<-ctx.Done()
 	return nil
 }
@@ -421,6 +426,112 @@ func TestOrderedServicesCheckerTimeout(t *testing.T) {
 		t.Fatal("Start() = nil, want health wait timeout")
 	}
 	cancel()
+	_ = g.Stop(context.Background())
+}
+
+// hungProbe 无 Ready、CheckHealth 挂死：锁定有界探测——挂死的 checker
+// 不能越过预算，取消优先于超时。unblock 由用例收尾关闭，放行遗留的
+// 探测 goroutine（callBounded 的既有取舍）。
+type hungProbe struct {
+	name    string
+	unblock chan struct{}
+}
+
+func (p *hungProbe) Name() string              { return p.name }
+func (p *hungProbe) Init(ctx AppContext) error { return nil }
+func (p *hungProbe) CheckHealth() error {
+	<-p.unblock
+	return errors.New("unblocked")
+}
+func (p *hungProbe) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+func (p *hungProbe) Stop(ctx context.Context) error { return nil }
+
+// TestOrderedServicesReadyNeverClosesTimeout 锁定 readiness 收敛：声明
+// Ready 却永不关闭的服务在预算内判超时（此前 Ready 路径无界，可永久
+// 卡住启动）。
+func TestOrderedServicesReadyNeverClosesTimeout(t *testing.T) {
+	log := &orderLog{}
+	a := newReadyProbe("a", log, 0)
+	a.neverReady = true
+	g := OrderedServices("g", a).(*orderedServices)
+	g.readyTimeout = 30 * time.Millisecond
+	if err := g.Init(testAppCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := time.Now()
+	err := g.Start(ctx)
+	if err == nil {
+		t.Fatal("Start() = nil, want ready wait timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Start() took %v, want bounded by readyTimeout", elapsed)
+	}
+	if !strings.Contains(err.Error(), "ready signal not closed") {
+		t.Errorf("Start() error = %v, want ready-not-closed cause", err)
+	}
+	cancel()
+	_ = g.Stop(context.Background())
+}
+
+// TestOrderedServicesHungCheckerTimeout 锁定：挂死的 CheckHealth 不能
+// 越过预算（此前同步调用可永久挂起启动）。
+func TestOrderedServicesHungCheckerTimeout(t *testing.T) {
+	a := &hungProbe{name: "a", unblock: make(chan struct{})}
+	defer close(a.unblock)
+	g := OrderedServices("g", a).(*orderedServices)
+	g.readyTimeout = 30 * time.Millisecond
+	if err := g.Init(testAppCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := time.Now()
+	err := g.Start(ctx)
+	if err == nil {
+		t.Fatal("Start() = nil, want health wait timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Start() took %v, want bounded by readyTimeout", elapsed)
+	}
+	if !strings.Contains(err.Error(), "health check timed out") {
+		t.Errorf("Start() error = %v, want per-call bound to be the cause", err)
+	}
+	cancel()
+	_ = g.Stop(context.Background())
+}
+
+// TestOrderedServicesHungCheckerAbortsOnCtxCancel 锁定：ctx 取消优先于
+// 预算——等待方立即返回 ctx.Err()，不陪跑剩余预算。
+func TestOrderedServicesHungCheckerAbortsOnCtxCancel(t *testing.T) {
+	a := &hungProbe{name: "a", unblock: make(chan struct{})}
+	defer close(a.unblock)
+	g := OrderedServices("g", a).(*orderedServices)
+	g.readyTimeout = time.Hour // 大预算：证明取消优先于预算
+	if err := g.Init(testAppCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel)
+	start := time.Now()
+	err := g.Start(ctx)
+	if err == nil {
+		t.Fatal("Start() = nil, want abort on cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Start() error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Start() took %v, want prompt abort on ctx cancel", elapsed)
+	}
 	_ = g.Stop(context.Background())
 }
 

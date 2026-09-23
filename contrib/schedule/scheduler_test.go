@@ -480,7 +480,7 @@ func TestErrorHandlerInvoked(t *testing.T) {
 }
 
 // TestStartRespectsCtx 回归：Start 必须阻塞在传入 ctx 上，ctx 取消即返回
-// （run.Group actor 语义）。
+// （lifecycle actor 语义）。
 func TestStartRespectsCtx(t *testing.T) {
 	var count atomic.Int32
 	s, err := NewScheduler(

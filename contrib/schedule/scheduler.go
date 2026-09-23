@@ -101,7 +101,7 @@ func (s *Scheduler) Init(ctx lynx.AppContext) error {
 
 // Start 启动 cron 调度器并开始按调度执行任务，阻塞至传入 ctx 取消。
 // 竞态安全：Stop 先于本方法调用时（服务启动失败引发的提前中断），
-// 不启动 cron 并立即返回，保证 run.Group 不会因停不掉的 cron 循环挂死。
+// 不启动 cron 并立即返回，保证 lifecycle 不会因停不掉的 cron 循环挂死。
 func (s *Scheduler) Start(ctx context.Context) error {
 	if s.stopping.Load() {
 		// Stop 先到：不启动 cron。runDone 已由 Stop 关闭（或在此关闭），
@@ -123,7 +123,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		s.closeRunDone()
 		return errors.New("scheduler stopped before start")
 	}
-	// 对齐 run.Group actor 语义：等待传入的 ctx 取消（框架在 Stop 返回后
+	// 对齐 lifecycle actor 语义：等待传入的 ctx 取消（框架在 Stop 返回后
 	// 取消服务 ctx）。任务执行的取消由 taskCtx（ctx.Context）在应用关闭时
 	// 触发，与 Start 的等待相互独立。
 	<-ctx.Done()

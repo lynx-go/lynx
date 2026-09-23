@@ -216,18 +216,18 @@ type fakeApp struct {
 	drainHooks []lynx.HookFunc
 }
 
-func (f *fakeApp) Context() context.Context       { return context.Background() }
-func (f *fakeApp) Config() lynx.Config            { return nil }
-func (f *fakeApp) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
-func (f *fakeApp) Logger(...any) *slog.Logger     { return slog.Default() }
-func (f *fakeApp) HealthCheckers() []lynx.Checker { return nil }
-func (f *fakeApp) Close()                         {}
-func (f *fakeApp) Command(lynx.CommandFunc) error { return nil }
-func (f *fakeApp) OnPreStart(...lynx.HookFunc)    {}
-func (f *fakeApp) OnDrain(fns ...lynx.HookFunc)   { f.drainHooks = append(f.drainHooks, fns...) }
-func (f *fakeApp) OnPreStop(...lynx.HookFunc)     {}
-func (f *fakeApp) OnPostStart(...lynx.HookFunc)   {}
-func (f *fakeApp) OnPostStop(...lynx.CleanupFunc) {}
+func (f *fakeApp) Context() context.Context                              { return context.Background() }
+func (f *fakeApp) Config() lynx.Config                                   { return nil }
+func (f *fakeApp) Bus() eventbus.Bus                                     { return eventbus.NewMemoryBus(eventbus.Options{}) }
+func (f *fakeApp) Logger(...any) *slog.Logger                            { return slog.Default() }
+func (f *fakeApp) HealthCheckers() []lynx.Checker                        { return nil }
+func (f *fakeApp) Close()                                                {}
+func (f *fakeApp) Command(lynx.CommandFunc, ...lynx.CommandOption) error { return nil }
+func (f *fakeApp) OnPreStart(...lynx.HookFunc)                           {}
+func (f *fakeApp) OnDrain(fns ...lynx.HookFunc)                          { f.drainHooks = append(f.drainHooks, fns...) }
+func (f *fakeApp) OnPreStop(...lynx.HookFunc)                            {}
+func (f *fakeApp) OnPostStart(...lynx.HookFunc)                          {}
+func (f *fakeApp) OnPostStop(...lynx.CleanupFunc)                        {}
 func (f *fakeApp) Register(services ...lynx.Service) {
 	f.registered = append(f.registered, services...)
 }

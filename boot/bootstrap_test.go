@@ -38,15 +38,15 @@ func (f *fakeLynx) RegisterFactories(fs ...lynx.ServiceFactory) {
 	f.factories = append(f.factories, fs...)
 }
 
-func (f *fakeLynx) Close()                             {}
-func (f *fakeLynx) Config() lynx.Config                { return lynx.NewViperConfig(viper.New()) }
-func (f *fakeLynx) Context() context.Context           { return context.Background() }
-func (f *fakeLynx) Command(cmd lynx.CommandFunc) error { return nil }
-func (f *fakeLynx) Run() error                         { return nil }
-func (f *fakeLynx) SetLogger(logger *slog.Logger)      {}
-func (f *fakeLynx) Logger(kwargs ...any) *slog.Logger  { return slog.Default() }
-func (f *fakeLynx) HealthCheckers() []lynx.Checker     { return nil }
-func (f *fakeLynx) Bus() eventbus.Bus                  { return eventbus.NewMemoryBus(eventbus.Options{}) }
+func (f *fakeLynx) Close()                                                         {}
+func (f *fakeLynx) Config() lynx.Config                                            { return lynx.NewViperConfig(viper.New()) }
+func (f *fakeLynx) Context() context.Context                                       { return context.Background() }
+func (f *fakeLynx) Command(cmd lynx.CommandFunc, opts ...lynx.CommandOption) error { return nil }
+func (f *fakeLynx) Run() error                                                     { return nil }
+func (f *fakeLynx) SetLogger(logger *slog.Logger)                                  {}
+func (f *fakeLynx) Logger(kwargs ...any) *slog.Logger                              { return slog.Default() }
+func (f *fakeLynx) HealthCheckers() []lynx.Checker                                 { return nil }
+func (f *fakeLynx) Bus() eventbus.Bus                                              { return eventbus.NewMemoryBus(eventbus.Options{}) }
 
 var _ lynx.App = (*fakeLynx)(nil)
 

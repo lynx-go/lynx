@@ -1,9 +1,9 @@
 package lynx
 
-// 关停流水线的唯一归属：排水状态与窗口、各阶段钩子执行器、有界停止与
-// 有界调用原语。Run / Close / command.Stop 是本模块的薄入口；阶段时序与
-// 预算不变量（DrainTimeout + ShutdownTimeout + Σ StopTimeout + CleanupTimeout）
-// 见 lynx.go Run 与 options.go 各预算字段的注释。
+// 关停阶段执行器与有界原语的唯一归属：排水检查器与窗口、各阶段钩子
+// 执行器、有界停止与有界调用原语。阶段时序（谁先谁后）在 lifecycle.go；
+// 预算不变量（DrainTimeout + ShutdownTimeout + Σ StopTimeout +
+// CleanupTimeout）见 lifecycle.go 文件头与 options.go 各预算字段注释。
 
 import (
 	"context"
@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"sync/atomic"
 	"time"
+
+	"github.com/lynx-go/lynx/eventbus"
 )
 
 // ErrDraining 是排水窗口内 readiness 聚合返回的错误。排水置位后
@@ -84,8 +86,7 @@ func (app *lynx) stopServiceBounded(ctx context.Context, service Service) {
 }
 
 // stopServices 逆序停止已注册服务，用于 Init/OnPreStart 失败路径的资源清理。
-// （正常关停路径由 run.Group 按注册序中断服务 actor，两套顺序约定并存：
-// 组内 LIFO、顶层 FIFO——修改为 observable 行为变更，需单独决策。）
+// 正常关停路径由 lifecycle 的 stopActors 逆序停止（LIFO），与本函数一致。
 func (app *lynx) stopServices(ctx context.Context) {
 	app.mu.Lock()
 	svcs := append([]Service(nil), app.services...)
@@ -101,6 +102,43 @@ func (app *lynx) hasDrainHooks() bool {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	return len(app.onDrains) > 0
+}
+
+// runDrainPhase 执行排水窗口：置位 drainChecker（readiness 聚合立即失败，
+// LB 摘流），窗口睡眠与 OnDrain 钩子并发执行——窗口即钩子总预算，上界不
+// 叠加（DrainTimeout=0 时整段跳过，Run 入口已保证此路径不可能有已注册的
+// OnDrain 钩子）。返回钩子错误（无钩子或窗口未启用时 nil）。
+func (app *lynx) runDrainPhase() error {
+	if app.drain != nil {
+		app.drain.SetDraining(true)
+	}
+	if app.o.DrainTimeout <= 0 {
+		return nil
+	}
+	app.publishEvent(eventbus.TopicDrainStarting, eventbus.DrainEvent{Timeout: app.o.DrainTimeout, Time: time.Now()})
+	var drainErr error
+	drainHooksDone := make(chan struct{})
+	if app.hasDrainHooks() {
+		// 窗口 deadline 即钩子总预算：在窗口开启时创建并传入，钩子预算
+		// 与窗口严格对齐（无论钩子 goroutine 调度迟早）。
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), app.o.DrainTimeout)
+		defer drainCancel()
+		go func() {
+			defer close(drainHooksDone)
+			drainErr = app.runOnDrainHooks(drainCtx)
+		}()
+	} else {
+		close(drainHooksDone)
+	}
+	app.Logger().Info("draining: readiness marked unhealthy, waiting for drain window",
+		"drain_timeout", app.o.DrainTimeout.String())
+	// 窗口不可被 ctx 取消打断：排水语义要求服务在窗口内保持运行，
+	// 供在途请求收尾。
+	time.Sleep(app.o.DrainTimeout)
+	app.publishEvent(eventbus.TopicDrainCompleted, eventbus.DrainEvent{Timeout: app.o.DrainTimeout, Time: time.Now()})
+	// 等待 OnDrain 钩子收尾（受窗口预算约束，不会挂死）。
+	<-drainHooksDone
+	return drainErr
 }
 
 // shutdownPhase 描述一个带预算的关停钩子阶段，参数化两处逐行重复的
