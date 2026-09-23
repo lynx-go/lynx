@@ -120,11 +120,18 @@ type lynx struct {
 	c  *viper.Viper
 	// cfg 是权威的配置读取接口：默认路径在 initConfigure 完成后由 c 包装
 	// 而成；WithConfig 注入时直接采用注入实例（跳过 flags/文件装配）。
-	cfg            Config
-	ctx            context.Context
-	cancelCtx      context.CancelFunc
-	runG           *run.Group
-	logger         *slog.Logger
+	cfg Config
+	ctx  context.Context
+	// logLevelVar 非 nil（applyLogLevel 自建 handler 路径）时为运行时
+	// 可调的级别变量；loggerCustom 标记用户 SetLogger 定制过 handler
+	// （此后框架不再代理级别调整）；lastLevel 是级别记账值（未显式
+	// 设置时为 Info），供 LogLevel 查询。
+	logLevelVar  *slog.LevelVar
+	loggerCustom bool
+	lastLevel    slog.Level
+	cancelCtx    context.CancelFunc
+	runG         *run.Group
+	logger       *slog.Logger
 	healthCheckers []Checker
 	// services 按注册顺序记录已 Init 成功的服务，用于失败路径的逆序清理。
 	services []Service
@@ -254,11 +261,45 @@ var errRunStarted = errors.New("lynx: registration after Run() has started")
 
 // SetLogger 设置 logger，并同步 slog.SetDefault 使全局默认 logger 与应用
 // 一致（全局副作用见 App 接口注释；WithIsolated 可关闭该副作用）。
+// 设置后视为用户定制：SetLogLevel 不再代理该 logger 的级别调整。
 func (app *lynx) SetLogger(logger *slog.Logger) {
 	if !app.o.isolated {
 		slog.SetDefault(logger)
 	}
+	app.loggerCustom = true
 	app.logger = logger
+}
+
+// SetLogLevel 运行时调整应用默认 logger 的日志级别（运行时可调性，
+// debug 服务的 /loglevel 端点经此生效）。返回 false 表示当前 logger
+// 不可由框架调整（用户 SetLogger 定制过 handler 形态）。两条生效路径：
+//   - 配置过 log-level（applyLogLevel 自建 LevelVar handler）：直接修改
+//     级别变量，app.logger 与 slog.Default()（同源）即时生效；
+//   - 未配置（logger 为 slog.Default()）：经 slog.SetLogLoggerLevel，
+//     仅影响内置 default handler（zap 等自建 handler 的 contrib 不受
+//     影响，级别调整走各自机制）。
+func (app *lynx) SetLogLevel(level slog.Level) bool {
+	if app.loggerCustom {
+		return false
+	}
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.logLevelVar != nil {
+		app.logLevelVar.Set(level)
+	} else {
+		slog.SetLogLoggerLevel(level)
+	}
+	app.lastLevel = level
+	return true
+}
+
+// LogLevel 返回日志级别的记账值：显式设置（配置 log-level 或
+// SetLogLevel）后为最后设置值，否则为 Info。用户 SetLogger 定制路径的
+// handler 级别不可见，同样返回记账值。
+func (app *lynx) LogLevel() slog.Level {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	return app.lastLevel
 }
 
 // HealthCheckers 返回当前已注册的健康检查器快照。
@@ -367,6 +408,8 @@ func (app *lynx) applyLogLevel() {
 	}
 	var levelVar slog.LevelVar
 	levelVar.Set(level)
+	app.logLevelVar = &levelVar
+	app.lastLevel = level
 	app.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &levelVar}))
 	// 与应用日志保持单通道：--log-level 对框架与应用日志一致生效。
 	// WithIsolated 下不触碰进程全局默认 logger。

@@ -10,12 +10,15 @@ package debug
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/pprof"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -92,6 +95,16 @@ type Service struct {
 	logger     *slog.Logger
 	o          Options
 	started    atomic.Bool
+	// meta 是 Init 时捕获的应用元数据（name/id/version，来自
+	// lynx.Meta），/version 端点输出；ctx 为 nil 时为零值。
+	meta lynx.Metadata
+	// logLevelCtrl 非 nil（AppContext 实现 SetLogLevel/LogLevel）时
+	// /loglevel 端点可用；自定义 logger（SetLogger 定制）的 App 不实现，
+	// 端点返回 501。
+	logLevelCtrl interface {
+		SetLogLevel(slog.Level) bool
+		LogLevel() slog.Level
+	}
 	// stopping 标记 Stop 已被调用：Start 在监听前与监听后各检查一次，
 	// 避免 Stop 先于 Start 时留下无人关停的 http.Server。
 	stopping  atomic.Bool
@@ -106,6 +119,8 @@ func (s *Service) Name() string {
 
 // Init 记录日志实例：未显式 WithLogger 时取 ctx.Logger（带服务标签）。
 // ctx 为 nil（脱离框架单用）时保持 NewService 的默认 logger。
+// 同时捕获应用元数据（/version）与日志级别控制能力（/loglevel，
+// AppContext 未实现时该端点返回 501）。
 func (s *Service) Init(ctx lynx.AppContext) error {
 	if ctx == nil {
 		return nil
@@ -113,6 +128,11 @@ func (s *Service) Init(ctx lynx.AppContext) error {
 	if !s.o.loggerSet {
 		s.logger = ctx.Logger("service", "debug")
 	}
+	s.meta = lynx.Meta(ctx.Context())
+	s.logLevelCtrl, _ = ctx.(interface {
+		SetLogLevel(slog.Level) bool
+		LogLevel() slog.Level
+	})
 	return nil
 }
 
@@ -161,7 +181,7 @@ func (s *Service) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: newMux()}
+	srv := &http.Server{Handler: s.newMux()}
 	s.mu.Lock()
 	s.httpServer = srv
 	s.listener = ln
@@ -266,8 +286,9 @@ func (s *Service) Stop(ctx context.Context) error {
 }
 
 // newMux 构建自建 mux：显式挂载 pprof handlers，不依赖 net/http/pprof
-// 注册到 DefaultServeMux 的全局副作用。
-func newMux() *http.ServeMux {
+// 注册到 DefaultServeMux 的全局副作用。除 pprof 外还挂载 /healthz 探活、
+// /loglevel 运行时日志级别调整与 /version 构建信息端点。
+func (s *Service) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -283,7 +304,89 @@ func newMux() *http.ServeMux {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("/loglevel", s.handleLogLevel)
+	mux.HandleFunc("/version", s.handleVersion)
 	return mux
+}
+
+// handleLogLevel 运行时查询/调整日志级别（运行时可调性；安全边界沿用
+// debug 服务整体的本机回环缺省——级别调整不会暴露敏感信息，但放开监听
+// 时仍不建议暴露到不受信网络）。
+//
+// GET /loglevel                       → {"level":"INFO"}
+// POST/PUT /loglevel?level=debug      → 调整（query 参数）
+// POST/PUT /loglevel  body {"level":"debug"} → 调整（JSON body）
+//
+// AppContext 未实现级别控制（或用户 SetLogger 定制过 handler）时返回
+// 501，GET 返回记账值。非法级别返回 400。
+func (s *Service) handleLogLevel(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		level := slog.LevelInfo
+		if s.logLevelCtrl != nil {
+			level = s.logLevelCtrl.LogLevel()
+		}
+		_, _ = fmt.Fprintf(w, `{"level":%q}`, level.String())
+	case http.MethodPost, http.MethodPut:
+		if s.logLevelCtrl == nil {
+			http.Error(w, `{"error":"log level control not available"}`, http.StatusNotImplemented)
+			return
+		}
+		levelStr := r.URL.Query().Get("level")
+		if levelStr == "" && r.Body != nil {
+			var body struct {
+				Level string `json:"level"`
+			}
+			if err := json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&body); err == nil {
+				levelStr = body.Level
+			}
+		}
+		level, err := lynx.ParseLogLevel(levelStr)
+		if err != nil || levelStr == "" {
+			http.Error(w, `{"error":"invalid level"}`, http.StatusBadRequest)
+			return
+		}
+		if !s.logLevelCtrl.SetLogLevel(level) {
+			http.Error(w, `{"error":"logger is customized, level not adjustable"}`, http.StatusConflict)
+			return
+		}
+		s.logger.InfoContext(r.Context(), "log level adjusted", "level", level.String())
+		_, _ = fmt.Fprintf(w, `{"level":%q}`, level.String())
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+// handleVersion 输出构建信息（ldflags 注入的 BuildVersion/BuildCommit/
+// BuildDate，见 vars.go）叠加 Go/OS/Arch 与应用元数据（Init 捕获）。
+func (s *Service) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+		Date    string `json:"date"`
+		Go      string `json:"go"`
+		OS      string `json:"os"`
+		Arch    string `json:"arch"`
+		Service struct {
+			Name    string `json:"name,omitempty"`
+			ID      string `json:"id,omitempty"`
+			Version string `json:"version,omitempty"`
+		} `json:"service"`
+	}{
+		Version: BuildVersion,
+		Commit:  BuildCommit,
+		Date:    BuildDate,
+		Go:      runtime.Version(),
+		OS:      runtime.GOOS,
+		Arch:    runtime.GOARCH,
+		Service: struct {
+			Name    string `json:"name,omitempty"`
+			ID      string `json:"id,omitempty"`
+			Version string `json:"version,omitempty"`
+		}{Name: s.meta.Name, ID: s.meta.ID, Version: s.meta.Version},
+	})
 }
 
 var _ lynx.Service = (*Service)(nil)
