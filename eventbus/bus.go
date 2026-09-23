@@ -31,7 +31,8 @@ type Bus interface {
 	// 内存 Bus 允许 Start 后动态订阅；持久化 Bus 的 Start 前后语义由实现保证。
 	Subscribe(ctx context.Context, topic string, h HandlerFunc, opts ...SubscribeOption) error
 
-	// MarshalerFor 返回 topic 的序列化器（TopicMarshalers 命中则用之，否则回退默认）。
+	// MarshalerFor 返回 topic 的序列化器（查找序：TopicMarshalers[t] →
+	// Topics[t].Marshaler → 全局默认 → JSON）。
 	MarshalerFor(topic string) Marshaler
 
 	// Service / Checker 内嵌由实现显式声明，避免循环导入 lynx。
@@ -128,7 +129,9 @@ type SubscribeOptions struct {
 	ContinueOnError bool
 	Group           string
 	Instances       int
-	Marshaler       Marshaler
+	// Retry 是订阅级重试默认（高→低：本字段 > Options.Topics[t].Retry > Options.Retry）。
+	// Topic[T] 会把 WithTopicRetry 作为本字段的基础值注入，调用方选项可覆盖。
+	Retry *RetryOptions
 	// Bus 覆盖本次调用解析到的 Bus（仅 Topic 方法路径使用；Bus.Subscribe 忽略）。
 	Bus Bus
 }
@@ -172,9 +175,9 @@ func WithInstances(n int) SubscribeOption {
 	return subscribeOptionFunc(func(o *SubscribeOptions) { o.Instances = n })
 }
 
-// WithSubscribeMarshaler 覆盖本次订阅的序列化器，供解码与 Publish 对称。
-func WithSubscribeMarshaler(m Marshaler) SubscribeOption {
-	return subscribeOptionFunc(func(o *SubscribeOptions) { o.Marshaler = m })
+// WithSubscribeRetry 覆盖本次订阅的重试默认，优先级高于 Topic / Topics 配置 / 全局。
+func WithSubscribeRetry(r RetryOptions) SubscribeOption {
+	return subscribeOptionFunc(func(o *SubscribeOptions) { r2 := r; o.Retry = &r2 })
 }
 
 // busOverride 同时实现 PublishOption 与 SubscribeOption。

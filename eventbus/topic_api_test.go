@@ -42,36 +42,73 @@ func TestMarshalerPriorityOptionOverTopic(t *testing.T) {
 	}
 }
 
-func TestSubscribeOptionMarshalerUsedForDecode(t *testing.T) {
-	bus := NewMemoryBus(Options{})
+// TestMarshalerPriorityTopicMarshalersOverTopicsConfig 验证 MarshalerFor 同级两个面的先后：
+// TopicMarshalers[t] 赢过 Topics[t].Marshaler（均为编程式设置面）。
+func TestMarshalerPriorityTopicMarshalersOverTopicsConfig(t *testing.T) {
+	bus := NewMemoryBus(Options{
+		TopicMarshalers: map[string]Marshaler{"prio.cfg": JSONMarshaler{}},
+		Topics:          map[string]TopicConfig{"prio.cfg": {Marshaler: prefixMarshaler{}}},
+	})
 	_ = bus.Init(nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = bus.Start(ctx) }()
 	waitRunning(t, bus)
 
-	topic := NewTopic[map[string]string]("prio.sub")
-	got := make(chan string, 1)
-	if err := topic.Subscribe(context.Background(), func(ctx context.Context, e *Event[map[string]string]) error {
-		got <- e.Payload["hello"]
+	received := make(chan []byte, 1)
+	_ = bus.Subscribe(context.Background(), "prio.cfg", func(ctx context.Context, e *RawEvent) error {
+		received <- append([]byte(nil), e.Payload...)
 		return nil
-	}, WithBus(bus), WithSubscribeMarshaler(prefixMarshaler{})); err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
+	})
 	time.Sleep(20 * time.Millisecond)
 
-	// Publish with matching prefix marshaler via option
-	if err := topic.Publish(context.Background(), map[string]string{"hello": "world"},
-		WithBus(bus), WithPublishMarshaler(prefixMarshaler{})); err != nil {
+	if err := bus.Publish(context.Background(), "prio.cfg", map[string]string{"a": "b"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
-	case v := <-got:
-		if v != "world" {
-			t.Fatalf("got %q, want world", v)
+	case p := <-received:
+		// TopicMarshalers 的 JSON 应赢：payload 无 prefix: 前缀
+		if len(p) >= 7 && string(p[:7]) == "prefix:" {
+			t.Fatalf("TopicMarshalers should win over Topics[t].Marshaler, got prefix payload %q", p)
+		}
+		var m map[string]string
+		if err := json.Unmarshal(p, &m); err != nil || m["a"] != "b" {
+			t.Fatalf("payload = %q, err=%v", p, err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("decode timeout — SubscribeOption marshaler not applied")
+		t.Fatal("timeout")
+	}
+}
+
+// TestMarshalerTopicsConfigFallback 验证 Topics[t].Marshaler 作为 Bus 级回填生效：
+// 高于全局默认（JSON）。
+func TestMarshalerTopicsConfigFallback(t *testing.T) {
+	bus := NewMemoryBus(Options{
+		Topics: map[string]TopicConfig{"prio.fallback": {Marshaler: prefixMarshaler{}}},
+	})
+	_ = bus.Init(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = bus.Start(ctx) }()
+	waitRunning(t, bus)
+
+	received := make(chan []byte, 1)
+	_ = bus.Subscribe(context.Background(), "prio.fallback", func(ctx context.Context, e *RawEvent) error {
+		received <- append([]byte(nil), e.Payload...)
+		return nil
+	})
+	time.Sleep(20 * time.Millisecond)
+
+	if err := bus.Publish(context.Background(), "prio.fallback", map[string]string{"a": "b"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	select {
+	case p := <-received:
+		if len(p) < 7 || string(p[:7]) != "prefix:" {
+			t.Fatalf("Topics[t].Marshaler should be used, got %q", p)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
 	}
 }
 
@@ -104,7 +141,7 @@ func TestPublishRawEventUsesParamTopic(t *testing.T) {
 	}
 }
 
-func TestPublishRawTypedPreservesEnvelope(t *testing.T) {
+func TestPublishRawPreservesEnvelope(t *testing.T) {
 	bus := NewMemoryBus(Options{})
 	_ = bus.Init(nil)
 	ctx, cancel := context.WithCancel(context.Background())

@@ -277,7 +277,7 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 	case nil:
 		raw = &eventbus.RawEvent{ID: uuid.NewString(), Headers: map[string]string{}}
 	default:
-		m := eventbus.ResolvePublishMarshaler(b, topic, nil, o.Marshaler)
+		m := eventbus.ResolveMarshaler(b, topic, nil, o.Marshaler)
 		bs, err := m.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("eventbus: marshal %q: %w", topic, err)
@@ -521,16 +521,19 @@ func (b *Bus) addHandler(topic, handlerName string, h eventbus.HandlerFunc, opts
 	if limit, ok := b.maxRedeliveriesFor(topic); ok {
 		hh.AddMiddleware(b.redeliveryMiddleware(handlerName, topic, limit))
 	}
-	if retry, ok := b.retryMiddleware(topic); ok {
+	if retry, ok := b.retryMiddleware(topic, opts); ok {
 		hh.AddMiddleware(retry)
 	}
 	return nil
 }
 
-// MarshalerFor 返回序列化器。
+// MarshalerFor 返回序列化器（查找序：TopicMarshalers[t] → Topics[t].Marshaler → 全局 → JSON）。
 func (b *Bus) MarshalerFor(topic string) eventbus.Marshaler {
 	if m, ok := b.opts.TopicMarshalers[topic]; ok {
 		return m
+	}
+	if cfg, ok := b.opts.Topics[topic]; ok && cfg.Marshaler != nil {
+		return cfg.Marshaler
 	}
 	if b.opts.Marshaler != nil {
 		return b.opts.Marshaler
@@ -584,7 +587,12 @@ func (b *Bus) logFor(topic string) eventbus.LogMessageOptions {
 	return eventbus.LogMessageOptions{}
 }
 
-func (b *Bus) retryFor(topic string) eventbus.RetryOptions {
+// retryFor 解析订阅的重试默认（高→低）：调用/Topic 级 SubscribeOptions.Retry →
+// Options.Topics[t].Retry → Options.Retry → 默认 3 次。
+func (b *Bus) retryFor(topic string, call *eventbus.RetryOptions) eventbus.RetryOptions {
+	if call != nil {
+		return *call
+	}
 	if cfg, ok := b.opts.Topics[topic]; ok && cfg.Retry != nil {
 		return *cfg.Retry
 	}
@@ -594,8 +602,8 @@ func (b *Bus) retryFor(topic string) eventbus.RetryOptions {
 	return eventbus.RetryOptions{MaxRetries: 3}
 }
 
-func (b *Bus) retryMiddleware(topic string) (message.HandlerMiddleware, bool) {
-	r := b.retryFor(topic)
+func (b *Bus) retryMiddleware(topic string, opts eventbus.SubscribeOptions) (message.HandlerMiddleware, bool) {
+	r := b.retryFor(topic, opts.Retry)
 	if r.MaxRetries <= 0 {
 		return nil, false
 	}

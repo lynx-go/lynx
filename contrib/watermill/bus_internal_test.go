@@ -164,6 +164,28 @@ func TestMaxRedeliveriesFor(t *testing.T) {
 	}
 }
 
+// TestRetryForMergeOrder 验证订阅重试四级合并（设计文档 §10.4）：
+// 调用/Topic 级 SubscribeOptions.Retry > Options.Topics[t].Retry > Options.Retry > 默认 3。
+func TestRetryForMergeOrder(t *testing.T) {
+	b := New(eventbus.Options{
+		Retry:  &eventbus.RetryOptions{MaxRetries: 5},
+		Topics: map[string]eventbus.TopicConfig{"t": {Retry: &eventbus.RetryOptions{MaxRetries: 2}}},
+	})
+	call := eventbus.RetryOptions{MaxRetries: 1}
+	if got := b.retryFor("t", &call); got.MaxRetries != 1 {
+		t.Fatalf("call-level: got %d, want 1", got.MaxRetries)
+	}
+	if got := b.retryFor("t", nil); got.MaxRetries != 2 {
+		t.Fatalf("topic config: got %d, want 2", got.MaxRetries)
+	}
+	if got := b.retryFor("other", nil); got.MaxRetries != 5 {
+		t.Fatalf("global: got %d, want 5", got.MaxRetries)
+	}
+	if got := New(eventbus.Options{}).retryFor("x", nil); got.MaxRetries != 3 {
+		t.Fatalf("default: got %d, want 3", got.MaxRetries)
+	}
+}
+
 // captureLogs 收集日志记录（WK-14 测试用）。
 type captureLogs struct {
 	mu    sync.Mutex

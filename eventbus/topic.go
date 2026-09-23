@@ -46,7 +46,7 @@ func WithTopicContinueOnError() TopicOption {
 	return func(o *TopicOptions) { o.ContinueOnError = true }
 }
 
-// WithTopicRetry 覆盖重试。
+// WithTopicRetry 覆盖重试（经 subscribeTyped 转发为订阅基础值，调用方 WithSubscribeRetry 可覆盖）。
 func WithTopicRetry(r RetryOptions) TopicOption {
 	return func(o *TopicOptions) { r2 := r; o.Retry = &r2 }
 }
@@ -104,33 +104,7 @@ func (t Topic[T]) PublishRaw(ctx context.Context, raw *RawEvent, opts ...Publish
 	return publishRawTyped(ctx, b, t, raw, opts...)
 }
 
-// PublishTyped 发布类型化负载（迁移期薄别名；新代码优先 Topic.Publish）。
-func PublishTyped[T any](ctx context.Context, b Bus, topic Topic[T], payload T, opts ...PublishOption) error {
-	if b == nil {
-		return ErrNoBus
-	}
-	return publishTyped(ctx, b, topic, payload, opts...)
-}
-
-// SubscribeTyped 订阅类型化主题（迁移期薄别名；新代码优先 Topic.Subscribe）。
-func SubscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error {
-	if b == nil {
-		return ErrNoBus
-	}
-	return subscribeTyped(ctx, b, topic, h, opts...)
-}
-
-// PublishRawTyped 以原始事件发布类型化主题（迁移期薄别名；新代码优先 Topic.PublishRaw）。
-func PublishRawTyped[T any](ctx context.Context, b Bus, topic Topic[T], raw *RawEvent, opts ...PublishOption) error {
-	if b == nil {
-		return ErrNoBus
-	}
-	return publishRawTyped(ctx, b, topic, raw, opts...)
-}
-
 func publishTyped[T any](ctx context.Context, b Bus, topic Topic[T], payload T, opts ...PublishOption) error {
-	po := &PublishOptions{}
-	applyPublishOptions(po, opts...)
 	// Topic Marshaler 作为较低优先级默认：先注入，再让调用方 opts 覆盖
 	var base []PublishOption
 	if m := topic.Options().Marshaler; m != nil {
@@ -141,11 +115,13 @@ func publishTyped[T any](ctx context.Context, b Bus, topic Topic[T], payload T, 
 }
 
 func subscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error {
-	so := &SubscribeOptions{}
-	applySubscribeOptions(so, opts...)
 	topts := topic.Options()
-	m := ResolveSubscribeMarshaler(b, topic.Name(), topts.Marshaler, so.Marshaler)
+	// CORE-03：解码器在订阅时一次解析、闭包直接捕获。订阅侧无调用级覆盖
+	// （有意的不对称，见 docs/design-eventbus.md §5.2）：同一 topic 的 wire
+	// 格式由发布侧决定，解码按 Topic 携带 > Bus 级（MarshalerFor）。
+	dec := ResolveMarshaler(b, topic.Name(), topts.Marshaler, nil)
 
+	// Topic 默认值作为基础项注入，调用方 opts 排在末尾最后生效
 	wrappedOpts := make([]SubscribeOption, 0, len(opts)+5)
 	if topts.Group != "" {
 		wrappedOpts = append(wrappedOpts, WithGroup(topts.Group))
@@ -159,18 +135,10 @@ func subscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], h func(co
 	if topts.ContinueOnError {
 		wrappedOpts = append(wrappedOpts, WithContinueOnError())
 	}
-	if m != nil {
-		wrappedOpts = append(wrappedOpts, WithSubscribeMarshaler(m))
+	if topts.Retry != nil {
+		wrappedOpts = append(wrappedOpts, WithSubscribeRetry(*topts.Retry))
 	}
 	wrappedOpts = append(wrappedOpts, opts...)
-
-	// CORE-03：wrappedOpts 在订阅时已固定，Marshaler 解析提升到订阅时
-	// 一次完成、闭包直接捕获——此前每条消息重复 apply+解析纯属分配浪费。
-	// 优先级语义不变：用户 opts 排在 wrappedOpts 末尾最后生效，可在
-	// 订阅时覆盖 Topic 默认 Marshaler。
-	final := &SubscribeOptions{}
-	applySubscribeOptions(final, wrappedOpts...)
-	dec := ResolveSubscribeMarshaler(b, topic.Name(), topts.Marshaler, final.Marshaler)
 
 	return b.Subscribe(ctx, topic.Name(), func(ctx context.Context, raw *RawEvent) error {
 		ev, err := DecodeTyped[T](dec, raw)

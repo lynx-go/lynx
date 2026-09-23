@@ -17,9 +17,14 @@ func (JSONMarshaler) Marshal(v any) ([]byte, error) { return json.Marshal(v) }
 // Unmarshal 将 Payload 反序列化到 out，直接委托 json.Unmarshal。
 func (JSONMarshaler) Unmarshal(b []byte, out any) error { return json.Unmarshal(b, out) }
 
-// ResolvePublishMarshaler 按对称优先级解析发布侧 Marshaler（高→低）：
-// 1. 本次 PublishOption  2. Topic 携带  3. TopicMarshalers  4. 全局  5. JSON。
-func ResolvePublishMarshaler(b Bus, topic string, topicMarshaler, optionMarshaler Marshaler) Marshaler {
+// ResolveMarshaler 是编解码解析的唯一归属（发布/订阅共用），按优先级（高→低）：
+// 1. 调用级显式 optionMarshaler（PublishOption 注入；Topic 携带者由 Topic 层转为基础调用项）
+// 2. topicMarshaler（Topic[T] 携带）
+// 3. Bus 级：MarshalerFor → TopicMarshalers[t] → Topics[t].Marshaler → 全局
+// 4. JSON。
+// 订阅侧无调用级覆盖：同一 topic 的 wire 格式由发布侧决定，订阅侧按 Topic/Bus 配置解码
+// （见 docs/design-eventbus.md §5.2，有意的不对称）。
+func ResolveMarshaler(b Bus, topic string, topicMarshaler, optionMarshaler Marshaler) Marshaler {
 	if optionMarshaler != nil {
 		return optionMarshaler
 	}
@@ -30,12 +35,6 @@ func ResolvePublishMarshaler(b Bus, topic string, topicMarshaler, optionMarshale
 		return b.MarshalerFor(topic)
 	}
 	return JSONMarshaler{}
-}
-
-// ResolveSubscribeMarshaler 按对称优先级解析订阅侧 Marshaler（高→低）：
-// 1. 本次 SubscribeOption  2. Topic 携带  3. TopicMarshalers  4. 全局  5. JSON。
-func ResolveSubscribeMarshaler(b Bus, topic string, topicMarshaler, optionMarshaler Marshaler) Marshaler {
-	return ResolvePublishMarshaler(b, topic, topicMarshaler, optionMarshaler)
 }
 
 // TypedDecoding helpers — 内存 Bus 与 Watermill Bus 共用。

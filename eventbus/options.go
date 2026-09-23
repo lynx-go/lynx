@@ -24,7 +24,9 @@ type TopicConfig struct {
 	ContinueOnError bool               `mapstructure:"continue_on_error"`
 	Retry           *RetryOptions      `mapstructure:"retry"`
 	LogMessage      *LogMessageOptions `mapstructure:"log_message"`
-	Marshaler       Marshaler          `mapstructure:"-"`
+	// Marshaler 是 Topics[t] 维度的序列化器（编程式设置，yaml 不可表达）。
+	// 生效优先级低于 TopicMarshalers[t]、高于全局 Marshaler（见 MarshalerFor）。
+	Marshaler Marshaler `mapstructure:"-"`
 }
 
 // Options 是 Bus 的构造选项，全部有默认值，开箱即零值可用。

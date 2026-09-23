@@ -26,7 +26,7 @@ func (prefixMarshaler) Unmarshal(data []byte, out any) error {
 	return json.Unmarshal(data, out)
 }
 
-func TestPublishTypedUsesTopicMarshaler(t *testing.T) {
+func TestTopicPublishUsesTopicMarshaler(t *testing.T) {
 	bus := NewMemoryBus(Options{})
 	if err := bus.Init(nil); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -34,13 +34,7 @@ func TestPublishTypedUsesTopicMarshaler(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = bus.Start(ctx) }()
-	// 等待 bus running
-	for i := 0; i < 20; i++ {
-		if bus.CheckHealth() == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitRunning(t, bus)
 
 	// Topic 带自定义 Marshaler
 	topic := NewTopic[map[string]string]("test.custom", WithTopicMarshaler(prefixMarshaler{}))
@@ -55,8 +49,8 @@ func TestPublishTypedUsesTopicMarshaler(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	payload := map[string]string{"hello": "world"}
-	if err := PublishTyped(context.Background(), bus, topic, payload); err != nil {
-		t.Fatalf("PublishTyped: %v", err)
+	if err := topic.Publish(context.Background(), payload, WithBus(bus)); err != nil {
+		t.Fatalf("Publish: %v", err)
 	}
 
 	select {
@@ -65,18 +59,18 @@ func TestPublishTypedUsesTopicMarshaler(t *testing.T) {
 		if len(e.Payload) < 7 || string(e.Payload[:7]) != "prefix:" {
 			t.Fatalf("payload not using topic marshaler, got %q", string(e.Payload))
 		}
-		// 验证 SubscribeTyped 也能用同一 Marshaler 正确解码
+		// 验证 Topic.Subscribe 也能用同一 Marshaler 正确解码
 		typedCh := make(chan string, 1)
 		topic2 := NewTopic[map[string]string]("test.custom.typed", WithTopicMarshaler(prefixMarshaler{}))
-		if err := SubscribeTyped(context.Background(), bus, topic2, func(ctx context.Context, ev *Event[map[string]string]) error {
+		if err := topic2.Subscribe(context.Background(), func(ctx context.Context, ev *Event[map[string]string]) error {
 			typedCh <- ev.Payload["hello"]
 			return nil
-		}); err != nil {
-			t.Fatalf("SubscribeTyped: %v", err)
+		}, WithBus(bus)); err != nil {
+			t.Fatalf("Subscribe: %v", err)
 		}
 		time.Sleep(20 * time.Millisecond)
-		if err := PublishTyped(context.Background(), bus, topic2, payload); err != nil {
-			t.Fatalf("PublishTyped2: %v", err)
+		if err := topic2.Publish(context.Background(), payload, WithBus(bus)); err != nil {
+			t.Fatalf("Publish2: %v", err)
 		}
 		select {
 		case got := <-typedCh:
@@ -111,10 +105,12 @@ func (strictPrefixMarshaler) Unmarshal(data []byte, out any) error {
 	return json.Unmarshal(data[7:], out)
 }
 
-// TestSubscribeTypedMarshalerResolvedAtSubscribe 是 CORE-03 的回归：
-// 解码器提升到订阅时一次解析后，"用户 opts 覆盖 Topic 默认 Marshaler"
-// 的优先级语义必须原样保留（两个方向都验证）。
-func TestSubscribeTypedMarshalerResolvedAtSubscribe(t *testing.T) {
+// TestSubscribeMarshalerResolvedAtSubscribe 是 CORE-03 的回归：
+// 解码器提升到订阅时一次解析后，Topic 默认与 Bus 级（MarshalerFor）两条
+// 解析路径都必须在订阅时固定并正确生效。
+func TestSubscribeMarshalerResolvedAtSubscribe(t *testing.T) {
+	// 方向一：Topic 默认 strictPrefix，无调用级覆盖——
+	// wire 上是带前缀数据，解码必须用 Topic 默认。
 	bus := NewMemoryBus(Options{})
 	_ = bus.Init(nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -122,38 +118,12 @@ func TestSubscribeTypedMarshalerResolvedAtSubscribe(t *testing.T) {
 	go func() { _ = bus.Start(ctx) }()
 	waitRunning(t, bus)
 
-	// 方向一：Topic 默认 strictPrefix，用户 opts 显式 JSON——
-	// wire 上是纯 JSON（发布侧同优先级），解码必须用用户的 JSON；
-	// 若误用 Topic 的 strictPrefix 会因缺前缀而解码失败。
-	overridden := NewTopic[map[string]string]("resolve.override", WithTopicMarshaler(strictPrefixMarshaler{}))
-	gotOverride := make(chan string, 1)
-	if err := SubscribeTyped(context.Background(), bus, overridden, func(ctx context.Context, e *Event[map[string]string]) error {
-		gotOverride <- e.Payload["k"]
-		return nil
-	}, WithHandlerName("h-res-override"), WithSubscribeMarshaler(JSONMarshaler{})); err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-	if err := overridden.Publish(context.Background(), map[string]string{"k": "user-wins"},
-		WithBus(bus), WithPublishMarshaler(JSONMarshaler{})); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-	select {
-	case v := <-gotOverride:
-		if v != "user-wins" {
-			t.Fatalf("override decode got %q, want user-wins", v)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("user SubscribeOption marshaler did not win — decode failed")
-	}
-
-	// 方向二：Topic 默认 strictPrefix，用户未指定——
-	// wire 上是带前缀数据，解码必须用 Topic 默认。
 	defaulted := NewTopic[map[string]string]("resolve.default", WithTopicMarshaler(strictPrefixMarshaler{}))
 	gotDefault := make(chan string, 1)
-	if err := SubscribeTyped(context.Background(), bus, defaulted, func(ctx context.Context, e *Event[map[string]string]) error {
+	if err := defaulted.Subscribe(context.Background(), func(ctx context.Context, e *Event[map[string]string]) error {
 		gotDefault <- e.Payload["k"]
 		return nil
-	}, WithHandlerName("h-res-default")); err != nil {
+	}, WithBus(bus), WithHandlerName("h-res-default")); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	if err := defaulted.Publish(context.Background(), map[string]string{"k": "topic-wins"}, WithBus(bus)); err != nil {
@@ -166,5 +136,36 @@ func TestSubscribeTypedMarshalerResolvedAtSubscribe(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("topic default marshaler not used for decode")
+	}
+
+	// 方向二：Topic 未携带，Bus 级 TopicMarshalers 提供 strictPrefix——
+	// 解码走 MarshalerFor 路径，同样在订阅时一次解析。
+	bus2 := NewMemoryBus(Options{TopicMarshalers: map[string]Marshaler{
+		"resolve.bus-level": strictPrefixMarshaler{},
+	}})
+	_ = bus2.Init(nil)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	go func() { _ = bus2.Start(ctx2) }()
+	waitRunning(t, bus2)
+
+	busLevel := NewTopic[map[string]string]("resolve.bus-level")
+	gotBusLevel := make(chan string, 1)
+	if err := busLevel.Subscribe(context.Background(), func(ctx context.Context, e *Event[map[string]string]) error {
+		gotBusLevel <- e.Payload["k"]
+		return nil
+	}, WithBus(bus2), WithHandlerName("h-res-bus-level")); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if err := busLevel.Publish(context.Background(), map[string]string{"k": "bus-wins"}, WithBus(bus2)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	select {
+	case v := <-gotBusLevel:
+		if v != "bus-wins" {
+			t.Fatalf("bus-level decode got %q, want bus-wins", v)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bus-level (MarshalerFor) marshaler not used for decode")
 	}
 }

@@ -115,10 +115,13 @@ func (b *memoryBus) CheckHealth() error {
 	return nil
 }
 
-// MarshalerFor 返回主题序列化器。
+// MarshalerFor 返回主题序列化器（查找序：TopicMarshalers[t] → Topics[t].Marshaler → 全局 → JSON）。
 func (b *memoryBus) MarshalerFor(topic string) Marshaler {
 	if m, ok := b.opts.TopicMarshalers[topic]; ok {
 		return m
+	}
+	if cfg, ok := b.opts.Topics[topic]; ok && cfg.Marshaler != nil {
+		return cfg.Marshaler
 	}
 	if b.opts.Marshaler != nil {
 		return b.opts.Marshaler
@@ -143,7 +146,12 @@ func (b *memoryBus) logFor(topic string) LogMessageOptions {
 	return LogMessageOptions{}
 }
 
-func (b *memoryBus) retryFor(topic string) RetryOptions {
+// retryFor 解析订阅的重试默认（高→低）：调用/Topic 级 SubscribeOptions.Retry →
+// Options.Topics[t].Retry → Options.Retry → 默认 3 次。
+func (b *memoryBus) retryFor(topic string, call *RetryOptions) RetryOptions {
+	if call != nil {
+		return *call
+	}
 	if cfg, ok := b.opts.Topics[topic]; ok && cfg.Retry != nil {
 		return *cfg.Retry
 	}
@@ -191,7 +199,7 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 		key = o.MessageKey
 		headers = map[string]string{}
 	default:
-		m := ResolvePublishMarshaler(b, topic, nil, o.Marshaler)
+		m := ResolveMarshaler(b, topic, nil, o.Marshaler)
 		bs, err := m.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("bus: marshal %q: %w", topic, err)
@@ -322,7 +330,7 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 }
 
 func (b *memoryBus) loop(ctx context.Context, sub *subscriber) {
-	retry := b.retryFor(sub.topic)
+	retry := b.retryFor(sub.topic, sub.opts.Retry)
 	for {
 		select {
 		case <-ctx.Done():

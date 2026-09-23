@@ -59,18 +59,18 @@ func TestMemoryBusPublishSubscribe(t *testing.T) {
 		t.Fatal("did not receive event")
 	}
 
-	// Test Typed helper
+	// Test Typed path
 	topic := NewTopic[map[string]string]("order.typed")
 	typedReceived := make(chan *Event[map[string]string], 1)
-	if err := SubscribeTyped(context.Background(), b, topic, func(ctx context.Context, e *Event[map[string]string]) error {
+	if err := topic.Subscribe(context.Background(), func(ctx context.Context, e *Event[map[string]string]) error {
 		typedReceived <- e
 		return nil
-	}, WithHandlerName("h2")); err != nil {
-		t.Fatalf("SubscribeTyped: %v", err)
+	}, WithBus(b), WithHandlerName("h2")); err != nil {
+		t.Fatalf("Subscribe: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if err := PublishTyped(context.Background(), b, topic, map[string]string{"id": "2"}); err != nil {
-		t.Fatalf("PublishTyped: %v", err)
+	if err := topic.Publish(context.Background(), map[string]string{"id": "2"}, WithBus(b)); err != nil {
+		t.Fatalf("Publish: %v", err)
 	}
 	select {
 	case e := <-typedReceived:

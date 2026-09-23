@@ -166,9 +166,9 @@ OrderCreated.Subscribe(ctx, "audit", handler, eventbus.WithBus(other))
 | `lynx.WithBus` | `lynx` | 应用构造 Option，注入整应用的 Bus |
 | `eventbus.WithBus` | `eventbus` | 单次 Publish/Subscribe 的 Option，覆盖解析结果 |
 
-包级 `PublishTyped` / `SubscribeTyped`：**改为** `Topic` 方法的薄别名或迁移期后删除，避免双入口。
+包级 `PublishTyped` / `SubscribeTyped` / `PublishRawTyped`：**已删除**（无兼容别名，见 CHANGELOG），`Topic.Publish` / `Subscribe` / `PublishRaw` 为唯一类型化入口，避免双入口。
 
-`NewTopic` 选项（`WithTopicMarshaler` / Group / Instances / AutoAck / ContinueOnError / Retry）须在 Subscribe 路径 **实际生效**（见 §5.2）。
+`NewTopic` 选项（`WithTopicMarshaler` / Group / Instances / AutoAck / ContinueOnError / Retry）须在 Subscribe 路径 **实际生效**（见 §5.2；Retry 四级合并已接通：Topic 携带值经 `WithSubscribeRetry` 转发为基础调用项）。
 
 ```go
 type Event[T any] struct {
@@ -237,20 +237,30 @@ _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
 | Topic | 可选 metadata `x-logical-topic`；物理名由 Transport 决定 | handler 侧逻辑名以订阅注册为准，可与 metadata 校验 |
 | Time | metadata `x-event-time`（RFC3339Nano） | 还原；缺失时可用 `time.Now()` 并文档标明降级 |
 
-### 5.2 Marshaler 优先级（发布/订阅对称）
+### 5.2 Marshaler 优先级（发布/订阅）
 
-统一规则（高 → 低）：
+发布侧统一规则（高 → 低）：
 
-1. 本次 `PublishOption` / `SubscribeOption` 显式 Marshaler  
-2. `Topic[T]` 携带的 Marshaler  
-3. `Options.TopicMarshalers[topic]`  
-4. `Options.Marshaler`  
+1. 本次 `PublishOption` 显式 Marshaler（`WithPublishMarshaler`）
+2. `Topic[T]` 携带的 Marshaler（`WithTopicMarshaler`，由 `Topic` 层转为基础调用项注入）
+3. `Options.TopicMarshalers[topic]`
+4. `Options.Topics[topic].Marshaler`（编程式设置，yaml 不可表达）
+5. `Options.Marshaler`
+6. `JSONMarshaler`
+
+订阅侧（高 → 低）：**无调用级覆盖**（有意的不对称：同一 topic 的 wire 格式由发布侧决定，订阅侧按配置解码）：
+
+1. `Topic[T]` 携带的 Marshaler
+2. `Options.TopicMarshalers[topic]`
+3. `Options.Topics[topic].Marshaler`
+4. `Options.Marshaler`
 5. `JSONMarshaler`
 
 要求：
 
-- `Subscribe` 实现 **必须读取** `SubscribeOptions.Marshaler`（或解码闭包与 Publish 使用同一解析函数）。
-- 禁止「`PublishTyped` 用 Topic Marshaler、同名字符串 `Publish` 用全局 JSON」的静默错接；Debug 下应对齐告警（可选：同 topic 首次不一致时 Error 日志）。
+- 编解码解析的唯一归属是 `eventbus.ResolveMarshaler`（发布/订阅共用）；解码在订阅时一次解析、闭包直接捕获（CORE-03），不逐消息解析。
+- `MarshalerFor` 的查找序为 `TopicMarshalers[t]` → `Topics[t].Marshaler` → 全局（同级两面中 `TopicMarshalers` 优先）。
+- 禁止「`Topic.Publish` 用 Topic Marshaler、同名字符串 `Publish` 用全局 JSON」的静默错接；Debug 下应对齐告警（可选：同 topic 首次不一致时 Error 日志）。
 - `T == []byte`：Payload 透传，不经 Marshaler（与现状一致）。
 
 ### 5.3 Key 与 Kafka 分区键
@@ -259,7 +269,7 @@ _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
 - **Kafka**：适配器必须把该键写入 **Kafka record key**（分区/保序），不能仅放 header。实现可选：自定义 Watermill Kafka Marshaler，或在 Transport.Publish 组装 ProducerMessage。
 - `maps.Copy(Headers)` **不得覆盖** 已写入的 `x-message-key`（先 Copy 再 Set key，或 Copy 时跳过协议键）。
 
-### 5.4 PublishRawTyped / 转发
+### 5.4 Topic.PublishRaw / 转发
 
 转发应保留 `ID`、`Key`、`Headers`、`Time`、`Payload`；仅当明确「新事件」语义时才生成新 ID/Time。文档与 API 命名区分 **转发** vs **新发**。
 
@@ -342,7 +352,7 @@ Run
 
 | 能力 | Init 时保证 |
 | --- | --- |
-| Subscribe / SubscribeTyped（含 `lynx.*`） | 是 |
+| Topic.Subscribe（含 `lynx.*`） | 是 |
 | Publish 到已订阅的同进程 handler | 是 |
 | 跨进程消费者已 rebalance | 否（仅领域；健康检查表达） |
 | `lynx.service.registered` 等 | 是（经同一 Bus → 内存 Transport） |
@@ -388,7 +398,7 @@ Run
 
 ### 9.2 刻意不迁（降低心智）
 
-- `Handler` / `NewEvent() any` 类型擦除 → 用 `Topic[T]` + `SubscribeTyped`
+- `Handler` / `NewEvent() any` 类型擦除 → 用 `Topic[T]` + `Topic.Subscribe`
 - 公共 API 暴露 `*message.Message`
 - 与 `eventbus.Options` 重复的第二套 Options（配置键从 `pubsub.*` 迁到 `bus.*` 或沿用 `Topics`）
 
@@ -422,7 +432,7 @@ Run
 1. **Start**：`go router.Run(ctx)`；允许 0 handler 启动；对外 `CheckHealth` 对齐 `IsRunning`（注意文档：历史原因下 Closed 后 `IsRunning` 仍可能为 true，关停用 `IsClosed` 或自有标志）。
 2. **Subscribe**：`AddConsumerHandler` + **`RunHandlers(ctx)`**；失败返回给调用方。
 3. **Publish**：经 `resolve` → Transport；wire 用 §5 单一映射。
-4. **Retry / AutoAck / ContinueOnError**：行为与现 Broker 文档对齐；`Topic[T].Retry` 与 `Options.Topics[].Retry` 合并规则写清（显式 SubscribeOption > Topic > Options.Topics > 全局默认）。
+4. **Retry / AutoAck / ContinueOnError**：行为与现 Broker 文档对齐；`Topic[T].Retry` 与 `Options.Topics[].Retry` 合并已实现（显式 `WithSubscribeRetry` > Topic（经基础项转发） > Options.Topics > 全局默认）。
 5. **中间件**：Recoverer、CorrelationID 可保留；**不要** SignalsHandler。
 6. **动态订阅与关停**：handler 名全局唯一；Stop 时 Close router 并关闭 Transports（生命周期约定写进文档：Transport 由谁 Close）。
 
@@ -505,7 +515,7 @@ kafka:
 | O3 | `Event.Time` 缺失旧消息是否失败 | 建议：降级 `time.Now()` + Debug 日志 |
 | O4 | 内存 Bus / MemoryTransport 缓冲满丢弃是否对领域过激 | 建议：领域生产用 Kafka；内存路径文档标明 |
 | O5 | Transport.Close 所有权 | 建议：Bus.Stop 关闭其拥有的 Transport；所有权单一 |
-| O6 | 是否保留薄 `Router` Service | 建议：可选；内部只调 SubscribeTyped |
+| O6 | 是否保留薄 `Router` Service | 建议：可选；内部只调 `Topic.Subscribe` |
 | O7 | 生命周期走 Watermill 的转换开销 / 信封 Time | **已决（方案 B）**：接受同进程多一跳；wire 契约仍适用；payload 内业务 Time 为准 |
 | O9 | `eventbus.WithBus` 与 `lynx.WithBus` 重名 | **已决**：分属两包，文档表注明；实现注释交叉引用 |
 | O10 | Transport 订阅如何保留 Ack/Nack | **已决（方案 B）**：`Subscribe` 返回 `<-chan Delivery`（Event + Ack/Nack）；业务 API 仍不出现 `Delivery` / `*message.Message` |

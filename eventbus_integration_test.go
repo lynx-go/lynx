@@ -65,7 +65,7 @@ type Order struct {
 	ID string `json:"id"`
 }
 
-func TestBusPublishTypedViaApp(t *testing.T) {
+func TestBusPublishTypedTopicViaApp(t *testing.T) {
 	topic := eventbus.NewTopic[Order]("order.created")
 	received := make(chan string, 1)
 	app, _ := newLynx(NewOptions())

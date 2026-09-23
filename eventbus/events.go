@@ -69,7 +69,7 @@ type ConfigUpdatedEvent struct {
 	Time time.Time `json:"time"`
 }
 
-// 预定义类型化 Topic，便于编译期约束：业务侧可直接 SubscribeTyped。
+// 预定义类型化 Topic，便于编译期约束：业务侧直接调用各 Topic 的 Subscribe。
 var (
 	AppStartingTopic = NewTopic[AppEvent](TopicAppStarting)
 	AppStartedTopic  = NewTopic[AppEvent](TopicAppStarted)
