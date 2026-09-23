@@ -38,7 +38,7 @@ func (c *versionCmd) Synopsis() string         { return "打印示例版本（�
 func (c *versionCmd) Usage() string            { return "version" }
 func (c *versionCmd) SetFlags(_ *flag.FlagSet) {}
 func (c *versionCmd) Run(_ context.Context, env *commands.Environment, _ []string) error {
-	fmt.Fprintln(env.Stdout, "cli-example v1.12.0")
+	_, _ = fmt.Fprintln(env.Stdout, "cli-example v1.12.0")
 	return nil
 }
 
@@ -64,7 +64,7 @@ func (c *setCmd) Run(_ context.Context, env *commands.Environment, args []string
 	key, value := args[0], args[1]
 	return runLynx(c.configFile, func(_ context.Context, a *App) error {
 		a.Store.Set(key, value)
-		fmt.Fprintf(env.Stdout, "set %s=%s\n", key, value)
+		_, _ = fmt.Fprintf(env.Stdout, "set %s=%s\n", key, value)
 		return nil
 	})
 }
@@ -91,7 +91,7 @@ func (c *getCmd) Run(_ context.Context, env *commands.Environment, args []string
 		if !ok {
 			return fmt.Errorf("key %q not found", key)
 		}
-		fmt.Fprintf(env.Stdout, "%s=%s\n", key, value)
+		_, _ = fmt.Fprintf(env.Stdout, "%s=%s\n", key, value)
 		return nil
 	})
 }
@@ -112,7 +112,7 @@ func (c *listCmd) Run(_ context.Context, env *commands.Environment, _ []string) 
 	return runLynx(c.configFile, func(_ context.Context, a *App) error {
 		for _, key := range a.Store.Keys() {
 			value, _ := a.Store.Get(key)
-			fmt.Fprintf(env.Stdout, "%s=%s\n", key, value)
+			_, _ = fmt.Fprintf(env.Stdout, "%s=%s\n", key, value)
 		}
 		return nil
 	})
