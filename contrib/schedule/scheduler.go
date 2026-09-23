@@ -36,6 +36,9 @@ type Scheduler struct {
 	// 收敛；从未启动时由 Stop 幂等关闭。
 	runDone  chan struct{}
 	doneOnce sync.Once
+	// entries 按任务名索引 fire 入口（构造时填充、之后只读），
+	// 供 Trigger 手动触发。重名任务后注册者覆盖前者。
+	entries map[string]func()
 }
 
 // Options 是调度器服务的配置项。
@@ -54,6 +57,10 @@ type Options struct {
 	// Coordinator 是进程间协调后端。Exclusive 任务经 TryOnce 抢格子；
 	// 未设置时 Exclusive 任务使 NewScheduler 返回 ErrCoordinatorRequired。
 	Coordinator cluster.Coordinator
+	// NowFunc 返回计算 Exclusive 互斥格子所用的时间，nil 时使用
+	// time.Now。供测试注入固定/步进时钟；仅影响格子身份计算，不影响
+	// cron 引擎自身的触发时序（引擎时序经 Trigger 绕过）。
+	NowFunc func() time.Time
 }
 
 // CheckHealth 实现健康检查，调度器未初始化或未运行时返回错误。
@@ -229,9 +236,19 @@ func WithCoordinator(s cluster.Coordinator) Option {
 	}
 }
 
+// WithNow 设置 Exclusive 互斥格子计算使用的时间来源（缺省 time.Now）。
+// 供测试注入固定/步进时钟，使互斥行为可确定性断言，无需真实等待。
+func WithNow(fn func() time.Time) Option {
+	return func(o *Options) {
+		o.NowFunc = fn
+	}
+}
+
 var (
 	// ErrCoordinatorRequired 表示存在 Exclusive 任务但未 WithCoordinator。
 	ErrCoordinatorRequired = errors.New("schedule: Exclusive task requires WithCoordinator")
+	// ErrTaskNotFound 表示 Trigger 的任务名未注册。
+	ErrTaskNotFound = errors.New("schedule: task not found")
 )
 
 // NewScheduler 创建调度器服务并注册所有定时任务，cron 表达式非法时返回错误。
@@ -287,49 +304,75 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	if loc == nil {
 		loc = time.Local
 	}
+	scheduler.entries = make(map[string]func(), len(tasks))
 	for i := range tasks {
 		task := tasks[i]
 		exclusive := isExclusive(task)
-		if _, err := scheduler.cron.AddFunc(task.Cron(), func() {
-			// 任务上下文取自 Init（ctx.Context，携带应用元数据，关闭时
-			// 取消）；未 Init 时回退 Background。
-			ctx := scheduler.taskCtx
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			defer func() {
-				if r := recover(); r != nil {
-					scheduler.logger.ErrorContext(ctx, "schedule task panic",
-						"task_name", task.Name(), "error", fmt.Errorf("%v", r))
-				}
-			}()
-			run := task.HandlerFunc()
-			if exclusive {
-				name, ttl, err := fireIdentity(task.Name(), task.Cron(), time.Now().In(loc), loc)
-				if err != nil {
-					scheduler.reportTaskError(ctx, task, err)
-					return
-				}
-				skipped, err := cluster.TryOnce(ctx, scheduler.options.Coordinator, name, ttl, run)
-				if skipped {
-					scheduler.logger.DebugContext(ctx, "schedule exclusive fire skipped",
-						"task_name", task.Name(), "fire", name)
-					return
-				}
-				if err != nil {
-					scheduler.reportTaskError(ctx, task, err)
-				}
-				return
-			}
-			if err := run(ctx); err != nil {
-				scheduler.reportTaskError(ctx, task, err)
-			}
-		}); err != nil {
+		fire := func() { scheduler.fireTask(task, exclusive, loc) }
+		if _, err := scheduler.cron.AddFunc(task.Cron(), fire); err != nil {
 			return nil, err
 		}
+		scheduler.entries[task.Name()] = fire
 	}
 
 	return scheduler, nil
+}
+
+// fireTask 执行一次任务：panic 恢复、Exclusive 互斥（TryOnce 抢格子）、
+// 错误上报。cron 触发与 Trigger 手动触发共用同一路径，行为一致。
+// 任务上下文取自 Init（ctx.Context，携带应用元数据，关闭时取消）；
+// 未 Init 时回退 Background。
+func (s *Scheduler) fireTask(task Task, exclusive bool, loc *time.Location) {
+	ctx := s.taskCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.ErrorContext(ctx, "schedule task panic",
+				"task_name", task.Name(), "error", fmt.Errorf("%v", r))
+		}
+	}()
+	run := task.HandlerFunc()
+	if exclusive {
+		now := time.Now
+		if s.options.NowFunc != nil {
+			now = s.options.NowFunc
+		}
+		name, ttl, err := fireIdentity(task.Name(), task.Cron(), now().In(loc), loc)
+		if err != nil {
+			s.reportTaskError(ctx, task, err)
+			return
+		}
+		skipped, err := cluster.TryOnce(ctx, s.options.Coordinator, name, ttl, run)
+		if skipped {
+			s.logger.DebugContext(ctx, "schedule exclusive fire skipped",
+				"task_name", task.Name(), "fire", name)
+			return
+		}
+		if err != nil {
+			s.reportTaskError(ctx, task, err)
+		}
+		return
+	}
+	if err := run(ctx); err != nil {
+		s.reportTaskError(ctx, task, err)
+	}
+}
+
+// Trigger 立即按任务名触发一次执行，走与 cron 触发完全相同的路径
+// （panic 恢复、Exclusive 互斥、错误上报）。用途：测试中无需等待
+// cron 时序即可驱动任务逻辑；生产上作为"手动执行一次"的运维入口。
+// 任务未注册时返回 ErrTaskNotFound；Exclusive 任务同样参与互斥
+// （手动触发不绕过格子锁）。Init/Start 前亦可调用（ctx 回退
+// Background，与 cron fire 同语义）。
+func (s *Scheduler) Trigger(name string) error {
+	fire, ok := s.entries[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrTaskNotFound, name)
+	}
+	fire()
+	return nil
 }
 
 func (s *Scheduler) reportTaskError(ctx context.Context, task Task, err error) {
