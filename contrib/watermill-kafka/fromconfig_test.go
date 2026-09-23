@@ -76,9 +76,11 @@ kafka:
 	}
 }
 
-// TestValidateKafkaSection 表驱动覆盖校验层全部分支：YAML null 视为未设置
-// 不报错；标量/错误类型被拒；非映射 section 跳过；键大小写不敏感。
-func TestValidateKafkaSection(t *testing.T) {
+// TestUnmarshalStrictTypes 表驱动覆盖严格类型语义的全部分支（原手写
+// validateKafkaSection 垫片的行为矩阵，现由 lynx.WithStrictTypes 统一实现）：
+// YAML null 视为未设置不报错；标量/错误类型被拒；字符串来源（env/简写）
+// 接受；键大小写不敏感。
+func TestUnmarshalStrictTypes(t *testing.T) {
 	tests := []struct {
 		name    string
 		yaml    string
@@ -91,17 +93,18 @@ func TestValidateKafkaSection(t *testing.T) {
 		{"consumer scalar rejected", "kafka:\n  hello:\n    consumer: 42\n", true},
 		{"sasl null treated as absent", "kafka:\n  hello:\n    sasl: null\n", false},
 		{"brokers scalar string accepted", "kafka:\n  hello:\n    brokers: \"127.0.0.1:19092\"\n", false},
-		{"non-map section skipped", "kafka: true\n", false},
-		{"case-variant keys accepted via foldGet", "kafka:\n  hello:\n    Brokers: [x]\n", false},
+		{"scalar section rejected at decode", "kafka: true\n", true},
+		{"case-variant keys accepted", "kafka:\n  hello:\n    Brokers: [x]\n", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateKafkaSection(fromConfigTestConfig(t, tt.yaml).Get("kafka"))
+			var opts Options
+			err := fromConfigTestConfig(t, tt.yaml).UnmarshalKey("kafka", &opts, lynx.WithStrictTypes())
 			if tt.wantErr && err == nil {
-				t.Fatal("expected validation error, got nil")
+				t.Fatal("expected decode error, got nil")
 			}
 			if !tt.wantErr && err != nil {
-				t.Fatalf("expected no validation error, got %v", err)
+				t.Fatalf("expected no decode error, got %v", err)
 			}
 		})
 	}

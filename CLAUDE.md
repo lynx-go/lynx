@@ -163,6 +163,8 @@ Configuration is exposed through two generic interfaces, decoupled from the unde
 
 Other config libraries (e.g. koanf) can be integrated by implementing these two interfaces.
 
+Decode semantics (`Unmarshal`/`UnmarshalKey`): struct targets default to struct-driven leaf-wise `Get` — tag fallback chain mapstructure → json → lowercase field name; env-only keys (set only in env vars) participate. Non-struct targets fall back to viper semantics. Options: `WithTagName` (restrict tag), `WithStrictTypes` (reject non-string-scalar→collection weak conversion, e.g. `brokers: 42`; string sources/env stay legal), `WithErrorUnused` (report unknown keys in the subtree; `UnmarshalKey` only). Nested container fields (maps/slices of structs, incl. `mapstructure:",remain"`) decode elements by mapstructure semantics. contrib fromconfig constructors（registry/consul/watermill-kafka）统一走 `WithStrictTypes`，不再各自手写类型预检垫片；`registry.FileConfig`/`LoadFileConfig` 是 `registry.*` 段的唯一 schema（consul 经它读共享字段）。
+
 Configuration flow:
 1. `BindFlagsFunc` - Bind CLI flags
 2. `BindConfigFunc` - Bind flags to the app ConfigSource, set config file paths

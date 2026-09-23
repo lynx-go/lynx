@@ -1,6 +1,7 @@
 package lynx
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -24,8 +25,10 @@ type Config interface {
 	GetStringSlice(path string) []string
 	// IsSet 报告 path 是否已设置。
 	IsSet(path string) bool
-	// Unmarshal 将配置解码到 out 指向的结构体。默认行为与 viper 一致，
-	// 通过 opts 选择或定制解码行为（见 UnmarshalOption）。
+	// Unmarshal 将配置解码到 out 指向的结构体。结构体目标默认走结构体驱动的
+	// 逐叶取值：tag 回退链 mapstructure → json → 小写字段名，仅在环境变量
+	// 设置的键（配置文件无此键）也参与解码；非结构体目标（map 等，无法
+	// 枚举叶子）回落 viper 语义。通过 opts 选择或定制解码行为（见 UnmarshalOption）。
 	Unmarshal(out any, opts ...UnmarshalOption) error
 	// UnmarshalKey 将 path 对应的配置子树解码到 out 指向的结构体；
 	// opts 语义与 Unmarshal 相同，叶子键以 path 为前缀。
@@ -36,28 +39,36 @@ type Config interface {
 // 字段均为解码器无关概念，任意 Config 实现都应能解释。
 type UnmarshalOptions struct {
 	// TagName 非空时仅按该 struct tag 匹配配置键（无 tag 的字段按
-	// 小写字段名匹配）。空值时：默认路径仅按 mapstructure 匹配（viper
-	// 语义）；EnvForAllKeys 路径按 mapstructure → json → 小写字段名回退。
+	// 小写字段名匹配）。空值按 mapstructure → json → 小写字段名回退。
 	TagName string
-	// EnvForAllKeys 开启结构体驱动的逐叶取值：以 out 的结构体叶子为键集
-	// 逐键 Get，使仅在环境变量中设置的键（配置文件无此键）也参与解码——
-	// viper Unmarshal 基于 AllSettings，对此类键不可见。无法枚举叶子的
-	// 目标（非结构体、动态键的 map 字段）回落 viper 路径。
-	EnvForAllKeys bool
+	// StrictTypes 拒绝非字符串标量到集合的弱类型转换（如 brokers: 42 被
+	// 静默弱转为 []string{"42"}）：启动期报错优于静默错值。字符串来源的
+	// 弱转不受影响——环境变量注入的值恒为字符串（"a,b" → 切表、"42" →
+	// int 均为合法弱转），拒绝字符串会使 env 覆盖不可用。
+	StrictTypes bool
+	// ErrorUnused 报告配置子树中未被目标结构体消费的键（未知键，多为
+	// 拼写错误）。仅 UnmarshalKey 支持（需要可枚举的配置子树，Unmarshal
+	// 传入时返回明确错误）；动态键的 map 字段整体视为已消费。
+	ErrorUnused bool
 }
 
 // UnmarshalOption 定制 Unmarshal/UnmarshalKey 的解码行为。
 type UnmarshalOption func(*UnmarshalOptions)
 
-// WithTagName 指定匹配配置键所用的 struct tag。
+// WithTagName 指定匹配配置键所用的 struct tag（缺 tag 字段按小写字段名匹配）。
 func WithTagName(tag string) UnmarshalOption {
 	return func(o *UnmarshalOptions) { o.TagName = tag }
 }
 
-// WithEnvForAllKeys 开启结构体驱动的逐叶取值，使仅在环境变量中设置的键
-// 也参与解码。
-func WithEnvForAllKeys() UnmarshalOption {
-	return func(o *UnmarshalOptions) { o.EnvForAllKeys = true }
+// WithStrictTypes 拒绝非字符串标量到集合的弱类型转换（如 brokers: 42
+// 弱转为 []string{"42"} 的静默错配）；字符串来源（环境变量注入）不受影响。
+func WithStrictTypes() UnmarshalOption {
+	return func(o *UnmarshalOptions) { o.StrictTypes = true }
+}
+
+// WithErrorUnused 报告配置子树中未被结构体消费的未知键（仅支持 UnmarshalKey）。
+func WithErrorUnused() UnmarshalOption {
+	return func(o *UnmarshalOptions) { o.ErrorUnused = true }
 }
 
 // ConfigSource 是配置源的绑定接口，在初始化绑定阶段（BindConfigFunc）
@@ -125,7 +136,12 @@ func (c *viperConfig) IsSet(key string) bool {
 
 func (c *viperConfig) Unmarshal(out any, opts ...UnmarshalOption) error {
 	o := applyUnmarshalOptions(opts)
-	if o.EnvForAllKeys && structTypeOf(out) != nil {
+	if o.ErrorUnused {
+		// Config 接口无全量配置树枚举（无 AllSettings），未知键检测仅对
+		// 可定位的子树（UnmarshalKey）有意义；静默忽略选项即接口说谎。
+		return errors.New("lynx: WithErrorUnused 仅支持 UnmarshalKey（Unmarshal 无法枚举全量配置树）")
+	}
+	if structTypeOf(out) != nil {
 		return unmarshalByStruct(c, "", out, o)
 	}
 	return c.v.Unmarshal(out, o.viperOpts()...)
@@ -133,7 +149,7 @@ func (c *viperConfig) Unmarshal(out any, opts ...UnmarshalOption) error {
 
 func (c *viperConfig) UnmarshalKey(path string, out any, opts ...UnmarshalOption) error {
 	o := applyUnmarshalOptions(opts)
-	if o.EnvForAllKeys && structTypeOf(out) != nil {
+	if structTypeOf(out) != nil {
 		return unmarshalByStruct(c, path, out, o)
 	}
 	return c.v.UnmarshalKey(path, out, o.viperOpts()...)

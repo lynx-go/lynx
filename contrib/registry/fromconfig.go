@@ -2,14 +2,17 @@ package registry
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/lynx-go/lynx"
 )
 
-// fileConfig 是 registry 配置段的映射（yaml 键 → mapstructure 字段）。
-type fileConfig struct {
+// FileConfig 是 registry 配置段（yaml 键 → mapstructure 字段）的完整
+// schema，唯一归属：consul 等下游后端经 LoadFileConfig 读取同一段的
+// 共享字段（enabled / backend / heartbeat_ttl / deregister_after），
+// 不得另建副本 schema 手工同步（RC-06：两份 hand-synced struct 的
+// 「已生效」假象来源）。
+type FileConfig struct {
 	Enabled           *bool             `mapstructure:"enabled"`
 	Backend           string            `mapstructure:"backend"`
 	FailFast          *bool             `mapstructure:"fail_fast"`
@@ -35,6 +38,13 @@ type fileConfig struct {
 		Namespace string         `mapstructure:"namespace"`
 		Ports     map[string]int `mapstructure:"ports"`
 	} `mapstructure:"dns"`
+}
+
+// LoadFileConfig 读取 registry 段（严格类型：非字符串标量到集合的弱转
+// 错配报错）。ok=false 表示未启用（段缺失 / enabled:false / backend:""），
+// 调用方按未配置处理。下游后端（consul）用本函数读取共享字段。
+func LoadFileConfig(cfg lynx.Config) (FileConfig, bool, error) {
+	return loadFileConfig(cfg)
 }
 
 // NewBackendFromConfig 按 registry.backend 构造零依赖后端（memory/dns；
@@ -67,7 +77,7 @@ func NewBackendFromConfig(cfg lynx.Config) (Registry, Discovery, error) {
 
 // newDNSFromConfig 用 registry.dns.* 与 registry.discovery.poll_interval
 // 构造 DNS Discovery（未设置的字段取默认值）。
-func newDNSFromConfig(fc fileConfig) Discovery {
+func newDNSFromConfig(fc FileConfig) Discovery {
 	return NewDNSDiscovery(
 		WithDNSDomain(fc.DNS.Domain),
 		WithDNSNamespace(fc.DNS.Namespace),
@@ -171,17 +181,18 @@ func Apply(app lynx.App, r *Registrar) {
 	}
 }
 
-// loadFileConfig 读取 registry 段。返回 ok=false 表示未启用（段缺失 /
-// enabled:false / backend:""），调用方按 (nil, nil) 处理。
-func loadFileConfig(cfg lynx.Config) (fileConfig, bool, error) {
-	var fc fileConfig
+// loadFileConfig 读取 registry 段（严格类型，垫片已由 lynx.WithStrictTypes
+// 取代——非字符串标量到集合的弱转错配在解码期报错）。返回 ok=false 表示
+// 未启用（段缺失 / enabled:false / backend:""），调用方按 (nil, nil) 处理。
+// 类型预检垫片（validateRegistrySection / foldGet / isStringList）已删除：
+// 语义由 lynx.WithStrictTypes 在解码器层统一实现（启动期拒绝 brokers: 42
+// 这类弱转错配），不再各 contrib 手写一份。
+func loadFileConfig(cfg lynx.Config) (FileConfig, bool, error) {
+	var fc FileConfig
 	if cfg.Get("registry") == nil {
 		return fc, false, nil
 	}
-	if err := validateRegistrySection(cfg.Get("registry")); err != nil {
-		return fc, false, err
-	}
-	if err := cfg.UnmarshalKey("registry", &fc); err != nil {
+	if err := cfg.UnmarshalKey("registry", &fc, lynx.WithStrictTypes()); err != nil {
 		return fc, false, err
 	}
 	if fc.Enabled != nil && !*fc.Enabled {
@@ -191,57 +202,4 @@ func loadFileConfig(cfg lynx.Config) (fileConfig, bool, error) {
 		return fc, false, nil
 	}
 	return fc, true, nil
-}
-
-// validateRegistrySection 轻量校验 registry 段的字段结构类型，拒绝
-// mapstructure 弱类型转换会静默掩盖的类型错误（对齐 contrib/watermill-kafka）。
-// 仅在 cfg.Get 返回映射时生效。值为 nil 的字段（YAML null）视为未设置。
-func validateRegistrySection(raw any) error {
-	section, ok := raw.(map[string]any)
-	if !ok {
-		return nil
-	}
-	if v, ok := foldGet(section, "tags"); ok && v != nil && !isStringList(v) {
-		return fmt.Errorf("registry: field tags must be a list of strings, got %T", v)
-	}
-	if v, ok := foldGet(section, "meta"); ok && v != nil {
-		if _, ok := v.(map[string]any); !ok {
-			return fmt.Errorf("registry: field meta must be a mapping, got %T", v)
-		}
-	}
-	if v, ok := foldGet(section, "endpoints"); ok && v != nil {
-		list, ok := v.([]any)
-		if !ok {
-			return fmt.Errorf("registry: field endpoints must be a list, got %T", v)
-		}
-		for i, item := range list {
-			if _, ok := item.(map[string]any); !ok {
-				return fmt.Errorf("registry: endpoints[%d] must be a mapping, got %T", i, item)
-			}
-		}
-	}
-	return nil
-}
-
-// isStringList 判断值是否为字符串列表；字符串本身也接受（env 注入的
-// 扁平值或单值简写，弱类型转换下行为不变）。
-func isStringList(v any) bool {
-	switch v.(type) {
-	case []any, []string, string:
-		return true
-	}
-	return false
-}
-
-// foldGet 大小写不敏感地从映射取键（viper 对配置键大小写不敏感）。
-func foldGet(m map[string]any, key string) (any, bool) {
-	if v, ok := m[key]; ok {
-		return v, true
-	}
-	for k, v := range m {
-		if strings.EqualFold(k, key) {
-			return v, true
-		}
-	}
-	return nil, false
 }

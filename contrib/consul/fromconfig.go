@@ -8,15 +8,15 @@ import (
 
 	"github.com/hashicorp/consul/api"
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/contrib/registry"
 )
 
-// fileConfig 是 registry 配置段中 consul 关心的子树。
+// fileConfig 是 registry 配置段中 consul 独有的子树。共享字段
+// （enabled / backend / heartbeat_ttl / deregister_after）经
+// registry.LoadFileConfig 读取同一份 schema（FileConfig 唯一归属），
+// 不再手工同步副本（RC-06）。
 type fileConfig struct {
-	Enabled         *bool         `mapstructure:"enabled"`
-	Backend         string        `mapstructure:"backend"`
-	HeartbeatTTL    time.Duration `mapstructure:"heartbeat_ttl"`
-	DeregisterAfter time.Duration `mapstructure:"deregister_after"`
-	HealthCheck     struct {
+	HealthCheck struct {
 		Type     string        `mapstructure:"type"`
 		Path     string        `mapstructure:"path"`
 		Interval time.Duration `mapstructure:"interval"`
@@ -54,15 +54,18 @@ func NewFromConfig(cfg lynx.Config) (*Client, error) {
 	if cfg.Get("registry") == nil {
 		return nil, nil
 	}
-	var fc fileConfig
-	if err := cfg.UnmarshalKey("registry", &fc); err != nil {
+	// 共享字段（enabled/backend/heartbeat_ttl/deregister_after）经 registry
+	// 的唯一 schema 读取；本段独有的 consul/health_check 子树单独解码。
+	shared, ok, err := registry.LoadFileConfig(cfg)
+	if err != nil || !ok {
 		return nil, err
 	}
-	if fc.Enabled != nil && !*fc.Enabled {
+	if shared.Backend != "consul" {
 		return nil, nil
 	}
-	if fc.Backend != "consul" {
-		return nil, nil
+	var fc fileConfig
+	if err := cfg.UnmarshalKey("registry", &fc, lynx.WithStrictTypes()); err != nil {
+		return nil, err
 	}
 
 	apiConfig := api.DefaultConfig()
@@ -101,8 +104,8 @@ func NewFromConfig(cfg lynx.Config) (*Client, error) {
 		WithCheckPath(fc.HealthCheck.Path),
 		WithCheckInterval(fc.HealthCheck.Interval),
 		WithCheckTimeout(fc.HealthCheck.Timeout),
-		WithHeartbeatTTL(fc.HeartbeatTTL),
-		WithDeregisterAfter(fc.DeregisterAfter),
+		WithHeartbeatTTL(shared.HeartbeatTTL),
+		WithDeregisterAfter(shared.DeregisterAfter),
 		WithAllowStale(fc.Consul.AllowStale),
 	)
 }
