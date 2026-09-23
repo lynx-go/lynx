@@ -196,8 +196,8 @@ This pattern is particularly useful for complex applications with many services.
 
 **gRPC Server** (server/grpc/server.go)
 - Wraps `google.golang.org/grpc` with health check and reflection
-- Built-in logging and recovery interceptors (request log switchable via `WithRequestLog`/`WithRequestLogLevel`; Recovery logs panic+stack and returns generic "internal error")
-- Custom interceptors via `WithInterceptors()` option; `WithShutdownTimeout` is the preferred alias of `WithTimeout`
+- Built-in interceptors in chain order: recovery (outermost), request_id/user_id propagation restore (from incoming metadata into ctx log attrs, `interceptor.RequestIDPropagation`), then request logging (`WithRequestLog`/`WithRequestLogLevel`); custom interceptors via `WithInterceptors()` option run after the built-ins; `WithShutdownTimeout` is the preferred alias of `WithTimeout`
+- `grpc.RequestIDFrom(ctx)` extracts the restored request id (symmetric to `server/http.RequestIDFrom`)
 - Health check service registered at `grpc.health.v1.Health`; poller runs checkers concurrently with per-check timeout (same `WithHealthCheckTimeout` as HTTP)
 
 **EventBus** (eventbus/)

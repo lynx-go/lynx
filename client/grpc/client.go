@@ -96,9 +96,10 @@ func WithDialOptions(opts ...grpc.DialOption) Option {
 //   - 传输：未配置 WithTLSConfig 时使用明文凭据
 //     （insecure.NewCredentials，grpc.NewClient 不再隐式缺省）。
 //
-// 传播边界：服务端（server/grpc）当前不把 incoming metadata 中的
-// request_id/user_id 还原为日志属性（v1.1 只做客户端写入，服务端还原
-// 入 v1.2 backlog），gRPC 链路暂未形成 HTTP 侧的 request_id 闭环。
+// 传播闭环：服务端（server/grpc）内置 RequestIDPropagation 拦截器把
+// incoming metadata 中的 request_id/user_id 还原为日志属性（校验规则
+// 与 HTTP 侧一致），与 server/http.WithRequestID 共同形成框架两侧的
+// 传播闭环。
 func Dial(target string, opts ...Option) (*grpc.ClientConn, error) {
 	options := Options{Timeout: DefaultTimeout}
 	for _, opt := range opts {

@@ -135,14 +135,16 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithInterceptors 追加一元 RPC 服务端拦截器，在内置恢复与日志拦截器之后执行。
+// WithInterceptors 追加一元 RPC 服务端拦截器，在内置恢复、request_id
+// 还原与日志拦截器之后执行。
 func WithInterceptors(interceptors ...grpc.UnaryServerInterceptor) Option {
 	return func(o *Options) {
 		o.Interceptors = append(o.Interceptors, interceptors...)
 	}
 }
 
-// WithStreamInterceptors 追加流式 RPC 服务端拦截器，在内置恢复与日志拦截器之后执行。
+// WithStreamInterceptors 追加流式 RPC 服务端拦截器，在内置恢复、
+// request_id 还原与日志拦截器之后执行。
 func WithStreamInterceptors(interceptors ...grpc.StreamServerInterceptor) Option {
 	return func(o *Options) {
 		o.StreamInterceptors = append(o.StreamInterceptors, interceptors...)
@@ -256,9 +258,12 @@ func NewServer(opts ...Option) *Server {
 	}
 	// Recovery 在最外层：链内任意一环（含用户拦截器）panic 都能被恢复，
 	// 恢复时记录 panic 值 + 调用栈并返回通用错误（SC-04/SC-06）。
+	// RequestID 还原紧随其后（与 HTTP 侧 Recovery → RequestID 推荐链
+	// 一致），使后续请求日志与用户拦截器都能拿到 request_id/user_id。
 	// Bus 注入在请求时读取 s.bus（Init 后可用），供 Topic API 经 Context 解析。
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		interceptor.RecoveryWithLogger(options.Logger),
+		interceptor.RequestIDPropagation(),
 		s.injectBusUnary(),
 	}
 	if options.RequestLog {
@@ -270,6 +275,7 @@ func NewServer(opts ...Option) *Server {
 	// 没有内置保护，不加拦截器会直接崩溃整个进程。
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		interceptor.RecoveryStreamWithLogger(options.Logger),
+		interceptor.RequestIDPropagationStream(),
 		s.injectBusStream(),
 	}
 	if options.RequestLog {
