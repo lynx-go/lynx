@@ -1,5 +1,106 @@
 # Changelog
 
+## v1.13.0 (2026-09-23)
+
+本次发布 tag：根 `v1.13.0`、`contrib/schedule/v1.8.0`（Trigger/WithNow）、
+`contrib/telemetry/v1.7.0`（runtime metrics）、`contrib/registry/v1.8.0`
+（Subscribe）。其余 contrib 无源码变更，不重复打 tag。本批为 ROADMAP
+Phase G「运行时可调性与可观测」主线 + 若干存量承诺回收，API 只增不改。
+
+### 新增：运行时日志级别调整与 `/version` 构建信息（debug 服务）
+
+- `lynx` 新增 `SetLogLevel`/`LogLevel`（`*lynx` 方法，不动 App 接口）：
+  配置过 `log-level` 时直接修改既有 LevelVar 即时生效；未配置时经
+  `slog.SetLogLoggerLevel` 兜底；用户 `SetLogger` 定制 handler 后拒绝
+  代理（返回 false）
+- debug 服务新增 `GET/POST /loglevel`（query 或 JSON body 调整；非法
+  级别 400、无控制能力 501、定制 logger 409）与 `/version`
+  （`-ldflags -X` 注入 `debug.BuildVersion/BuildCommit/BuildDate` +
+  Go/OS/Arch + 应用元数据，注入示例见 `debug/vars.go`）
+
+### 新增：配置热更新 `WithConfigWatch`
+
+显式启用：文件变更经 viper 自动重读（后续 `Config()` 读取返回新值），
+框架向总线发布 `lynx.config.updated` 事件（`eventbus.ConfigUpdatedTopic`），
+订阅方自行决定响应粒度。`lynx.*` 前缀在跨进程 Bus 上强制内存路由，
+热更新事件不出进程；无文件来源（`WithConfig` 注入/未指定 `--config`）时
+`Run()` 启动期快失败（镜像 poison-pill 语义）。已知取舍（注释化）：viper
+watcher 无撤销 API，随进程常驻。
+
+### 新增：Go runtime metrics 开箱接入（telemetry）
+
+otel runtime instrument（goroutine/GC/内存）默认注册到 MeterProvider，
+随指标管线输出，零配置获得进程级可观测基线；`WithoutRuntimeMetrics()`
+关闭。依赖钉 v0.67.0 与既有 otel contrib 版本线对齐。容器 CPU 配额感知
+（GOMAXPROCS 修正）由 Go 1.25+ runtime 内建，不引入 automaxprocs。
+
+### 新增：出站熔断 `WithCircuitBreaker`（client/http）
+
+封装 sony/gobreaker/v2（TwoStepCircuitBreaker），公共 API 零 gobreaker
+类型（`CircuitBreakerOptions` 自有配置面：连续失败阈值/半开放行数/open
+时长/失败状态码/状态回调）。集成于 `Do` 最外层、重试之外：一次调用整体
+成败只计一次；熔断打开时本地快速拒绝（`errors.Is(err, ErrCircuitOpen)`）
+不进重试循环。失败判定默认仅传输层错误，`FailureStatusCodes` 按需扩展；
+客户端取消/超时经 `IsExcluded` 排除（不误开熔断）；状态迁移记 Info 日志
+并转交回调。选型结论：经典三态为业界收敛点，failsafe-go 与既有 backoff
+重试职责重叠故排除。
+
+### 新增：`Resolver.Subscribe` 消费侧订阅（registry）
+
+与 `Discovery.Watcher` 同构的缓存层订阅：首个 `Next` 立即返回当前快照、
+信号合并（慢消费者只拿最新）、`Stop` 广播唤醒阻塞中的 `Next`、
+`Stop` 后 `ErrWatcherStopped` / Resolver 关闭后 `ErrResolverClosed`；
+订阅者对后端形态无感（DNS 式轮询后端同样触发）。gRPC resolver 改订阅
+驱动：实例变化毫秒级反映到 `UpdateState`（原 5 秒轮询消除），订阅终止
+退回 30 秒兜底轮询；`ResolveNow` 与去重/空快照/保态语义不变。
+设计文档见 `docs/design-resolver-subscribe.md`。
+
+### 新增：schedule `Trigger` 手动触发与 `WithNow` 时钟注入
+
+`Scheduler.Trigger(name)` 立即执行任务，与 cron fire 共用同一路径（panic
+恢复、Exclusive TryOnce 互斥、错误上报），未注册返回 `ErrTaskNotFound`：
+测试无需真等 cron 时序，生产兼作手动执行运维口。`WithNow` 注入互斥格子
+计算时间源，使分布式互斥行为可确定性断言。
+
+### 改进：v1.1.0 承诺回收——服务器级 ErrorHandler 与按维度限流
+
+- `WithErrorHandler(h)` + `Server.NewErrorHandler(h, fn)`：h 传 nil 的
+  兜底依次取服务器级默认 → 包级 `DefaultErrorHandler`；典型用法
+  `WithErrorHandler(DefaultErrorHandlerWithLogger(srvLogger))` 接入
+  服务日志。包级 `NewErrorHandler` 行为不变
+- `RateLimitPerKey(rps, key)` 按 key 分桶限流，预置路由/客户端 IP/
+  user_id 三个提取器，自定义提取器可组合维度；桶存储带惰性清扫
+  （每 1024 请求扫除 10 分钟空闲桶）；空 key 退化为共享桶；可与
+  服务器级 `RateLimit` 叠放
+
+### 改进：gRPC 服务端 request_id/user_id 还原闭环
+
+`interceptor.RequestIDPropagation()`/`...Stream()` 从 incoming metadata
+还原为日志属性（校验与 HTTP 侧 SC-22 同规：≤128、`[A-Za-z0-9-_]`，非法
+丢弃防日志污染）；默认装配于 Recovery 之后、请求日志之前，请求日志自动
+携带 id，下游调用继续透传——client 写入 + server 还原开箱闭环。新增
+`grpc.RequestIDFrom(ctx)` 与 HTTP 侧对称。
+
+### 改进：命令依赖探测上界可配（`WithProbeTimeout`）
+
+`healthCheckTimeout`/`readyWaitTimeout` 收敛为 `defaultProbeTimeout`
+默认值，`WithProbeTimeout` 统一覆盖，非法值回落默认。
+
+### 工程与文档
+
+- CI 新增 govulncheck 依赖漏洞扫描（vuln job + `mise run vuln`，工具钉
+  v1.8.0）；首跑即发现 go1.26.5 标准库 6 个可达漏洞，工具链钉版升
+  1.26.8（`go.mod` 语言指令保持 1.26.5 不变）
+- 9 个 contrib 模块补齐 README（符号/配置键/file:line 经源码核对）；
+  `_examples/bus` 补 README；`contrib/watermill` 补 LICENSE
+- 新增 CONTRIBUTING.md、SECURITY.md、issue 模板（开源协作基建）；
+  docs/01 新增「范围边界」小节（数据层不做等）；docs/05 写明 gRPC
+  reflection 常开的取舍
+- 修复 `_examples/cli` errcheck 失败（83b0307 引入，lint(_examples)
+  CI 自该提交起红灯）
+- ROADMAP 三路独立复核修正（版本归属对账、失联承诺回收、Phase G
+  扩充至 20 项并重排），见 `ROADMAP.md`
+
 ## v1.12.0 (2026-09-22)
 
 本次发布 tag：根 `v1.12.0`、`contrib/watermill-kafka/v1.7.0`（Transport

@@ -94,9 +94,9 @@ v1.0 发布前全量审查（功能缺失/设计缺陷/实现缺陷）的修复�
       全部修复并以变异验证测试锁住
 - [x] 测试盲区补齐：healthz 端点、HTTP TLS、超时×body、zap 内容断言、
       schedule 时区、consul index 回绕与挂死 agent、watcher 错误退避
-- [ ] 后续工作：Kafka testcontainers 集成测试（WK-19）；Resolver 订阅 API
-      （消除 gRPC 5s 轮询）；command 健康等待上界可配化
-      （三项均移入 Phase G，见 G4/G5）
+- [ ] 后续工作：Kafka testcontainers 集成测试（WK-19，移入 G4）
+      ——同列的 Resolver 订阅 API 与 command 健康等待上界可配化
+      已随 v1.13.0 完成
 
 ## Phase E — v1.0 后的能力补全（v1.1+）
 
@@ -127,8 +127,8 @@ kratos/go-zero 等成熟框架的能力面。）
 
 ### E2 运维增强（v1.x 中后期）
 
-- [ ] 配置热更新（viper WatchConfig）与运行时日志级别调整（移入 G1）
-- [ ] Go runtime metrics 开箱接入（goroutine/GC/内存）（移入 G1）
+- [x] 配置热更新（viper WatchConfig）与运行时日志级别调整（移入 G1）
+- [x] Go runtime metrics 开箱接入（goroutine/GC/内存）（移入 G1）
 - [x] 关停排水语义显式化（readiness 先变 not-ready → 等 LB 摘流 →
       再关监听；v1.1 引入，v1.10.0 将 OnDrain 钩子预算并入 `DrainTimeout` 窗口）
 
@@ -159,13 +159,13 @@ G3 提前，且先启动其"开源准备"子列。
 
 ### G1 运行时可调性与可观测（服务跑起来之后还能调、还能看）
 
-- [ ] 运行时日志级别调整与构建信息：挂 `debug/` 服务端点（与 pprof
+- [x] 运行时日志级别调整与构建信息：挂 `debug/` 服务端点（与 pprof
       同域，复用既有本机回环安全边界），含 `/version` 构建信息
       （ldflags 注入）
-- [ ] 配置热更新：viper WatchConfig 桥接 eventbus（发 `lynx.*` 主题，
+- [x] 配置热更新：viper WatchConfig 桥接 eventbus（发 `lynx.*` 主题，
       沿用框架生命周期事件先例），订阅方自行选择响应粒度；
       设计时注意与三级就绪解析（`lynx.Ready`，v1.12）的语义协同
-- [ ] Go runtime metrics 开箱接入：otel `instrument/runtime` 接进
+- [x] Go runtime metrics 开箱接入：otel `instrument/runtime` 接进
       `contrib/telemetry`（goroutine/GC/内存），含容器 CPU 配额感知
       （automaxprocs 类，K8s 配额下修正 GOMAXPROCS）
 - [ ] `/metrics` 一等挂载选项（当前需自行手挂 promhttp，
@@ -179,35 +179,35 @@ G3 提前，且先启动其"开源准备"子列。
 
 ### G2 流量韧性（出站治理与入站 gRPC 对齐）
 
-- [ ] 熔断器：`client/http` 已有超时 + 重试退避，补熔断（E1 "按需"
+- [x] 熔断器：`client/http` 已有超时 + 重试退避，补熔断（E1 "按需"
       转正）
-- [ ] 按路由/IP/用户维度限流（v1.1.0 CHANGELOG 承诺回收，现仅
+- [x] 按路由/IP/用户维度限流（v1.1.0 CHANGELOG 承诺回收，现仅
       服务器级单桶）；HTTP 请求体大小上限（MaxBytesReader 类
       防御默认值）
 - [ ] gRPC server 侧限流/超时拦截器（与 HTTP 侧对齐，现仅
       Recovery/Logging）
 - [ ] gRPC client 侧重试/负载策略评估（可先只出结论不动代码）；
       `client/http` Transport/连接池调优逃生口
-- [ ] gRPC 服务端 request_id 还原闭环（client 已写入 metadata，
+- [x] gRPC 服务端 request_id 还原闭环（client 已写入 metadata，
       `client/grpc` 注释标注 backlog）
 
 ### G3 缺陷清偿与开源准备
 
 缺陷清偿（用户可感知）：
 
-- [ ] 文档与发布卫生债：9 个 contrib 模块补 README（对齐 `docs/`
+- [x] 文档与发布卫生债：9 个 contrib 模块补 README（对齐 `docs/`
       教程写法；watermill-kafka 可用 `_examples/bus-kafka` 改写）；
       `_examples/bus` 补 README（v1.5.0 新增示例漏配）；
       `contrib/watermill` 补 LICENSE（9 个 contrib 中唯一缺失）；
       docs 补定位边界说明（数据层不做等）
-- [ ] 服务器级默认 ErrorHandler Option（v1.1.0 承诺，
+- [x] 服务器级默认 ErrorHandler Option（v1.1.0 承诺，
       `server/http/errors.go` 注释自标待做）
-- [ ] docs 写明 gRPC reflection 常开的取舍（现 NewServer 即注册、
+- [x] docs 写明 gRPC reflection 常开的取舍（现 NewServer 即注册、
       无开关；开源后必被问及）
 
 开源准备（对外推广启动时优先）：
 
-- [ ] 开源协作基建：CONTRIBUTING.md（面向人的贡献指南，CLAUDE.md
+- [x] 开源协作基建：CONTRIBUTING.md（面向人的贡献指南，CLAUDE.md
       面向 agent 不能替代）、SECURITY.md、issue/PR 模板
       （`.github/` 目前仅 CI）
 - [ ] 若面向国际社区：文档/README 英文化（战略决策，视推广目标
@@ -215,18 +215,18 @@ G3 提前，且先启动其"开源准备"子列。
 
 ### G4 测试与安全网（延续 v1.12 lynxtest 方向）
 
-- [ ] schedule/bus 测试假件或时钟注入（G1 配置热更新的测试前置，
+- [x] schedule/bus 测试假件或时钟注入（G1 配置热更新的测试前置，
       建议与 G1 同期或先行）
 - [ ] Kafka testcontainers 集成测试（WK-19，Phase F 遗留承接，
       已积压月余，建议尽早），模式沉淀为 contrib 可复用的测试辅助
-- [ ] CI 增加 govulncheck 依赖漏洞扫描（开源后供应链关注度陡增，
+- [x] CI 增加 govulncheck 依赖漏洞扫描（开源后供应链关注度陡增，
       v1.10.0 的 grpc CVE 修复说明风险面真实）
 
 ### G5 存量改进（Phase F 遗留转正）
 
-- [ ] Resolver 订阅 API：消除 gRPC 发现 5s 轮询（跨 registry 与
+- [x] Resolver 订阅 API：消除 gRPC 发现 5s 轮询（跨 registry 与
       gRPC resolver 的设计项，先出设计再动手）
-- [ ] command 健康等待上界可配化（小项，随手带走不占阶段位）
+- [x] command 健康等待上界可配化（小项，随手带走不占阶段位）
 
 ### 按需 contrib（只立原则，不立项）
 
