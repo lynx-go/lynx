@@ -263,60 +263,15 @@ func (b *Bus) Stop(ctx context.Context) error {
 func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) error {
 	o := &eventbus.PublishOptions{}
 	eventbus.ApplyPublishOptions(o, opts...)
-	var raw *eventbus.RawEvent
-	var eventTime time.Time
-	switch v := payload.(type) {
-	case *eventbus.RawEvent:
-		if v == nil {
-			return errors.New("eventbus: payload is typed nil *RawEvent")
-		}
-		raw = cloneRawEvent(v)
-		eventTime = v.Time
-	case []byte:
-		raw = &eventbus.RawEvent{ID: uuid.NewString(), Payload: v, Headers: map[string]string{}}
-	case nil:
-		raw = &eventbus.RawEvent{ID: uuid.NewString(), Headers: map[string]string{}}
-	default:
-		m := eventbus.ResolveMarshaler(b, topic, nil, o.Marshaler)
-		bs, err := m.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("eventbus: marshal %q: %w", topic, err)
-		}
-		raw = &eventbus.RawEvent{ID: uuid.NewString(), Payload: bs, Headers: map[string]string{}}
+	raw, err := eventbus.BuildRawEvent(ctx, b, topic, payload, o, b.opts.PropagateKeys())
+	if err != nil {
+		return err
 	}
-	raw.Topic = topic
-	if o.MessageKey != "" {
-		raw.Key = o.MessageKey
-	}
-	if raw.Headers == nil {
-		raw.Headers = map[string]string{}
-	}
-	maps.Copy(raw.Headers, o.Metadata)
-	for k := range raw.Headers {
-		if k == eventbus.MetaMessageKey || k == eventbus.MetaEventTime || k == eventbus.MetaLogicalTopic {
-			delete(raw.Headers, k)
-		}
-	}
-	for _, k := range b.propagateKeys() {
-		if _, ok := raw.Headers[k]; ok {
-			continue
-		}
-		for _, a := range logging.AttrsFrom(ctx) {
-			if a.Key == k {
-				raw.Headers[k] = a.Value.String()
-				break
-			}
-		}
-	}
-	if eventTime.IsZero() {
-		eventTime = time.Now()
-	}
-	raw.Time = eventTime
 	t, key, err := b.resolve(topic)
 	if err != nil {
 		return err
 	}
-	if lm := b.logFor(topic); lm.Publish {
+	if lm := b.opts.LogMessageFor(topic); lm.Publish {
 		// Debug 级日志：log_message 配置实际开启的是 debug 级输出，
 		// 需 --log-level=debug 才可见（WK-18 语义澄清）。
 		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", raw.Key)
@@ -334,18 +289,7 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 	o := &eventbus.SubscribeOptions{}
 	eventbus.ApplySubscribeOptions(o, opts...)
 	if cfg, ok := b.opts.Topics[topic]; ok {
-		if o.Group == "" {
-			o.Group = cfg.Group
-		}
-		if o.Instances == 0 {
-			o.Instances = cfg.Instances
-		}
-		if !o.AutoAck && cfg.AutoAck {
-			o.AutoAck = true
-		}
-		if !o.ContinueOnError && cfg.ContinueOnError {
-			o.ContinueOnError = true
-		}
+		eventbus.ApplyTopicConfig(o, cfg)
 	}
 	handlerName := o.HandlerName
 	if handlerName == "" {
@@ -570,40 +514,8 @@ func isMemoryTransport(t eventbus.Transport) bool {
 	return ok
 }
 
-func (b *Bus) propagateKeys() []string {
-	if b.opts.PropagateAttrs != nil {
-		return b.opts.PropagateAttrs
-	}
-	return []string{logging.FieldRequestID, logging.FieldUserID}
-}
-
-func (b *Bus) logFor(topic string) eventbus.LogMessageOptions {
-	if cfg, ok := b.opts.Topics[topic]; ok && cfg.LogMessage != nil {
-		return *cfg.LogMessage
-	}
-	if b.opts.LogMessage != nil {
-		return *b.opts.LogMessage
-	}
-	return eventbus.LogMessageOptions{}
-}
-
-// retryFor 解析订阅的重试默认（高→低）：调用/Topic 级 SubscribeOptions.Retry →
-// Options.Topics[t].Retry → Options.Retry → 默认 3 次。
-func (b *Bus) retryFor(topic string, call *eventbus.RetryOptions) eventbus.RetryOptions {
-	if call != nil {
-		return *call
-	}
-	if cfg, ok := b.opts.Topics[topic]; ok && cfg.Retry != nil {
-		return *cfg.Retry
-	}
-	if b.opts.Retry != nil {
-		return *b.opts.Retry
-	}
-	return eventbus.RetryOptions{MaxRetries: 3}
-}
-
 func (b *Bus) retryMiddleware(topic string, opts eventbus.SubscribeOptions) (message.HandlerMiddleware, bool) {
-	r := b.retryFor(topic, opts.Retry)
+	r := b.opts.RetryFor(topic, opts.Retry)
 	if r.MaxRetries <= 0 {
 		return nil, false
 	}
@@ -620,9 +532,9 @@ func (b *Bus) retryMiddleware(topic string, opts eventbus.SubscribeOptions) (mes
 }
 
 func (b *Bus) wrapHandler(topic string, h eventbus.HandlerFunc, opts eventbus.SubscribeOptions) message.NoPublishHandlerFunc {
-	lm := b.logFor(topic)
+	lm := b.opts.LogMessageFor(topic)
 	handler := func(msg *message.Message) error {
-		raw := fromWatermill(msg)
+		raw := FromMessage(msg)
 		raw.Topic = topic
 		ctx := msg.Context()
 		existing := map[string]struct{}{}
@@ -630,7 +542,7 @@ func (b *Bus) wrapHandler(topic string, h eventbus.HandlerFunc, opts eventbus.Su
 			existing[a.Key] = struct{}{}
 		}
 		var attrs []slog.Attr
-		for _, k := range b.propagateKeys() {
+		for _, k := range b.opts.PropagateKeys() {
 			if _, ok := existing[k]; ok {
 				continue
 			}
@@ -709,7 +621,7 @@ func (a *subscriberAdapter) Subscribe(ctx context.Context, topic string) (<-chan
 				if !ok {
 					return
 				}
-				msg := toWatermill(d.Event)
+				msg := ToMessage(d.Event)
 				// Router 对副本的 Ack/Nack 转达到 Transport Delivery（Kafka offset / gochannel）。
 				a.forwardAck(subCtx, msg, d)
 				select {
@@ -762,7 +674,10 @@ func (b *Bus) forwardDeliveryAck(ctx context.Context, msg *message.Message, d ev
 	}()
 }
 
-func toWatermill(e *eventbus.RawEvent) *message.Message {
+// ToMessage 将 RawEvent 转为 watermill 消息（wire 元数据经 EncodeWireMetadata；
+// ID 为空时生成）。设计文档 §5.1 单一映射点：watermill 生态的 Transport 实现
+// （如 contrib/watermill-kafka）必须复用本函数，禁止各写一份。
+func ToMessage(e *eventbus.RawEvent) *message.Message {
 	if e == nil {
 		return message.NewMessage("", nil)
 	}
@@ -777,7 +692,9 @@ func toWatermill(e *eventbus.RawEvent) *message.Message {
 	return msg
 }
 
-func fromWatermill(msg *message.Message) *eventbus.RawEvent {
+// FromMessage 将 watermill 消息还原为 RawEvent（DecodeWireMetadata）。
+// 与 ToMessage 对称，同为 §5.1 单一映射点。
+func FromMessage(msg *message.Message) *eventbus.RawEvent {
 	if msg == nil {
 		return &eventbus.RawEvent{Headers: map[string]string{}}
 	}

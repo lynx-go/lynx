@@ -38,7 +38,7 @@ func (t *MemoryTransport) Publish(ctx context.Context, topic string, e *eventbus
 	// 置位 running 让 CheckHealth 反映真实状态（此前无任何置 true 路径，
 	// 导出 API 恒报 not running）。
 	t.running.Store(true)
-	msg := toWatermill(e)
+	msg := ToMessage(e)
 	return t.pubSub.Publish(topic, msg)
 }
 
@@ -61,7 +61,7 @@ func (t *MemoryTransport) Subscribe(ctx context.Context, topic string, opts even
 				if !ok {
 					return
 				}
-				raw := fromWatermill(msg)
+				raw := FromMessage(msg)
 				raw.Topic = topic
 				wm := msg
 				d := eventbus.Delivery{

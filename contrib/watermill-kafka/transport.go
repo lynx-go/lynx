@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"os"
 	"reflect"
 	"sort"
@@ -33,6 +32,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/eventbus"
+	lynxwatermill "github.com/lynx-go/lynx/contrib/watermill"
 )
 
 // Options 是 Kafka Transport 的配置；可用 app.Config().UnmarshalKey("kafka", &opts)
@@ -379,7 +379,7 @@ func (t *Transport) Publish(ctx context.Context, topic string, e *eventbus.RawEv
 	if raw.Topic == "" {
 		raw.Topic = topic
 	}
-	msg := toWatermill(&raw)
+	msg := lynxwatermill.ToMessage(&raw)
 	if to.Producer.LogMessage {
 		// Debug 级日志：log_message 配置实际开启的是 debug 级输出，
 		// 需 --log-level=debug 才可见（WK-18 语义澄清）。
@@ -450,28 +450,6 @@ func (t *Transport) Subscribe(ctx context.Context, topic string, opts eventbus.S
 	return mapDeliveries(subCtx, fanIn(subCtx, chans, cancel), topic), nil
 }
 
-// toWatermill 将 RawEvent 转为 watermill 消息（wire 元数据经 EncodeWireMetadata）。
-func toWatermill(e *eventbus.RawEvent) *message.Message {
-	if e == nil {
-		return message.NewMessage("", nil)
-	}
-	msg := message.NewMessage(e.ID, e.Payload)
-	for k, v := range eventbus.EncodeWireMetadata(e) {
-		msg.Metadata.Set(k, v)
-	}
-	return msg
-}
-
-// fromWatermill 将 watermill 消息还原为 RawEvent（DecodeWireMetadata）。
-func fromWatermill(msg *message.Message) *eventbus.RawEvent {
-	if msg == nil {
-		return &eventbus.RawEvent{Headers: map[string]string{}}
-	}
-	meta := map[string]string{}
-	maps.Copy(meta, msg.Metadata)
-	return eventbus.DecodeWireMetadata(msg.UUID, msg.Payload, meta)
-}
-
 // mapDeliveries 将 watermill 消息 channel 转为 Delivery channel：
 // Event 填入逻辑 topic；Ack/Nack 转达原 *message.Message（Kafka offset 提交依赖此路径）。
 // WK-05：收发两侧均带 ctx 退出分支——下游停读（返回 channel 无人消费）
@@ -490,7 +468,7 @@ func mapDeliveries(ctx context.Context, in <-chan *message.Message, logicalTopic
 				if !ok {
 					return
 				}
-				raw := fromWatermill(msg)
+				raw := lynxwatermill.FromMessage(msg)
 				if raw.Topic == "" {
 					raw.Topic = logicalTopic
 				}

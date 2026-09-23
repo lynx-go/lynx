@@ -228,6 +228,8 @@ _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
 
 `RawEvent` ↔ 底层消息（Watermill `message.Message` 或等价）的转换 **只实现一次**，放在 `eventbus`（或 watermill 包内唯一调用的 `eventbus` helper），禁止 Transport 与 Bus 各写一份不一致逻辑。
 
+**已落地**：wire 侧统一经 `eventbus.EncodeWireMetadata` / `DecodeWireMetadata`；Watermill 生态的 `message.Message` 转换统一经 `contrib/watermill` 的 `ToMessage` / `FromMessage`（Bus、MemoryTransport、watermill-kafka 共用，ID 为空时回退生成 UUID）；发布侧 RawEvent 组装统一经 `eventbus.BuildRawEvent`（内存 Bus 与 Watermill Bus 共用）。
+
 | 字段 | Wire | 消费还原 |
 | --- | --- | --- |
 | Payload | 消息体 | 原样 |

@@ -7,6 +7,7 @@ import (
 	watermillkafka "github.com/ThreeDotsLabs/watermill-kafka/v3/pkg/kafka"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx/eventbus"
+	lynxwatermill "github.com/lynx-go/lynx/contrib/watermill"
 )
 
 func TestWireMarshalerSetsKafkaRecordKey(t *testing.T) {
@@ -66,7 +67,7 @@ func TestWireMarshalerUnmarshalRestoresKeyFromRecord(t *testing.T) {
 	if got := msg.Metadata.Get(eventbus.MetaMessageKey); got != "partition-key" {
 		t.Fatalf("x-message-key = %q, want partition-key", got)
 	}
-	raw := fromWatermill(msg)
+	raw := lynxwatermill.FromMessage(msg)
 	if raw.Key != "partition-key" {
 		t.Fatalf("RawEvent.Key = %q, want partition-key", raw.Key)
 	}
@@ -115,7 +116,7 @@ func TestPublishRoundTripWireMetadata(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("published %d msgs, want 1", len(msgs))
 	}
-	got := fromWatermill(msgs[0])
+	got := lynxwatermill.FromMessage(msgs[0])
 	if got.ID != "evt-1" || got.Key != "user-7" || got.Topic != "orders" {
 		t.Fatalf("round-trip RawEvent = %+v", got)
 	}

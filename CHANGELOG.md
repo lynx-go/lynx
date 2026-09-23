@@ -232,6 +232,21 @@ oklog/run 的 interrupt 可先于服务 actor 的 execute 执行，`Close` 可�
 - CI Test 步骤加 `-shuffle=on`；`mise.toml` 新增 `test`/`test-integration`
   任务（逐 workspace 模块遍历，与 CI 同参数）。
 
+### 变更：Bus 语义下沉共享核心（memory / watermill 去重）
+
+- 发布侧 RawEvent 组装收敛为 `eventbus.BuildRawEvent`：payload 类型分派
+  （`*RawEvent` 透传 / `[]byte` / `nil` / 类型化经 Marshaler）、协议键清除、
+  Metadata 合并、日志属性白名单传播、ID/Time 默认——两个 Bus 实现此前各写
+  一份，且协议键清除已出现硬编码漂移（watermill 侧未走 `isProtocolMetaKey`）；
+- `eventbus.Options` 新增 `PropagateKeys` / `LogMessageFor` / `RetryFor`，
+  propagate / log / retry 的解析从各 Bus 私有函数收敛到 Options 一处；
+- 订阅的 `Topics[t]` 默认合并收敛为 `eventbus.ApplyTopicConfig`；
+- watermill 的 wire 转换导出为 `watermill.ToMessage` / `FromMessage`，
+  watermill-kafka 删除逐字节相同的自有副本改为复用（§5.1 单一映射点成真）；
+  watermill-kafka 为此新增对 `contrib/watermill` 的模块依赖；
+- watermill 行为微调：`*RawEvent` 透传时空 ID 现在回退生成 UUID（与内存
+  Bus 对齐，此前保持空串）。
+
 ## v1.11.0 (2026-09-15)
 
 本次发布 tag：根 `v1.11.0`、`contrib/registry/v1.7.0`（两处 `Bind`

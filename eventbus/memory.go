@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/lynx-go/lynx/logging"
 )
 
@@ -129,38 +128,6 @@ func (b *memoryBus) MarshalerFor(topic string) Marshaler {
 	return JSONMarshaler{}
 }
 
-func (b *memoryBus) propagateKeys() []string {
-	if b.opts.PropagateAttrs != nil {
-		return b.opts.PropagateAttrs
-	}
-	return []string{logging.FieldRequestID, logging.FieldUserID}
-}
-
-func (b *memoryBus) logFor(topic string) LogMessageOptions {
-	if cfg, ok := b.opts.Topics[topic]; ok && cfg.LogMessage != nil {
-		return *cfg.LogMessage
-	}
-	if b.opts.LogMessage != nil {
-		return *b.opts.LogMessage
-	}
-	return LogMessageOptions{}
-}
-
-// retryFor 解析订阅的重试默认（高→低）：调用/Topic 级 SubscribeOptions.Retry →
-// Options.Topics[t].Retry → Options.Retry → 默认 3 次。
-func (b *memoryBus) retryFor(topic string, call *RetryOptions) RetryOptions {
-	if call != nil {
-		return *call
-	}
-	if cfg, ok := b.opts.Topics[topic]; ok && cfg.Retry != nil {
-		return *cfg.Retry
-	}
-	if b.opts.Retry != nil {
-		return *b.opts.Retry
-	}
-	return RetryOptions{MaxRetries: 3}
-}
-
 // Publish 发布业务对象或原始字节。
 func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) error {
 	if b.closed.Load() {
@@ -168,81 +135,12 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 	}
 	o := &PublishOptions{Metadata: map[string]string{}}
 	applyPublishOptions(o, opts...)
-	var data []byte
-	var headers map[string]string
-	var key string
-	var id = uuid.NewString()
-	var eventTime time.Time
-
-	switch v := payload.(type) {
-	case *RawEvent:
-		if v == nil {
-			return errors.New("bus: payload is typed nil *RawEvent")
-		}
-		// 透传：保留 ID/Key/Headers/Time；逻辑 topic 以函数参数为准（与 Watermill 路径一致）
-		if v.ID != "" {
-			id = v.ID
-		}
-		key = v.Key
-		if o.MessageKey != "" {
-			key = o.MessageKey
-		}
-		headers = cloneHeaders(v.Headers)
-		data = v.Payload
-		eventTime = v.Time
-	case []byte:
-		data = v
-		key = o.MessageKey
-		headers = map[string]string{}
-	case nil:
-		data = nil
-		key = o.MessageKey
-		headers = map[string]string{}
-	default:
-		m := ResolveMarshaler(b, topic, nil, o.Marshaler)
-		bs, err := m.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("bus: marshal %q: %w", topic, err)
-		}
-		data = bs
-		key = o.MessageKey
-		headers = map[string]string{}
+	ev, err := BuildRawEvent(ctx, b, topic, payload, o, b.opts.PropagateKeys())
+	if err != nil {
+		return err
 	}
-	if headers == nil {
-		headers = map[string]string{}
-	}
-	// 先合并业务 Metadata，再写入协议键，避免覆盖 x-message-key 等
-	maps.Copy(headers, o.Metadata)
-	for k := range headers {
-		if isProtocolMetaKey(k) {
-			delete(headers, k)
-		}
-	}
-	// 传播日志属性（白名单），已存在的不覆盖
-	for _, k := range b.propagateKeys() {
-		if _, ok := headers[k]; ok {
-			continue
-		}
-		for _, a := range logging.AttrsFrom(ctx) {
-			if a.Key == k {
-				headers[k] = a.Value.String()
-				break
-			}
-		}
-	}
-	if eventTime.IsZero() {
-		eventTime = time.Now()
-	}
-	ev := &RawEvent{
-		ID:      id,
-		Topic:   topic,
-		Key:     key,
-		Headers: headers,
-		Payload: data,
-		Time:    eventTime,
-	}
-	if lm := b.logFor(topic); lm.Publish {
-		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", key)
+	if lm := b.opts.LogMessageFor(topic); lm.Publish {
+		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", ev.Key)
 	}
 	return b.dispatch(ctx, ev)
 }
@@ -288,18 +186,7 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 	}
 	// 合并 Topic 默认值：显式优先
 	if cfg, ok := b.opts.Topics[topic]; ok {
-		if o.Group == "" {
-			o.Group = cfg.Group
-		}
-		if o.Instances == 0 {
-			o.Instances = cfg.Instances
-		}
-		if !o.AutoAck && cfg.AutoAck {
-			o.AutoAck = true
-		}
-		if !o.ContinueOnError && cfg.ContinueOnError {
-			o.ContinueOnError = true
-		}
+		ApplyTopicConfig(o, cfg)
 	}
 
 	b.mu.Lock()
@@ -330,7 +217,7 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 }
 
 func (b *memoryBus) loop(ctx context.Context, sub *subscriber) {
-	retry := b.retryFor(sub.topic, sub.opts.Retry)
+	retry := b.opts.RetryFor(sub.topic, sub.opts.Retry)
 	for {
 		select {
 		case <-ctx.Done():
@@ -353,7 +240,7 @@ func (b *memoryBus) handleWithRetry(ctx context.Context, sub *subscriber, ev *Ra
 		existing[a.Key] = struct{}{}
 	}
 	var attrs []slog.Attr
-	for _, k := range b.propagateKeys() {
+	for _, k := range b.opts.PropagateKeys() {
 		if _, ok := existing[k]; ok {
 			continue
 		}
@@ -363,7 +250,7 @@ func (b *memoryBus) handleWithRetry(ctx context.Context, sub *subscriber, ev *Ra
 	}
 	hCtx = logging.WithAttrs(hCtx, attrs...)
 
-	lm := b.logFor(sub.topic)
+	lm := b.opts.LogMessageFor(sub.topic)
 	if lm.Subscribe {
 		b.logger.DebugContext(hCtx, "received event", "topic", sub.topic, "handler", sub.handlerName)
 	}

@@ -2,6 +2,8 @@ package eventbus
 
 import (
 	"time"
+
+	"github.com/lynx-go/lynx/logging"
 )
 
 // RetryOptions 配置 handler 失败重试。
@@ -68,4 +70,39 @@ func (o *Options) EnsureDefaults() {
 	if o.TopicMarshalers == nil {
 		o.TopicMarshalers = map[string]Marshaler{}
 	}
+}
+
+// PropagateKeys 返回跨请求传播的日志属性白名单。
+// nil 表示默认 {request_id, user_id}；非 nil 空切片表示关闭传播。
+func (o *Options) PropagateKeys() []string {
+	if o.PropagateAttrs != nil {
+		return o.PropagateAttrs
+	}
+	return []string{logging.FieldRequestID, logging.FieldUserID}
+}
+
+// LogMessageFor 返回 topic 的收发日志选项（Topics[t].LogMessage > 全局）。
+func (o *Options) LogMessageFor(topic string) LogMessageOptions {
+	if cfg, ok := o.Topics[topic]; ok && cfg.LogMessage != nil {
+		return *cfg.LogMessage
+	}
+	if o.LogMessage != nil {
+		return *o.LogMessage
+	}
+	return LogMessageOptions{}
+}
+
+// RetryFor 解析订阅的重试默认（高→低）：调用/Topic 级 call（SubscribeOptions.Retry，
+// Topic 携带值经 WithSubscribeRetry 转发注入）> Topics[t].Retry > Retry > 默认 3 次。
+func (o *Options) RetryFor(topic string, call *RetryOptions) RetryOptions {
+	if call != nil {
+		return *call
+	}
+	if cfg, ok := o.Topics[topic]; ok && cfg.Retry != nil {
+		return *cfg.Retry
+	}
+	if o.Retry != nil {
+		return *o.Retry
+	}
+	return RetryOptions{MaxRetries: 3}
 }
