@@ -91,11 +91,18 @@ func TestSubscribeReceivesUpdates(t *testing.T) {
 }
 
 // TestSubscribeSignalCoalescing：连续两次变更只消费一次时，Next 拿到
-// 最新快照（信号合并，不排队陈旧快照）。
+// 最新快照（信号合并，不排队陈旧快照）。直驱 cacheEntry 消除 watchLoop
+// 的异步时序（push → watchLoop 消费 → store 的传播由
+// TestSubscribeReceivesUpdates 覆盖，此处仅测订阅机制本身的合并语义）。
 func TestSubscribeSignalCoalescing(t *testing.T) {
 	fd := &fakeDiscovery{snap: []Instance{inst("a")}}
 	r := NewResolver(fd, WithPollInterval(50*time.Millisecond))
 	defer func() { _ = r.Close() }()
+	e, ok := r.entryFor("svc")
+	if !ok {
+		t.Fatal("entryFor failed")
+	}
+	e.store([]Instance{inst("a")})
 	w, err := r.Subscribe("svc")
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -104,11 +111,12 @@ func TestSubscribeSignalCoalescing(t *testing.T) {
 	if _, err := nextWithTimeout(t, w); err != nil {
 		t.Fatalf("first Next: %v", err)
 	}
-	fd.push([]Instance{inst("a"), inst("b")})
-	fd.push([]Instance{inst("a"), inst("b"), inst("c")})
+	// 连续两次 store、其间不消费：两枚信号合并为一枚，Next 拿最新。
+	e.store([]Instance{inst("a"), inst("b")})
+	e.store([]Instance{inst("a"), inst("b"), inst("c")})
 	insts, err := nextWithTimeout(t, w)
 	if err != nil {
-		t.Fatalf("Next after two pushes: %v", err)
+		t.Fatalf("Next after two stores: %v", err)
 	}
 	if len(insts) != 3 {
 		t.Errorf("coalesced Next = %d instances, want 3 (latest only)", len(insts))
