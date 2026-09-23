@@ -158,11 +158,9 @@ func (b *Bus) Init(ctx eventbus.InitContext) error {
 			b.routes[topic] = routeEntry{t: t, key: topic}
 		}
 	}
-	for topic, e := range b.explicit {
-		if eventbus.IsLifecycleTopic(topic) && !isMemoryTransport(e.t) {
-			return fmt.Errorf("watermill: lifecycle topic %q must use MemoryTransport, got %T", topic, e.t)
-		}
-	}
+	// explicit 表只由 RouteKey 写入，其写入前已完成 lynx.* 校验——此处
+	// 不再重复检查（lynx.* 的执行点收敛为：RouteKey 配置期报错 + resolve
+	// 运行时强制走内置内存后端 + Init 的自动路由拒绝）。
 	// DefaultTransport 可为 Kafka 等非内存后端，但不得承接 lynx.*：
 	// resolve 的生命周期前缀规则优先于 DefaultTransport 回退。
 	return nil
@@ -371,20 +369,37 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 // 此名已被占用，Subscribe 失败但不得回滚 handlerNames（WK-03）。
 var errHandlerNameTaken = errors.New("handler name already exists in router")
 
-// claimGroup 登记非内存 Transport 上（订阅键 × 消费组）的 handler 占用，
-// 已被其他 handlerName 占用时返回明确错误（WK-01）。Bus 无 Unsubscribe
-// API、进程内订阅一般不撤销，因此占用后不释放（宁可误拒，不可静默瓜分）。
-// 已知局限一：某 handler 显式指定的 group 恰好等于另一 handler 留空的
-// Transport 默认组（如 kafka consumer.group_id）时，Bus 看不到默认组名，
-// 无法识别冲突——同 topic 的多个 handler 要么全部显式配置组，要么保持
-// 单 handler + instances。
-// 已知局限二（复审-9，claim 粒度）：两个不同逻辑 topic 路由到同一
-// Transport、各自配置的物理 topics 重叠、又共用同一（显式或默认）消费组
-// 时，claim 键（transport × 订阅键 × 组）互不相同，本检查不拦截——
-// Kafka 侧它们仍会并入同一消费组瓜分分区。物理 topics 存在重叠的部署
-// 必须为各逻辑 topic 显式配置互不相同的消费组。
+// effectiveGroup 计算订阅键上的有效消费组：显式 WithGroup 优先，为空时
+// 取 ConsumerGroup 后端声明的配置默认组（eventbus.DefaultGrouper，如 kafka
+// consumer.group_id）。占用检查与回滚都必须用有效组——原已知局限一
+//（"显式组恰好等于另一 handler 留空的默认组"检测不到）由此闭合。
+func effectiveGroup(t eventbus.Transport, key, group string) string {
+	if group != "" {
+		return group
+	}
+	if t == nil {
+		return ""
+	}
+	if dg, ok := t.(eventbus.DefaultGrouper); ok {
+		if g, ok := dg.DefaultGroup(key); ok {
+			return g
+		}
+	}
+	return ""
+}
+
+// claimGroup 登记 ConsumerGroup 后端上（订阅键 × 有效消费组）的 handler
+// 占用，已被其他 handlerName 占用时返回明确错误（WK-01）。投递模式经
+// Transport.DeliveryMode 声明（原 isMemoryTransport 类型断言已由契约取代：
+// 广播后端不受组占用约束）。Bus 无 Unsubscribe API、进程内订阅一般不撤销，
+// 因此占用后不释放（宁可误拒，不可静默瓜分）。
+// 已知局限（复审-9，claim 粒度）：两个不同逻辑 topic 路由到同一 Transport、
+// 各自配置的物理 topics 重叠、又共用同一（显式或默认）消费组时，claim 键
+//（transport × 订阅键 × 组）互不相同，本检查不拦截——Kafka 侧它们仍会并入
+// 同一消费组瓜分分区。物理 topics 存在重叠的部署必须为各逻辑 topic 显式
+// 配置互不相同的消费组。
 func (b *Bus) claimGroup(t eventbus.Transport, topic, key, group, handlerName string) error {
-	if t == nil || isMemoryTransport(t) {
+	if t == nil || t.DeliveryMode() != eventbus.DeliveryConsumerGroup {
 		return nil
 	}
 	// 不可比较的值类型 Transport 无法作为 map key 跟踪（仓库内实现均为
@@ -392,11 +407,12 @@ func (b *Bus) claimGroup(t eventbus.Transport, topic, key, group, handlerName st
 	if !reflect.TypeOf(t).Comparable() {
 		return nil
 	}
-	k := claimKey{t: t, key: key, group: group}
+	eff := effectiveGroup(t, key, group)
+	k := claimKey{t: t, key: key, group: eff}
 	if prev, ok := b.groupClaims[k]; ok && prev != handlerName {
-		groupLabel := group
+		groupLabel := eff
 		if groupLabel == "" {
-			groupLabel = "(transport default group)"
+			groupLabel = "(no group)"
 		}
 		return fmt.Errorf(
 			"watermill: topic %q (transport key %q, group %s) is already consumed by handler %q on %T; "+
@@ -411,16 +427,17 @@ func (b *Bus) claimGroup(t eventbus.Transport, topic, key, group, handlerName st
 
 // releaseGroupClaim 回滚 claimGroup 的登记（复审-1）：动态订阅在登记后、
 // handler 进入 router 前失败时调用，避免残留 claim 永久锁死该 topic+组。
-// 与 claimGroup 的跳过条件保持一致——不可比较的 Transport 键连 delete 都
-// 会 panic，绝不能直接 delete。调用方必须已持有 b.mu。
+// 与 claimGroup 的跳过条件保持一致（DeliveryMode 判定 + 有效组键）——
+// 不可比较的 Transport 键连 delete 都会 panic，绝不能直接 delete。
+// 调用方必须已持有 b.mu。
 func (b *Bus) releaseGroupClaim(t eventbus.Transport, key, group string) {
-	if t == nil || isMemoryTransport(t) {
+	if t == nil || t.DeliveryMode() != eventbus.DeliveryConsumerGroup {
 		return
 	}
 	if !reflect.TypeOf(t).Comparable() {
 		return
 	}
-	delete(b.groupClaims, claimKey{t: t, key: key, group: group})
+	delete(b.groupClaims, claimKey{t: t, key: key, group: effectiveGroup(t, key, group)})
 }
 
 // addHandlerSafe 是 addHandler 的 panic 安全包装（WK-03）：watermill router

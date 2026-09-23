@@ -125,6 +125,12 @@ func (t *nonMemoryTransport) Subscribe(ctx context.Context, topic string, opts e
 func (t *nonMemoryTransport) Topics() []string { return t.topics }
 func (t *nonMemoryTransport) Close() error     { return nil }
 
+// DeliveryMode 声明消费组：本假件模拟持久化后端（lynx.* 路由测试中
+// 被拒绝的非内存 Transport）。
+func (t *nonMemoryTransport) DeliveryMode() eventbus.DeliveryMode {
+	return eventbus.DeliveryConsumerGroup
+}
+
 func TestWatermillBusForwardsDeliveryAck(t *testing.T) {
 	acked := make(chan struct{}, 1)
 	rt := &recordingTransport{
@@ -245,6 +251,12 @@ func (t *recordingTransport) Subscribe(ctx context.Context, topic string, opts e
 
 func (t *recordingTransport) Topics() []string { return []string{t.topic} }
 func (t *recordingTransport) Close() error     { return nil }
+
+// DeliveryMode 声明消费组：与被模拟的持久化后端对齐（测试均为单 handler，
+// 不触发组占用）。
+func (t *recordingTransport) DeliveryMode() eventbus.DeliveryMode {
+	return eventbus.DeliveryConsumerGroup
+}
 
 func stopWithin(t *testing.T, bus eventbus.Bus, d time.Duration) {
 	t.Helper()

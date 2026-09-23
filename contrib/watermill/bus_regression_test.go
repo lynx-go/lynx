@@ -161,6 +161,11 @@ func (t *redeliveringTransport) Subscribe(ctx context.Context, topic string, opt
 func (t *redeliveringTransport) Topics() []string { return []string{t.topic} }
 func (t *redeliveringTransport) Close() error     { return nil }
 
+// DeliveryMode 声明消费组：本假件模拟 Kafka 的重投语义（Nack → 重投）。
+func (t *redeliveringTransport) DeliveryMode() eventbus.DeliveryMode {
+	return eventbus.DeliveryConsumerGroup
+}
+
 // TestMaxRedeliveriesDropsPoisonMessage 回归 WK-02：handler 恒失败 + Transport
 // 无限重投时，Bus 必须在 MaxRedeliveries 轮终态失败后 Ack 丢弃毒消息；
 // 上限为 3 意味着 1 次初始投递 + 3 次重投后放弃。

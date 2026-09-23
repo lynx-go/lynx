@@ -1,5 +1,163 @@
 # Changelog
 
+## v1.14.0 (2026-09-23)
+
+本次发布 tag：根 `v1.14.0`、`contrib/watermill/v1.7.0`、
+`contrib/watermill-kafka/v1.8.0`、`contrib/cluster/v1.1.0`、
+`contrib/cluster-redis/v1.1.0`、`contrib/registry/v1.9.0`、
+`contrib/schedule/v1.9.0`、`contrib/consul/v1.8.0`。`contrib/telemetry`
+与 `contrib/zap` 本批无源码变更，不重复打 tag。
+
+本批为架构收敛批次（架构评审报告候选 1-8 全量落地）：eventbus 编解码/
+重试/投递语义唯一归属、Bus 共享核心去重、关停流水线与 readiness 机制
+收敛、cluster 租约引擎、config 单解码路径、Transport 投递模式契约。
+基于 v1.13.0 rebase 集成：命令三级就绪（v1.12.0）与 D1-D4 竞态修复
+（v1.13.0 前序）保留远端语义。
+
+**应用迁移总览**（均为机械替换）：
+
+- `PublishTyped` / `SubscribeTyped` / `PublishRawTyped` → `Topic.Publish` /
+  `Topic.Subscribe` / `Topic.PublishRaw`；
+- `WithSubscribeMarshaler`（订阅侧调用级覆盖，已删）→ 删除调用（订阅侧
+  按 Topic / Bus 配置解码，有意不对称）；
+- `bus.PublishRaw(ctx, topic, data)` → `bus.Publish(ctx, topic, data)`；
+- `WithEnvForAllKeys()` → 删除调用（已是默认语义）；
+- `ResolvePublishMarshaler` → `ResolveMarshaler`；
+- 自定义 `eventbus.Transport` 实现：补 `DeliveryMode()` 一个方法（分区
+  后端 `DeliveryConsumerGroup`、进程内广播 `DeliveryBroadcast`）。
+
+### 破坏性变更：Transport 接缝声明投递模式与生命周期契约
+
+- `Transport` 接口新增 `DeliveryMode() DeliveryMode`（`DeliveryBroadcast` /
+  `DeliveryConsumerGroup`）：投递模式是每个后端必答的内在属性，Bus 的
+  消费组占用检查（WK-01）据此启用，取代原"非内存 Transport 即检查"的
+  `isMemoryTransport` 类型断言（`lynx.*` 强制内存后端的所有权判定仍用
+  身份检查，属另一回事）。MemoryTransport → Broadcast，kafka →
+  ConsumerGroup；自定义 Transport 实现需补一个方法；
+- 新增可选能力 `eventbus.DefaultGrouper`（ConsumerGroup 后端）：暴露
+  订阅键的配置默认组（kafka `consumer.group_id`）。Bus 据此计算有效组，
+  **闭合 claimGroup 原已知局限一**——"handler 显式指定的组恰好等于另一
+  handler 留空的默认组"此前 claim 键不同而静默放行（分区瓜分），现在
+  两个方向（显式→默认、默认→显式）均拒绝；已知局限二（物理 topics
+  重叠）保持文档化限制；
+- `lynx.*` 强制内存后端的校验点 4 → 3（删除 Init 对 explicit 路由表的
+  冗余再校验——该表只由 RouteKey 写入且写入前已校验）；
+- `Transport` 接口文档写明生命周期归属契约（原 watermill 的 WK-10 注释
+  升为接缝契约）：Transport 独立于 Bus 生存，需托管时实现 lynx.Service
+  由应用 Register，Bus.Stop 只关自身与内置生命周期后端。
+
+### 破坏性变更：删除 Bus.PublishRaw（等价面收敛）
+
+- 两个实现均为一行委托 `Publish`，且 `Publish` 的 `[]byte` payload 分支
+  本身就是原始字节直发（跳过序列化）——能力完全重叠，接口 9 方法收窄
+  到 8。迁移：`bus.PublishRaw(ctx, topic, data)` → `bus.Publish(ctx,
+  topic, data)`，逐字等价。`*RawEvent` 信封转发（保留 ID/Key/Headers/
+  Time）不受影响——那是 `Topic.PublishRaw` 的职责。
+
+### 破坏性变更：config 解码语义收敛——env 感知解码转正，双宇宙合一
+
+- **转正**（应用确认在用）：结构体目标的 `Unmarshal`/`UnmarshalKey` 默认
+  走结构体驱动逐叶取值（原 `WithEnvForAllKeys` 选项删除，迁移为删掉该
+  选项调用）——tag 回退链 mapstructure → json → 小写字段名，仅在环境
+  变量设置的键（配置文件无此键）参与解码；非结构体目标回落 viper 语义。
+  `WithTagName` 收敛为单一含义（限定 tag，缺 tag 回退小写字段名）；
+- 新增 `WithStrictTypes`：拒绝非字符串标量到集合的弱转（`brokers: 42`
+  不再静默弱转为 `[]string{"42"}`）；字符串来源不受影响（env 值恒为
+  字符串，`"a,b"` → 切表、`"42"` → int 均为合法弱转）。registry /
+  watermill-kafka 的手写类型预检垫片（`validateRegistrySection` /
+  `validateKafkaSection` + 逐字节重复的 `foldGet`/`isStringList`）删除，
+  统一走本选项；
+- 新增 `WithErrorUnused`（仅 `UnmarshalKey`）：报告配置子树中未被结构体
+  消费的未知键（多为拼写错误）；remain/map 字段整体视为已消费；
+- `registry.FileConfig` / `registry.LoadFileConfig` 成为 `registry.*` 段的
+  唯一 schema：consul 删除自己 fileConfig 中手工同步的共享字段副本
+  （enabled/backend/heartbeat_ttl/deregister_after），改经 LoadFileConfig
+  读取（RC-06 的「解析即丢」假象消除）；
+- 修复转正过程中发现的两处既有缺陷：`mapstructure:",remain"` 字段
+  （kafka `map[逻辑topic]TopicOptions`）在结构体驱动路径下会静默解出
+  空 map；结构体容器字段（map/切片且元素为结构体）的嵌套下划线键
+  （如 `max_redeliveries`）按字段名匹配会静默解成零值——两处现均按
+  mapstructure 语义解码并各有回归测试。
+
+### 变更：cluster 租约引擎收敛——适配器骨架唯一化，TTL 下限进入契约
+
+- 新增 `cluster/lease.go` 作为 Claim/Acquire 公共骨架的唯一归属：
+  `ValidateCall`（ctx/名称/ttl 校验，三后端错误一致）、
+  `RenewInterval`（ttl/3 续约间隔，1ms 下限）、`RunRenewLoop`（续约循环
+  骨架，renew 报错即 cancel 租约 ctx 退出）；memory / cluster-redis /
+  consul 三份手写骨架删除，适配器只留后端相关的存储/脚本/Session 逻辑；
+- 新增可选能力 `cluster.TTLAware` / `cluster.MinTTL(c)`：适配器声明租约
+  TTL 下限（Consul Session 10s；内存/Redis 无下限返回 0），不拓宽
+  Coordinator 核心接口；
+- **行为修复**：schedule 的 Exclusive 触发 TTL（间隔 + 1s）低于后端下限
+  时自动钳制到下限并 Warn——此前短间隔任务配 Consul 会在每次触发时
+  撞 `errTTLTooShort` 报错（该冲突原先只写在 contrib/consul 的注释里）；
+  钳制只延长同一格子占位的存活期（格子名含时槽），不影响后续格子抢占
+  （cron 与 Trigger 共用本路径）；
+- 微小行为差异（多违规边界场景的报错优先级）：校验统一为
+  ctx → 名称 → ttl 顺序，consul 的 ctx 检查从最后提前、redis 增加
+  ctx 前置检查（错误值不变，仅提前）。
+
+### 变更：eventbus 投递泵与克隆去重（Bus 共享核心收尾，内部重构为主）
+
+- 新增 `watermill.PumpMessages`：watermill 消息 channel → `Delivery`
+  channel 的共享投递泵（消息还原、逻辑 topic 回填、Ack/Nack 转达、下游
+  停读防护 WK-05），MemoryTransport 与 watermill-kafka 共用，两份逐行
+  相近的手写泵删除；
+- 新增 `eventbus.CloneRawEvent`：内存 dispatch 与 Watermill 发布前的
+  两份私有克隆合一（Headers 一律克隆为非 nil）；
+- `SubscribeOptions.AutoAck` / `ContinueOnError` 补跨运行时语义文档
+  （与重试/重投的互斥关系，两种 Bus 一致）；
+- 新增双实现一致性测试：AutoAck / ContinueOnError / 重试预算同一场景
+  矩阵在内存 Bus 与 Watermill(+MemoryTransport) 上断言相同调用次数；
+  重试耗尽点为文档声明的有意分歧（内存丢弃 vs 持久化重投至重投上限），
+  以测试钉死该分歧本身。
+
+### 变更：readiness 等待机制收敛至 ready.go（内部重构，API 不变）
+
+- 新建 `ready.go` 作为就绪等待的唯一归属：`awaitServiceReady`
+  （Ready 通道 → Checker 轮询 → 直接放行）与 `awaitHealthy`
+  （预算内轮询，可选 startErr 交错监听——peek 语义取出即放回）；
+- `OrderedServices` 的 `waitReady`/`waitHealthy` 与 `newLynx` 的总线
+  就绪轮询改为消费共享机制（预算仍由各自配置：前者组内默认 10s，
+  后者 `BusReadyTimeout`）；错误文案与等待顺序逐字保留；
+- 未纳入（有意）：OnPostStart 的 startWG 边界（非 readiness）、command
+  的依赖等待（v1.12.0 已独立演进为三级就绪 + WithProbeTimeout，语义
+  更丰富，保留）、drainChecker（关停信号，见 shutdown.go）。
+
+### 变更：关停流水线收敛至 shutdown.go（内部重构，API 不变）
+
+- 新建 `shutdown.go` 作为关停流水线的唯一归属：`drain.go`（`ErrDraining` /
+  `drainChecker`）并入删除，`stopServiceBounded` / `stopServices` /
+  `hasDrainHooks` / `runOnDrainHooks` / `runOnPreStopHooks` /
+  `runPostStopHooks` 从 `lynx.go`（1015 行）迁入；
+- 逐行近似的 `runOnDrainHooks` / `runOnPreStopHooks` 合并为参数化的
+  `runHooksInBudget`（阶段文案差异收进 `shutdownPhase`，日志与错误字符串
+  逐字保留）；
+- 手写 bounded-wait 惯用法从七处收敛为 `callBounded` 原语（结构性超时
+  判定，不用错误值区分预算耗尽与 fn 自身错误）：服务停止、三阶段钩子
+  改用；命令侧保留 v1.12.0 的三级就绪实现（`checkHealthBounded`/
+  `waitReadyBounded`，语义更丰富）；
+- 行为零变更：阶段顺序、预算、错误聚合、日志/错误文案均逐字保留
+  （全量 `-race` 回归通过）。
+
+### 破坏性变更（第一至三批，随本版本合并发布）：eventbus 编解码收敛与 Bus 共享核心
+
+- 编解码解析唯一归属 `ResolveMarshaler`（原 `ResolvePublishMarshaler`/
+  `ResolveSubscribeMarshaler`）；删除 `WithSubscribeMarshaler` 与
+  `SubscribeOptions.Marshaler`（订阅侧无调用级覆盖，有意不对称）；
+  删除 `PublishTyped`/`SubscribeTyped`/`PublishRawTyped` 迁移别名；
+- `MarshalerFor` 接通 `Topics[t].Marshaler`（查找序 `TopicMarshalers[t]`
+  → `Topics[t].Marshaler` → 全局 → JSON）；新增 `SubscribeOptions.Retry`
+  与 `WithSubscribeRetry`，四级重试合并接通（§10.4 承诺兑现）；
+- 发布侧组装收敛为 `eventbus.BuildRawEvent`、订阅默认合并收敛为
+  `eventbus.ApplyTopicConfig`、`Options` 增 `PropagateKeys`/`LogMessageFor`/
+  `RetryFor`：memory 与 watermill 的成对手写实现全部删除，协议键清除
+  漂移（watermill 硬编码三键未走 `isProtocolMetaKey`）随之消除；
+  watermill wire 转换导出 `ToMessage`/`FromMessage`，kafka 删除逐字节
+  相同的自有副本（§5.1 单一映射点成真），watermill-kafka 为此新增对
+  `contrib/watermill` 的模块依赖。
+
 ## v1.13.0 (2026-09-23)
 
 本次发布 tag：根 `v1.13.0`、`contrib/schedule/v1.8.0`（Trigger/WithNow）、

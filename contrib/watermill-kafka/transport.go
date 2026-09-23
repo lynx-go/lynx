@@ -348,6 +348,26 @@ func (t *Transport) watermillLogger() watermill.LoggerAdapter {
 	return watermill.NewSlogLogger(t.logger)
 }
 
+// DeliveryMode 声明消费组：同组订阅者瓜分分区消息，Bus 对本后端启用
+// 消费组占用检查（WK-01）。
+func (t *Transport) DeliveryMode() eventbus.DeliveryMode {
+	return eventbus.DeliveryConsumerGroup
+}
+
+// DefaultGroup 实现 eventbus.DefaultGrouper：返回订阅键配置的默认组
+//（consumer.group_id），未配置时 ok=false。Bus 据此计算有效组，识别
+// "显式组 == 他人默认组"的静默瓜分（原 claimGroup 已知局限一）。
+func (t *Transport) DefaultGroup(key string) (string, bool) {
+	to, ok := t.opts.Topics[key]
+	if !ok || to.Consumer == nil {
+		return "", false
+	}
+	if to.Consumer.GroupID == "" {
+		return "", false
+	}
+	return to.Consumer.GroupID, true
+}
+
 // Publish 将 RawEvent 发布到逻辑 topic 对应的物理 topic；ctx 用于传播 trace/元数据。
 // Kafka record Key = e.Key（经 x-message-key 写入，见 wireMarshaler）。
 func (t *Transport) Publish(ctx context.Context, topic string, e *eventbus.RawEvent) error {
@@ -864,6 +884,7 @@ func fanIn(ctx context.Context, chans []<-chan *message.Message, done func()) <-
 }
 
 var _ eventbus.Transport = (*Transport)(nil)
+var _ eventbus.DefaultGrouper = (*Transport)(nil)
 var _ lynx.Service = (*Transport)(nil)
 var _ lynx.Checker = (*Transport)(nil)
 var _ lynx.Ready = (*Transport)(nil)

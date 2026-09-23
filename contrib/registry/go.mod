@@ -5,7 +5,7 @@ go 1.26.5
 replace github.com/lynx-go/lynx => ../../
 
 require (
-	github.com/lynx-go/lynx v1.0.0
+	github.com/lynx-go/lynx v1.14.0
 	github.com/spf13/viper v1.21.0
 	google.golang.org/grpc v1.83.2
 )

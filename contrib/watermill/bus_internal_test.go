@@ -262,8 +262,9 @@ func TestForwardDeliveryAckWaitsForSlowHandler(t *testing.T) {
 	}
 }
 
-// fakeNonMemoryTransport 是仅用于促使 claimGroup 登记的非内存 Transport
-// （订阅/发布行为无关紧要，测试只驱动 Bus 内部路径）。
+// fakeNonMemoryTransport 是仅用于促使 claimGroup 登记的消费组 Transport
+// （订阅/发布行为无关紧要，测试只驱动 Bus 内部路径；占用检查经
+// DeliveryMode 声明启用——原"非内存即检查"的身份推断已由契约取代）。
 type fakeNonMemoryTransport struct{}
 
 func (fakeNonMemoryTransport) Publish(ctx context.Context, topic string, e *eventbus.RawEvent) error {
@@ -274,6 +275,9 @@ func (fakeNonMemoryTransport) Subscribe(ctx context.Context, topic string, opts 
 }
 func (fakeNonMemoryTransport) Topics() []string { return nil }
 func (fakeNonMemoryTransport) Close() error     { return nil }
+func (fakeNonMemoryTransport) DeliveryMode() eventbus.DeliveryMode {
+	return eventbus.DeliveryConsumerGroup
+}
 
 // TestSubscribeAddHandlerFailureReleasesGroupClaim 回归复审-1：claimGroup
 // 在锁内登记后，addHandlerSafe 失败（非 errHandlerNameTaken，handler 未

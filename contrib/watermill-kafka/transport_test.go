@@ -1017,3 +1017,30 @@ func TestTransportReadyClosesOnStart(t *testing.T) {
 		t.Fatal("Ready must stay closed after being closed once")
 	}
 }
+
+// TestDeliveryModeAndDefaultGroup 钉住接缝契约实现：kafka 声明消费组
+// 模式（Bus 据此启用组占用检查），并经 DefaultGrouper 暴露配置默认组
+//（consumer.group_id），使"显式组 == 他人默认组"的静默瓜分可被识别。
+func TestDeliveryModeAndDefaultGroup(t *testing.T) {
+	tr := newTestTransport(Options{Topics: map[string]TopicOptions{
+		"with-group":  {Brokers: []string{"b1"}, Consumer: &ConsumerOptions{GroupID: "svc"}},
+		"no-group":    {Brokers: []string{"b1"}, Consumer: &ConsumerOptions{}},
+		"no-consumer": {Brokers: []string{"b1"}},
+	}}, newFakePubSub())
+
+	if got := tr.DeliveryMode(); got != eventbus.DeliveryConsumerGroup {
+		t.Fatalf("DeliveryMode = %v, want DeliveryConsumerGroup", got)
+	}
+	if g, ok := tr.DefaultGroup("with-group"); !ok || g != "svc" {
+		t.Fatalf("DefaultGroup(with-group) = (%q, %v), want (svc, true)", g, ok)
+	}
+	if _, ok := tr.DefaultGroup("no-group"); ok {
+		t.Fatal("DefaultGroup(no-group) should report false for empty group_id")
+	}
+	if _, ok := tr.DefaultGroup("no-consumer"); ok {
+		t.Fatal("DefaultGroup(no-consumer) should report false without consumer config")
+	}
+	if _, ok := tr.DefaultGroup("unknown-topic"); ok {
+		t.Fatal("DefaultGroup(unknown-topic) should report false")
+	}
+}
