@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/lynx-go/lynx/eventbus"
 	"github.com/oklog/run"
 	"github.com/spf13/pflag"
@@ -564,8 +565,29 @@ func (app *lynx) serviceSnapshot() []Service {
 }
 
 // publishEvent 发布内建生命周期事件，失败仅记 debug 日志，不影响主流程。
-func (app *lynx) publishEvent(topic string, payload any) {
-	if app.bus == nil {
+// startConfigWatch 注册配置文件热更新（WithConfigWatch）：viper WatchConfig
+// 在文件变更时已自动重读（后续 Get 返回新值），此处仅桥接事件——发布
+// lynx.config.updated 到总线（lynx.* 前缀在 watermill 等跨进程 Bus 上
+// 强制内存路由，热更新事件不出进程）。已知取舍：viper 的 watcher 无
+// 撤销 API，watch 随进程常驻（与 AUX-14 全局 provider 不复位同类）。
+// 配置非文件来源（WithConfig 注入/无 --config）时报错，由调用方以
+// poison-pill 语义处理。
+func (app *lynx) startConfigWatch() error {
+	if app.c == nil || app.c.ConfigFileUsed() == "" {
+		return errors.New("lynx: WithConfigWatch requires a config file (--config / -c or WithConfigFile)")
+	}
+	app.c.OnConfigChange(func(in fsnotify.Event) {
+		app.publishEvent(eventbus.TopicConfigUpdated, eventbus.ConfigUpdatedEvent{
+			File: in.Name,
+			Time: time.Now(),
+		})
+	})
+	app.c.WatchConfig()
+	app.logger.Info("config watch started", "file", app.c.ConfigFileUsed())
+	return nil
+}
+
+func (app *lynx) publishEvent(topic string, payload any) {	if app.bus == nil {
 		return
 	}
 	// 使用携带 Meta 的 app.ctx 为底，但脱离取消，避免关停时事件被取消。
@@ -739,6 +761,17 @@ func (app *lynx) Run() error {
 		app.stopServices(app.ctx)
 		app.publishEvent(eventbus.TopicAppStopped, eventbus.AppEvent{Name: meta.Name, ID: meta.ID, Version: meta.Version, Time: time.Now()})
 		return ErrDrainHooksRequireDrainTimeout
+	}
+
+	// 配置热更新（WithConfigWatch）：注册失败镜像 initErr 的 poison-pill
+	// 语义（已 Init 的服务逆序停止后返回），显式要求热更新却无从 watch
+	// 的配置错误在启动期暴露。
+	if app.o.ConfigWatch {
+		if err := app.startConfigWatch(); err != nil {
+			app.stopServices(app.ctx)
+			app.publishEvent(eventbus.TopicAppStopped, eventbus.AppEvent{Name: meta.Name, ID: meta.ID, Version: meta.Version, Time: time.Now()})
+			return err
+		}
 	}
 
 	// 退出信号提前注册：OnPreStart hook 阻塞期间收到的信号进入缓冲 chan，

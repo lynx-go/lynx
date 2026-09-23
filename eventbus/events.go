@@ -27,6 +27,8 @@ const (
 	TopicGRPCListening = "lynx.grpc.listening"
 	TopicGRPCStopping  = "lynx.grpc.stopping"
 	TopicGRPCStopped   = "lynx.grpc.stopped"
+
+	TopicConfigUpdated = "lynx.config.updated"
 )
 
 // AppEvent 是 App 级事件的负载。
@@ -59,6 +61,14 @@ type DrainEvent struct {
 	Time    time.Time     `json:"time"`
 }
 
+// ConfigUpdatedEvent 是配置热更新事件（WithConfigWatch）的负载：
+// 文件变更已由框架重读完成，订阅方收到后经 Config() 读取新值并自行
+// 决定响应粒度（重建连接/调参/忽略）。
+type ConfigUpdatedEvent struct {
+	File string    `json:"file"`
+	Time time.Time `json:"time"`
+}
+
 // 预定义类型化 Topic，便于编译期约束：业务侧可直接 SubscribeTyped。
 var (
 	AppStartingTopic = NewTopic[AppEvent](TopicAppStarting)
@@ -83,4 +93,6 @@ var (
 	GRPCListeningTopic = NewTopic[ServerEvent](TopicGRPCListening)
 	GRPCStoppingTopic  = NewTopic[ServerEvent](TopicGRPCStopping)
 	GRPCStoppedTopic   = NewTopic[ServerEvent](TopicGRPCStopped)
+
+	ConfigUpdatedTopic = NewTopic[ConfigUpdatedEvent](TopicConfigUpdated)
 )

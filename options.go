@@ -63,6 +63,11 @@ type Options struct {
 	// 以构造应用总线（依赖配置的总线如 watermill.NewFromConfig）及其配套
 	// 服务（如 kafka Transport）。与 WithBus 并存时 WithBus 优先。
 	BusProvider func(cfg Config) (eventbus.Bus, []Service, error) `json:"-"`
+	// ConfigWatch 启用配置文件热更新（WithConfigWatch）：Run 启动期注册
+	// viper WatchConfig，文件变更时框架经总线发布 lynx.config.updated
+	// 事件（eventbus.ConfigUpdatedTopic），后续 Config() 读取返回新值；
+	// 订阅方自行决定响应粒度。要求配置来自文件，否则 Run 启动期报错。
+	ConfigWatch bool `json:"-"`
 	// busFromOptions 标记 Bus 由框架填充（EnsureDefaults 默认或 WithBusOptions
 	// 物化），而非显式 WithBus 注入：provider 咨询条件放宽为"Bus 为 nil 或
 	// 仅由框架填充"，使 NewOptions 先跑 EnsureDefaults 的路径与 Option 顺序
@@ -360,6 +365,20 @@ func WithBus(b eventbus.Bus) Option {
 func WithBusProvider(fn func(cfg Config) (eventbus.Bus, []Service, error)) Option {
 	return func(o *Options) {
 		o.BusProvider = fn
+	}
+}
+
+// WithConfigWatch 启用配置文件热更新（viper WatchConfig）：文件变更时
+// 框架发布 lynx.config.updated 事件（eventbus.ConfigUpdatedTopic，
+// 订阅示例见该 Topic 注释），此后 Config() 读取返回新值——订阅方收到
+// 事件后重新读取配置并自行决定响应粒度（重建连接/调参/忽略）。
+// 仅对文件来源的配置生效（--config / -c 或 WithConfigFile）：无配置
+// 文件时 Run() 启动期返回错误（显式要求热更新却无从 watch，快失败
+// 好过静默失效）。WithConfig 注入自定义 Config 实现的场景同样报错
+// （无 viper 文件句柄可 watch）。
+func WithConfigWatch() Option {
+	return func(o *Options) {
+		o.ConfigWatch = true
 	}
 }
 
