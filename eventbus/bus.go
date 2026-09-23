@@ -22,10 +22,8 @@ import (
 type Bus interface {
 	// Publish 发布业务对象到逻辑 topic，按 Topic 的 Marshaler 序列化。
 	// topic 为逻辑名，物理映射由 Bus 实现决定（内存直接投递，持久化 Bus 按配置路由）。
+	// payload 为 []byte 时跳过序列化直发（原 Bus.PublishRaw 的能力）。
 	Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) error
-
-	// PublishRaw 以原始字节发布，跳过序列化（用于已序列化的 *Event 透传）。
-	PublishRaw(ctx context.Context, topic string, data []byte, opts ...PublishOption) error
 
 	// Subscribe 订阅逻辑 topic；handler 名由 WithHandlerName 指定，为空时使用 topic，且在 Bus 内全局唯一。
 	// 内存 Bus 允许 Start 后动态订阅；持久化 Bus 的 Start 前后语义由实现保证。

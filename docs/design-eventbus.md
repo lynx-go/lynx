@@ -110,7 +110,6 @@ Lynx 将 **EventBus** 提升为一等子系统：进程内组件协同与跨进�
 ```go
 type Bus interface {
     Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) error
-    PublishRaw(ctx context.Context, topic string, data []byte, opts ...PublishOption) error
     Subscribe(ctx context.Context, topic, handlerName string, h HandlerFunc, opts ...SubscribeOption) error
     MarshalerFor(topic string) Marshaler
 
@@ -121,6 +120,12 @@ type Bus interface {
     CheckHealth() error
 }
 ```
+
+说明：
+
+- 原始字节发布经 `Publish` 的 `[]byte` payload 分支（跳过序列化）；
+  独立的 `Bus.PublishRaw` 方法已删除（v1.12，一行委托 Publish 的等价面），
+  `*RawEvent` 信封转发用 `Topic.PublishRaw`。
 
 说明：
 

@@ -1528,9 +1528,6 @@ func (b *readyGateBus) CheckHealth() error {
 func (b *readyGateBus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) error {
 	return nil
 }
-func (b *readyGateBus) PublishRaw(ctx context.Context, topic string, data []byte, opts ...eventbus.PublishOption) error {
-	return nil
-}
 func (b *readyGateBus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
 	return nil
 }

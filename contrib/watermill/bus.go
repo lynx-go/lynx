@@ -279,11 +279,6 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 	return t.Publish(ctx, key, eventbus.CloneRawEvent(raw))
 }
 
-// PublishRaw 原始发布。
-func (b *Bus) PublishRaw(ctx context.Context, topic string, data []byte, opts ...eventbus.PublishOption) error {
-	return b.Publish(ctx, topic, data, opts...)
-}
-
 // Subscribe 订阅；Start 后动态注册（AddConsumerHandler + RunHandlers）。
 func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
 	o := &eventbus.SubscribeOptions{}

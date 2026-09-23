@@ -144,10 +144,6 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 	return b.dispatch(ctx, ev)
 }
 
-func (b *memoryBus) PublishRaw(ctx context.Context, topic string, data []byte, opts ...PublishOption) error {
-	return b.Publish(ctx, topic, data, opts...)
-}
-
 func (b *memoryBus) dispatch(ctx context.Context, ev *RawEvent) error {
 	// 发送必须在 RLock 临界区内完成：与 Stop 的写锁 close(sub.ch) 互斥。
 	// 若先拷贝订阅者再解锁发送，关停期间的并发 Publish 会落进
