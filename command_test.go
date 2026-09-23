@@ -445,7 +445,10 @@ func TestCommandStartWaitsForReadyService(t *testing.T) {
 	if got := ran.Load(); got != 1 {
 		t.Errorf("command ran %d times, want 1", got)
 	}
-	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
+	// 下界取 delay/2：Ready 的 AfterFunc 计时在 newReadyService 时启动，
+	// 早于本处计时起点——严格 >= delay 的断言在负载下会因调度偏差偶发
+	// 失败（实测 99.4ms < 100ms）。不等待的实现在此下界下仍会立即暴露。
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
 		t.Errorf("Start() took %v, want to wait for Ready channel", elapsed)
 	}
 }

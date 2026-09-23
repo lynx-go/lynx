@@ -94,8 +94,10 @@ func TestSubscribeReceivesUpdates(t *testing.T) {
 // 最新快照（信号合并，不排队陈旧快照）。直驱 cacheEntry 消除 watchLoop
 // 的异步时序（push → watchLoop 消费 → store 的传播由
 // TestSubscribeReceivesUpdates 覆盖，此处仅测订阅机制本身的合并语义）。
+// fakeDiscovery 用 silent 模式：Watch 不预推快照，缓存只由本测试直驱，
+// 否则 watchLoop 的初始快照可能在两次 store 之后写入并覆盖最新快照。
 func TestSubscribeSignalCoalescing(t *testing.T) {
-	fd := &fakeDiscovery{snap: []Instance{inst("a")}}
+	fd := &fakeDiscovery{snap: []Instance{inst("a")}, silent: true}
 	r := NewResolver(fd, WithPollInterval(50*time.Millisecond))
 	defer func() { _ = r.Close() }()
 	e, ok := r.entryFor("svc")

@@ -18,6 +18,9 @@ type fakeDiscovery struct {
 	mu       sync.Mutex
 	snap     []Instance
 	watchErr error // 非 nil 时 Watch 直接失败
+	// silent 置位时 Watch 不预推初始快照：调用方直驱缓存（store）的用例
+	// 用它消除 watchLoop 初始快照与直驱写入的时序竞争。
+	silent   bool
 	watchers []*fakeWatcher
 }
 
@@ -41,8 +44,11 @@ func (f *fakeDiscovery) Watch(ctx context.Context, _ string, _ Filter) (Watcher,
 		done:  make(chan struct{}),
 		errCh: make(chan error, 1),
 	}
-	// 对齐 Watcher 契约：首次 Next 立即推送当前快照。
-	w.ch <- slices.Clone(f.snap)
+	// 对齐 Watcher 契约：首次 Next 立即推送当前快照。silent 模式除外
+	// （调用方直驱缓存，Watch 保持挂起不推送）。
+	if !f.silent {
+		w.ch <- slices.Clone(f.snap)
+	}
 	f.watchers = append(f.watchers, w)
 	return w, nil
 }
