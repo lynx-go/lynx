@@ -74,8 +74,9 @@ client := clienthttp.New(clienthttp.WithRetry(3,
 ### Do 的行为约定
 
 - **传播**：将 `req.Context()` 的日志属性写入请求头（`request_id` →
-  `X-Request-Id`、`user_id` → `X-User-Id`），**已存在的同名请求头不覆盖**
-  （显式设置的头部优先）；otel 插装同时注入 `traceparent` 等传播上下文。
+  `x-request-id`、`user_id` → `x-user-id`，与服务端/gRPC metadata 同一组
+  共享 wire 键），**已存在的同名请求头不覆盖**（显式设置的头部优先）；
+  otel 插装同时注入 `traceparent` 等传播上下文。
 - **Do/Get/Post 不读取、不关闭响应体**：调用方负责读取并关闭
   （重试中途丢弃的响应体由客户端内部关闭）。
 
@@ -84,22 +85,22 @@ client := clienthttp.New(clienthttp.WithRetry(3,
 HTTP 链路（client/http → server/http）的完整时序：
 
 1. 调用方在 ctx 预置日志属性：`logging.WithAttrs(ctx, slog.String("request_id", rid))`。
-2. `client.Do` 从 ctx 提取属性写入请求头（`X-Request-Id`、`X-User-Id`，
+2. `client.Do` 从 ctx 提取属性写入请求头（`x-request-id`、`x-user-id`，
    已存在的头部不覆盖）；otelhttp transport 同时注入 `traceparent`。
-3. 服务端 `server/http.WithRequestID` 中间件透传 `X-Request-Id`
-   （未携带则生成 UUID），回写响应头，并经 `logging.WithAttrs` 还原进
-   请求 ctx。
-4. 服务端请求链内所有日志自动携带同一 `request_id`；响应头中的
-   `X-Request-Id` 可供调用方取回继续下传，全链路同 id。
+3. 服务端**默认安装**的传播中间件透传 `x-request-id`（未携带则生成
+   UUID）与 `x-user-id`（合法时还原），回写响应头，并经 `logging.WithAttrs`
+   还原进请求 ctx（`WithDisableRequestID` 可关闭）。
+4. 服务端请求链内所有日志自动携带同一 `request_id`/`user_id`；响应头中的
+   `x-request-id` 可供调用方取回继续下传，全链路同 id。
 
 ```
 调用方 ──logging.WithAttrs──▶ client.Do
-                                  │  X-Request-Id / X-User-Id / traceparent
+                                  │  x-request-id / x-user-id / traceparent
                                   ▼
-                            server.WithRequestID（透传/生成 → 回写响应头）
+                            server 默认传播（透传/生成 → 回写响应头）
                                   │  logging.WithAttrs 还原
                                   ▼
-                            业务 handler 日志（同 request_id）
+                            业务 handler 日志（同 request_id / user_id）
 ```
 
 ## 6.3 gRPC 客户端（client/grpc）
@@ -118,8 +119,8 @@ defer conn.Close()
 // 惰性连接：Dial 不发起连接，首次 RPC 时才建立，返回 nil error
 // 不代表对端可达。
 
-// ctx 预置日志属性 → 自动写入 outgoing metadata（key 同日志字段名）：
-// request_id / user_id。
+// ctx 预置日志属性 → 自动写入 outgoing metadata
+//（共享 wire 键 x-request-id / x-user-id）：
 ctx := logging.WithAttrs(context.Background(), slog.String(logging.FieldRequestID, rid))
 resp, err := client.NewUserClient(conn).GetUser(ctx, &GetUserRequest{Id: 1})
 ```
@@ -127,9 +128,10 @@ resp, err := client.NewUserClient(conn).GetUser(ctx, &GetUserRequest{Id: 1})
 ### Dial 的默认装配
 
 - **传播**：unary/stream 拦截器把 ctx 的日志属性（`request_id`/`user_id`）
-  写入 outgoing metadata，key 与日志字段同名；**已存在的 metadata key
-  不被覆盖**（显式设置优先）。otelgrpc stats handler 同时注入 trace
-  传播上下文。
+  写入 outgoing metadata，键为共享 wire 键 `x-request-id`/`x-user-id`
+  （中划线键同时规避 Envoy 等代理对下划线 header 的默认拒绝）；**已存在
+  的 metadata key 不被覆盖**（显式设置优先）。otelgrpc stats handler 同时
+  注入 trace 传播上下文。
 - **超时**：`WithTimeout` 设置默认调用超时（per-RPC context deadline，
   缺省 30s），在 RPC 发起时注入 ctx deadline；调用方 ctx 已带 deadline
   时不叠加。流式 RPC 的定时器在流结束时释放。
@@ -148,13 +150,13 @@ conn, err := clientgrpc.Dial("user-service:9090",
 `WithDialOptions(opts ...grpc.DialOption)` 是逃生口，透传额外的
 `grpc.DialOption`（消息大小限制、keepalive 等）。
 
-### 传播边界（gRPC）
+### 传播闭环（gRPC）
 
-**当前边界**：服务端（`server/grpc`）暂不把 incoming metadata 中的
-`request_id`/`user_id` 还原为日志属性——gRPC 链路只做客户端写入，
-**未形成** HTTP 侧的 request_id 闭环（对端服务内部可自行从
-`metadata.FromIncomingContext(ctx)` 读取）。服务端还原入 v1.2 backlog
-（届时 client → server 全链路日志同 id）。HTTP 链路（6.2 节）已闭环。
+`client/grpc` 写入 outgoing metadata（`x-request-id`/`x-user-id`），
+`server/grpc` 内置的 `interceptor.RequestIDPropagation` 拦截器默认把
+incoming metadata 中的这两个键还原为日志属性（非法值丢弃）——client →
+server 全链路日志同 id，与 HTTP 链路（6.2 节）使用同一组共享 wire 键。
+业务代码在 handler 内用 `grpc.RequestIDFrom(ctx)` 取当前 request_id。
 
 ## 下一步
 

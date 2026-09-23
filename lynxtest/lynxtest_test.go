@@ -33,7 +33,7 @@ func newHTTPSetup(hs **lynxhttp.Server, listening chan<- string) lynx.SetupFunc 
 		)
 		a.Register(*hs)
 		// 组装测试顺带验证事件接线：server 的 listening 事件送达订阅者。
-		return a.Bus().Subscribe(context.Background(), eventbus.TopicHTTPListening,
+		return a.Bus().Subscribe(context.Background(), eventbus.TopicServerListening,
 			func(_ context.Context, ev *eventbus.RawEvent) error {
 				listening <- ev.Topic
 				return nil
@@ -83,11 +83,11 @@ func TestRun_HTTPApp(t *testing.T) {
 
 	select {
 	case topic := <-listening:
-		if topic != eventbus.TopicHTTPListening {
-			t.Errorf("listening event topic = %q, want %q", topic, eventbus.TopicHTTPListening)
+		if topic != eventbus.TopicServerListening {
+			t.Errorf("listening event topic = %q, want %q", topic, eventbus.TopicServerListening)
 		}
 	case <-time.After(3 * time.Second):
-		t.Error("did not receive TopicHTTPListening event within 3s")
+		t.Error("did not receive TopicServerListening event within 3s")
 	}
 }
 

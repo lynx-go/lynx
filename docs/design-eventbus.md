@@ -322,7 +322,7 @@ _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
 
 约束：
 
-- `lynx.*` **仅**进程内有效；跨实例协同用 registry，禁止把 `lynx.http.listening` 等配进 Kafka。
+- `lynx.*` **仅**进程内有效；跨实例协同用 registry，禁止把 `lynx.server.listening` 等配进 Kafka。
 - Watermill Bus 在 `Init` 中：
   - 确保存在专用于生命周期的 MemoryTransport（或等价 gochannel）；
   - 将所有 `lynx.*`（含未来新增常量）解析到该 Transport；

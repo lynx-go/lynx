@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/logging"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -957,8 +958,8 @@ func TestReadinessHungCheckerTimesOut(t *testing.T) {
 
 // TestReadinessCheckerPanicRecovered 回归 SC-08：健康端点绕过用户中间件
 // 链，checker panic 必须被兜底（按不健康 503 处理），不拖垮进程——
-// 并发路径下 checker 运行在独立 goroutine，靠 runHealthChecks 内的
-// recover 兜底；handler 自身的 panic 由外层 Recovery 兜底。
+// 并发路径下 checker 运行在独立 goroutine，靠 serverkit.RunHealthChecks
+// 内的 recover 兜底；handler 自身的 panic 由外层 Recovery 兜底。
 func TestReadinessCheckerPanicRecovered(t *testing.T) {
 	addr, stop := startHTTPServerForTest(t,
 		WithHealthCheckers(func() []lynx.Checker { return []lynx.Checker{&panicChecker{}} }))
@@ -985,47 +986,6 @@ func TestReadinessCheckerPanicRecovered(t *testing.T) {
 type panicChecker struct{}
 
 func (c *panicChecker) CheckHealth() error { panic("checker exploded") }
-
-// TestRunHealthChecksConcurrent 验证 SC-03 的并发语义：两个各睡 150ms 的
-// checker 在 200ms 上限内通过——顺序执行（300ms）必然超时。
-func TestRunHealthChecksConcurrent(t *testing.T) {
-	slow := func() lynx.Checker {
-		return funcChecker(func() error {
-			time.Sleep(150 * time.Millisecond)
-			return nil
-		})
-	}
-	checkers := func() []lynx.Checker { return []lynx.Checker{slow(), slow()} }
-
-	start := time.Now()
-	if err := runHealthChecks(checkers, 200*time.Millisecond); err != nil {
-		t.Fatalf("并发执行下应在时限内全部通过: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed >= 200*time.Millisecond {
-		t.Errorf("elapsed = %v, checker 未并发执行（顺序 300ms 应已超时）", elapsed)
-	}
-}
-
-// TestRunHealthChecksTimeout 单元验证超时语义。
-func TestRunHealthChecksTimeout(t *testing.T) {
-	hung := funcChecker(func() error {
-		time.Sleep(2 * time.Second)
-		return nil
-	})
-	err := runHealthChecks(func() []lynx.Checker { return []lynx.Checker{hung} },
-		50*time.Millisecond)
-	if err == nil {
-		t.Fatal("hung checker 应按超时不健康返回")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("err = %v, want 超时错误", err)
-	}
-}
-
-// funcChecker 把函数适配为 lynx.Checker。
-type funcChecker func() error
-
-func (f funcChecker) CheckHealth() error { return f() }
 
 // TestHealthCheckPrefix 回归 SC-08：WithHealthCheckPrefix 改挂载路径，
 // 缺省 /healthz 端点回落到业务 handler。
@@ -1063,6 +1023,88 @@ func TestDisableHealthCheck(t *testing.T) {
 	}
 	if body != "user" {
 		t.Errorf("body = %q, want 业务 handler 响应（\"user\"）", body)
+	}
+}
+
+// startEchoServerForTest 起真实 server（自定义 handler）并等待可拨号。
+func startEchoServerForTest(t *testing.T, handler http.Handler, opts ...Option) (string, func()) {
+	t.Helper()
+	opts = append([]Option{WithAddr("127.0.0.1:0")}, opts...)
+	srv := NewServer(handler, opts...)
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start(context.Background()) }()
+	addr := srv.mustAddr(t)
+	return addr, func() {
+		_ = srv.Stop(context.Background())
+		select {
+		case <-startErr:
+		case <-time.After(5 * time.Second):
+			t.Error("Start did not return after Stop")
+		}
+	}
+}
+
+// TestRequestIDPropagationInstalledByDefault：裸 NewServer（无任何用户
+// 中间件）默认还原 x-request-id/x-user-id 并回写响应头（此前 HTTP 侧
+// 默认不装传播、user_id 断链）。
+func TestRequestIDPropagationInstalledByDefault(t *testing.T) {
+	var gotUID string
+	addr, stop := startEchoServerForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, a := range logging.AttrsFrom(r.Context()) {
+			if a.Key == logging.FieldUserID {
+				gotUID = a.Value.String()
+			}
+		}
+		_, _ = w.Write([]byte(RequestIDFrom(r.Context())))
+	}))
+	defer stop()
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(RequestIDHeader, "rid-default")
+	req.Header.Set(UserIDHeader, "user-default")
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "rid-default" {
+		t.Errorf("handler saw request_id %q, want rid-default", body)
+	}
+	if got := resp.Header.Get(RequestIDHeader); got != "rid-default" {
+		t.Errorf("response header = %q, want rid-default", got)
+	}
+	if gotUID != "user-default" {
+		t.Errorf("handler saw user_id %q, want user-default", gotUID)
+	}
+}
+
+// TestRequestIDPropagationDisabled：WithDisableRequestID 关闭默认装配。
+func TestRequestIDPropagationDisabled(t *testing.T) {
+	addr, stop := startEchoServerForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(RequestIDFrom(r.Context())))
+	}), WithDisableRequestID())
+	defer stop()
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(RequestIDHeader, "rid-off")
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "" {
+		t.Errorf("request_id = %q, want empty with propagation disabled", body)
+	}
+	if got := resp.Header.Get(RequestIDHeader); got != "" {
+		t.Errorf("response header = %q, want empty with propagation disabled", got)
 	}
 }
 

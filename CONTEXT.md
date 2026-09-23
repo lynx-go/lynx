@@ -54,3 +54,9 @@ _Avoid_: 配置管理器
 **投递执行（Invoke）**:
 一次订阅投递的语义执行：构建 handler 上下文、固定退避重试、AutoAck / ContinueOnError 裁决；不接触消息确认（ack 时序归适配器）。
 _Avoid_: 消费循环（那是适配器的调度）
+
+## 请求标识
+
+**传播键（Propagation key）**:
+request_id / user_id 在传输层（HTTP 头与 gRPC metadata）的共享 wire 键 `x-request-id` / `x-user-id`；日志字段名仍是 `request_id` / `user_id`。两侧同源，同一标识不因传输换名字。
+_Avoid_: header 名、metadata key（分开命名会让两侧漂移）

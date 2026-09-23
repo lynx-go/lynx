@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/eventbus"
+	"github.com/lynx-go/lynx/internal/serverkit"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
@@ -30,8 +30,9 @@ const (
 	DefaultShutdownTimeout = 10 * time.Second
 	// DefaultHealthCheckTimeout 是单个健康检查器的执行上限（SC-03）：
 	// CheckHealth 接口无 ctx 参数，挂死的 checker 必须被限时打断，
-	// 否则 readiness 探测请求被挂起、LB 反复超时。
-	DefaultHealthCheckTimeout = 3 * time.Second
+	// 否则 readiness 探测请求被挂起、LB 反复超时。共享规则见
+	// internal/serverkit（gRPC 侧同值）。
+	DefaultHealthCheckTimeout = serverkit.DefaultHealthCheckTimeout
 	// DefaultHealthCheckPrefix 是内置健康检查端点的路径前缀（SC-08）：
 	// 端点为 <prefix>/liveness 与 <prefix>/readiness。
 	DefaultHealthCheckPrefix = "/healthz"
@@ -60,9 +61,13 @@ type Options struct {
 	HealthCheckPrefix string
 	// DisableHealthCheck 为 true 时不挂载内置健康检查端点（SC-08）。
 	DisableHealthCheck bool
-	HealthCheckers     lynx.HealthCheckersFunc
-	Logger             *slog.Logger
-	RequestLog         bool
+	// DisableRequestID 为 true 时不安装内置 request_id/user_id 传播中间件
+	//（WithDisableRequestID）：默认安装，收到合法的 x-request-id/x-user-id
+	// 即还原进请求 ctx 并回写响应头。
+	DisableRequestID bool
+	HealthCheckers   lynx.HealthCheckersFunc
+	Logger           *slog.Logger
+	RequestLog       bool
 	// ErrorHandler 是服务器级默认错误处理器（WithErrorHandler 设置）：
 	// 经 Server.NewErrorHandler(h, fn) 使用，h 传 nil 时的兜底改取它
 	//（未配置时回退包级 DefaultErrorHandler）——包级 NewErrorHandler
@@ -151,6 +156,14 @@ func WithHealthCheckTimeout(timeout time.Duration) Option {
 func WithHealthCheckPrefix(prefix string) Option {
 	return func(o *Options) {
 		o.HealthCheckPrefix = prefix
+	}
+}
+
+// WithDisableRequestID 关闭内置 request_id/user_id 传播中间件（默认安装）：
+// 需要自行接管传播或完全不要该行为的场景使用。
+func WithDisableRequestID() Option {
+	return func(o *Options) {
+		o.DisableRequestID = true
 	}
 }
 
@@ -305,13 +318,6 @@ func (s *Server) Init(ctx lynx.AppContext) error {
 	return nil
 }
 
-func (s *Server) publishEvent(topic string, payload any) {
-	if s.bus == nil {
-		return
-	}
-	_ = s.bus.Publish(context.Background(), topic, payload)
-}
-
 // Addr 返回实际监听地址：Start 前（或 Listen 失败时）返回空字符串；
 // 使用随机端口（如 ":0"）时返回 Listen 成功后的实际地址。
 // 语义与 debug.Service.Addr 一致。
@@ -394,7 +400,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return nil
 	}
 	s.logger.InfoContext(ctx, "starting HTTP server, listening on "+ln.Addr().String())
-	s.publishEvent(eventbus.TopicHTTPListening, eventbus.ServerEvent{Service: "http", Addr: ln.Addr().String(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
+	serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerListening, "http", ln.Addr().String(), s.o.AdvertiseAddr)
 	s.closeReady()
 	var serveErr error
 	if s.o.TLSConfig != nil {
@@ -420,6 +426,12 @@ func (s *Server) buildHandler(ctx context.Context) http.Handler {
 	}
 
 	user := chain(s.handler, s.o.Middlewares)
+	// 默认安装 request_id/user_id 传播（WithDisableRequestID 关闭）：
+	// 客户端已在发 x-request-id/x-user-id，服务端默认还原进 ctx，闭环
+	// 不依赖用户记得加中间件。
+	if !s.o.DisableRequestID {
+		user = WithRequestID()(user)
+	}
 	if s.bus != nil {
 		user = injectBus(s.bus)(user)
 	}
@@ -479,7 +491,7 @@ func handleReadiness(checkers lynx.HealthCheckersFunc, timeout time.Duration) ht
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		if err := runHealthChecks(checkers, timeout); err != nil {
+		if err := serverkit.RunHealthChecks(checkers, timeout); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(err.Error()))
 			return
@@ -488,70 +500,14 @@ func handleReadiness(checkers lynx.HealthCheckersFunc, timeout time.Duration) ht
 	})
 }
 
-// runHealthChecks 并发执行 checkers 并整体限时 timeout：任一失败立即
-// 返回其错误；超时返回超时错误（视为不健康，SC-03）。
-// lynx.Checker 接口无 ctx 参数（API 冻结），挂死的 checker 无法被打断，
-// 只能被"放弃等待"——结果 channel 带缓冲，最终返回的 checker goroutine
-// 写入后自行退出，不阻塞探测请求。固有边界（放弃等待模式的残余代价）：
-// 永不返回的 checker（死锁类）其 goroutine 无法回收，会随每次探测累积
-// 泄漏，只能修复 checker 本身或重启进程消除。
-// timeout <= 0 表示不限时：退化为顺序执行（保持旧行为的逃生口）。
-func runHealthChecks(checkers lynx.HealthCheckersFunc, timeout time.Duration) error {
-	cs := checkers()
-	if len(cs) == 0 {
-		return nil
-	}
-	if timeout <= 0 {
-		for _, c := range cs {
-			if err := checkOne(c); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	results := make(chan error, len(cs))
-	for _, c := range cs {
-		go func(c lynx.Checker) {
-			results <- checkOne(c)
-		}(c)
-	}
-	// checker 并发起步，共享一个计时窗口即等效"每个 checker 限时"。
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	for i := 0; i < len(cs); i++ {
-		select {
-		case err := <-results:
-			if err != nil {
-				return err
-			}
-		case <-timer.C:
-			return fmt.Errorf("health check timed out after %s", timeout)
-		}
-	}
-	return nil
-}
-
-// checkOne 执行单个 checker 并兜底其 panic：并发路径下 checker 运行在
-// 独立 goroutine，panic 无外层中间件可恢复（SC-08 的 Recovery 只覆盖
-// handler goroutine），必须就地 recover 并按不健康处理，避免拖垮进程。
-func checkOne(c lynx.Checker) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("health check panicked: %v", r)
-		}
-	}()
-	return c.CheckHealth()
-}
-
 // Stop 优雅关停 HTTP 服务；服务尚未启动时直接返回 nil。
-// 为保证不无限挂起：与 gRPC 侧 Stop 一致地取 min 语义（SC-05）——
-// 调用方 ctx deadline 与 ShutdownTimeout 并存时取较小者（context
-// 会自动取父 ctx 的较早 deadline），ShutdownTimeout=0 表示无上界、仅以
-// 调用方 ctx 为准；超时后强制关闭活动连接（长轮询/流式 handler），
-// 并以错误返回。
+// 有界规则（SC-05，与 gRPC/debug 共用 internal/serverkit）：调用方 ctx
+// deadline 与 ShutdownTimeout 并存时取较小者；ShutdownTimeout=0 表示无
+// 配置上界、仅以调用方 ctx 为准；超时后强制关闭活动连接（长轮询/流式
+// handler），并以错误返回。
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "stopping HTTP server")
-	s.publishEvent(eventbus.TopicHTTPStopping, eventbus.ServerEvent{Service: "http", Addr: s.Addr(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
+	serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopping, "http", s.Addr(), s.o.AdvertiseAddr)
 	// 读取 httpServer 之前置位（SC-02 的 HTTP 侧对称面）：Start 侧据此在
 	// 进入 Serve 前中止，避免 Stop 见 httpServer 为 nil 先返回、Start
 	// 随后 Listen 并永久 Serve 的启动期交错。
@@ -560,49 +516,18 @@ func (s *Server) Stop(ctx context.Context) error {
 	hs := s.httpServer
 	s.mu.RUnlock()
 	if hs == nil {
-		s.publishEvent(eventbus.TopicHTTPStopped, eventbus.ServerEvent{Service: "http", Time: time.Now()})
+		serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopped, "http", "", "")
 		return nil
 	}
-	defer s.publishEvent(eventbus.TopicHTTPStopped, eventbus.ServerEvent{Service: "http", Time: time.Now()})
-	if s.o.ShutdownTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.o.ShutdownTimeout)
-		defer cancel()
-	}
-	done := make(chan struct{})
-	var shutdownErr error
-	go func() {
-		defer close(done)
-		shutdownErr = hs.Shutdown(ctx)
-	}()
-	select {
-	case <-done:
-		switch {
-		case shutdownErr == nil, errors.Is(shutdownErr, http.ErrServerClosed):
-			// 正常优雅关停。
+	defer serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopped, "http", "", "")
+	graceful := func(ctx context.Context) error {
+		err := hs.Shutdown(ctx)
+		if errors.Is(err, http.ErrServerClosed) {
 			return nil
-		case errors.Is(shutdownErr, context.Canceled), errors.Is(shutdownErr, context.DeadlineExceeded):
-			// Shutdown 因超时/取消返回：与 ctx.Done() 分支同样归入超时
-			// 路径，强制关闭活动连接并以错误返回——不得放行未完成的连接。
-			s.logger.ErrorContext(ctx, "graceful HTTP shutdown timed out, forcing close", "error", shutdownErr)
-			if err := hs.Close(); err != nil {
-				s.logger.ErrorContext(ctx, "failed to force-close http server after shutdown timeout", "error", err)
-			}
-			return fmt.Errorf("http server graceful shutdown timed out: %w", shutdownErr)
-		default:
-			s.logger.ErrorContext(ctx, "failed to shutdown http server", "error", shutdownErr)
-			return shutdownErr
 		}
-	case <-ctx.Done():
-		// ctx 已结束，Shutdown 必然很快返回；先等它退出再强制关闭，
-		// 避免与 Shutdown 内部的连接清理交错。
-		<-done
-		s.logger.ErrorContext(ctx, "graceful HTTP shutdown timed out, forcing close", "error", ctx.Err())
-		if err := hs.Close(); err != nil {
-			s.logger.ErrorContext(ctx, "failed to force-close http server after shutdown timeout", "error", err)
-		}
-		return fmt.Errorf("http server graceful shutdown timed out: %w", ctx.Err())
+		return err
 	}
+	return serverkit.Shutdown(ctx, s.o.ShutdownTimeout, s.logger, "http server", graceful, hs.Close)
 }
 
 var _ lynx.Service = (*Server)(nil)

@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/eventbus"
+	"github.com/lynx-go/lynx/internal/serverkit"
 	"github.com/lynx-go/lynx/server/grpc/interceptor"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/metric"
@@ -34,8 +34,9 @@ const (
 	DefaultHealthCheckPeriod = 10 * time.Second
 	// DefaultHealthCheckTimeout 是健康轮询中单个 checker 的执行上限
 	//（SC-03）：CheckHealth 接口无 ctx 参数，挂死的 checker 会卡死轮询
-	// goroutine 并把状态冻结在 SERVING。
-	DefaultHealthCheckTimeout = 3 * time.Second
+	// goroutine 并把状态冻结在 SERVING。共享规则见 internal/serverkit
+	//（HTTP 侧同值）。
+	DefaultHealthCheckTimeout = serverkit.DefaultHealthCheckTimeout
 )
 
 // Options 是 gRPC 服务服务的配置项。
@@ -374,13 +375,6 @@ func (s *Server) Init(ctx lynx.AppContext) error {
 	return nil
 }
 
-func (s *Server) publishEvent(topic string, payload any) {
-	if s.bus == nil {
-		return
-	}
-	_ = s.bus.Publish(context.Background(), topic, payload)
-}
-
 // Addr 返回实际监听地址：Start 前（或 Listen 失败时）返回空字符串；
 // 使用随机端口（如 ":0"）时返回 Listen 成功后的实际地址。
 // 语义与 debug.Service.Addr 一致。
@@ -436,7 +430,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.mu.Lock()
 	s.listener = lis
 	s.mu.Unlock()
-	s.publishEvent(eventbus.TopicGRPCListening, eventbus.ServerEvent{Service: "grpc", Addr: lis.Addr().String(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
+	serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerListening, "grpc", lis.Addr().String(), s.o.AdvertiseAddr)
 	s.closeReady()
 
 	// Set the server to healthy, for both the named and the standard empty
@@ -515,74 +509,21 @@ func (s *Server) updateHealthStatus() {
 	status := grpc_health_v1.HealthCheckResponse_SERVING
 	// 经限时并发 helper 执行（SC-03）：挂死的 checker 按超时不健康，
 	// 轮询 goroutine 不被卡死、状态不会冻结在 SERVING。
-	if err := runHealthChecks(s.o.HealthCheck, s.o.HealthCheckTimeout); err != nil {
+	if err := serverkit.RunHealthChecks(s.o.HealthCheck, s.o.HealthCheckTimeout); err != nil {
 		status = grpc_health_v1.HealthCheckResponse_NOT_SERVING
 	}
 	s.health.SetServingStatus("", status)
 	s.health.SetServingStatus("grpc", status)
 }
 
-// runHealthChecks 并发执行 checkers 并整体限时 timeout：任一失败立即
-// 返回其错误；超时返回超时错误（视为不健康，SC-03，与 server/http 侧
-// 同款实现）。lynx.Checker 接口无 ctx 参数（API 冻结），挂死的 checker
-// 无法被打断只能被"放弃等待"——结果 channel 带缓冲，最终返回的
-// checker goroutine 写入后自行退出，不卡轮询。固有边界（放弃等待模式
-// 的残余代价）：永不返回的 checker（死锁类）其 goroutine 无法回收，
-// 会随每次健康轮询累积泄漏，只能修复 checker 本身或重启进程消除。
-// timeout <= 0 表示不限时：退化为顺序执行（保持旧行为的逃生口）。
-func runHealthChecks(checkers lynx.HealthCheckersFunc, timeout time.Duration) error {
-	cs := checkers()
-	if len(cs) == 0 {
-		return nil
-	}
-	if timeout <= 0 {
-		for _, c := range cs {
-			if err := checkOne(c); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	results := make(chan error, len(cs))
-	for _, c := range cs {
-		go func(c lynx.Checker) {
-			results <- checkOne(c)
-		}(c)
-	}
-	// checker 并发起步，共享一个计时窗口即等效"每个 checker 限时"。
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	for i := 0; i < len(cs); i++ {
-		select {
-		case err := <-results:
-			if err != nil {
-				return err
-			}
-		case <-timer.C:
-			return fmt.Errorf("health check timed out after %s", timeout)
-		}
-	}
-	return nil
-}
-
-// checkOne 执行单个 checker 并兜底其 panic：并发路径下 checker 运行在
-// 独立 goroutine，panic 会直接崩溃进程，必须就地 recover 并按不健康
-// 处理（与 server/http 侧同款）。
-func checkOne(c lynx.Checker) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("health check panicked: %v", r)
-		}
-	}()
-	return c.CheckHealth()
-}
-
 // Stop 优雅关停 gRPC 服务：先关闭监听器，再等待在途请求完成，超时后强制停止。
-// 返回错误（如强制停止）使调用方感知关停失败。
+// 返回错误（如强制停止）使调用方感知关停失败。有界规则（SC-05，与
+// HTTP/debug 共用 internal/serverkit）：调用方 ctx deadline 与 Timeout
+// 并存时取较小者；Timeout=0 表示无配置上界。
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "stopping gRPC server")
-	s.publishEvent(eventbus.TopicGRPCStopping, eventbus.ServerEvent{Service: "grpc", Addr: s.Addr(), AdvertiseAddr: s.o.AdvertiseAddr, Time: time.Now()})
-	defer s.publishEvent(eventbus.TopicGRPCStopped, eventbus.ServerEvent{Service: "grpc", Time: time.Now()})
+	serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopping, "grpc", s.Addr(), s.o.AdvertiseAddr)
+	defer serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopped, "grpc", "", "")
 	if s.health != nil {
 		s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 		s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
@@ -614,39 +555,18 @@ func (s *Server) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	// The configured Timeout is an upper bound on graceful stop: use it even
-	// when the caller's context already has a deadline, taking the smaller of
-	// the two.
-	if s.o.Timeout > 0 {
-		var cancel context.CancelFunc
-		if deadline, ok := ctx.Deadline(); ok {
-			if remaining := time.Until(deadline); remaining < s.o.Timeout {
-				ctx, cancel = context.WithTimeout(ctx, remaining)
-			} else {
-				ctx, cancel = context.WithTimeout(ctx, s.o.Timeout)
-			}
-		} else {
-			ctx, cancel = context.WithTimeout(ctx, s.o.Timeout)
-		}
-		defer cancel()
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
+	// 有界优雅关停（SC-05，与 HTTP/debug 共用 internal/serverkit）：
+	// GracefulStop 等待在途 RPC，不会自行返回；超时由 helper 先 Stop 解除
+	// 阻塞再等其退出。
+	graceful := func(context.Context) error {
 		s.server.GracefulStop()
-	}()
-
-	select {
-	case <-done:
-		s.logger.InfoContext(ctx, "gRPC server stopped gracefully")
 		return nil
-	case <-ctx.Done():
-		s.logger.WarnContext(ctx, "graceful stop timeout, forcing stop")
-		s.server.Stop()
-		<-done
-		return fmt.Errorf("gRPC server graceful stop timed out")
 	}
+	force := func() error {
+		s.server.Stop()
+		return nil
+	}
+	return serverkit.Shutdown(ctx, s.o.Timeout, s.logger, "gRPC server", graceful, force)
 }
 
 // GetServer 返回底层 *grpc.Server 实例，用于注册业务服务实现。

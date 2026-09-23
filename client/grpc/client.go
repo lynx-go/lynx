@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lynx-go/lynx/internal/serverkit"
 	"github.com/lynx-go/lynx/logging"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/trace"
@@ -212,12 +213,9 @@ func applyDefaults(ctx context.Context, timeout time.Duration) (context.Context,
 }
 
 // injectAttrs 把 ctx 的日志属性（request_id/user_id）写入 outgoing
-// metadata，key 与日志字段同名；调用方已显式设置的 key 不被覆盖。
-//
-// 跨代理兼容性警示（SC-18）：metadata key 使用下划线（request_id/
-// user_id），而 Envoy/部分代理默认 headers_with_underscores_action=
-// REJECT_REQUEST，会把带下划线的 header 拒绝或剥离——跨代理部署时需
-// 显式配置代理放行下划线 header，或改用中划线 key（需两端约定）。
+// metadata，键为共享 wire 键 x-request-id / x-user-id（internal/serverkit）：
+// 中划线键与 HTTP 头同源，同时规避 Envoy 等代理对下划线 header 的默认
+// 拒绝（SC-18）。调用方已显式设置的键不被覆盖。
 func injectAttrs(ctx context.Context) context.Context {
 	attrs := logging.AttrsFrom(ctx)
 	if len(attrs) == 0 {
@@ -227,13 +225,19 @@ func injectAttrs(ctx context.Context) context.Context {
 	md := metadata.New(nil)
 	added := false
 	for _, a := range attrs {
-		if a.Key != logging.FieldRequestID && a.Key != logging.FieldUserID {
+		var key string
+		switch a.Key {
+		case logging.FieldRequestID:
+			key = serverkit.RequestIDKey
+		case logging.FieldUserID:
+			key = serverkit.UserIDKey
+		default:
 			continue
 		}
-		if len(existing.Get(a.Key)) > 0 {
+		if len(existing.Get(key)) > 0 {
 			continue
 		}
-		md.Set(a.Key, a.Value.String())
+		md.Set(key, a.Value.String())
 		added = true
 	}
 	if !added {

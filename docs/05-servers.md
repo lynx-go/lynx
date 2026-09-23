@@ -575,17 +575,17 @@ func newZapLogger() (*slog.Logger, error) {
 // logging.NewAttrsHandler(logging.NewTraceHandler(base))
 ```
 
-2. **HTTP 中间件**：`http.WithRequestID()` 为每个请求生成/透传 `request_id`（沿用 `X-Request-Id` 请求头，无则生成 UUID），回写响应头，并通过 `WithAttrs` 写入请求 ctx：
+2. **HTTP 传播（默认安装）**：服务端默认安装 request_id/user_id 传播——沿用合法的 `x-request-id` 请求头（无则生成 UUID），还原合法的 `x-user-id`，回写响应头，并通过 `WithAttrs` 写入请求 ctx（`http.WithDisableRequestID()` 可关闭）：
 
 ```go
 srv := http.NewServer(router,
 	http.WithAddr(addr),
-	http.WithMiddleware(http.WithRequestID()), // 第一个中间件，其余中间件与 handler 均可见
+	// 传播中间件已默认安装；用户中间件排在其内侧，均可见还原后的属性
 	http.WithLogger(app.Logger("logger", "http-requestlog")),
 )
 ```
 
-此后请求链内所有 `logger.InfoContext(r.Context(), ...)` 自动携带 `request_id`（`logging.NewAttrsHandler` 注入）；访问日志同样带 `requestId` 字段（从响应头读取，见 5.1 节）。业务代码可用 `http.RequestIDFrom(r.Context())` 取当前值。`user_id` 同理：认证中间件确定身份后执行 `r = r.WithContext(logging.WithAttrs(r.Context(), slog.String(logging.FieldUserID, uid)))` 即可。
+此后请求链内所有 `logger.InfoContext(r.Context(), ...)` 自动携带 `request_id`/`user_id`（`logging.NewAttrsHandler` 注入）；访问日志同样带 `requestId` 字段（从响应头读取，见 5.1 节）。业务代码可用 `http.RequestIDFrom(r.Context())` 取当前值。需要自定义顺序（如 Recovery 必须在最外层）时用 `http.WithMiddleware`，或关闭默认装配自行挂 `http.WithRequestID()`。
 
 3. **消息跨服务传播**：`eventbus.Bus`（内存或 `contrib/watermill`）在 Publish 时自动把 ctx 日志属性白名单写入消息头，Subscribe 时还原进 handler ctx——`request_id`/`user_id` 随消息跨服务流转，消费侧日志自动携带同一组字段（Kafka 侧为 record headers，内存 transport 为进程内 metadata）。白名单默认 `{request_id, user_id}`，可用 `eventbus.Options.PropagateAttrs` 自定义（非 nil 空切片完全关闭）：
 
@@ -609,7 +609,8 @@ bus := watermill.New(eventbus.Options{
 srv := http.NewServer(router,
 	http.WithAddr(addr),
 	// Recovery 建议声明在最外层：链内任意一环的 panic 都能被恢复
-	http.WithMiddleware(http.Recovery(), http.WithRequestID()),
+	//（request_id 传播已默认安装在其内侧，无需重复添加）
+	http.WithMiddleware(http.Recovery()),
 	http.WithLogger(app.Logger("logger", "http-requestlog")),
 )
 ```

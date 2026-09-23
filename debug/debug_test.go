@@ -17,11 +17,18 @@ import (
 // fakeAppContext 是 lynx.AppContext 的最小测试替身。
 type fakeAppContext struct {
 	logger *slog.Logger
+	// bus 非 nil 时作为应用总线（事件断言用）；缺省每次新建内存 Bus。
+	bus eventbus.Bus
 }
 
 func (f *fakeAppContext) Context() context.Context { return context.Background() }
 func (f *fakeAppContext) Config() lynx.Config      { return nil }
-func (f *fakeAppContext) Bus() eventbus.Bus        { return eventbus.NewMemoryBus(eventbus.Options{}) }
+func (f *fakeAppContext) Bus() eventbus.Bus {
+	if f.bus != nil {
+		return f.bus
+	}
+	return eventbus.NewMemoryBus(eventbus.Options{})
+}
 func (f *fakeAppContext) Logger(...any) *slog.Logger {
 	return f.logger
 }
@@ -66,6 +73,71 @@ func TestNewServiceNilLoggerFallsBack(t *testing.T) {
 	s := NewService(WithLogger(nil))
 	if s.o.Logger == nil {
 		t.Error("Logger should fall back to slog.Default()")
+	}
+}
+
+// TestWithShutdownTimeout：关停上限默认 3s，可覆盖（0 = 无配置上界）。
+func TestWithShutdownTimeout(t *testing.T) {
+	if got := NewService().o.ShutdownTimeout; got != DefaultShutdownTimeout {
+		t.Errorf("default ShutdownTimeout = %v, want %v", got, DefaultShutdownTimeout)
+	}
+	if got := NewService(WithShutdownTimeout(0)).o.ShutdownTimeout; got != 0 {
+		t.Errorf("WithShutdownTimeout(0) = %v, want 0", got)
+	}
+}
+
+// TestServerEvents：debug 生命周期事件经共享主题发出（Service=debug），
+// 与 HTTP/gRPC 侧同一组 lynx.server.* 主题。
+func TestServerEvents(t *testing.T) {
+	bus := eventbus.NewMemoryBus(eventbus.Options{})
+	subCtx := eventbus.ContextWithBus(context.Background(), bus)
+	events := make(chan eventbus.ServerEvent, 8)
+	subscribe := func(topic eventbus.Topic[eventbus.ServerEvent]) {
+		t.Helper()
+		if err := topic.Subscribe(subCtx, func(_ context.Context, e *eventbus.Event[eventbus.ServerEvent]) error {
+			events <- e.Payload
+			return nil
+		}); err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+	}
+	subscribe(eventbus.ServerListeningTopic)
+	subscribe(eventbus.ServerStoppingTopic)
+	subscribe(eventbus.ServerStoppedTopic)
+
+	s := NewService(WithAddr("127.0.0.1:0"))
+	if err := s.Init(&fakeAppContext{logger: discardLogger(), bus: bus}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	startCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Start(startCtx) }()
+	waitServing(t, s)
+
+	expect := func(what string) {
+		t.Helper()
+		select {
+		case e := <-events:
+			if e.Service != "debug" {
+				t.Fatalf("%s event service = %q, want debug", what, e.Service)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no %s event received", what)
+		}
+	}
+	expect("listening")
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	expect("stopping")
+	expect("stopped")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after cancel")
 	}
 }
 

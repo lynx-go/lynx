@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lynx-go/lynx/internal/serverkit"
 	"github.com/lynx-go/lynx/logging"
 )
 
@@ -126,43 +127,14 @@ func TestRequestIDFromUnset(t *testing.T) {
 	}
 }
 
-// TestValidRequestID 单元测试 SC-22 的入站 request_id 校验：合法值
-// （UUID/常见追踪 ID）通过，超长与非法字符被拒。
-func TestValidRequestID(t *testing.T) {
-	valid := []string{
-		"rid-from-client",
-		"0123456789abcdef",
-		"aBcD-_1234",
-		strings.Repeat("a", maxRequestIDLength),
-	}
-	for _, v := range valid {
-		if !validRequestID(v) {
-			t.Errorf("validRequestID(%q) = false, want true", v)
-		}
-	}
-	invalid := []string{
-		"",
-		strings.Repeat("a", maxRequestIDLength+1), // 超长
-		"rid with space",
-		"rid\twith\ttab",
-		"rid<>script", // 注入载荷
-		"中文rid",
-	}
-	for _, v := range invalid {
-		if validRequestID(v) {
-			t.Errorf("validRequestID(%q) = true, want false", v)
-		}
-	}
-}
-
 // TestWithRequestIDRegeneratesInvalidHeader 回归 SC-22：入站
-// X-Request-Id 超长或含非法字符时不透传——重新生成合法 ID 并回写。
+// x-request-id 超长或含非法字符时不透传——重新生成合法 ID 并回写。
 func TestWithRequestIDRegeneratesInvalidHeader(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
 	}{
-		{"overlong", strings.Repeat("x", maxRequestIDLength+1)},
+		{"overlong", strings.Repeat("x", serverkit.MaxPropagationValueLength+1)},
 		{"illegal chars", "rid<>injection"},
 	}
 	for _, tc := range cases {
@@ -180,13 +152,34 @@ func TestWithRequestIDRegeneratesInvalidHeader(t *testing.T) {
 			if gotRID == tc.in {
 				t.Errorf("非法入站 request_id 被原样透传（SC-22）: %q", gotRID)
 			}
-			if !validRequestID(gotRID) {
+			if !serverkit.ValidPropagationValue(gotRID) {
 				t.Errorf("重新生成的 request_id 非法: %q", gotRID)
 			}
 			if got := rec.Header().Get(RequestIDHeader); got != gotRID {
-				t.Errorf("响应头 X-Request-Id = %q, want 重新生成的 %q", got, gotRID)
+				t.Errorf("响应头 x-request-id = %q, want 重新生成的 %q", got, gotRID)
 			}
 		})
+	}
+}
+
+// TestWithRequestIDRestoresUserID：user_id 与 request_id 同源还原
+// （补齐此前 HTTP 侧只还原 request_id、client 已发 x-user-id 的断链）。
+func TestWithRequestIDRestoresUserID(t *testing.T) {
+	var gotUID string
+	handler := chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, a := range logging.AttrsFrom(r.Context()) {
+			if a.Key == logging.FieldUserID {
+				gotUID = a.Value.String()
+			}
+		}
+	}), []Middleware{WithRequestID()})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(UserIDHeader, "user-7")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotUID != "user-7" {
+		t.Fatalf("user_id attr = %q, want user-7", gotUID)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lynx-go/lynx/internal/serverkit"
 	"github.com/lynx-go/lynx/logging"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -107,10 +108,10 @@ func TestMetadataPropagation(t *testing.T) {
 		t.Fatalf("Invoke: %v", err)
 	}
 	md := gotMD()
-	if got := md.Get(logging.FieldRequestID); len(got) != 1 || got[0] != "rid-1" {
+	if got := md.Get(serverkit.RequestIDKey); len(got) != 1 || got[0] != "rid-1" {
 		t.Errorf("metadata request_id = %v, want [rid-1]", got)
 	}
-	if got := md.Get(logging.FieldUserID); len(got) != 1 || got[0] != "u1" {
+	if got := md.Get(serverkit.UserIDKey); len(got) != 1 || got[0] != "u1" {
 		t.Errorf("metadata user_id = %v, want [u1]", got)
 	}
 
@@ -128,10 +129,10 @@ func TestMetadataPropagation(t *testing.T) {
 		t.Fatalf("RecvMsg: %v", err)
 	}
 	md = gotMD()
-	if got := md.Get(logging.FieldRequestID); len(got) != 1 || got[0] != "rid-1" {
+	if got := md.Get(serverkit.RequestIDKey); len(got) != 1 || got[0] != "rid-1" {
 		t.Errorf("stream metadata request_id = %v, want [rid-1]", got)
 	}
-	if got := md.Get(logging.FieldUserID); len(got) != 1 || got[0] != "u1" {
+	if got := md.Get(serverkit.UserIDKey); len(got) != 1 || got[0] != "u1" {
 		t.Errorf("stream metadata user_id = %v, want [u1]", got)
 	}
 }
@@ -149,7 +150,7 @@ func TestMetadataExistingNotOverwritten(t *testing.T) {
 	ctx := metadata.NewOutgoingContext(
 		logging.WithAttrs(context.Background(),
 			slog.String(logging.FieldRequestID, "auto-rid")),
-		metadata.Pairs(logging.FieldRequestID, "explicit"))
+		metadata.Pairs(serverkit.RequestIDKey, "explicit"))
 
 	var reply []byte
 	if err := conn.Invoke(ctx, "/test.Echo/Echo", []byte("req"), &reply,
@@ -157,7 +158,7 @@ func TestMetadataExistingNotOverwritten(t *testing.T) {
 		t.Fatalf("Invoke: %v", err)
 	}
 	md := gotMD()
-	if got := md.Get(logging.FieldRequestID); len(got) != 1 || got[0] != "explicit" {
+	if got := md.Get(serverkit.RequestIDKey); len(got) != 1 || got[0] != "explicit" {
 		t.Errorf("metadata request_id = %v, want [explicit]（已存在 key 不被覆盖）", got)
 	}
 }

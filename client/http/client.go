@@ -13,19 +13,19 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
+	"github.com/lynx-go/lynx/internal/serverkit"
 	"github.com/lynx-go/lynx/logging"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// RequestIDHeader 是 request_id 透传的 HTTP 请求头名，与服务端
-// server/http.RequestIDHeader 同值（两处各自定义同名常量，保持
-// client 不反向依赖 server 包；语义靠常量名与注释维系一致）。
-const RequestIDHeader = "X-Request-Id"
+// RequestIDHeader 是 request_id 透传的 HTTP 请求头名：与 server 侧及
+// gRPC metadata 同源的共享 wire 键（internal/serverkit）。
+const RequestIDHeader = serverkit.RequestIDKey
 
-// UserIDHeader 是 user_id 透传的 HTTP 请求头名。
-const UserIDHeader = "X-User-Id"
+// UserIDHeader 是 user_id 透传的 HTTP 请求头名（与 gRPC metadata 同源）。
+const UserIDHeader = serverkit.UserIDKey
 
 // DefaultTimeout 是整体超时的缺省值（30s）。
 const DefaultTimeout = 30 * time.Second

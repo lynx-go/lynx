@@ -20,13 +20,9 @@ const (
 	TopicDrainStarting  = "lynx.drain.starting"
 	TopicDrainCompleted = "lynx.drain.completed"
 
-	TopicHTTPListening = "lynx.http.listening"
-	TopicHTTPStopping  = "lynx.http.stopping"
-	TopicHTTPStopped   = "lynx.http.stopped"
-
-	TopicGRPCListening = "lynx.grpc.listening"
-	TopicGRPCStopping  = "lynx.grpc.stopping"
-	TopicGRPCStopped   = "lynx.grpc.stopped"
+	TopicServerListening = "lynx.server.listening"
+	TopicServerStopping  = "lynx.server.stopping"
+	TopicServerStopped   = "lynx.server.stopped"
 
 	TopicConfigUpdated = "lynx.config.updated"
 )
@@ -86,13 +82,9 @@ var (
 	DrainStartingTopic  = NewTopic[DrainEvent](TopicDrainStarting)
 	DrainCompletedTopic = NewTopic[DrainEvent](TopicDrainCompleted)
 
-	HTTPListeningTopic = NewTopic[ServerEvent](TopicHTTPListening)
-	HTTPStoppingTopic  = NewTopic[ServerEvent](TopicHTTPStopping)
-	HTTPStoppedTopic   = NewTopic[ServerEvent](TopicHTTPStopped)
-
-	GRPCListeningTopic = NewTopic[ServerEvent](TopicGRPCListening)
-	GRPCStoppingTopic  = NewTopic[ServerEvent](TopicGRPCStopping)
-	GRPCStoppedTopic   = NewTopic[ServerEvent](TopicGRPCStopped)
+	ServerListeningTopic = NewTopic[ServerEvent](TopicServerListening)
+	ServerStoppingTopic  = NewTopic[ServerEvent](TopicServerStopping)
+	ServerStoppedTopic   = NewTopic[ServerEvent](TopicServerStopped)
 
 	ConfigUpdatedTopic = NewTopic[ConfigUpdatedEvent](TopicConfigUpdated)
 )

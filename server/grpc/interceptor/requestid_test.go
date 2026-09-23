@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lynx-go/lynx/internal/serverkit"
 	"github.com/lynx-go/lynx/logging"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -55,7 +56,7 @@ func (s *stubServerStream) Context() context.Context { return s.ctx }
 
 func TestRequestIDPropagationRestoresBothFields(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(),
-		metadata.Pairs(logging.FieldRequestID, "req-1", logging.FieldUserID, "user-9"))
+		metadata.Pairs(serverkit.RequestIDKey, "req-1", serverkit.UserIDKey, "user-9"))
 	f := runPropagation(ctx)
 	for name, attrs := range map[string][]slog.Attr{"unary": f.unaryAttrs, "stream": f.streamAttrs} {
 		if got := attrValue(attrs, logging.FieldRequestID); got != "req-1" {
@@ -69,14 +70,14 @@ func TestRequestIDPropagationRestoresBothFields(t *testing.T) {
 
 func TestRequestIDPropagationDropsInvalidValues(t *testing.T) {
 	cases := map[string]string{
-		"overlong":       strings.Repeat("a", maxPropagationValueLength+1),
-		"illegal chars":  "bad id\n<script>",
-		"empty":          "",
-		"space":          "bad id",
+		"overlong":      strings.Repeat("a", serverkit.MaxPropagationValueLength+1),
+		"illegal chars": "bad id\n<script>",
+		"empty":         "",
+		"space":         "bad id",
 	}
 	for name, v := range cases {
 		ctx := metadata.NewIncomingContext(context.Background(),
-			metadata.Pairs(logging.FieldRequestID, v, logging.FieldUserID, strings.Repeat("é", 5)))
+			metadata.Pairs(serverkit.RequestIDKey, v, serverkit.UserIDKey, strings.Repeat("é", 5)))
 		f := runPropagation(ctx)
 		for kind, attrs := range map[string][]slog.Attr{"unary": f.unaryAttrs, "stream": f.streamAttrs} {
 			if attrValue(attrs, logging.FieldRequestID) != "" || attrValue(attrs, logging.FieldUserID) != "" {
@@ -98,7 +99,7 @@ func TestRequestIDPropagationNoMetadata(t *testing.T) {
 func TestRequestIDPropagationMetadataWins(t *testing.T) {
 	ctx := logging.WithAttrs(context.Background(), slog.String(logging.FieldRequestID, "orig"))
 	ctx = metadata.NewIncomingContext(ctx,
-		metadata.Pairs(logging.FieldRequestID, "from-metadata"))
+		metadata.Pairs(serverkit.RequestIDKey, "from-metadata"))
 	f := runPropagation(ctx)
 	if got := attrValue(f.unaryAttrs, logging.FieldRequestID); got != "from-metadata" {
 		t.Errorf("unary request_id = %q, want from-metadata (WithAttrs overwrite semantics)", got)
@@ -111,7 +112,7 @@ func TestRequestIDPropagationMetadataWins(t *testing.T) {
 // 多值 metadata 取首个。
 func TestRequestIDPropagationUsesFirstValue(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(),
-		metadata.MD{logging.FieldRequestID: []string{"first", "second"}})
+		metadata.MD{serverkit.RequestIDKey: []string{"first", "second"}})
 	f := runPropagation(ctx)
 	if got := attrValue(f.unaryAttrs, logging.FieldRequestID); got != "first" {
 		t.Errorf("request_id = %q, want first", got)

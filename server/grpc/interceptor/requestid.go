@@ -4,27 +4,22 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/lynx-go/lynx/internal/serverkit"
 	"github.com/lynx-go/lynx/logging"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
 
-// maxPropagationValueLength 是入站传播值的最大长度：与 server/http 侧
-// SC-22 同一动机——metadata 是客户端可控输入，超长或含非法字符的值
-// 通常是异常客户端/攻击载荷，直接丢弃，不注入日志（避免刷日志与
-// 污染下游）。
-const maxPropagationValueLength = 128
-
-// RequestIDPropagation 返回把 incoming metadata 中的 request_id/user_id
+// RequestIDPropagation 返回把 incoming metadata 中的 x-request-id/x-user-id
 // 还原为日志属性的一元拦截器：lynx grpc client（client/grpc）的传播
-// 拦截器把 ctx 日志属性写入 outgoing metadata（key 与日志字段同名），
-// 本拦截器在服务端对称还原，经 logging.WithAttrs 注入 RPC ctx——链内
-// 所有日志自动携带，handler 发起的下游调用（HTTP/gRPC client）继续
-// 透传，与 server/http.WithRequestID 共同形成框架两侧的传播闭环。
+// 拦截器把 ctx 日志属性写入 outgoing metadata，本拦截器在服务端对称还原，
+// 经 logging.WithAttrs 注入 RPC ctx——链内所有日志自动携带，handler 发起
+// 的下游调用（HTTP/gRPC client）继续透传，与 server/http 的内置传播
+// 共同形成框架两侧的传播闭环（共享键与校验见 internal/serverkit）。
 //
 // 校验规则与 HTTP 侧一致（长度 ≤128、字符集 [A-Za-z0-9-_]）：非法值
-// 丢弃；缺失的字段不注入。注入为 logging.WithAttrs 覆盖语义（与
-// HTTP 侧一致）；gRPC 服务端每 RPC 新建 ctx，不存在既有属性冲突。
+// 丢弃；缺失的字段不注入。注入为 logging.WithAttrs 覆盖语义（与 HTTP
+// 侧一致）；gRPC 服务端每 RPC 新建 ctx，不存在既有属性冲突。
 func RequestIDPropagation() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler) (any, error) {
@@ -57,39 +52,19 @@ type ctxStream struct {
 func (s *ctxStream) Context() context.Context { return s.ctx }
 
 // attrsFromMetadata 从 incoming metadata 提取合法的传播属性：
-// key 与日志字段同名（metadata 规范小写，字段名已满足）；多值取首个。
+// 键为共享 wire 键（x-request-id / x-user-id）；多值取首个。
 func attrsFromMetadata(ctx context.Context) []slog.Attr {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil
 	}
-	var attrs []slog.Attr
-	for _, field := range []string{logging.FieldRequestID, logging.FieldUserID} {
-		values := md.Get(field)
-		if len(values) == 0 || !validPropagationValue(values[0]) {
-			continue
-		}
-		attrs = append(attrs, slog.String(field, values[0]))
-	}
-	return attrs
+	return serverkit.AttrsFromValues(firstValue(md, serverkit.RequestIDKey), firstValue(md, serverkit.UserIDKey))
 }
 
-// validPropagationValue 判定入站传播值是否可安全注入日志：非空、
-// 长度 ≤128、字符集限定 [A-Za-z0-9-_]（与 server/http 侧
-// validRequestID 同一规则；两包各自私有实现，避免跨 server 包的
-// 公共依赖面）。
-func validPropagationValue(v string) bool {
-	if v == "" || len(v) > maxPropagationValueLength {
-		return false
+// firstValue 取 metadata 多值中的首个，缺失时返回空字符串。
+func firstValue(md metadata.MD, key string) string {
+	if vs := md.Get(key); len(vs) > 0 {
+		return vs[0]
 	}
-	for i := 0; i < len(v); i++ {
-		c := v[i]
-		switch {
-		case c >= '0' && c <= '9', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z',
-			c == '-', c == '_':
-		default:
-			return false
-		}
-	}
-	return true
+	return ""
 }

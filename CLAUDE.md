@@ -71,6 +71,7 @@ This is a Go workspace using `go.work`. The main modules are:
 Server implementations (within main module):
 - `./server/http` - HTTP server using stdlib `net/http` with otelhttp instrumentation
 - `./server/grpc` - gRPC server with interceptors
+- Shared server rules live in `internal/serverkit`: health-check execution, bounded graceful shutdown (caller deadline ∩ configured cap), request-id/user_id propagation (shared wire keys `x-request-id`/`x-user-id`), and lifecycle events (`lynx.server.listening/stopping/stopped`, `ServerEvent.Service` distinguishes http/grpc/debug)
 
 Client implementations (within main module):
 - `./client/http` - HTTP client: otel instrumentation, request_id/user_id propagation, timeout + retry (backoff/v5), optional circuit breaker (`WithCircuitBreaker`, gobreaker/v2 wrapped behind lynx-owned options)
@@ -200,10 +201,11 @@ This pattern is particularly useful for complex applications with many services.
 - Support for request logging and custom timeouts
 - Automatically registers health check endpoints at `/healthz/liveness` and `/healthz/readiness` (prefix/disabled via `WithHealthCheckPrefix`/`WithDisableHealthCheck`; checkers run concurrently with a per-check timeout, default 3s, `WithHealthCheckTimeout`)
 - `Serve` returning `http.ErrServerClosed` on normal shutdown is normalized to nil (no spurious `lynx.service.failed` events); 5xx error bodies are generic (`http.StatusText`), details go to logs only
+- Request-id/user_id propagation is installed by default (opt out with `WithDisableRequestID`): incoming `x-request-id`/`x-user-id` are validated and restored into ctx log attrs; the response echoes `x-request-id`
 
 **gRPC Server** (server/grpc/server.go)
 - Wraps `google.golang.org/grpc` with health check and reflection
-- Built-in interceptors in chain order: recovery (outermost), request_id/user_id propagation restore (from incoming metadata into ctx log attrs, `interceptor.RequestIDPropagation`), then request logging (`WithRequestLog`/`WithRequestLogLevel`); custom interceptors via `WithInterceptors()` option run after the built-ins; `WithShutdownTimeout` is the preferred alias of `WithTimeout`
+- Built-in interceptors in chain order: recovery (outermost), request_id/user_id propagation restore (from incoming metadata keys `x-request-id`/`x-user-id` into ctx log attrs, `interceptor.RequestIDPropagation`), then request logging (`WithRequestLog`/`WithRequestLogLevel`); custom interceptors via `WithInterceptors()` option run after the built-ins; `WithShutdownTimeout` is the preferred alias of `WithTimeout`
 - `grpc.RequestIDFrom(ctx)` extracts the restored request id (symmetric to `server/http.RequestIDFrom`)
 - Health check service registered at `grpc.health.v1.Health`; poller runs checkers concurrently with per-check timeout (same `WithHealthCheckTimeout` as HTTP)
 
