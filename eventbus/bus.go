@@ -153,23 +153,6 @@ func ApplySubscribeOptions(o *SubscribeOptions, opts ...SubscribeOption) {
 	applySubscribeOptions(o, opts...)
 }
 
-// ApplyTopicConfig 将 Options.Topics[t] 配置合并进订阅选项（显式调用选项优先；
-// 供 Bus 实现使用，与 ApplySubscribeOptions 同类）。
-func ApplyTopicConfig(o *SubscribeOptions, cfg TopicConfig) {
-	if o.Group == "" {
-		o.Group = cfg.Group
-	}
-	if o.Instances == 0 {
-		o.Instances = cfg.Instances
-	}
-	if !o.AutoAck && cfg.AutoAck {
-		o.AutoAck = true
-	}
-	if !o.ContinueOnError && cfg.ContinueOnError {
-		o.ContinueOnError = true
-	}
-}
-
 // WithHandlerName 设置订阅 handler 名（Bus 内全局唯一）；省略时使用 topic。
 func WithHandlerName(name string) SubscribeOption {
 	return subscribeOptionFunc(func(o *SubscribeOptions) { o.HandlerName = name })

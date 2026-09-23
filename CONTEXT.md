@@ -36,3 +36,21 @@ _Avoid_: timeout（单次上界与总预算都叫 timeout 会混）、readyTimeo
 **单次调用上界（Per-call bound）**:
 单次探测调用允许消耗的上限。预算循环模式下取「剩余总预算」：总预算永远是硬上界。
 _Avoid_: 超时时间
+
+## 消息总线（eventbus）
+
+**总线（Bus）**:
+应用级消息通道：业务对象按 topic 发布/订阅；实现决定投递语义（内存 at-most-once、持久化 at-least-once）。
+_Avoid_: 消息队列、broker（那是 Bus 后面的 Transport）
+
+**传输（Transport）**:
+Bus 背后可插拔的后端：topic 一律为 Transport 侧键；投递模式（广播 / 消费组）是每个后端的必答属性。
+_Avoid_: 驱动、连接器
+
+**解析器（Resolver）**:
+Bus 配置解析的唯一归属：marshaler / retry / 收发日志 / 传播键的查找与 Topic 级合并都在此；适配器只消费结果。
+_Avoid_: 配置管理器
+
+**投递执行（Invoke）**:
+一次订阅投递的语义执行：构建 handler 上下文、固定退避重试、AutoAck / ContinueOnError 裁决；不接触消息确认（ack 时序归适配器）。
+_Avoid_: 消费循环（那是适配器的调度）

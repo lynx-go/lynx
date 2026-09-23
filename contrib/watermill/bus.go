@@ -16,16 +16,19 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	"github.com/google/uuid"
 	"github.com/lynx-go/lynx/eventbus"
-	"github.com/lynx-go/lynx/logging"
 )
 
 // Bus 是 watermill 驱动的 eventbus.Bus：Router 调度 + 可插拔 Transport。
 // lynx.* 强制走内置 MemoryTransport；信号只归 App（无 SignalsHandler）。
 type Bus struct {
-	opts   eventbus.Options
-	ext    Options // watermill 扩展配置（重投上限等；eventbus.Options 已冻结）
-	logger *slog.Logger
-	router *message.Router
+	opts     eventbus.Options
+	ext      Options // watermill 扩展配置（重投上限等；eventbus.Options 已冻结）
+	resolver *eventbus.Resolver
+	logger   *slog.Logger
+	router   *message.Router
+	// warnBufferSize 记录构造时是否显式设置了 BufferSize（内存 Bus 专属）：
+	// EnsureDefaults 会把零值填成 64，必须在填充前判定，Init 拿到 logger 后 Warn。
+	warnBufferSize bool
 
 	// redeliver 是 Bus 级毒消息重投计数（WK-02）：handler 终态失败按
 	// handler × 消息 ID 有界累计（复审-4：键含 handlerName，避免成功侧
@@ -73,15 +76,18 @@ type pendingSubscription struct {
 
 // New 创建 watermill Bus；ext 注入 watermill 特有扩展配置（可空，见 Options）。
 func New(opts eventbus.Options, ext ...Option) *Bus {
+	bufferSizeSet := opts.BufferSize != 0
 	opts.EnsureDefaults()
 	b := &Bus{
-		opts:         opts,
-		routes:       map[string]routeEntry{},
-		explicit:     map[string]routeEntry{},
-		handlerNames: map[string]struct{}{},
-		groupClaims:  map[claimKey]string{},
-		redeliver:    newRedeliveryLimiter(4096),
-		logger:       slog.Default(),
+		opts:           opts,
+		resolver:       eventbus.NewResolver(opts),
+		routes:         map[string]routeEntry{},
+		explicit:       map[string]routeEntry{},
+		handlerNames:   map[string]struct{}{},
+		groupClaims:    map[claimKey]string{},
+		redeliver:      newRedeliveryLimiter(4096),
+		logger:         slog.Default(),
+		warnBufferSize: bufferSizeSet,
 	}
 	for _, o := range ext {
 		if o != nil {
@@ -123,6 +129,9 @@ func (b *Bus) RouteKey(topic string, t eventbus.Transport, key string) error {
 func (b *Bus) Init(ctx eventbus.InitContext) error {
 	if ctx != nil {
 		b.logger = ctx.Logger("service", "watermill-bus")
+	}
+	if b.warnBufferSize {
+		b.logger.Warn("watermill: eventbus.Options.BufferSize is only honored by the memory bus; ignored")
 	}
 	wmLogger := b.logger
 	if !b.opts.Debug {
@@ -261,7 +270,7 @@ func (b *Bus) Stop(ctx context.Context) error {
 func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) error {
 	o := &eventbus.PublishOptions{}
 	eventbus.ApplyPublishOptions(o, opts...)
-	raw, err := eventbus.BuildRawEvent(ctx, b, topic, payload, o, b.opts.PropagateKeys())
+	raw, err := eventbus.BuildRawEvent(ctx, b, topic, payload, o, b.resolver.PropagateKeys())
 	if err != nil {
 		return err
 	}
@@ -269,7 +278,7 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 	if err != nil {
 		return err
 	}
-	if lm := b.opts.LogMessageFor(topic); lm.Publish {
+	if lm := b.resolver.LogMessageFor(topic); lm.Publish {
 		// Debug 级日志：log_message 配置实际开启的是 debug 级输出，
 		// 需 --log-level=debug 才可见（WK-18 语义澄清）。
 		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", raw.Key)
@@ -281,9 +290,8 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
 	o := &eventbus.SubscribeOptions{}
 	eventbus.ApplySubscribeOptions(o, opts...)
-	if cfg, ok := b.opts.Topics[topic]; ok {
-		eventbus.ApplyTopicConfig(o, cfg)
-	}
+	// 合并 Topic 默认值（显式优先），由共享 Resolver 统一完成。
+	b.resolver.ApplyTopicDefaults(topic, o)
 	handlerName := o.HandlerName
 	if handlerName == "" {
 		handlerName = topic
@@ -372,7 +380,7 @@ var errHandlerNameTaken = errors.New("handler name already exists in router")
 // effectiveGroup 计算订阅键上的有效消费组：显式 WithGroup 优先，为空时
 // 取 ConsumerGroup 后端声明的配置默认组（eventbus.DefaultGrouper，如 kafka
 // consumer.group_id）。占用检查与回滚都必须用有效组——原已知局限一
-//（"显式组恰好等于另一 handler 留空的默认组"检测不到）由此闭合。
+// （"显式组恰好等于另一 handler 留空的默认组"检测不到）由此闭合。
 func effectiveGroup(t eventbus.Transport, key, group string) string {
 	if group != "" {
 		return group
@@ -395,7 +403,7 @@ func effectiveGroup(t eventbus.Transport, key, group string) string {
 // 因此占用后不释放（宁可误拒，不可静默瓜分）。
 // 已知局限（复审-9，claim 粒度）：两个不同逻辑 topic 路由到同一 Transport、
 // 各自配置的物理 topics 重叠、又共用同一（显式或默认）消费组时，claim 键
-//（transport × 订阅键 × 组）互不相同，本检查不拦截——Kafka 侧它们仍会并入
+// （transport × 订阅键 × 组）互不相同，本检查不拦截——Kafka 侧它们仍会并入
 // 同一消费组瓜分分区。物理 topics 存在重叠的部署必须为各逻辑 topic 显式
 // 配置互不相同的消费组。
 func (b *Bus) claimGroup(t eventbus.Transport, topic, key, group, handlerName string) error {
@@ -471,30 +479,17 @@ func (b *Bus) addHandler(topic, handlerName string, h eventbus.HandlerFunc, opts
 	}
 	handler := b.wrapHandler(topic, h, opts)
 	hh := b.router.AddConsumerHandler(handlerName, key, adapter, handler)
-	// WK-02：重投上限中间件必须先于 Retry 添加——先添加者位于调用栈最
-	// 外层，这样它按"投递轮次"计数（Retry 耗尽后的终态失败每轮只计一次），
-	// Retry 的内层多次重试不会被重复计数。
+	// WK-02：重投上限中间件按「投递轮次」计数——重试已内聚到
+	// eventbus.InvokeHandler，终态失败每轮只记一次，内层重试不再重复计数。
 	if limit, ok := b.maxRedeliveriesFor(topic); ok {
 		hh.AddMiddleware(b.redeliveryMiddleware(handlerName, topic, limit))
-	}
-	if retry, ok := b.retryMiddleware(topic, opts); ok {
-		hh.AddMiddleware(retry)
 	}
 	return nil
 }
 
-// MarshalerFor 返回序列化器（查找序：TopicMarshalers[t] → Topics[t].Marshaler → 全局 → JSON）。
+// MarshalerFor 返回序列化器（委托共享 Resolver，查找序见其文档）。
 func (b *Bus) MarshalerFor(topic string) eventbus.Marshaler {
-	if m, ok := b.opts.TopicMarshalers[topic]; ok {
-		return m
-	}
-	if cfg, ok := b.opts.Topics[topic]; ok && cfg.Marshaler != nil {
-		return cfg.Marshaler
-	}
-	if b.opts.Marshaler != nil {
-		return b.opts.Marshaler
-	}
-	return eventbus.JSONMarshaler{}
+	return b.resolver.MarshalerFor(topic)
 }
 
 func (b *Bus) resolve(topic string) (eventbus.Transport, string, error) {
@@ -526,67 +521,42 @@ func isMemoryTransport(t eventbus.Transport) bool {
 	return ok
 }
 
-func (b *Bus) retryMiddleware(topic string, opts eventbus.SubscribeOptions) (message.HandlerMiddleware, bool) {
-	r := b.opts.RetryFor(topic, opts.Retry)
-	if r.MaxRetries <= 0 {
-		return nil, false
-	}
-	retry := middleware.Retry{MaxRetries: r.MaxRetries}
-	if r.Backoff > 0 {
-		// 行为冻结（WK-17）：InitialInterval=MaxInterval=Backoff 会把
-		// middleware.Retry 的指数退避压成固定间隔——每次重试都等 Backoff，
-		// 与字段名 "Backoff" 暗示的指数增长不符。保持现语义不改（避免
-		// 静默拉长既有用户的重试时延），需要指数退避时调小 Backoff 补偿。
-		retry.InitialInterval = r.Backoff
-		retry.MaxInterval = r.Backoff
-	}
-	return retry.Middleware, true
-}
-
+// wrapHandler 把 eventbus handler 适配为 watermill handler：投递语义
+// （ctx 传播属性 / received 日志 / 固定退避重试 / AutoAck / ContinueOnError）
+// 全部委托 eventbus.InvokeHandler；本层只保留 ack 时序（WK-13：AutoAck
+// 先 Ack 后执行）与 Nack 映射。
 func (b *Bus) wrapHandler(topic string, h eventbus.HandlerFunc, opts eventbus.SubscribeOptions) message.NoPublishHandlerFunc {
-	lm := b.opts.LogMessageFor(topic)
-	handler := func(msg *message.Message) error {
+	handlerName := opts.HandlerName
+	if handlerName == "" {
+		handlerName = topic
+	}
+	retry := b.resolver.RetryFor(topic, opts.Retry)
+	invoke := func(msg *message.Message, once bool) error {
 		raw := FromMessage(msg)
 		raw.Topic = topic
-		ctx := msg.Context()
-		existing := map[string]struct{}{}
-		for _, a := range logging.AttrsFrom(ctx) {
-			existing[a.Key] = struct{}{}
-		}
-		var attrs []slog.Attr
-		for _, k := range b.opts.PropagateKeys() {
-			if _, ok := existing[k]; ok {
-				continue
-			}
-			if v, ok := raw.Headers[k]; ok && v != "" {
-				attrs = append(attrs, slog.String(k, v))
-			}
-		}
-		ctx = logging.WithAttrs(ctx, attrs...)
-		if lm.Subscribe {
-			// Debug 级日志：log_message 配置实际开启的是 debug 级输出，
-			// 需 --log-level=debug 才可见（WK-18 语义澄清）。
-			b.logger.DebugContext(ctx, "received event", "topic", topic)
-		}
-		if err := h(ctx, raw); err != nil {
-			b.logger.ErrorContext(ctx, "handler failed", "error", err)
-			if opts.ContinueOnError {
-				msg.Ack()
-				return nil
-			}
+		return eventbus.InvokeHandler(msg.Context(), b.logger, h, raw, b.resolver, eventbus.InvokeOptions{
+			Topic:       topic,
+			HandlerName: handlerName,
+			Retry:       retry,
+			Once:        once,
+			Swallow:     opts.ContinueOnError,
+		})
+	}
+	handler := func(msg *message.Message) error {
+		if err := invoke(msg, false); err != nil {
+			// 终态失败（重试已耗尽或退避中取消）：返回错误 → Nack → Transport
+			// 重投（at-least-once）；重投上限由 redeliveryMiddleware 阻断。
 			return err
 		}
 		msg.Ack()
 		return nil
 	}
 	if opts.AutoAck {
-		// fire-and-forget（WK-13 语义澄清）：先 Ack 后执行 handler，handler
-		// 错误仅记日志、消息不会重投——外层 Retry 中间件看到的一直是成功，
-		// 因此 AutoAck 与 Retry 组合时重试不会发生，终态失败计数（重投
-		// 上限）也不会累积。仅用于可容忍丢失的旁路事件。
+		// fire-and-forget（WK-13）：先 Ack 后执行 handler，handler 错误仅
+		// 记日志、消息不会重投（InvokeHandler 的 Once 语义）。
 		return func(msg *message.Message) error {
 			msg.Ack()
-			_ = handler(msg)
+			_ = invoke(msg, true)
 			return nil
 		}
 	}

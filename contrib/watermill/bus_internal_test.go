@@ -172,16 +172,16 @@ func TestRetryForMergeOrder(t *testing.T) {
 		Topics: map[string]eventbus.TopicConfig{"t": {Retry: &eventbus.RetryOptions{MaxRetries: 2}}},
 	})
 	call := eventbus.RetryOptions{MaxRetries: 1}
-	if got := b.opts.RetryFor("t", &call); got.MaxRetries != 1 {
+	if got := b.resolver.RetryFor("t", &call); got.MaxRetries != 1 {
 		t.Fatalf("call-level: got %d, want 1", got.MaxRetries)
 	}
-	if got := b.opts.RetryFor("t", nil); got.MaxRetries != 2 {
+	if got := b.resolver.RetryFor("t", nil); got.MaxRetries != 2 {
 		t.Fatalf("topic config: got %d, want 2", got.MaxRetries)
 	}
-	if got := b.opts.RetryFor("other", nil); got.MaxRetries != 5 {
+	if got := b.resolver.RetryFor("other", nil); got.MaxRetries != 5 {
 		t.Fatalf("global: got %d, want 5", got.MaxRetries)
 	}
-	if got := New(eventbus.Options{}).opts.RetryFor("x", nil); got.MaxRetries != 3 {
+	if got := New(eventbus.Options{}).resolver.RetryFor("x", nil); got.MaxRetries != 3 {
 		t.Fatalf("default: got %d, want 3", got.MaxRetries)
 	}
 }

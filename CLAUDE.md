@@ -210,10 +210,12 @@ This pattern is particularly useful for complex applications with many services.
 **EventBus** (eventbus/)
 - 一等消息总线：`Bus` / `Topic[T]` / `Event[T]`；默认 `NewMemoryBus`，`app.Bus()` / Context / Default 解析
 - 业务主路径：`Topic.Publish` / `Topic.Subscribe`（不必手传 Bus）
+- 共享核心：`Resolver` 是 marshaler/retry/log-message/传播键解析与 Topic 级合并的唯一归属（contrib Bus 复用，`Bus.MarshalerFor` 委托它）；`InvokeHandler` 是订阅投递语义的唯一执行点（ctx 传播属性、固定退避重试、AutoAck/ContinueOnError 裁决；ack 时序留在适配器）。memory/watermill 不再各自复制查找链与重试循环
 - `lynx.WithBusProvider(fn)` 配置驱动构造跨进程 Bus：框架装配好配置后调用 fn（cfg → bus + 配套 Services，如 kafka Transport 托管生命周期），是 watermill `NewFromConfig` 的推荐注入路径；已有现成实例仍用 `lynx.WithBus(bus)`（显式实例优先）
 
 **Watermill Bus** (contrib/watermill/)
 - Watermill Router 驱动的 `eventbus.Bus`；`lynx.*` 生命周期强制内存 Transport
+- 投递语义（重试/AutoAck/ContinueOnError）委托 `eventbus.InvokeHandler`；ack 时序与 Nack 映射留在本适配器（AutoAck 先 Ack，WK-13）
 - `NewFromConfig(cfg, transports)` 从 `bus` 段加载 topics/route；标识 `memory` 兼作 DefaultTransport
 - 消费组语义：同 topic 多 handler 共用同组（含空 group 的 Transport 默认组）会被 `Subscribe` 拒绝——Kafka 组内瓜分分区是静默半量丢消息；广播用不同 group（`WithGroup` / topic group），竞争消费用单 handler + instances；内存 Transport 广播不受限
 - 毒消息止损：`bus.max_redeliveries`（默认 10，主题级可覆盖）限制终态失败后的累计重投轮数，超过即 Ack 丢弃并记 Error

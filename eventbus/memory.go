@@ -7,23 +7,21 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-	"time"
-
-	"github.com/lynx-go/lynx/logging"
 )
 
 // memoryBus 是默认的进程内 Bus：零依赖、开箱即用、支持 Start 后动态订阅。
 //
 // 投递语义（与持久化 Bus 的关键差异，选型时必读）：
 // 内存 Bus 是 at-most-once——订阅者缓冲满时非阻塞丢弃（仅 Error 日志，
-// 见 dispatch）；handler 重试耗尽同样丢弃（见 handleWithRetry）。
+// 见 dispatch）；handler 重试耗尽同样丢弃（见 InvokeHandler）。
 // 原因：状态协同场景不应反压发布者，更不该阻塞进程内事件循环。
 // 持久化 Bus（如 Kafka，见 contrib/watermill-kafka）语义相反：
 // at-least-once，处理失败无限重投。跨 Bus 迁移前先确认业务能接受
 // 哪一侧的丢失/重复语义，必要时内存侧调大 BufferSize 或业务侧幂等。
 type memoryBus struct {
-	opts   Options
-	logger *slog.Logger
+	opts     Options
+	resolver *Resolver
+	logger   *slog.Logger
 
 	mu          sync.RWMutex
 	subs        map[string][]*subscriber // topic -> subs
@@ -46,6 +44,7 @@ func NewMemoryBus(opts Options) Bus {
 	opts.EnsureDefaults()
 	return &memoryBus{
 		opts:        opts,
+		resolver:    NewResolver(opts),
 		subs:        map[string][]*subscriber{},
 		handlerName: map[string]struct{}{},
 		logger:      slog.Default(),
@@ -67,10 +66,17 @@ func WithRetry(r RetryOptions) Option { return func(o *Options) { o.Retry = &r }
 // Name 返回服务名。
 func (b *memoryBus) Name() string { return "bus-memory" }
 
-// Init 捕获日志实例。
+// Init 捕获日志实例，并对内存 Bus 不读取的选项记 Warn（选错后端可见，
+// 但不硬失败：同一份配置在 dev/prod 换后端是常见用法）。
 func (b *memoryBus) Init(ctx InitContext) error {
 	if ctx != nil {
 		b.logger = ctx.Logger("service", "bus")
+	}
+	if b.opts.Debug || len(b.opts.Transports) > 0 || b.opts.DefaultTransport != nil {
+		b.logger.Warn("eventbus: memory bus ignores Debug/Transports/DefaultTransport (watermill-only options)",
+			"debug", b.opts.Debug,
+			"transports", len(b.opts.Transports),
+			"default_transport", b.opts.DefaultTransport != nil)
 	}
 	return nil
 }
@@ -113,18 +119,9 @@ func (b *memoryBus) CheckHealth() error {
 	return nil
 }
 
-// MarshalerFor 返回主题序列化器（查找序：TopicMarshalers[t] → Topics[t].Marshaler → 全局 → JSON）。
+// MarshalerFor 返回主题序列化器（委托共享 Resolver，查找序见其文档）。
 func (b *memoryBus) MarshalerFor(topic string) Marshaler {
-	if m, ok := b.opts.TopicMarshalers[topic]; ok {
-		return m
-	}
-	if cfg, ok := b.opts.Topics[topic]; ok && cfg.Marshaler != nil {
-		return cfg.Marshaler
-	}
-	if b.opts.Marshaler != nil {
-		return b.opts.Marshaler
-	}
-	return JSONMarshaler{}
+	return b.resolver.MarshalerFor(topic)
 }
 
 // Publish 发布业务对象或原始字节。
@@ -134,11 +131,11 @@ func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts
 	}
 	o := &PublishOptions{Metadata: map[string]string{}}
 	applyPublishOptions(o, opts...)
-	ev, err := BuildRawEvent(ctx, b, topic, payload, o, b.opts.PropagateKeys())
+	ev, err := BuildRawEvent(ctx, b, topic, payload, o, b.resolver.PropagateKeys())
 	if err != nil {
 		return err
 	}
-	if lm := b.opts.LogMessageFor(topic); lm.Publish {
+	if lm := b.resolver.LogMessageFor(topic); lm.Publish {
 		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", ev.Key)
 	}
 	return b.dispatch(ctx, ev)
@@ -156,10 +153,10 @@ func (b *memoryBus) dispatch(ctx context.Context, ev *RawEvent) error {
 		return nil
 	}
 	for _, sub := range subs {
-			// 非阻塞投递，满缓冲时丢弃并告警（状态协同不该反压发布者，
-			// at-most-once 语义见 Bus 接口注释）；日志带事件 ID 便于对账。
-			select {
-			case sub.ch <- CloneRawEvent(ev):
+		// 非阻塞投递，满缓冲时丢弃并告警（状态协同不该反压发布者，
+		// at-most-once 语义见 Bus 接口注释）；日志带事件 ID 便于对账。
+		select {
+		case sub.ch <- CloneRawEvent(ev):
 		default:
 			b.logger.ErrorContext(ctx, "bus dispatch dropped event: subscriber buffer full",
 				"topic", ev.Topic, "handler", sub.handlerName, "id", ev.ID)
@@ -179,9 +176,13 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 	if handlerName == "" {
 		handlerName = topic
 	}
-	// 合并 Topic 默认值：显式优先
-	if cfg, ok := b.opts.Topics[topic]; ok {
-		ApplyTopicConfig(o, cfg)
+	// 合并 Topic 默认值（显式优先），由共享 Resolver 统一完成。
+	b.resolver.ApplyTopicDefaults(topic, o)
+	if o.Group != "" || o.Instances != 0 {
+		// 消费组语义（分区瓜分/多实例竞争）只对 ConsumerGroup 后端有意义；
+		// 内存 Bus 是广播语义，静默忽略会让配置意图落空——记 Warn 可见。
+		b.logger.Warn("eventbus: memory bus ignores group/instances (consumer-group semantics)",
+			"topic", topic, "handler", handlerName, "group", o.Group, "instances", o.Instances)
 	}
 
 	b.mu.Lock()
@@ -212,7 +213,7 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 }
 
 func (b *memoryBus) loop(ctx context.Context, sub *subscriber) {
-	retry := b.opts.RetryFor(sub.topic, sub.opts.Retry)
+	retry := b.resolver.RetryFor(sub.topic, sub.opts.Retry)
 	for {
 		select {
 		case <-ctx.Done():
@@ -221,63 +222,17 @@ func (b *memoryBus) loop(ctx context.Context, sub *subscriber) {
 			if !ok {
 				return
 			}
-			b.handleWithRetry(ctx, sub, ev, retry)
+			// 投递语义唯一执行点（InvokeHandler）：失败重试耗尽后丢弃
+			//（at-most-once，见 memoryBus 注释），错误不向发布者反压。
+			_ = InvokeHandler(ctx, b.logger, sub.handler, ev, b.resolver, InvokeOptions{
+				Topic:       sub.topic,
+				HandlerName: sub.handlerName,
+				Retry:       retry,
+				Once:        sub.opts.AutoAck,
+				Swallow:     sub.opts.ContinueOnError,
+			})
 		}
 	}
-}
-
-func (b *memoryBus) handleWithRetry(ctx context.Context, sub *subscriber, ev *RawEvent, retry RetryOptions) {
-	// 为 handler 构造带传播属性的 ctx
-	hCtx := context.WithValue(ctx, struct{ string }{"x-bus-topic"}, ev.Topic)
-	// 还原发布侧日志属性
-	existing := map[string]struct{}{}
-	for _, a := range logging.AttrsFrom(hCtx) {
-		existing[a.Key] = struct{}{}
-	}
-	var attrs []slog.Attr
-	for _, k := range b.opts.PropagateKeys() {
-		if _, ok := existing[k]; ok {
-			continue
-		}
-		if v, ok := ev.Headers[k]; ok && v != "" {
-			attrs = append(attrs, slog.String(k, v))
-		}
-	}
-	hCtx = logging.WithAttrs(hCtx, attrs...)
-
-	lm := b.opts.LogMessageFor(sub.topic)
-	if lm.Subscribe {
-		b.logger.DebugContext(hCtx, "received event", "topic", sub.topic, "handler", sub.handlerName)
-	}
-
-	// AutoAck：先确认语义在内存 Bus 中等价于不重试
-	if sub.opts.AutoAck {
-		_ = sub.handler(hCtx, ev)
-		return
-	}
-
-	var err error
-	for attempt := 0; attempt <= retry.MaxRetries; attempt++ {
-		err = sub.handler(hCtx, ev)
-		if err == nil {
-			return
-		}
-		if sub.opts.ContinueOnError {
-			b.logger.ErrorContext(hCtx, "handler failed but continue_on_error is set", "error", err, "handler", sub.handlerName)
-			return
-		}
-		if attempt < retry.MaxRetries {
-			if retry.Backoff > 0 {
-				select {
-				case <-time.After(retry.Backoff):
-				case <-ctx.Done():
-					return
-				}
-			}
-			b.logger.ErrorContext(hCtx, "handler failed, retrying", "error", err, "attempt", attempt+1, "handler", sub.handlerName)
-		}
-	}
-	b.logger.ErrorContext(hCtx, "handler failed after retries", "error", err, "handler", sub.handlerName)
 }
 
 var _ Bus = (*memoryBus)(nil)
