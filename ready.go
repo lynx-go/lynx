@@ -5,9 +5,10 @@ package lynx
 // newLynx 的总线就绪等待。预算由调用方传入（各自配置），机制只有一份。
 //
 // 未纳入本模块：OnPostStart 的 startWG 边界（"所有 actor 进入执行体"，
-// 文档明确不是 readiness）；command 的 backoff 健康等待（重试语义，
-// 单次检查经 shutdown.go 的 callBounded 限界）；drainChecker（关停信号，
-// 见 shutdown.go——它复用 Checker 接口但不表达健康）。
+// 文档明确不是 readiness）；command 的依赖等待（v1.12.0 起独立演进为
+// 三级就绪探测 + WithProbeTimeout，单次检查经 shutdown.go 的 callBounded
+// 限界）；drainChecker（关停信号，见 shutdown.go——它复用 Checker 接口
+// 但不表达健康）。
 
 import (
 	"context"

@@ -94,21 +94,20 @@ type command struct {
 // 调整。
 const defaultProbeTimeout = 3 * time.Second
 
-// checkHealthBounded 以调用方给定的上界执行单次健康检查：goroutine+select
-// 兜底无 ctx 的 checker。结果经缓冲 chan 返回，超时后迟到的结果被自然丢弃
-// （goroutine 不因无人接收而阻塞；若 checker 永久挂死，该 goroutine
+// checkHealthBounded 以调用方给定的上界执行单次健康检查：经 shutdown.go
+// 的 callBounded 原语兜底无 ctx 的 checker。超时后迟到的结果被自然丢弃
+//（goroutine 不因无人接收而阻塞；若 checker 永久挂死，该 goroutine
 // 随之遗留——保证等待循环不挂死优先，与 stopServiceBounded 同一取舍）。
 // 不监听调用侧 ctx：健康的 checker 立即返回即成功（即使 ctx 已取消，
 // 既有语义为"首查健康即运行"）；取消裁决由 backoff.Retry 在重试间完成。
 func checkHealthBounded(checker Checker, timeout time.Duration) error {
-	done := make(chan error, 1)
-	go func() { done <- checker.CheckHealth() }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(timeout):
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	err, timedOut := callBounded(ctx, checker.CheckHealth)
+	if timedOut {
 		return fmt.Errorf("health check timed out after %v", timeout)
 	}
+	return err
 }
 
 // waitReadyBounded 以调用方给定的上界单次等待 Ready channel：超过上界
