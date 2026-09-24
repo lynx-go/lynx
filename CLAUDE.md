@@ -112,7 +112,7 @@ Services are registered via `app.Register(...)` and automatically managed throug
 Optional `lynx.Ready` (`Ready() <-chan struct{}`): close the channel after the service has entered the running state (HTTP/gRPC/debug: after `Listen`, before `Serve`). Listen/Start failure must not close it. All readiness probes are bounded (ready.go is the single owner): a Ready channel that never closes is a timeout, not a hang.
 
 **OrderedServices**
-`lynx.OrderedServices(name, svcs...)` wraps multiple services as one `Service`. Init/Start run in argument order; Stop is reverse. Nested groups are allowed. Children must not also be `Register`'d.
+`lynx.OrderedServices(name, svcs...)` wraps multiple services as one `Service`. Init/Start run in argument order; Stop is reverse. Nested groups are allowed. Children must not also be `Register`'d. Each child's Init/Start/Stop is logged at Info with `service=<child>` and `group=<wrapper name>`; the wrapper captures its logger from `Init`'s AppContext (falls back to `slog.Default()` when absent).
 
 Start sequencing after launching each child `Start` in its own goroutine:
 1. `Ready` → wait until the channel closes, bounded by the same budget (timeout 10s)
