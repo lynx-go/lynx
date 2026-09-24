@@ -42,10 +42,9 @@ mise run release-tag -- contrib/watermill-kafka/vX.Y.Z "release vX.Y.Z"  # 单�
 
 ## 打 tag 顺序（依赖约束）
 
-`mise run release-all` 内部按固定顺序执行，但由于 Git 只记录 tag 而模块代理在
-解析 `require` 时按版本号取 tag，**contrib 模块之间的 require 交叉引用要求
-被依赖方先发布**，否则代理在无 replace 时解析不到（unknown revision）。
-当前依赖关系：
+Git 只记录 tag，模块代理在解析 `require` 时按版本号取 tag，**contrib 模块
+之间的 require 交叉引用要求被依赖方先发布**，否则在无 replace 时解析不到
+（unknown revision）。当前依赖关系：
 
 ```
 lynx（根） ──────────┬──> contrib/zap
@@ -53,29 +52,34 @@ lynx（根） ──────────┬──> contrib/zap
                       ├──> contrib/cluster ─┬─> contrib/schedule
                       │                     ├─> contrib/consul
                       │                     └─> contrib/cluster-redis
-                      ├──> contrib/registry ──> contrib/consul
-                      ├──> contrib/watermill
-                      └──> contrib/watermill-kafka
+                      ├──> contrib/watermill ──> contrib/watermill-kafka
+                      └──> contrib/registry ──> contrib/consul
 ```
 
 推荐的显式发布顺序（贡献者单模块发版时务必遵守）：
 
 1. **根模块**：`v1.0.0`（所有 contrib 都 require 它，必须先发）；
-2. **contrib/watermill / contrib/watermill-kafka**：`contrib/watermill/v1.0.0`、`contrib/watermill-kafka/v1.0.0`（仅依赖根；可并行）；
-3. **contrib/cluster**：`contrib/cluster/v1.0.0`（schedule / consul / cluster-redis 依赖它，必须先于这三者发布）；
-4. **contrib/telemetry / contrib/zap / contrib/registry**：无交叉依赖，可并行
+2. **contrib/watermill**：`contrib/watermill/v1.0.0`（仅依赖根）；
+3. **contrib/watermill-kafka**：`contrib/watermill-kafka/v1.0.0`（依赖根与
+   contrib/watermill，须在 watermill 之后）；
+4. **contrib/cluster**：`contrib/cluster/v1.0.0`（schedule / consul /
+   cluster-redis 依赖它，必须先于这三者发布）；
+5. **contrib/telemetry / contrib/zap / contrib/registry**：无交叉依赖，可并行
    （`contrib/{telemetry,zap,registry}/v1.0.0`）；
-5. **contrib/schedule / contrib/consul / contrib/cluster-redis**：依赖 cluster（consul 另依赖 registry），须在 cluster（及 consul 所需的 registry）之后。
+6. **contrib/schedule / contrib/consul / contrib/cluster-redis**：依赖 cluster（consul 另依赖 registry），须在 cluster（及 consul 所需的 registry）之后。
 
 > 依赖关系以各 `contrib/*/go.mod` 的 require 为准；后续若新增 contrib 间
 > 依赖，须在发布前更新本清单。
+>
+> `mise run release-all` 的循环顺序（schedule / consul 排在 cluster 之前）
+> 尚未与上表对齐；用它发版前先对齐顺序，或按上表逐个 `mise run release-tag`。
 
 ## 发版前检查清单
 
 - [ ] **CI 全绿**：`.github/workflows/ci.yml` 中 11 个模块（根、`_examples`、9 个 contrib）的 vet、`go test -race` 与 golangci-lint 矩阵全部通过
 - [ ] **本地回归**：11 个模块逐个执行 `go build ./... && go vet ./... && go test -race ./... && golangci-lint run`
 - [ ] **ROADMAP 同步**：本次发版覆盖的路线图条目已勾选
-- [ ] **contrib 对根模块的版本引用**：各 `contrib/*/go.mod` 中 `require github.com/lynx-go/lynx` 指向已发布的根模块版本；当前为 `replace` 本地路径 + 旧版本号（如 `v0.4.0`），发版前需确认并修正，发布 contrib 时替换掉 replace（或用伪版本验证解析）
+- [ ] **模块间版本引用**：各 `contrib/*/go.mod` 的 `require github.com/lynx-go/lynx` 指向已发布的根模块版本；跨 contrib 依赖（consul→registry/cluster、schedule→cluster、watermill-kafka→watermill）指向对应模块的已发布版本。`replace ../` 仅 workspace 内生效、发布后对消费方无影响（消费方忽略依赖模块的 replace），无需删除；发版前确认各 require 版本已随批 bump
 
 ## 发版后
 
