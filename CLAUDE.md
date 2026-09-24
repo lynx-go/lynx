@@ -213,14 +213,16 @@ This pattern is particularly useful for complex applications with many services.
 - 一等消息总线：`Bus` / `Topic[T]` / `Event[T]`；默认 `NewMemoryBus`，`app.Bus()` / Context / Default 解析
 - 业务主路径：`Topic.Publish` / `Topic.Subscribe`（不必手传 Bus）
 - 共享核心：`Resolver` 是 marshaler/retry/log-message/传播键解析与 Topic 级合并的唯一归属（contrib Bus 复用，`Bus.MarshalerFor` 委托它）；`InvokeHandler` 是订阅投递语义的唯一执行点（ctx 传播属性、固定退避重试、AutoAck/ContinueOnError 裁决；ack 时序留在适配器）。memory/watermill 不再各自复制查找链与重试循环
+- `lynx.NewHandlerService` / `lynx.EventHandler[T]`：订阅型 handler 的 Service 适配器——业务结构体实现 `Topic`/`HandlerName`/`Init`/`Handle`，适配器保证先 `Init` 注入依赖（可用 AppContext）再订阅；handler 级选项（retry/auto_ack/continue_on_error）透传，默认 handler 名 = `HandlerName()`；同一事件的多个 handler 共享一条 transport 订阅并进程内并行扇出
 - `lynx.WithBusProvider(fn)` 配置驱动构造跨进程 Bus：框架装配好配置后调用 fn（cfg → bus + 配套 Services，如 kafka Transport 托管生命周期），是 watermill `NewFromConfig` 的推荐注入路径（kafka 版一行接入：`wmkafka.NewBusFromConfig`）；已有现成实例仍用 `lynx.WithBus(bus)`（显式实例优先）
 
 **Watermill Bus** (contrib/watermill/)
 - Watermill Router 驱动的 `eventbus.Bus`；`lynx.*` 生命周期强制内存 Transport
-- 投递语义（重试/AutoAck/ContinueOnError）委托 `eventbus.InvokeHandler`；ack 时序与 Nack 映射留在本适配器（AutoAck 先 Ack，WK-13）
+- 投递语义（重试/AutoAck/ContinueOnError）委托 `eventbus.InvokeHandler`；确认裁决留在本适配器（订阅级聚合：全部 handler 成功才 Ack，Nack 整条重投）
 - `NewFromConfig(cfg, transports)` 从 `bus` 段加载 topics/route；标识 `memory` 兼作 DefaultTransport
-- 消费组语义：同 topic 多 handler 共用同组（含空 group 的 Transport 默认组）会被 `Subscribe` 拒绝——Kafka 组内瓜分分区是静默半量丢消息；广播用不同 group（`WithGroup` / topic group），竞争消费用单 handler + instances；内存 Transport 广播不受限。规则实现归 `eventbus.GroupClaims`（含 `EffectiveGroup` 的 DefaultGrouper 解析），适配器只接线
-- 毒消息止损：`bus.max_redeliveries`（默认 10，主题级可覆盖）限制终态失败后的累计重投轮数，超过即 Ack 丢弃并记 Error。计数实现归 `eventbus.RedeliveryLimiter`（handler×消息 ID、有界环形淘汰），配置解析留在本适配器
+- 消费模型：订阅单元是事件（逻辑 topic）——同一事件的多个 handler 共享一条 transport 订阅并进程内并行扇出；消费组 / 消费者成员数是后端配置（kafka `consumer.group_id` / `consumer.instances`），Bus 不建模；`WithGroup` / `WithInstances` / `WithTopicGroup` / `WithTopicInstances` 与 `DeliveryMode` 已随 v1.16 删除。订阅注册表 + dispatcher 见 `contrib/watermill/subscription.go`
+- 毒消息止损：`bus.max_redeliveries`（默认 10，主题级可覆盖）按 handler×消息 ID 计数终态失败轮数；共享 offset 下超限 handler 被跳过并记 Error，不连坐其他 handler。计数实现归 `eventbus.RedeliveryLimiter`（有界环形淘汰），配置解析留在本适配器
+- 订阅级在途上限：`bus.topics.<t>.max_in_flight`（默认 1，串行且保序；调大并发；负数不限）——限流点在 `subscriberAdapter`（交给 router 前占槽、Ack/Nack/关停释放），防止 router 每消息 goroutine 无界堆积并对 transport 形成背压
 - Transports / DefaultTransport 生命周期独立于 Bus：需 Register 托管，`Bus.Stop` 不关闭它们
 
 **Kafka Transport** (contrib/watermill-kafka/transport.go)

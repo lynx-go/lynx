@@ -95,7 +95,7 @@ func busFromConfig(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
 
 | 键 | 类型 | 默认 | 说明 |
 |----|------|------|------|
-| `group_id` | string | 空 | 消费组。订阅时组必须可得（`group_id` 或 `eventbus.WithGroup`），否则报错（`transport.go:408`） |
+| `group_id` | string | 空 | 消费组（kafka 后端配置）。订阅时组必须可得，否则报错；同一事件的多个 handler 共享该组与一条 transport 订阅 |
 | `instances` | int | `1` | 消费组实例数（每实例一条独立连接）；上限 64，超出钳制并 Warn（`transport.go:422`） |
 | `auto_commit_enabled` | bool | `true`（sarama 默认） | `false` = 每条消息 Ack 时显式提交 offset，`commit_interval` 不生效 |
 | `commit_interval` | duration | sarama 默认 | offset 自动提交间隔 |
@@ -143,7 +143,7 @@ func busFromConfig(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
 ## 关键语义
 
 - **nil = 未启用**：`kafka:` 段缺失或为空时 `NewFromConfig` 返回 `(nil, nil)`；nil Transport 不得 Register，也不得放进 `watermill.NewFromConfig` 的 transports。
-- **消费组互斥**（watermill Bus 侧拦截，`../watermill/bus.go` 的 `claimGroup`）：同一逻辑 topic 上两个 handler 共用同一消费组会被 `Subscribe` 拒绝——Kafka 组内瓜分分区等于各收一半消息。广播 = 各 handler / 各实例配不同 `group_id`；竞争消费 = 同一 `group_id` 多实例（组内每条消息只投递给一个实例）。已知边界：与 Transport 默认组（`consumer.group_id` 留空侧）同名冲突、物理 topics 重叠的逻辑 topic 同组，Bus 无法识别——为它们显式配置互不相同的组。
+- **消费组语义**：同 `group_id` 多实例竞争消费（组内每条消息只投递给一个实例）；不同 `group_id` 各自收全量（跨服务 / 跨实例扇出）。同一进程内同一逻辑 topic 只建一条 transport 订阅（Bus 侧订阅复用），组冲突结构上不可能。已知边界：物理 topics 重叠的不同逻辑 topic 共享同一 kafka 条目的组时会互相瓜分——为它们拆成不同 kafka 条目。
 - **毒消息止损**：handler 终态失败后 Nack 重投（默认约 100ms 一轮）；上限由 `bus.max_redeliveries`（默认 10）控制，超过后 Bus 记 Error 并 Ack 丢弃。详见 [watermill README](../watermill/README.md)。
 - **Ready 就绪信号**（`transport.go:290`）：`Ready()` 返回一次性 channel，`Start` 跨过启动门槛（置位运行标志）后关闭；未启动或 `Init` 失败不关闭。命令依赖等待经此事件驱动等待，无需轮询。
 - **健康检查**：`CheckHealth` 仅是进程内运行标志（`transport.go:323`），不做 broker 连通性检查——断连要等 Publish/Subscribe 报错才暴露。

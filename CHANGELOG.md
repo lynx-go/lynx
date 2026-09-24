@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### 破坏性变更：消费模型——订阅单元从 handler 收敛为事件
+
+同一事件的多个 handler 不再各自建立 transport 订阅：它们共享该事件的一条
+订阅并进程内并行扇出（每个 handler 都收到每条消息）。消费组 / 消费者成员数
+是后端配置，Bus 不再建模。变更点：
+
+- 删除 `eventbus.WithGroup` / `WithInstances` / `WithTopicGroup` /
+  `WithTopicInstances`：组与成员数只存在于后端配置（kafka
+  `consumer.group_id` / `consumer.instances`）；Bus 层事件配置只剩
+  `max_in_flight`（原 `concurrency` 更名，默认 1 = 串行且保序）。
+- 删除 `eventbus.GroupClaims` / `EffectiveGroup` / `DefaultGrouper`、
+  `Transport.DeliveryMode`（含 `DeliveryBroadcast` / `DeliveryConsumerGroup`）
+  与 kafka `DefaultGroup`：订阅复用键退化为逻辑 topic，"两个 handler 共组
+  瓜分分区"结构上不再可能，`Subscribe` 不再因此报错。
+- 共享 offset 的失败语义：全部 handler 成功才 Ack；任一终态失败整条重投
+  （成功过的 handler 也会重跑，业务需幂等）；某 handler 超过
+  `max_redeliveries` 后被跳过并记 Error，不连坐其他 handler。
+- `AutoAck` 语义微调：不再"先 Ack 后执行"，而是"不参与整条消息的确认裁决"。
+- 新增**订阅级在途上限** `bus.topics.<t>.max_in_flight`
+  （`Topic.WithTopicMaxInFlight`）：默认 **1** —— 同一事件订阅串行处理
+  （有界，goroutine 上界 ≈ handler 数 + 2，并恢复同订阅投递顺序；此前
+  watermill 路径是 router 每消息一 goroutine、无上限无背压）。调大即并发
+  处理；负数 = 不限制（逃生口，不推荐）。限流点在适配器（交给 router 前
+  占槽），形成对 transport 的真背压。
+
+迁移：删掉 `Subscribe` 上的 `WithGroup` / `WithInstances`；组 / 成员数移到
+kafka 段（`consumer.group_id` / `consumer.instances`）；`concurrency` 改名
+`max_in_flight`；自定义 Transport 删除 `DeliveryMode()` 方法。吞吐受默认串行
+影响的主题按需调大 `max_in_flight`。设计与理由见
+[docs/design-eventbus-consumption.md](docs/design-eventbus-consumption.md)。
+
 ### 破坏性变更：`registry.WatcherCore` 更名为 `registry.WatcherBase`
 
 `Core` 暗示唯一核心实现，实际是各后端 watcher 与消费侧订阅复用的共享
@@ -25,6 +56,34 @@
 配套服务返回（框架托管生命周期）；段缺失或为空时为纯内存总线（配置即
 开关）。自定义 transport 集合仍走 `watermill.NewFromConfig(cfg, transports)`
 手工装配；示例与文档已收敛为一行接入。
+
+### 新增：`lynx.NewHandlerService`——事件 handler 服务适配器
+
+订阅型 handler 的注册样板（声明主题 / handler 名 / 处理函数、Init 订阅、
+Start 等待关停）沉淀为 `lynx.HandlerService[T]` + `lynx.NewHandlerService`：
+业务结构体实现 `lynx.EventHandler[T]`（`Topic` / `HandlerName` / `Init` /
+`Handle`），适配器保证**先 `Init` 注入依赖、再订阅**——`Init` 可用
+`AppContext` 取构造期拿不到的配置/日志，返回错误则不订阅。订阅选项
+（`WithGroup` / `WithInstances` / `WithSubscribeRetry` / `WithAutoAck` /
+`WithContinueOnError`）在注册点透传；默认 handler 名 = `HandlerName()`，
+显式 `WithHandlerName` 可覆盖。`Name()` 构造后即可用（框架可能在 `Init`
+前调用），`Start` 无需手写 `WaitForShutdown`。
+
+```go
+type OrderCreatedHandler struct{ name string; db *sql.DB }
+
+func (h *OrderCreatedHandler) Topic() eventbus.Topic[OrderCreated] { return OrderCreatedTopic }
+func (h *OrderCreatedHandler) HandlerName() string                { return h.name }
+func (h *OrderCreatedHandler) Init(ctx lynx.AppContext) error     { return nil } // 依赖注入点
+func (h *OrderCreatedHandler) Handle(ctx context.Context, e *eventbus.Event[OrderCreated]) error { ... }
+
+app.Register(lynx.NewHandlerService(&OrderCreatedHandler{name: "order-created", db: db},
+    eventbus.WithGroup("order-created")))
+```
+
+`_examples/bus-kafka` 已改为该形态；同一 topic 的多个 handler 在消费组
+后端（Kafka）上必须使用不同 group（共用组会被消费组占用检查拒绝），
+示例已显式分组。
 
 ## v1.15.0 (2026-09-24)
 

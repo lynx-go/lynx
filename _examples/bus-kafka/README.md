@@ -22,7 +22,9 @@ go run .          # 终端 2：再跑一个实例
 两个实例的 `consumer.group_id` 相同（`bus-kafka-example`），构成一个
 消费组：**每条消息只投递给其中一个实例**（组内竞争消费）——观察两个
 终端的 `audit received order` 日志互补。要广播给所有实例，把第二个实例
-的 `group_id` 改成不同值即可。
+的 `group_id` 改成不同值即可。同一事件的三个 handler（audit 与两个
+handler 服务）共享这一条订阅：消息到达哪个实例，就在该实例内并行扇出
+给全部 handler。
 
 无 broker 直接运行会在启动期报 `connection refused` 退出——刻意的
 快失败。另外注意工作目录须在本示例目录（框架默认搜索 `.` 下的
@@ -43,6 +45,13 @@ config.yaml）；在别处运行会找不到 `kafka:` 段，Transport 不加入�
   （同键分区有序）。
 - `auditService`：Init 期 `Topic.Subscribe`，消费组参数来自
   `kafka.order.created.consumer`（group_id/instances）。
+- `OrderCreatedHandler` / `OrderCreatedHandler2`：handler 服务
+  （`lynx.NewHandlerService`）——结构体声明 `Topic`/`HandlerName`/`Handle`，
+  `Init` 是依赖注入点（适配器保证先注入后订阅）。同一事件的多个 handler
+  共享一条 transport 订阅并进程内并行扇出（消费组来自后端配置
+  `kafka.order.created.consumer.group_id`）：示例里 audit 与两个 handler
+  都收到每条消息。订阅级在途上限默认 1（串行且保序、goroutine 有界），
+  可按需在 `bus.topics.order.created.max_in_flight` 调大。
 - 注意：`lynx.*` 内建生命周期事件强制内存 transport，不能 route 到
   kafka（Init 期报错）。
 

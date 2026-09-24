@@ -178,11 +178,11 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 	}
 	// 合并 Topic 默认值（显式优先），由共享 Resolver 统一完成。
 	b.resolver.ApplyTopicDefaults(topic, o)
-	if o.Group != "" || o.Instances != 0 {
-		// 消费组语义（分区瓜分/多实例竞争）只对 ConsumerGroup 后端有意义；
-		// 内存 Bus 是广播语义，静默忽略会让配置意图落空——记 Warn 可见。
-		b.logger.Warn("eventbus: memory bus ignores group/instances (consumer-group semantics)",
-			"topic", topic, "handler", handlerName, "group", o.Group, "instances", o.Instances)
+	if o.MaxInFlight != 0 {
+		// 订阅级在途上限只对持久化（at-least-once）后端有意义；内存 Bus 是
+		// 广播语义且每 handler 串行处理，静默忽略会让配置意图落空——记 Warn 可见。
+		b.logger.Warn("eventbus: memory bus ignores max_in_flight (in-flight limit is for persistent backends)",
+			"topic", topic, "handler", handlerName, "max_in_flight", o.MaxInFlight)
 	}
 
 	b.mu.Lock()

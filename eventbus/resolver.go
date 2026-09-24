@@ -67,18 +67,15 @@ func (r *Resolver) PropagateKeys() []string {
 }
 
 // ApplyTopicDefaults 将 Options.Topics[t] 的订阅默认合并进订阅选项：
-// 显式调用选项优先（只填空缺），覆盖 Group / Instances / AutoAck /
-// ContinueOnError 四项；Retry 经 RetryFor 在投递执行时解析。
+// 显式调用选项优先（只填空缺），覆盖 MaxInFlight / AutoAck /
+// ContinueOnError 三项；Retry 经 RetryFor 在投递执行时解析。
 func (r *Resolver) ApplyTopicDefaults(topic string, o *SubscribeOptions) {
 	cfg, ok := r.opts.Topics[topic]
 	if !ok {
 		return
 	}
-	if o.Group == "" {
-		o.Group = cfg.Group
-	}
-	if o.Instances == 0 {
-		o.Instances = cfg.Instances
+	if o.MaxInFlight == 0 {
+		o.MaxInFlight = cfg.MaxInFlight
 	}
 	if !o.AutoAck && cfg.AutoAck {
 		o.AutoAck = true

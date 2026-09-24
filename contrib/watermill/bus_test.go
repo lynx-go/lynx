@@ -125,12 +125,6 @@ func (t *nonMemoryTransport) Subscribe(ctx context.Context, topic string, opts e
 func (t *nonMemoryTransport) Topics() []string { return t.topics }
 func (t *nonMemoryTransport) Close() error     { return nil }
 
-// DeliveryMode 声明消费组：本假件模拟持久化后端（lynx.* 路由测试中
-// 被拒绝的非内存 Transport）。
-func (t *nonMemoryTransport) DeliveryMode() eventbus.DeliveryMode {
-	return eventbus.DeliveryConsumerGroup
-}
-
 func TestWatermillBusForwardsDeliveryAck(t *testing.T) {
 	acked := make(chan struct{}, 1)
 	rt := &recordingTransport{
@@ -201,13 +195,16 @@ func TestWatermillBusForwardsDeliveryNack(t *testing.T) {
 	stopWithin(t, bus, 2*time.Second)
 }
 
-// recordingTransport 把 Publish 的事件投到订阅 channel，并记录 Ack/Nack。
+// recordingTransport 把 Publish 的事件投到订阅 channel，并记录 Ack/Nack
+// 与 transport 侧订阅调用（订阅复用断言用）。
 type recordingTransport struct {
 	topic  string
 	onAck  func()
 	onNack func()
 	mu     sync.Mutex
 	subs   []chan eventbus.Delivery
+	// subCalls 记录 Subscribe 调用次数：同事件多 handler 必须复用一条订阅。
+	subCalls int
 }
 
 func (t *recordingTransport) Publish(ctx context.Context, topic string, e *eventbus.RawEvent) error {
@@ -232,6 +229,7 @@ func (t *recordingTransport) Publish(ctx context.Context, topic string, e *event
 func (t *recordingTransport) Subscribe(ctx context.Context, topic string, opts eventbus.SubscribeOptions) (<-chan eventbus.Delivery, error) {
 	ch := make(chan eventbus.Delivery, 8)
 	t.mu.Lock()
+	t.subCalls++
 	t.subs = append(t.subs, ch)
 	t.mu.Unlock()
 	go func() {
@@ -251,12 +249,6 @@ func (t *recordingTransport) Subscribe(ctx context.Context, topic string, opts e
 
 func (t *recordingTransport) Topics() []string { return []string{t.topic} }
 func (t *recordingTransport) Close() error     { return nil }
-
-// DeliveryMode 声明消费组：与被模拟的持久化后端对齐（测试均为单 handler，
-// 不触发组占用）。
-func (t *recordingTransport) DeliveryMode() eventbus.DeliveryMode {
-	return eventbus.DeliveryConsumerGroup
-}
 
 func stopWithin(t *testing.T, bus eventbus.Bus, d time.Duration) {
 	t.Helper()

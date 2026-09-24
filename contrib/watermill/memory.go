@@ -32,12 +32,6 @@ func NewMemoryTransport() *MemoryTransport {
 // Topics 返回 nil：不声明 topic，仅作默认回退。
 func (t *MemoryTransport) Topics() []string { return nil }
 
-// DeliveryMode 声明广播：每个订阅者收到全部消息（gochannel 广播语义），
-// Bus 不对其启用消费组占用检查。
-func (t *MemoryTransport) DeliveryMode() eventbus.DeliveryMode {
-	return eventbus.DeliveryBroadcast
-}
-
 // Publish 发布 RawEvent（转换为 watermill 消息）。
 func (t *MemoryTransport) Publish(ctx context.Context, topic string, e *eventbus.RawEvent) error {
 	// WK-04：MemoryTransport 不是 Service、没有 Start，首次使用即视为运行，

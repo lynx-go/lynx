@@ -8,19 +8,15 @@ import (
 
 func TestTopicOptionsIsExported(t *testing.T) {
 	topic := eventbus.NewTopic[string]("orders",
-		eventbus.WithTopicGroup("g1"),
-		eventbus.WithTopicInstances(2),
+		eventbus.WithTopicMaxInFlight(3),
 		eventbus.WithTopicAutoAck(),
 		eventbus.WithTopicContinueOnError(),
 		eventbus.WithTopicMarshaler(eventbus.JSONMarshaler{}),
 	)
 	opts := topic.Options()
 	var _ = opts
-	if opts.Group != "g1" {
-		t.Fatalf("Group = %q, want g1", opts.Group)
-	}
-	if opts.Instances != 2 {
-		t.Fatalf("Instances = %d, want 2", opts.Instances)
+	if opts.MaxInFlight != 3 {
+		t.Fatalf("MaxInFlight = %d, want 3", opts.MaxInFlight)
 	}
 	if !opts.AutoAck || !opts.ContinueOnError {
 		t.Fatal("AutoAck/ContinueOnError not set")

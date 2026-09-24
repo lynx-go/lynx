@@ -19,7 +19,6 @@ bus:
   debug: false
   topics:
     order.created:
-      group: order-svc
       route:
         transport: memory
         key: orders

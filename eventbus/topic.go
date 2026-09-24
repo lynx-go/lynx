@@ -14,9 +14,10 @@ type Topic[T any] struct {
 }
 
 // TopicOptions 是 Topic[T] 的订阅/发布默认值（Options 返回的只读视图）。
+// 消费组 / 消费者成员数是后端配置（kafka consumer.group_id / instances），
+// 不在 Topic 上声明。
 type TopicOptions struct {
-	Group           string
-	Instances       int
+	MaxInFlight     int
 	AutoAck         bool
 	ContinueOnError bool
 	Retry           *RetryOptions
@@ -26,14 +27,12 @@ type TopicOptions struct {
 // TopicOption 配置 Topic。
 type TopicOption func(*TopicOptions)
 
-// WithTopicGroup 覆盖消费组。
-func WithTopicGroup(group string) TopicOption {
-	return func(o *TopicOptions) { o.Group = group }
-}
-
-// WithTopicInstances 覆盖并发成员数。
-func WithTopicInstances(n int) TopicOption {
-	return func(o *TopicOptions) { o.Instances = n }
+// WithTopicMaxInFlight 设置订阅级在途上限：同一事件订阅内"未确认消息"的
+// 并发上限（消息内多 handler 仍并行）。0 = 后端默认（watermill 为 1，串行
+// 并恢复同订阅处理顺序）；负数 = 不限制（逃生口，不推荐）。持久化后端专用：
+// 内存 Bus 每 handler 串行处理，无此概念。
+func WithTopicMaxInFlight(n int) TopicOption {
+	return func(o *TopicOptions) { o.MaxInFlight = n }
 }
 
 // WithTopicAutoAck 覆盖 AutoAck。
@@ -114,12 +113,9 @@ func subscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], h func(co
 	dec := ResolveMarshaler(b, topic.Name(), topts.Marshaler, nil)
 
 	// Topic 默认值作为基础项注入，调用方 opts 排在末尾最后生效
-	wrappedOpts := make([]SubscribeOption, 0, len(opts)+5)
-	if topts.Group != "" {
-		wrappedOpts = append(wrappedOpts, WithGroup(topts.Group))
-	}
-	if topts.Instances != 0 {
-		wrappedOpts = append(wrappedOpts, WithInstances(topts.Instances))
+	wrappedOpts := make([]SubscribeOption, 0, len(opts)+4)
+	if topts.MaxInFlight != 0 {
+		wrappedOpts = append(wrappedOpts, withMaxInFlight(topts.MaxInFlight))
 	}
 	if topts.AutoAck {
 		wrappedOpts = append(wrappedOpts, WithAutoAck())

@@ -25,33 +25,9 @@ func (d Delivery) NackOnce() {
 	}
 }
 
-// DeliveryMode 声明后端的投递模式：多个订阅者共存时消息如何分配。
-// Bus 据此决定消费组占用检查（WK-01）——模式是每个后端必答的内在属性，
-// 不是可选能力（可选能力见 DefaultGrouper / cluster.TTLAware 一类断言式接口）。
-type DeliveryMode uint8
-
-const (
-	// DeliveryBroadcast 广播：每个订阅者收到全部消息（进程内内存后端）。
-	DeliveryBroadcast DeliveryMode = iota
-	// DeliveryConsumerGroup 消费组：同组订阅者瓜分消息（Kafka 等分区后端）。
-	// 两个 handler 共用同一 topic+组会静默各收一半，Bus 在订阅期显式拒绝；
-	// 广播语义用互不相同的组，竞争消费用单 handler + WithInstances。
-	DeliveryConsumerGroup
-)
-
-// String 使投递模式在错误信息与日志中可读。
-func (m DeliveryMode) String() string {
-	switch m {
-	case DeliveryBroadcast:
-		return "broadcast"
-	case DeliveryConsumerGroup:
-		return "consumer-group"
-	default:
-		return "unknown"
-	}
-}
-
 // Transport 是 Bus 可插拔的后端，topic 一律为 Transport 侧键（缺省=逻辑名）。
+// 消费组 / 消费者成员数等后端特有概念由各 Transport 自己的配置承担
+//（如 kafka consumer.group_id / instances），不进 Bus 层。
 //
 // 生命周期归属契约：Transport 独立于 Bus 生存——Bus.Stop 只关闭自身与内置
 // 的生命周期内存后端，不关闭用户传入的 Transport。需要框架托管 Init/Start/
@@ -59,18 +35,9 @@ func (m DeliveryMode) String() string {
 // 并由应用 Register（先例：contrib/watermill-kafka 的 Transport）。
 type Transport interface {
 	Publish(ctx context.Context, topic string, e *RawEvent) error
+	// Subscribe 订阅 Transport 侧键；opts 当前保留为后端扩展缝（Bus 不填
+	// 后端特有字段——消费组 / 成员数由 Transport 自己的配置决定）。
 	Subscribe(ctx context.Context, topic string, opts SubscribeOptions) (<-chan Delivery, error)
 	Topics() []string
 	Close() error
-	// DeliveryMode 声明投递模式（Broadcast / ConsumerGroup），Bus 据此启用
-	// 消费组占用检查。
-	DeliveryMode() DeliveryMode
-}
-
-// DefaultGrouper 是 DeliveryConsumerGroup 后端的可选能力：返回订阅键的
-// 配置默认组（如 kafka consumer.group_id），无默认组时 ok=false。
-// Bus 据此计算有效组（显式 WithGroup 为空时取默认），使"某 handler 显式
-// 指定的组恰好等于另一 handler 留空的默认组"也能被占用检查识别。
-type DefaultGrouper interface {
-	DefaultGroup(key string) (group string, ok bool)
 }

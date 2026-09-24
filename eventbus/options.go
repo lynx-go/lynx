@@ -17,9 +17,10 @@ type LogMessageOptions struct {
 }
 
 // TopicConfig 是单主题的完整选项（用于 Options.Topics 配置映射）。
+// 消费组 / 消费者成员数是后端配置（kafka consumer.group_id / instances），
+// 不在此结构。
 type TopicConfig struct {
-	Group           string             `mapstructure:"group"`
-	Instances       int                `mapstructure:"instances"`
+	MaxInFlight     int                `mapstructure:"max_in_flight"`
 	AutoAck         bool               `mapstructure:"auto_ack"`
 	ContinueOnError bool               `mapstructure:"continue_on_error"`
 	Retry           *RetryOptions      `mapstructure:"retry"`

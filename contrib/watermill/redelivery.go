@@ -1,10 +1,5 @@
 package watermill
 
-import (
-	"github.com/ThreeDotsLabs/watermill/message"
-	"github.com/lynx-go/lynx/eventbus"
-)
-
 // DefaultMaxRedeliveries 是 MaxRedeliveries 未设置（0）时的默认重投上限。
 const DefaultMaxRedeliveries = 10
 
@@ -63,35 +58,5 @@ func (b *Bus) maxRedeliveriesFor(topic string) (limit int, ok bool) {
 		return DefaultMaxRedeliveries, true
 	default:
 		return b.ext.MaxRedeliveries, true
-	}
-}
-
-// redeliveryMiddleware 返回按投递轮次计数毒消息的中间件（WK-02）。
-// 内层 handler（含 Retry）返回错误即是一轮终态失败：Router 会 Nack →
-// Transport 重投（Kafka ResendLoop）→ 再进 handler……无 DLQ 时唯一止损
-// 是超过上限后丢弃：记 Error 留痕并返回 nil（Router 视为成功并 Ack），
-// 阻断重投循环。先于 Retry 中间件添加（先添加者位于调用栈最外层），
-// 这样 Retry 的内层多次重试不会被重复计数，每轮只计一次；计数按
-// handlerName 隔离（见 eventbus.RedeliveryLimiter 的键语义）。
-func (b *Bus) redeliveryMiddleware(handlerName, topic string, limit int) message.HandlerMiddleware {
-	return func(h message.HandlerFunc) message.HandlerFunc {
-		return func(msg *message.Message) ([]*message.Message, error) {
-			produced, err := h(msg)
-			if err == nil {
-				b.redeliver.Success(handlerName, msg.UUID)
-				return produced, nil
-			}
-			if n := b.redeliver.Failure(handlerName, msg.UUID); n > limit {
-				b.logger.Error("message exceeded max redeliveries, dropping",
-					"topic", topic,
-					"key", msg.Metadata.Get(eventbus.MetaMessageKey),
-					"message_id", msg.UUID,
-					"redeliveries", n-1,
-					"max_redeliveries", limit,
-				)
-				return nil, nil
-			}
-			return produced, err
-		}
 	}
 }

@@ -247,7 +247,7 @@ func TestSameValuePointerConfigNoWarn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	for _, topic := range []string{"a", "b", "c"} {
-		if _, err := tr.Subscribe(ctx, topic, eventbus.SubscribeOptions{Group: "g"}); err != nil {
+		if _, err := tr.Subscribe(ctx, topic, eventbus.SubscribeOptions{}); err != nil {
 			t.Fatalf("Subscribe %s: %v", topic, err)
 		}
 	}
@@ -433,17 +433,18 @@ func TestFanInCtxDoneExitsAndNacks(t *testing.T) {
 }
 
 // TestSubscribeInstancesClampedToLimit 回归 WK-15：instances=1000 会创建
-// 1000 个消费组连接，必须钳制到 maxConsumerInstances 并告警。
+// 1000 个消费组连接，必须钳制到 maxConsumerInstances 并告警。instances 是
+// kafka 段配置（consumer.instances），Bus 不再传递。
 func TestSubscribeInstancesClampedToLimit(t *testing.T) {
 	lc := newCaptureLogs()
 	pub := newFakePubSub()
 	tr := newTestTransport(Options{Topics: map[string]TopicOptions{
-		"orders": {Brokers: []string{"b1"}, Topics: []string{"t1"}, Consumer: &ConsumerOptions{GroupID: "g1"}},
+		"orders": {Brokers: []string{"b1"}, Topics: []string{"t1"}, Consumer: &ConsumerOptions{GroupID: "g1", Instances: 1000}},
 	}}, pub)
 	tr.logger = slog.New(lc)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{Instances: 1000}); err != nil {
+	if _, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 

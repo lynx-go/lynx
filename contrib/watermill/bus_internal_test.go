@@ -61,31 +61,33 @@ func TestDynamicSubscribeOnNonRunningRouterKeepsName(t *testing.T) {
 }
 
 // TestDynamicSubscribeDuplicateHandlerPanicTranslated 回归 WK-03：
-// router 内残留幽灵 handler（handlerNames 不知情）时，动态订阅的
+// router 内残留幽灵订阅（订阅注册表不知情）时，动态订阅的
 // AddConsumerHandler 会 panic（DuplicateHandlerNameError）——必须被翻译为
-// 错误返回，不得击穿进程；且该名字保持占用（重试得到 duplicate 错误）。
+// 错误返回，不得击穿进程；且该 handler 名保持占用（重试得到 duplicate）。
 func TestDynamicSubscribeDuplicateHandlerPanicTranslated(t *testing.T) {
 	b := New(eventbus.Options{DefaultTransport: NewMemoryTransport()})
 	if err := b.Init(nil); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	forceStarted(b)
-	// 制造幽灵 handler：直接进 router，绕过 handlerNames 查重。
-	b.router.AddConsumerHandler("ghost", "order.created", &subscriberAdapter{}, func(*message.Message) error { return nil })
+	// 制造幽灵订阅：直接进 router，绕过订阅注册表。router 名与订阅名
+	// （sub:<逻辑 topic>）一致。
+	ghost := "sub:order.created"
+	b.router.AddConsumerHandler(ghost, "order.created", &subscriberAdapter{}, func(*message.Message) error { return nil })
 
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("Subscribe panicked on duplicate handler name: %v", r)
 		}
 	}()
-	err := b.Subscribe(context.Background(), "order.created", func(context.Context, *eventbus.RawEvent) error { return nil }, eventbus.WithHandlerName("ghost"))
-	if err == nil || !strings.Contains(err.Error(), "ghost") {
-		t.Fatalf("err = %v, want translated duplicate-handler error mentioning ghost", err)
+	err := b.Subscribe(context.Background(), "order.created", func(context.Context, *eventbus.RawEvent) error { return nil }, eventbus.WithHandlerName("h1"))
+	if err == nil || !strings.Contains(err.Error(), ghost) {
+		t.Fatalf("err = %v, want translated duplicate-subscription error mentioning %q", err, ghost)
 	}
 	if !errors.Is(err, errHandlerNameTaken) {
 		t.Fatalf("err = %v, want errHandlerNameTaken in chain", err)
 	}
-	err = b.Subscribe(context.Background(), "order.created", func(context.Context, *eventbus.RawEvent) error { return nil }, eventbus.WithHandlerName("ghost"))
+	err = b.Subscribe(context.Background(), "order.created", func(context.Context, *eventbus.RawEvent) error { return nil }, eventbus.WithHandlerName("h1"))
 	if err == nil || !strings.Contains(err.Error(), "duplicate handler name") {
 		t.Fatalf("retry err = %v, want duplicate handler name", err)
 	}
@@ -165,7 +167,7 @@ func TestForwardDeliveryAckGivesUpOnCtxCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	msg := message.NewMessage("m1", nil)
-	b.forwardDeliveryAck(ctx, msg, eventbus.Delivery{Ack: func() {}, Nack: func() {}})
+	b.forwardDeliveryAck(ctx, msg, eventbus.Delivery{Ack: func() {}, Nack: func() {}}, nil)
 	cancel()
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -197,7 +199,7 @@ func TestForwardDeliveryAckWaitsForSlowHandler(t *testing.T) {
 	b.forwardDeliveryAck(ctx, msg, eventbus.Delivery{
 		Ack:  func() { acked <- struct{}{} },
 		Nack: func() {},
-	})
+	}, nil)
 	time.Sleep(100 * time.Millisecond) // 模拟慢 handler 尚未返回
 	msg.Ack()                          // 确认晚到
 
@@ -214,9 +216,8 @@ func TestForwardDeliveryAckWaitsForSlowHandler(t *testing.T) {
 	}
 }
 
-// fakeNonMemoryTransport 是仅用于促使 claimGroup 登记的消费组 Transport
-// （订阅/发布行为无关紧要，测试只驱动 Bus 内部路径；占用检查经
-// DeliveryMode 声明启用——原"非内存即检查"的身份推断已由契约取代）。
+// fakeNonMemoryTransport 是持久化 Transport 假件（订阅/发布行为无关紧要，
+// 测试只驱动 Bus 内部路径）。
 type fakeNonMemoryTransport struct{}
 
 func (fakeNonMemoryTransport) Publish(ctx context.Context, topic string, e *eventbus.RawEvent) error {
@@ -227,46 +228,43 @@ func (fakeNonMemoryTransport) Subscribe(ctx context.Context, topic string, opts 
 }
 func (fakeNonMemoryTransport) Topics() []string { return nil }
 func (fakeNonMemoryTransport) Close() error     { return nil }
-func (fakeNonMemoryTransport) DeliveryMode() eventbus.DeliveryMode {
-	return eventbus.DeliveryConsumerGroup
-}
 
-// TestSubscribeAddHandlerFailureReleasesGroupClaim 回归复审-1：claim 在
-// 锁内登记后，addHandlerSafe 失败（非 errHandlerNameTaken，handler 未
-// 进入 router）时必须同时回滚占用——只回滚 handlerNames 会留下残留
-// claim，一次订阅失败即永久锁死该 topic+组。构造：forceStarted 但不
-// Init（router 为 nil），addHandler 在 AddConsumerHandler 处必然 panic，
-// 被 addHandlerSafe 翻译为非 taken 错误。
-func TestSubscribeAddHandlerFailureReleasesGroupClaim(t *testing.T) {
+// TestAttachHandlerFailureRollsBack 回归订阅失败回滚：attach 失败（此处
+// router 未 Init，AddConsumerHandler panic 被翻译为错误）时必须回滚
+// handlerNames 与订阅注册表——残留会锁死该事件（后续订阅挂到没有 router
+// handler 的幽灵订阅上，永远收不到消息）。
+func TestAttachHandlerFailureRollsBack(t *testing.T) {
 	b := New(eventbus.Options{DefaultTransport: fakeNonMemoryTransport{}})
 	forceStarted(b)
 
 	err := b.Subscribe(context.Background(), "order.created", func(context.Context, *eventbus.RawEvent) error { return nil }, eventbus.WithHandlerName("h1"))
 	if err == nil || errors.Is(err, errHandlerNameTaken) {
-		t.Fatalf("err = %v, want non-taken add-handler failure", err)
+		t.Fatalf("err = %v, want non-taken attach failure", err)
 	}
 	b.mu.Lock()
 	_, nameTaken := b.handlerNames["h1"]
+	subCount := len(b.subs)
 	b.mu.Unlock()
 	if nameTaken {
 		t.Fatal("rollback incomplete: handlerNames entry not removed")
 	}
+	if subCount != 0 {
+		t.Fatalf("rollback incomplete: %d subscription(s) left behind", subCount)
+	}
 
-	// 同 topic+组、不同 handler 名必须可再次订阅成功（修复前被残留
-	// claim 以 WK-01 错误拒绝）。复位 started 走 pending 路径，订阅
-	// 仅登记、直接返回成功。
+	// 复位 started 走 pending 路径：同一事件可再次订阅成功。
 	b.mu.Lock()
 	b.started = false
 	b.mu.Unlock()
 	if err := b.Subscribe(context.Background(), "order.created", func(context.Context, *eventbus.RawEvent) error { return nil }, eventbus.WithHandlerName("h2")); err != nil {
-		t.Fatalf("resubscribe with a different handler name must succeed, got: %v", err)
+		t.Fatalf("resubscribe must succeed, got: %v", err)
 	}
 }
 
-// TestAddHandlerSafePanicErrorIncludesStack 回归复审-8：非 duplicate
+// TestAttachHandlerPanicErrorIncludesStack 回归复审-8：非 duplicate
 // panic 翻译为错误时必须附带 debug.Stack()——仅 %v 的 panic 值无堆栈，
 // 未知 panic 源无从排查。构造同上：router 为 nil 触发确定性 panic。
-func TestAddHandlerSafePanicErrorIncludesStack(t *testing.T) {
+func TestAttachHandlerPanicErrorIncludesStack(t *testing.T) {
 	b := New(eventbus.Options{DefaultTransport: fakeNonMemoryTransport{}})
 	forceStarted(b)
 
@@ -277,6 +275,33 @@ func TestAddHandlerSafePanicErrorIncludesStack(t *testing.T) {
 	// debug.Stack() 输出以 "goroutine N [running]:" 开头。
 	if !strings.Contains(err.Error(), "goroutine") {
 		t.Fatalf("panic error must include stack trace, got: %v", err)
+	}
+}
+
+// TestFromConfigTopicOptionsMapping 钉住 bus.topics.<topic> 的完整映射：
+// max_in_flight / auto_ack / continue_on_error 都必须落到
+// eventbus.Options.Topics（max_in_flight 曾漏映射，yaml 键静默失效）。
+// 消费组 / 成员数不进 Bus 配置——它们是 kafka 段（consumer.*）的事。
+func TestFromConfigTopicOptionsMapping(t *testing.T) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(strings.NewReader(`
+bus:
+  topics:
+    orders:
+      max_in_flight: 2
+      auto_ack: true
+      continue_on_error: true
+`)); err != nil {
+		t.Fatalf("ReadConfig: %v", err)
+	}
+	bus, err := NewFromConfig(lynx.NewViperConfig(v), map[string]eventbus.Transport{})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	tc := bus.opts.Topics["orders"]
+	if tc.MaxInFlight != 2 || !tc.AutoAck || !tc.ContinueOnError {
+		t.Fatalf("topic config = %+v, want max_in_flight/auto_ack/continue_on_error mapped", tc)
 	}
 }
 

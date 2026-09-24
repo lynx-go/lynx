@@ -19,5 +19,6 @@ go run .
 - `main.go:100`：`lifecycleCoordinator` 需最先注册才能捕获后续服务的注册/启动事件。
 - `main.go:103-109 OnPreStart`：两种发布方式——`Topic.Publish` 类型化发布与 `app.Bus().Publish` 原始发布。
 - Bus 开箱即用（默认内存实现），无需 Register。
+- 订阅型 handler 也可声明为服务（`lynx.NewHandlerService`，依赖注入先于订阅；同一事件的多个 handler 进程内并行扇出），见 `_examples/bus-kafka/handler.go` 与 `docs/04-service-system.md` §4.4.1。
 
 跨进程（Kafka）总线见 `_examples/bus-kafka`；EventBus 设计见 `docs/design-eventbus.md`。

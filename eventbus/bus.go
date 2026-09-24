@@ -20,6 +20,10 @@ import (
 //     日志），handler 重试耗尽后丢弃；不反压发布者。适合进程内状态协同。
 //   - 持久化 Bus（contrib/watermill-kafka 等）：at-least-once。处理失败
 //     会被重投（Kafka 消费组语义），重复投递需业务幂等兜底。
+//
+// 同一逻辑 topic 的多个 handler 都收到每条消息（进程内扇出）；同一事件的
+// handler 共享一条 transport 订阅。消费组 / 消费者成员数是后端配置
+// （kafka consumer.group_id / instances），不进 Bus 层。
 type Bus interface {
 	// Publish 发布业务对象到逻辑 topic，按 Topic 的 Marshaler 序列化。
 	// topic 为逻辑名，物理映射由 Bus 实现决定（内存直接投递，持久化 Bus 按配置路由）。
@@ -27,6 +31,8 @@ type Bus interface {
 	Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) error
 
 	// Subscribe 订阅逻辑 topic；handler 名由 WithHandlerName 指定，为空时使用 topic，且在 Bus 内全局唯一。
+	// 同一 topic 的多个 handler 均收到每条消息（进程内并行扇出）；同一事件
+	// 共享一条 transport 订阅，消费组 / 成员数由后端配置决定。
 	// 内存 Bus 允许 Start 后动态订阅；持久化 Bus 的 Start 前后语义由实现保证。
 	Subscribe(ctx context.Context, topic string, h HandlerFunc, opts ...SubscribeOption) error
 
@@ -64,12 +70,12 @@ type RawEvent struct {
 
 // Event 是类型化事件信封，Payload 为业务对象。
 type Event[T any] struct {
-	ID      string
-	Topic   string
-	Key     string
-	Headers map[string]string
-	Payload T
-	Time    time.Time
+	ID      string            `json:"id"`
+	Topic   string            `json:"topic"`
+	Key     string            `json:"key"`
+	Headers map[string]string `json:"headers"`
+	Payload T                 `json:"payload"`
+	Time    time.Time         `json:"time"`
 }
 
 // PublishOptions 是发布行为的配置项。
@@ -131,15 +137,18 @@ func WithPublishMarshaler(m Marshaler) PublishOption {
 type SubscribeOptions struct {
 	// HandlerName 在 Bus 内全局唯一；为空时实现应回退为 topic。
 	HandlerName string
-	// AutoAck 订阅即确认：先 Ack 后执行 handler，handler 错误仅记日志——
-	// 与重试/重投互斥，两种 Bus 一致（内存侧等于不重试即丢弃；持久化侧
-	// 外层 Retry 看到的一直是成功，终态失败计数也不累积）。仅用于可容忍
-	// 丢失的旁路事件。
+	// AutoAck 订阅即确认：只调用一次、不重试，失败仅记日志。持久化后端上
+	// 该 handler 的结果不参与整条消息的确认裁决（不会触发重投）——仅用于
+	// 可容忍丢失的旁路事件。
 	AutoAck bool
 	// ContinueOnError 处理失败仍确认，不再重试/重投（丢弃语义，两种 Bus 一致）。
 	ContinueOnError bool
-	Group           string
-	Instances       int
+	// MaxInFlight 是订阅级在途上限（未确认消息的并发上限；消息内多 handler
+	// 仍并行）。0 = 后端默认（watermill 为 1）；负数 = 不限制。内存 Bus
+	// 每 handler 串行处理，忽略本项。**不是调用者可传的订阅选项**：唯一写入
+	// 路径是 Topic 默认值（WithTopicMaxInFlight）与 Options.Topics[t]，由 Bus
+	// 合并后由适配器消费（消费组 / 成员数是后端配置，不在此结构）。
+	MaxInFlight int
 	// Retry 是订阅级重试默认（高→低：本字段 > Options.Topics[t].Retry > Options.Retry）。
 	// Topic[T] 会把 WithTopicRetry 作为本字段的基础值注入，调用方选项可覆盖。
 	Retry *RetryOptions
@@ -166,9 +175,9 @@ func WithHandlerName(name string) SubscribeOption {
 	return subscribeOptionFunc(func(o *SubscribeOptions) { o.HandlerName = name })
 }
 
-// WithAutoAck 订阅即确认：先 Ack 后执行 handler，错误仅记日志——与重试/
-// 重投互斥（两种 Bus 一致，见 SubscribeOptions.AutoAck）。仅用于可容忍
-// 丢失的旁路事件。
+// WithAutoAck 订阅即确认：只调用一次、不重试，错误仅记日志；持久化后端上
+// 不参与整条消息的确认裁决（不会触发重投，见 SubscribeOptions.AutoAck）。
+// 仅用于可容忍丢失的旁路事件。
 func WithAutoAck() SubscribeOption {
 	return subscribeOptionFunc(func(o *SubscribeOptions) { o.AutoAck = true })
 }
@@ -178,14 +187,10 @@ func WithContinueOnError() SubscribeOption {
 	return subscribeOptionFunc(func(o *SubscribeOptions) { o.ContinueOnError = true })
 }
 
-// WithGroup 显式指定消费组，覆盖 Transport 默认。
-func WithGroup(group string) SubscribeOption {
-	return subscribeOptionFunc(func(o *SubscribeOptions) { o.Group = group })
-}
-
-// WithInstances 显式指定同组消费者成员数。
-func WithInstances(n int) SubscribeOption {
-	return subscribeOptionFunc(func(o *SubscribeOptions) { o.Instances = n })
+// withMaxInFlight 注入订阅级在途上限（Topic 默认值路径；不对外暴露——
+// 调用者不能直接设置，见 SubscribeOptions.MaxInFlight）。
+func withMaxInFlight(n int) SubscribeOption {
+	return subscribeOptionFunc(func(o *SubscribeOptions) { o.MaxInFlight = n })
 }
 
 // WithSubscribeRetry 覆盖本次订阅的重试默认，优先级高于 Topic / Topics 配置 / 全局。

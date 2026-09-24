@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -44,11 +43,10 @@ type Bus struct {
 	mu           sync.Mutex
 	pending      []pendingSubscription
 	handlerNames map[string]struct{}
-	// claims 记录非内存 Transport 上（transport × 订阅键 × 有效消费组）
-	// 的 handler 占用（WK-01）：Kafka 等消费组后端上两个 handler 共用
-	// 同一 topic+组会静默瓜分分区。内存 Transport 是广播语义，不登记。
-	// 实现见 eventbus.GroupClaims（核心归属，适配器只接线）。
-	claims  *eventbus.GroupClaims
+	// subs 是订阅注册表：同一事件（逻辑 topic；消费组后端再加组）只建
+	// 一条 transport 订阅，多个 handler 挂载其上进程内并行扇出；组是
+	// 事件配置属性，不再是 handler 订阅参数。实现见 subscription.go。
+	subs    map[subscriptionKey]*topicSubscription
 	runCtx  context.Context
 	started bool
 	stopped bool
@@ -76,7 +74,7 @@ func New(opts eventbus.Options, ext ...Option) *Bus {
 		routes:         map[string]routeEntry{},
 		explicit:       map[string]routeEntry{},
 		handlerNames:   map[string]struct{}{},
-		claims:         &eventbus.GroupClaims{},
+		subs:           map[subscriptionKey]*topicSubscription{},
 		redeliver:      eventbus.NewRedeliveryLimiter(4096),
 		logger:         slog.Default(),
 		warnBufferSize: bufferSizeSet,
@@ -212,7 +210,7 @@ func (b *Bus) Start(ctx context.Context) error {
 		// 复审-7：pending 路径与动态路径同样复用 panic 安全包装——router
 		// 内残留幽灵 handler 等场景的 panic 必须翻译为错误返回，不得击穿
 		// Start 所在 goroutine（防御性补齐，与 Subscribe 对称）。
-		if err := b.addHandlerSafe(p.topic, p.handlerName, p.handler, p.opts); err != nil {
+		if err := b.attachHandler(p.topic, p.handlerName, p.handler, p.opts); err != nil {
 			// WK-11：失败必须回滚 started，否则 Bus 停留在"started=true
 			// 但 router 未运行"的中间态，后续动态 Subscribe 的 RunHandlers
 			// 会持续报错（router 未就绪）。
@@ -278,7 +276,10 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 	return t.Publish(ctx, key, eventbus.CloneRawEvent(raw))
 }
 
-// Subscribe 订阅；Start 后动态注册（AddConsumerHandler + RunHandlers）。
+// Subscribe 订阅逻辑 topic。同一事件的多个 handler 共享一条 transport
+// 订阅（进程内并行扇出）：消费组 / 实例数是事件配置属性（Topic 默认值 /
+// Options.Topics），不是订阅参数。Start 后动态注册走
+// AddConsumerHandler + RunHandlers。
 func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
 	o := &eventbus.SubscribeOptions{}
 	eventbus.ApplySubscribeOptions(o, opts...)
@@ -290,13 +291,6 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 	}
 	if h == nil {
 		return errors.New("handler is nil")
-	}
-	// WK-01：先解析目标 Transport，供消费组占用检查。Kafka 等消费组后端上
-	// 两个不同 handler 共用同一 topic+组会静默瓜分分区（各收一半消息），
-	// 必须在订阅期显式拒绝；内存 Transport 是广播语义，不受此限制。
-	t, key, err := b.resolve(topic)
-	if err != nil {
-		return err
 	}
 
 	b.mu.Lock()
@@ -314,12 +308,6 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 			return fmt.Errorf("duplicate handler name %q", handlerName)
 		}
 	}
-	if err := b.claims.Claim(t, key, o.Group, handlerName); err != nil {
-		b.mu.Unlock()
-		return fmt.Errorf("watermill: topic %q: %w; "+
-			"use a distinct group per handler (WithGroup or bus topic group) for broadcast semantics, "+
-			"or keep a single handler with WithInstances for competing consumers", topic, err)
-	}
 	started := b.started
 	if !started {
 		b.handlerNames[handlerName] = struct{}{}
@@ -331,17 +319,13 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 	runCtx := b.runCtx
 	b.mu.Unlock()
 
-	if err := b.addHandlerSafe(topic, handlerName, h, *o); err != nil {
+	if err := b.attachHandler(topic, handlerName, h, *o); err != nil {
 		if !errors.Is(err, errHandlerNameTaken) {
-			// handler 未进入 router（resolve 失败、panic 翻译等），回滚占用
+			// handler 未进入订阅（resolve 失败、panic 翻译等），回滚名字
 			// 是安全的；errHandlerNameTaken 例外：router 内已有同名幽灵
-			// handler，名字事实已被占用，回滚只会让下次重试撞上 panic 路径。
+			// 订阅，名字事实已被占用，回滚只会让下次重试撞上 panic 路径。
 			b.mu.Lock()
 			delete(b.handlerNames, handlerName)
-			// 复审-1：handler 未进入 router 时消费组占用同样必须回滚——
-			// 只回滚 handlerNames 会留下 groupClaims 残留，一次订阅失败即
-			// 永久锁死该 topic+组（同组不同名的后续订阅全部被拒绝）。
-			b.claims.Release(t, key, o.Group)
 			b.mu.Unlock()
 		}
 		return err
@@ -350,19 +334,15 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 		runCtx = ctx
 	}
 	if err := b.router.RunHandlers(runCtx); err != nil {
-		// WK-03：RunHandlers 失败不回滚 handlerNames/groupClaims——handler
-		// 已登记进 router（router 尚在启动时会随后续 Run 生效；router 启动
-		// 失败则一并失效），回滚会造成"幽灵订阅"：router 内残留同名
-		// handler，用户重试同名 Subscribe 必然触发 watermill 的
+		// WK-03：RunHandlers 失败不回滚 handlerNames——handler 已登记进
+		// router（router 尚在启动时会随后续 Run 生效；router 启动失败则
+		// 一并失效），回滚会造成"幽灵订阅"：router 内残留同名 handler，
+		// 用户重试同名 Subscribe 必然触发 watermill 的
 		// DuplicateHandlerNameError panic。保持占用并以错误明示。
-		// 复审-2：文案必须如实描述两种走向且警告勿换名重订阅——该订阅
-		// 已登记，Bus/Router 最终启动成功时它将生效，此时换名再订一份
-		// 会导致同一 topic+组双消费（或直接撞上 WK-01 消费组占用检查）。
-		return fmt.Errorf("watermill: subscription %q registered but not started (router not running): %w; "+
-			"do not resubscribe under a different handler name: the subscription stays registered and will "+
-			"take effect once the router starts (a second subscription to the same topic and group would "+
-			"double-consume); if the bus start failed permanently, the handler name stays taken — "+
-			"check the bus Start error instead", handlerName, err)
+		return fmt.Errorf("watermill: handler %q registered but not started (router not running): %w; "+
+			"do not resubscribe under a different handler name: the handler stays registered and will "+
+			"take effect once the router starts; if the bus start failed permanently, the handler name "+
+			"stays taken — check the bus Start error instead", handlerName, err)
 	}
 	return nil
 }
@@ -370,45 +350,6 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 // errHandlerNameTaken 标记"router 内已存在同名 handler"（panic 翻译而来）：
 // 此名已被占用，Subscribe 失败但不得回滚 handlerNames（WK-03）。
 var errHandlerNameTaken = errors.New("handler name already exists in router")
-
-// addHandlerSafe 是 addHandler 的 panic 安全包装（WK-03）：watermill router
-// 对重名 handler 直接 panic（DuplicateHandlerNameError），正常路径已由
-// handlerNames 查重拦截，但历史缺陷或外部操作残留的"幽灵 handler"会绕过
-// 查重——动态订阅不得击穿进程，此处把 panic 翻译为错误返回。
-// 非 duplicate panic 附 debug.Stack()（复审-8）：仅 %v 的 panic 值无堆栈，
-// 未知 panic 源无从排查。
-func (b *Bus) addHandlerSafe(topic, handlerName string, h eventbus.HandlerFunc, opts eventbus.SubscribeOptions) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			if dup, ok := r.(message.DuplicateHandlerNameError); ok {
-				err = fmt.Errorf("%w %q: %s", errHandlerNameTaken, dup.HandlerName, dup.Error())
-				return
-			}
-			err = fmt.Errorf("watermill: add handler %q panicked: %v\n%s", handlerName, r, debug.Stack())
-		}
-	}()
-	return b.addHandler(topic, handlerName, h, opts)
-}
-
-func (b *Bus) addHandler(topic, handlerName string, h eventbus.HandlerFunc, opts eventbus.SubscribeOptions) error {
-	t, key, err := b.resolve(topic)
-	if err != nil {
-		return err
-	}
-	adapter := &subscriberAdapter{
-		t:          t,
-		opts:       eventbus.SubscribeOptions{Group: opts.Group, Instances: opts.Instances},
-		forwardAck: b.forwardDeliveryAck,
-	}
-	handler := b.wrapHandler(topic, h, opts)
-	hh := b.router.AddConsumerHandler(handlerName, key, adapter, handler)
-	// WK-02：重投上限中间件按「投递轮次」计数——重试已内聚到
-	// eventbus.InvokeHandler，终态失败每轮只记一次，内层重试不再重复计数。
-	if limit, ok := b.maxRedeliveriesFor(topic); ok {
-		hh.AddMiddleware(b.redeliveryMiddleware(handlerName, topic, limit))
-	}
-	return nil
-}
 
 // MarshalerFor 返回序列化器（委托共享 Resolver，查找序见其文档）。
 func (b *Bus) MarshalerFor(topic string) eventbus.Marshaler {
@@ -444,48 +385,6 @@ func isMemoryTransport(t eventbus.Transport) bool {
 	return ok
 }
 
-// wrapHandler 把 eventbus handler 适配为 watermill handler：投递语义
-// （ctx 传播属性 / received 日志 / 固定退避重试 / AutoAck / ContinueOnError）
-// 全部委托 eventbus.InvokeHandler；本层只保留 ack 时序（WK-13：AutoAck
-// 先 Ack 后执行）与 Nack 映射。
-func (b *Bus) wrapHandler(topic string, h eventbus.HandlerFunc, opts eventbus.SubscribeOptions) message.NoPublishHandlerFunc {
-	handlerName := opts.HandlerName
-	if handlerName == "" {
-		handlerName = topic
-	}
-	retry := b.resolver.RetryFor(topic, opts.Retry)
-	invoke := func(msg *message.Message, once bool) error {
-		raw := FromMessage(msg)
-		raw.Topic = topic
-		return eventbus.InvokeHandler(msg.Context(), b.logger, h, raw, b.resolver, eventbus.InvokeOptions{
-			Topic:       topic,
-			HandlerName: handlerName,
-			Retry:       retry,
-			Once:        once,
-			Swallow:     opts.ContinueOnError,
-		})
-	}
-	handler := func(msg *message.Message) error {
-		if err := invoke(msg, false); err != nil {
-			// 终态失败（重试已耗尽或退避中取消）：返回错误 → Nack → Transport
-			// 重投（at-least-once）；重投上限由 redeliveryMiddleware 阻断。
-			return err
-		}
-		msg.Ack()
-		return nil
-	}
-	if opts.AutoAck {
-		// fire-and-forget（WK-13）：先 Ack 后执行 handler，handler 错误仅
-		// 记日志、消息不会重投（InvokeHandler 的 Once 语义）。
-		return func(msg *message.Message) error {
-			msg.Ack()
-			_ = invoke(msg, true)
-			return nil
-		}
-	}
-	return handler
-}
-
 // subscriberAdapter 把 eventbus.Transport 接到 Watermill Subscriber。
 // Close 必须取消 Subscribe 派生的 ctx 并等待转发 goroutine 退出：
 // Watermill handleClose 先调 Subscriber.Close，成功后才 cancel handler ctx；
@@ -494,7 +393,12 @@ type subscriberAdapter struct {
 	t    eventbus.Transport
 	opts eventbus.SubscribeOptions
 	// forwardAck 注入 Bus 的确认转达函数（携带订阅 ctx 与 logger，WK-14）。
-	forwardAck func(ctx context.Context, msg *message.Message, d eventbus.Delivery)
+	forwardAck func(ctx context.Context, msg *message.Message, d eventbus.Delivery, release func())
+	// sem 是订阅级在途上限（nil = 不限制）：在把消息交给 Router 之前占用，
+	// Ack/Nack/订阅关停时释放。限流点放在这里而不是 dispatcher——只限执行
+	// 挡不住 Router 的每消息 goroutine 堆积（阻塞的 goroutine 仍持有消息）；
+	// 在这里阻塞才能让 Router 停读、transport 投递链停读（真背压）。
+	sem chan struct{}
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -526,9 +430,21 @@ func (a *subscriberAdapter) Subscribe(ctx context.Context, topic string) (<-chan
 				if !ok {
 					return
 				}
+				// 订阅级在途上限：占用不到槽位就不把消息交给 Router（消息
+				// 留在 transport 侧，形成背压）；订阅关停时交还 Transport。
+				var release func()
+				if a.sem != nil {
+					select {
+					case a.sem <- struct{}{}:
+					case <-subCtx.Done():
+						d.NackOnce()
+						return
+					}
+					release = sync.OnceFunc(func() { <-a.sem })
+				}
 				msg := ToMessage(d.Event)
 				// Router 对副本的 Ack/Nack 转达到 Transport Delivery（Kafka offset / gochannel）。
-				a.forwardAck(subCtx, msg, d)
+				a.forwardAck(subCtx, msg, d, release)
 				select {
 				case out <- msg:
 				case <-subCtx.Done():
@@ -556,17 +472,23 @@ func (a *subscriberAdapter) Close() error {
 }
 
 // forwardDeliveryAck 在 Router 确认/拒绝副本消息时，调用 Transport 侧
-// Ack/Nack。不设人为超时（复审-5）：30s 固定上限会对合法慢 handler（>
-// 30s 才返回）截断确认转达，AutoCommit=false 下 offset 永不提交、消息
-// 重复消费——正常运行时等待时长应完全由 handler 决定。退出分支只有
-// 订阅 ctx 取消（Bus/订阅关停）：放弃等待并 Warn，未确认的后果由
-// Transport 的重投/超时语义兜底。
+// Ack/Nack，并释放订阅级在途槽位（release；nil 表示不限并发）。不设人为
+// 超时（复审-5）：30s 固定上限会对合法慢 handler（> 30s 才返回）截断确认
+// 转达，AutoCommit=false 下 offset 永不提交、消息重复消费——正常运行时等待
+// 时长应完全由 handler 决定。退出分支只有订阅 ctx 取消（Bus/订阅关停）：
+// 放弃等待并 Warn，未确认的后果由 Transport 的重投/超时语义兜底。
 // 已知取舍（WK-14 原始 Low 项保留）：handler 挂死且订阅永不关停时该
-// goroutine 常驻（每条 in-flight 消息一个）；关停路径（adapter.Close →
-// cancel）总能释放，接受此泄漏换取慢 handler 的正确性。
-func (b *Bus) forwardDeliveryAck(ctx context.Context, msg *message.Message, d eventbus.Delivery) {
+// goroutine 常驻（每条 in-flight 消息一个，受 Concurrency 上限约束）；
+// 关停路径（adapter.Close → cancel）总能释放，接受此泄漏换取慢 handler 的
+// 正确性。
+func (b *Bus) forwardDeliveryAck(ctx context.Context, msg *message.Message, d eventbus.Delivery, release func()) {
 	logger := b.logger
 	go func() {
+		defer func() {
+			if release != nil {
+				release()
+			}
+		}()
 		select {
 		case <-msg.Acked():
 			d.AckOnce()

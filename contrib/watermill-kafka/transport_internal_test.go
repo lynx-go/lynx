@@ -231,7 +231,7 @@ func TestPerSideConfigCache(t *testing.T) {
 		t.Fatalf("producer client id = %q, want producer-id", pubCfg.ClientID)
 	}
 
-	if _, err := tr.Subscribe(context.Background(), "orders", eventbus.SubscribeOptions{Group: "g"}); err != nil {
+	if _, err := tr.Subscribe(context.Background(), "orders", eventbus.SubscribeOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	subCfg, _ := cap.lastCfg.Load().(*sarama.Config)

@@ -22,6 +22,7 @@
 | 2026-09-22 | [测试套件 testkit](design-testkit.md) | Implemented | lynxtest 包 + R1-R5 可测性小幅重构，三层测试模型 |
 | 2026-09-22 | [启动期竞态修复](design-startup-race.md) | Implemented | Close/interrupt 与服务 Start 交错竞态族的四点修复（closed 标志 + 双层守卫） |
 | 2026-09-23 | [Resolver 订阅 API](design-resolver-subscribe.md) | Implemented | `Resolver.Subscribe` 消费侧订阅，grpcResolver 订阅驱动消除 5s 轮询（兜底 30s） |
+| 2026-09-24 | [EventBus 消费模型：事件订阅 + 进程内扇出](design-eventbus-consumption.md) | Implemented | 订阅单元从 handler 收敛为事件；组配置化，删 `WithGroup` 与 claim 机制 |
 
 ## 评审记录
 

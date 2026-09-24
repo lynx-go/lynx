@@ -191,6 +191,51 @@ var _ lynx.ServiceFactory = (*workerFactory)(nil)
 
 运行后通过日志可以看到两个 worker 实例各自经历了 `initializing service` → `starting service`；按 `Ctrl+C` 后各自收到 `Stop`。由于内嵌了 `HealthChecker`，两个实例都会被收集为就绪检查项。
 
+### 4.4.1 事件 handler 服务（eventbus）
+
+订阅型 handler 的注册样板（声明主题 / handler 名 / 处理函数、`Init` 订阅、
+`Start` 等待关停）由 `lynx.HandlerService[T]` 承接：业务结构体实现
+`lynx.EventHandler[T]`，经 `lynx.NewHandlerService` 适配为 Service 后直接
+`app.Register`：
+
+```go
+type OrderCreatedHandler struct {
+	name string
+	db   *sql.DB     // 构造期依赖
+	cfg  OrderConfig // Init 期依赖
+}
+
+func (h *OrderCreatedHandler) Topic() eventbus.Topic[OrderCreated] { return OrderCreatedTopic }
+func (h *OrderCreatedHandler) HandlerName() string                { return h.name }
+
+// Init 是依赖注入点：适配器保证它在订阅之前调用；返回错误则不订阅。
+func (h *OrderCreatedHandler) Init(ctx lynx.AppContext) error {
+	return ctx.Config().Unmarshal(&h.cfg)
+}
+
+func (h *OrderCreatedHandler) Handle(ctx context.Context, e *eventbus.Event[OrderCreated]) error {
+	return h.db.Save(ctx, e.Payload)
+}
+
+app.Register(lynx.NewHandlerService(&OrderCreatedHandler{name: "order-created", db: db}))
+```
+
+契约要点：
+
+- **依赖注入先于订阅**：`Init(ctx AppContext)` 用于获取构造期不可得的
+  配置 / 日志等依赖，适配器保证它返回 nil 之后才订阅——不会出现
+  「依赖没就绪先消费」或「忘写订阅」。
+- **handler 级选项**：`eventbus.WithSubscribeRetry` / `WithAutoAck` /
+  `WithContinueOnError` 只影响该 handler 自身的投递语义；默认 handler 名
+  = `HandlerName()`，显式 `WithHandlerName` 可覆盖。
+- **同一事件多 handler 进程内并行扇出**：多个 handler 共享该事件的一条
+  transport 订阅（消费组 / 成员数是后端配置，见 4.5 节 EventBus），
+  每个 handler 都收到每条消息。
+- `Name()` 构造后即可用（框架可能在 `Init` 前调用）；`Start` 订阅已在
+  `Init` 完成，阻塞至关停，不需要手写 `WaitForShutdown`。
+- 需要自定义生命周期（自有 Start/Stop 循环、健康检查等）时，仍按 4.4
+  的普通服务形态手写，不套本适配器。
+
 ## 4.5 contrib 模块概览
 
 `contrib/` 下的模块是框架官方维护的服务，各自是独立的 Go module，按需引入：

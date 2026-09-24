@@ -71,15 +71,15 @@ func TestResolverRetryPriority(t *testing.T) {
 // 显式调用选项优先（只填空缺），未知 topic 不改变选项。
 func TestResolverApplyTopicDefaults(t *testing.T) {
 	r := NewResolver(Options{Topics: map[string]TopicConfig{
-		"t": {Group: "cfg-group", Instances: 3, AutoAck: true, ContinueOnError: true},
+		"t": {MaxInFlight: 4, AutoAck: true, ContinueOnError: true},
 	}})
 
-	o := &SubscribeOptions{Group: "explicit"}
+	o := &SubscribeOptions{MaxInFlight: 2}
 	r.ApplyTopicDefaults("t", o)
-	if o.Group != "explicit" {
-		t.Errorf("Group = %q, want explicit to win", o.Group)
+	if o.MaxInFlight != 2 {
+		t.Errorf("MaxInFlight = %d, want explicit to win", o.MaxInFlight)
 	}
-	if o.Instances != 3 || !o.AutoAck || !o.ContinueOnError {
+	if !o.AutoAck || !o.ContinueOnError {
 		t.Errorf("defaults not filled: %+v", *o)
 	}
 

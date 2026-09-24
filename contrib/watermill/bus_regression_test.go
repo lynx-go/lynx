@@ -3,7 +3,6 @@ package watermill_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,53 +14,60 @@ import (
 
 func okRawHandler(context.Context, *eventbus.RawEvent) error { return nil }
 
-// TestSubscribeNonMemorySharedGroupRejected 回归 WK-01：Kafka 等消费组后端上，
-// 同一 topic 被两个不同 handler 以同一消费组订阅会静默瓜分分区（各收一半
-// 消息）。Bus 必须在订阅期拒绝：默认组（未配置 group）与显式同组均报错，
-// 错误信息需指出冲突双方与 WithGroup 逃生口。
-func TestSubscribeNonMemorySharedGroupRejected(t *testing.T) {
+// TestSubscribeSharesOneSubscriptionPerEvent 钉住新消费模型：同一事件的
+// 多个 handler 复用一条 transport 订阅（消费组 / 实例数取自事件配置），
+// 不再各建一条订阅、也不再需要 handler 级组参数；每个 handler 都收到
+// 每条消息（进程内并行扇出）。
+func TestSubscribeSharesOneSubscriptionPerEvent(t *testing.T) {
 	rt := &recordingTransport{topic: "order.created"}
 	bus := watermill.New(eventbus.Options{Transports: []eventbus.Transport{rt}})
 	if err := bus.Init(nil); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = bus.Start(ctx) }()
+	waitBus(t, bus)
 
-	// 默认组占用：第二个 handler 复用（空）默认组被拒。
-	if err := bus.Subscribe(ctx, "order.created", okRawHandler, eventbus.WithHandlerName("h1")); err != nil {
-		t.Fatalf("first subscribe: %v", err)
+	got1 := make(chan struct{}, 1)
+	got2 := make(chan struct{}, 1)
+	if err := bus.Subscribe(ctx, "order.created", func(context.Context, *eventbus.RawEvent) error {
+		got1 <- struct{}{}
+		return nil
+	}, eventbus.WithHandlerName("h1")); err != nil {
+		t.Fatalf("subscribe h1: %v", err)
 	}
-	err := bus.Subscribe(ctx, "order.created", okRawHandler, eventbus.WithHandlerName("h2"))
-	if err == nil {
-		t.Fatal("want error: two handlers sharing the default group on non-memory transport")
+	if err := bus.Subscribe(ctx, "order.created", func(context.Context, *eventbus.RawEvent) error {
+		got2 <- struct{}{}
+		return nil
+	}, eventbus.WithHandlerName("h2")); err != nil {
+		t.Fatalf("subscribe h2 (same event must reuse the subscription): %v", err)
 	}
-	for _, want := range []string{"order.created", "h1", "WithGroup"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error %q must mention %q", err.Error(), want)
+	time.Sleep(50 * time.Millisecond)
+
+	if err := bus.Publish(ctx, "order.created", map[string]string{"id": "1"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	for name, ch := range map[string]chan struct{}{"h1": got1, "h2": got2} {
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("handler %s did not receive event", name)
 		}
 	}
 
-	// 显式同组同样被拒。
-	if err := bus.Subscribe(ctx, "order.created", okRawHandler, eventbus.WithHandlerName("g1"), eventbus.WithGroup("payments")); err != nil {
-		t.Fatalf("subscribe with explicit group: %v", err)
+	rt.mu.Lock()
+	calls := rt.subCalls
+	rt.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("transport Subscribe calls = %d, want 1 (one subscription per event)", calls)
 	}
-	if err := bus.Subscribe(ctx, "order.created", okRawHandler, eventbus.WithHandlerName("g2"), eventbus.WithGroup("payments")); err == nil {
-		t.Fatal("want error: two handlers sharing explicit group payments")
-	}
-
-	// 不同组共存（广播语义的逃生口）。
-	if err := bus.Subscribe(ctx, "order.created", okRawHandler, eventbus.WithHandlerName("audit"), eventbus.WithGroup("audit")); err != nil {
-		t.Fatalf("subscribe with distinct group must be allowed: %v", err)
-	}
-
-	// 单 handler 多实例（竞争消费）不受影响。
-	if err := bus.Subscribe(ctx, "order.created", okRawHandler, eventbus.WithHandlerName("workers"), eventbus.WithGroup("workers"), eventbus.WithInstances(3)); err != nil {
-		t.Fatalf("single handler with instances must be allowed: %v", err)
-	}
+	stopWithin(t, bus, 2*time.Second)
 }
 
 // TestSubscribeMemoryTransportBroadcastAllowed 回归 WK-01 正向面：
-// 内存 Transport 是广播语义，同 topic 多 handler 不受消费组占用限制。
+// 内存 Transport 是广播语义，同 topic 多 handler 共享一条订阅并各自
+// 收到全部消息（与消费组后端语义一致）。
 func TestSubscribeMemoryTransportBroadcastAllowed(t *testing.T) {
 	mem := watermill.NewMemoryTransport()
 	bus := watermill.New(eventbus.Options{DefaultTransport: mem})
@@ -160,11 +166,6 @@ func (t *redeliveringTransport) Subscribe(ctx context.Context, topic string, opt
 
 func (t *redeliveringTransport) Topics() []string { return []string{t.topic} }
 func (t *redeliveringTransport) Close() error     { return nil }
-
-// DeliveryMode 声明消费组：本假件模拟 Kafka 的重投语义（Nack → 重投）。
-func (t *redeliveringTransport) DeliveryMode() eventbus.DeliveryMode {
-	return eventbus.DeliveryConsumerGroup
-}
 
 // TestMaxRedeliveriesDropsPoisonMessage 回归 WK-02：handler 恒失败 + Transport
 // 无限重投时，Bus 必须在 MaxRedeliveries 轮终态失败后 Ack 丢弃毒消息；
@@ -274,12 +275,12 @@ func TestMaxRedeliveriesCounterClearedOnSuccess(t *testing.T) {
 	stopWithin(t, bus, 2*time.Second)
 }
 
-// TestMaxRedeliveriesIndependentPerHandler 回归复审-4：同一 Kafka 消息投给
-// 两个不同消费组（两个 handler 各收一份）时，重投计数必须按 handler 隔离
-// ——成功 handler 的 success 不得清零失败 handler 的累计计数，否则毒消息
-// 永不达上限。h-ok 恒成功、h-fail 恒失败：失败侧独立累计至上限（2）后
-// 丢弃，重投循环终止；成功侧每轮正常 Ack，不受影响。
-func TestMaxRedeliveriesIndependentPerHandler(t *testing.T) {
+// TestMaxRedeliveriesSkipsPoisonHandler 回归毒消息止损（新消费模型）：
+// 同一事件的多个 handler 共享一条订阅与一个 offset。h-fail 恒失败、
+// h-ok 恒成功：h-fail 累计超过上限后被跳过，不再连坐——h-ok 随后完成，
+// 消息最终 Ack。共享 offset 的代价：h-fail 重投期间 h-ok 会重复收到同一
+// 消息（幂等由业务保证）。
+func TestMaxRedeliveriesSkipsPoisonHandler(t *testing.T) {
 	rt := &redeliveringTransport{topic: "order.fanout", acked: make(chan struct{}, 1)}
 	bus := watermill.New(
 		eventbus.Options{
@@ -297,45 +298,97 @@ func TestMaxRedeliveriesIndependentPerHandler(t *testing.T) {
 	waitBus(t, bus)
 
 	var okAttempts, failAttempts atomic.Int32
-	if err := bus.Subscribe(ctx, "order.fanout", func(ctx context.Context, e *eventbus.RawEvent) error {
+	if err := bus.Subscribe(ctx, "order.fanout", func(context.Context, *eventbus.RawEvent) error {
 		okAttempts.Add(1)
 		return nil
-	}, eventbus.WithHandlerName("h-ok"), eventbus.WithGroup("g-ok")); err != nil {
+	}, eventbus.WithHandlerName("h-ok")); err != nil {
 		t.Fatalf("Subscribe h-ok: %v", err)
 	}
-	if err := bus.Subscribe(ctx, "order.fanout", func(ctx context.Context, e *eventbus.RawEvent) error {
+	if err := bus.Subscribe(ctx, "order.fanout", func(context.Context, *eventbus.RawEvent) error {
 		failAttempts.Add(1)
 		return errors.New("poison")
-	}, eventbus.WithHandlerName("h-fail"), eventbus.WithGroup("g-fail")); err != nil {
+	}, eventbus.WithHandlerName("h-fail")); err != nil {
 		t.Fatalf("Subscribe h-fail: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	// 同一 ID 的消息广播给两个 handler：h-ok 每轮成功（若计数被共享，
-	// 它的 success 会清零 h-fail 的累计），h-fail 每轮终态失败。
-	e := &eventbus.RawEvent{ID: "shared-id", Payload: []byte("x"), Headers: map[string]string{}}
-	if err := rt.Publish(ctx, "order.fanout", e); err != nil {
+	if err := rt.Publish(ctx, "order.fanout", &eventbus.RawEvent{ID: "shared-id", Payload: []byte("x"), Headers: map[string]string{}}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
-	// 失败侧在上限（1 次投递 + 2 次重投）后丢弃。
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && failAttempts.Load() < 3 {
-		time.Sleep(10 * time.Millisecond)
+	// h-fail：1 次投递 + 2 次重投后超过上限被跳过；h-ok 每轮都跑，最终 Ack。
+	select {
+	case <-rt.acked:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("poison handler never stopped (ok=%d fail=%d)", okAttempts.Load(), failAttempts.Load())
 	}
-	if got := failAttempts.Load(); got != 3 {
-		t.Fatalf("fail handler attempts = %d, want 3 (success side cleared the poison counter?)", got)
-	}
-	if got := okAttempts.Load(); got < 3 {
-		t.Fatalf("ok handler attempts = %d, want >= 3 (must receive every round)", got)
-	}
-	// 丢弃后循环终止：两侧都不再有新投递。
 	time.Sleep(200 * time.Millisecond)
 	if got := failAttempts.Load(); got != 3 {
-		t.Fatalf("fail attempts grew to %d after drop; redelivery loop not stopped", got)
+		t.Fatalf("fail handler attempts = %d, want 3 (1 delivery + 2 redeliveries, then skipped)", got)
 	}
 	if got := okAttempts.Load(); got != 3 {
-		t.Fatalf("ok attempts = %d, want 3 (loop must stop once failing side drops)", got)
+		t.Fatalf("ok handler attempts = %d, want 3 (re-ran per redelivery round, then done)", got)
+	}
+	stopWithin(t, bus, 2*time.Second)
+}
+
+// TestRedeliveryCountClearedOnHandlerSuccess 钉住 per-handler 计数清除：
+// handler 成功必须立即清自身计数（而非等到整条 Ack）。H1 在 1/3/5 轮失败、
+// H2 在 2/4 轮失败（上限 2）：若成功不清计数，H1 的累计失败在第 5 轮推到
+// 3 会被误判为毒消息（attempts 停在 5）；正确语义下第 5 轮 Nack、第 6 轮
+// 双双成功后 Ack（各 6 次尝试）。
+func TestRedeliveryCountClearedOnHandlerSuccess(t *testing.T) {
+	rt := &redeliveringTransport{topic: "order.clear", acked: make(chan struct{}, 1)}
+	bus := watermill.New(
+		eventbus.Options{
+			Transports: []eventbus.Transport{rt},
+			Retry:      &eventbus.RetryOptions{MaxRetries: 0},
+		},
+		watermill.WithMaxRedeliveries(2),
+	)
+	if err := bus.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = bus.Start(ctx) }()
+	waitBus(t, bus)
+
+	h1Fail := map[int32]bool{1: true, 3: true, 5: true}
+	h2Fail := map[int32]bool{2: true, 4: true}
+	var h1Attempts, h2Attempts atomic.Int32
+	if err := bus.Subscribe(ctx, "order.clear", func(context.Context, *eventbus.RawEvent) error {
+		if h1Fail[h1Attempts.Add(1)] {
+			return errors.New("h1 transient")
+		}
+		return nil
+	}, eventbus.WithHandlerName("h1")); err != nil {
+		t.Fatalf("Subscribe h1: %v", err)
+	}
+	if err := bus.Subscribe(ctx, "order.clear", func(context.Context, *eventbus.RawEvent) error {
+		if h2Fail[h2Attempts.Add(1)] {
+			return errors.New("h2 transient")
+		}
+		return nil
+	}, eventbus.WithHandlerName("h2")); err != nil {
+		t.Fatalf("Subscribe h2: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if err := rt.Publish(ctx, "order.clear", &eventbus.RawEvent{ID: "clear-id", Payload: []byte("x"), Headers: map[string]string{}}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	select {
+	case <-rt.acked:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("message never acked (h1=%d h2=%d)", h1Attempts.Load(), h2Attempts.Load())
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := h1Attempts.Load(); got != 6 {
+		t.Fatalf("h1 attempts = %d, want 6 (success must clear its own count)", got)
+	}
+	if got := h2Attempts.Load(); got != 6 {
+		t.Fatalf("h2 attempts = %d, want 6", got)
 	}
 	stopWithin(t, bus, 2*time.Second)
 }

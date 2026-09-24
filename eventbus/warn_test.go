@@ -15,9 +15,8 @@ func (noopTransport) Publish(context.Context, string, *RawEvent) error { return 
 func (noopTransport) Subscribe(context.Context, string, SubscribeOptions) (<-chan Delivery, error) {
 	return nil, nil
 }
-func (noopTransport) Topics() []string           { return nil }
-func (noopTransport) Close() error               { return nil }
-func (noopTransport) DeliveryMode() DeliveryMode { return DeliveryBroadcast }
+func (noopTransport) Topics() []string { return nil }
+func (noopTransport) Close() error     { return nil }
 
 func newWarnBus(t *testing.T, opts Options) (*memoryBus, *bytes.Buffer) {
 	t.Helper()
@@ -43,15 +42,15 @@ func TestMemoryBusWarnsInapplicableOptions(t *testing.T) {
 	}
 }
 
-// TestMemoryBusWarnsGroupIgnored：内存 Bus 是广播语义，group/instances 的
-// 消费组意图被忽略时记 Warn，不静默。
-func TestMemoryBusWarnsGroupIgnored(t *testing.T) {
+// TestMemoryBusWarnsMaxInFlightIgnored：内存 Bus 每 handler 串行处理，
+// 在途上限的配置意图被忽略时记 Warn，不静默。
+func TestMemoryBusWarnsMaxInFlightIgnored(t *testing.T) {
 	bus, buf := newWarnBus(t, Options{})
 	defer func() { _ = bus.Stop(context.Background()) }()
-	if err := bus.Subscribe(context.Background(), "t", func(context.Context, *RawEvent) error { return nil }, WithGroup("g")); err != nil {
+	if err := bus.Subscribe(context.Background(), "t", func(context.Context, *RawEvent) error { return nil }, withMaxInFlight(4)); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	if !strings.Contains(buf.String(), "ignores group/instances") {
-		t.Fatalf("logs = %q, want group-ignored warning", buf.String())
+	if !strings.Contains(buf.String(), "ignores max_in_flight") {
+		t.Fatalf("logs = %q, want max_in_flight-ignored warning", buf.String())
 	}
 }

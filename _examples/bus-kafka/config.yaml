@@ -6,6 +6,7 @@ bus:
   topics:
     order.created:
       route: { transport: kafka, key: order.created }
+      # max_in_flight: 2   # 订阅级在途上限（默认 1 = 串行且保序；调大并发处理）
 
 # kafka 段：route.key 引用的条目——物理 topic 映射与客户端配置。
 # consumer.group_id 相同的多实例构成消费组（组内竞争消费，每条消息

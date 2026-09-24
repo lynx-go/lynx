@@ -45,6 +45,17 @@ func (l *RedeliveryLimiter) Failure(handlerName, id string) int {
 	return l.counts[key]
 }
 
+// Count 返回 (handler, id) 已累计的终态失败轮数（未记录为 0）。供订阅级
+// 投递器在调用前判断该 handler 是否已止损（超过上限即跳过）。
+func (l *RedeliveryLimiter) Count(handlerName, id string) int {
+	if id == "" {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.counts[limiterKey(handlerName, id)]
+}
+
 // Success 清除该 handler 对该消息的计数：消息处理成功即生命周期结束，
 // 腾出容量给活跃键，也避免同 ID 的陈旧计数误伤后续投递（如上游按 ID
 // 重发的新消息）。键含 handlerName，只清自身，不动其他 handler 对同一
@@ -58,9 +69,9 @@ func (l *RedeliveryLimiter) Success(handlerName, id string) {
 	delete(l.counts, limiterKey(handlerName, id))
 }
 
-// limiterKey 拼接计数键：handlerName + "|" + 消息 ID。同一消息可能同时
-// 投给多个 handler（如 Kafka 上两个不同消费组各收一份），纯消息 ID 的
-// 共享键会让成功侧清零失败侧的累计计数，毒消息永不达上限。
+// limiterKey 拼接计数键：handlerName + "|" + 消息 ID。同一消息会投给同
+// 订阅的多个 handler，纯消息 ID 的共享键会让成功侧清零失败侧的累计计数，
+// 毒消息永不达上限。
 func limiterKey(handlerName, id string) string {
 	return handlerName + "|" + id
 }

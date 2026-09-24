@@ -168,12 +168,13 @@ kafkaT, err := wmkafka.NewTransport(wmkafka.Options{
 
 Kafka 消费语义要点：
 
-- **广播 vs 竞争消费**：同一逻辑 topic 上多个 handler 若共用同一消费组，
-  Kafka 会在组内瓜分分区——每个 handler 只收到一部分消息。Watermill Bus
-  在订阅期直接拒绝这种配置并报错：需要广播（每个 handler 收全量）时为
-  每个 handler 配置不同 group（`WithGroup` 或 `bus.topics.<topic>.group`）；
-  需要竞争消费（多实例分流）时使用单个 handler + `instances`。内存
-  Transport 是广播语义，不受此限制。
+- **同一事件多 handler 并行扇出**：订阅单元是事件（逻辑 topic）——同一
+  逻辑 topic 上多个 handler 共享一条 transport 订阅并进程内并行触发，
+  每个 handler 都收到每条消息。消费组 / 消费者成员数是 kafka 配置
+  （`kafka.<key>.consumer.group_id` / `.instances`），多实例部署按该组
+  竞争消费。进程内在途上限由 `bus.topics.<topic>.max_in_flight` 控制
+  （默认 1，串行且保序；调大并发，goroutine 有界）。不同逻辑 topic 路由
+  到同一物理 topic 且组相同时仍会互相瓜分，部署时应拆成不同 kafka 条目。
 - **Transport 生命周期独立于 Bus**：`bus.Stop()` 不关闭 `opts.Transports`
   / `DefaultTransport`；Kafka Transport 必须作为独立服务 Register 交由
   框架托管 Start/Stop，漏注册则永远不会关闭。

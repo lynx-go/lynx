@@ -521,30 +521,6 @@ func TestTransportSubscribeExpansion(t *testing.T) {
 	}
 }
 
-func TestTransportSubscribeGroupOverride(t *testing.T) {
-	pub := newFakePubSub()
-	tr := newTestTransport(Options{
-		Topics: map[string]TopicOptions{
-			"orders": {
-				Brokers:  []string{"b1"},
-				Topics:   []string{"t1"},
-				Consumer: &ConsumerOptions{GroupID: "config-group"},
-			},
-		},
-	}, pub)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ch, err := tr.Subscribe(ctx, "orders", eventbus.SubscribeOptions{Group: "code-group"})
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-	if ch == nil {
-		t.Fatal("expected non-nil channel")
-	}
-	// fake 不区分组（Subscribe 只按 topic 记录），此处仅验证不报错。
-}
-
 func TestTransportSubscribeMissingGroup(t *testing.T) {
 	pub := newFakePubSub()
 	tr := newTestTransport(Options{
@@ -1000,29 +976,14 @@ func TestTransportReadyClosesOnStart(t *testing.T) {
 	}
 }
 
-// TestDeliveryModeAndDefaultGroup 钉住接缝契约实现：kafka 声明消费组
-// 模式（Bus 据此启用组占用检查），并经 DefaultGrouper 暴露配置默认组
-// （consumer.group_id），使"显式组 == 他人默认组"的静默瓜分可被识别。
-func TestDeliveryModeAndDefaultGroup(t *testing.T) {
+// TestConsumerGroupRequired 钉住组必须可得：kafka 消费组来自本模块配置
+// （consumer.group_id），缺失即订阅期报错——Bus 层不再有组参数。
+func TestConsumerGroupRequired(t *testing.T) {
 	tr := newTestTransport(Options{Topics: map[string]TopicOptions{
-		"with-group":  {Brokers: []string{"b1"}, Consumer: &ConsumerOptions{GroupID: "svc"}},
-		"no-group":    {Brokers: []string{"b1"}, Consumer: &ConsumerOptions{}},
-		"no-consumer": {Brokers: []string{"b1"}},
+		"no-group": {Brokers: []string{"b1"}, Consumer: &ConsumerOptions{}},
 	}}, newFakePubSub())
-
-	if got := tr.DeliveryMode(); got != eventbus.DeliveryConsumerGroup {
-		t.Fatalf("DeliveryMode = %v, want DeliveryConsumerGroup", got)
-	}
-	if g, ok := tr.DefaultGroup("with-group"); !ok || g != "svc" {
-		t.Fatalf("DefaultGroup(with-group) = (%q, %v), want (svc, true)", g, ok)
-	}
-	if _, ok := tr.DefaultGroup("no-group"); ok {
-		t.Fatal("DefaultGroup(no-group) should report false for empty group_id")
-	}
-	if _, ok := tr.DefaultGroup("no-consumer"); ok {
-		t.Fatal("DefaultGroup(no-consumer) should report false without consumer config")
-	}
-	if _, ok := tr.DefaultGroup("unknown-topic"); ok {
-		t.Fatal("DefaultGroup(unknown-topic) should report false")
+	if _, err := tr.Subscribe(context.Background(), "no-group", eventbus.SubscribeOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "consumer group required") {
+		t.Fatalf("err = %v, want consumer group required", err)
 	}
 }

@@ -57,8 +57,7 @@ func main() {
 | `bus.retry.max_retries` | int | `3` | handler 失败重试次数（`bus.go:594`） |
 | `bus.retry.backoff` | duration | `0s` | 重试间隔；固定间隔，不是指数退避（`bus.go:604`） |
 | `bus.max_redeliveries` | int | `10` | Bus 级毒消息重投上限；负数 = 不设限 |
-| `bus.topics.<topic>.group` | string | 空 | 消费组（非内存 Transport 生效） |
-| `bus.topics.<topic>.instances` | int | `0`（未设置） | 订阅实例数 |
+| `bus.topics.<topic>.max_in_flight` | int | `1` | 订阅级在途上限：同一事件未确认消息的并发上限（消息内多 handler 仍并行）；`1` = 串行且保序，负数 = 不限制（不推荐） |
 | `bus.topics.<topic>.auto_ack` | bool | `false` | 先 Ack 后执行 handler（fire-and-forget） |
 | `bus.topics.<topic>.continue_on_error` | bool | `false` | handler 失败仍 Ack，不重投 |
 | `bus.topics.<topic>.retry` | 同 `bus.retry` | 沿用全局 | 主题级重试覆盖 |
@@ -72,8 +71,9 @@ func main() {
 ## 关键语义
 
 - **`lynx.*` 强制内存 Transport**：`lynx.` 前缀的 topic 解析优先于路由表与 `DefaultTransport`，固定走 Bus 内置的 MemoryTransport（`bus.go:541`）。跨实例协同不应依赖生命周期事件。
-- **消费组互斥**（`bus.go:447`）：非内存 Transport 上同一（订阅键 × 消费组）只允许一个 handler——Kafka 组内两个 handler 会瓜分分区、各收一半消息，第二个 `Subscribe` 直接拒绝。广播语义 = 每个 handler 不同 group（`eventbus.WithGroup` 或 `bus.topics.<topic>.group`）；竞争消费 = 单 handler + `eventbus.WithInstances`。已知边界：一个 handler 显式指定的 group 与另一个 handler 留空的 Transport 默认组同名时无法识别；物理 topics 重叠的不同逻辑 topic 需显式配置互不相同的组。
-- **毒消息止损**（`redelivery.go:141`）：handler 终态失败（重试耗尽）后 Nack → Transport 重投（Kafka 默认约 100ms 一轮）。Bus 按 `handler|messageID` 计数累计重投轮数，超过 `max_redeliveries` 记 Error 并 Ack 丢弃，阻断无限重投与单分区队头阻塞。`auto_ack` 消息先 Ack 后执行，失败不重投、不计数。
+- **事件订阅复用**（`subscription.go`）：订阅单元是事件（逻辑 topic）——同一事件的多个 handler 共享一条 transport 订阅并进程内并行扇出，每个 handler 都收到每条消息。消费组 / 消费者成员数是后端配置（kafka `consumer.group_id` / `consumer.instances`），Bus 不建模。已知边界：物理 topics 重叠的不同逻辑 topic 需拆成不同 kafka 条目。
+- **订阅级在途上限**（`bus.topics.<topic>.max_in_flight`，默认 1）：适配器在把消息交给 Router 之前占用槽位、Ack/Nack/订阅关停时释放——在途消息有界（goroutine 上界 ≈ handler 数 + 2）并对 transport 形成背压；默认串行且恢复投递顺序，调大即并发处理，负数 = 不限制（不推荐）。只限 dispatcher 执行挡不住 Router 的每消息 goroutine 堆积，限流点必须在适配器。
+- **毒消息止损**（`redelivery.go` / `subscription.go`）：handler 终态失败（重试耗尽）后 Nack → Transport 重投（Kafka 默认约 100ms 一轮）。Bus 按 `handler|messageID` 计数累计终态失败轮数；共享 offset 下全部 handler 成功才 Ack，某 handler 超过 `max_redeliveries` 后被跳过并记 Error（不连坐其他 handler）；重投会整条重投，成功过的 handler 也需幂等。`auto_ack` handler 不参与确认裁决。
 - **Transport 生命周期独立于 Bus**：`Stop` 只关 Router 与内置生命周期 MemoryTransport，不关 `opts.Transports` / `DefaultTransport`（`bus.go:239`）——Kafka 等后端必须作为独立服务 Register 交框架托管，漏注册则永不关闭。
 - **健康与就绪**：`CheckHealth` 仅反映 Router 运行标志，不做 broker 连通性检查（`bus.go:171`）；框架启动期按 `lynx.WithBusReadyTimeout`（默认 10s）有界轮询就绪，超时构造失败。
 - **日志级别**：`log_message.*` 实际输出 Debug 级日志，需 `--log-level=debug` 或 `bus.debug: true` 才可见（`bus.go:322`）。

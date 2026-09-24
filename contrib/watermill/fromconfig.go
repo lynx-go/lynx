@@ -23,8 +23,7 @@ type topicFileConfig struct {
 	LogMessage      *logMessageConfig `mapstructure:"log_message"`
 	AutoAck         bool              `mapstructure:"auto_ack"`
 	ContinueOnError bool              `mapstructure:"continue_on_error"`
-	Group           string            `mapstructure:"group"`
-	Instances       int               `mapstructure:"instances"`
+	MaxInFlight     int               `mapstructure:"max_in_flight"`
 	Retry           *retryConfig      `mapstructure:"retry"`
 	// MaxRedeliveries 覆盖该主题的重投上限（0 = 沿用 Bus 级）。
 	MaxRedeliveries int `mapstructure:"max_redeliveries"`
@@ -86,8 +85,7 @@ func NewFromConfig(cfg lynx.Config, transports map[string]eventbus.Transport) (*
 	}
 	for topic, tc := range file.Topics {
 		opts.Topics[topic] = eventbus.TopicConfig{
-			Group:           tc.Group,
-			Instances:       tc.Instances,
+			MaxInFlight:     tc.MaxInFlight,
 			AutoAck:         tc.AutoAck,
 			ContinueOnError: tc.ContinueOnError,
 			Retry:           tc.Retry.toOptions(),

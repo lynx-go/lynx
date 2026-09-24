@@ -44,7 +44,7 @@ _Avoid_: 超时时间
 _Avoid_: 消息队列、broker（那是 Bus 后面的 Transport）
 
 **传输（Transport）**:
-Bus 背后可插拔的后端：topic 一律为 Transport 侧键；投递模式（广播 / 消费组）是每个后端的必答属性。
+Bus 背后可插拔的后端：topic 一律为 Transport 侧键；消费组 / 消费者成员数等后端特有概念由各后端自己的配置承担（Bus 不建模）。
 _Avoid_: 驱动、连接器
 
 **解析器（Resolver）**:
