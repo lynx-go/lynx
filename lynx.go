@@ -76,12 +76,12 @@ type App interface {
 	// 首个错误会被记录，并在 Run() 时统一返回。
 	// 所有注册必须先于 Run 与 Close：Run 开始后或 Close 之后调用将 panic。
 	Register(services ...Service)
-	// RegisterFactories 注册需要由应用托管生命周期的服务工厂，
+	// RegisterFactory 注册需要由应用托管生命周期的服务工厂，
 	// 错误处理语义与 Register 相同；同样必须先于 Run 与 Close。
-	RegisterFactories(factories ...ServiceFactory)
+	RegisterFactory(factories ...ServiceFactory)
 
 	// Run 运行应用主流程：执行 on-pre-start 钩子、启动所有服务并等待退出信号。
-	// Run 开始后或 Close 之后，Register/RegisterFactories 为禁止操作（panic），
+	// Run 开始后或 Close 之后，Register/RegisterFactory 为禁止操作（panic），
 	// Command 返回错误。
 	Run() error
 	// SetLogger 设置 logger。注意：同时调用 slog.SetDefault 同步全局默认
@@ -148,7 +148,7 @@ type lynx struct {
 	// 在 Run 时快照并调度；关停时逆序停止（LIFO）。
 	actors []actor
 	// running 标记 Run 已开始（受 app.mu 保护）：此后 Register/
-	// RegisterFactories 为禁止操作（panic），Command 返回错误；Run 的
+	// RegisterFactory 为禁止操作（panic），Command 返回错误；Run 的
 	// actor 快照在置位后取得，不存在并发登记。
 	running bool
 	// closed 标记 Close 已执行（受 app.mu 保护）：Close 之后的 Run 直接
@@ -233,15 +233,15 @@ func (app *lynx) Register(services ...Service) {
 	}
 }
 
-func (app *lynx) RegisterFactories(factories ...ServiceFactory) {
+func (app *lynx) RegisterFactory(factories ...ServiceFactory) {
 	if initErr, err := app.checkRegistration(); err != nil {
-		panic(registrationError("RegisterFactories", err))
+		panic(registrationError("RegisterFactory", err))
 	} else if initErr != nil {
 		return
 	}
 	if err := app.addServiceFactories(factories...); err != nil {
 		if errors.Is(err, errRunStarted) || errors.Is(err, ErrAppClosed) {
-			panic(registrationError("RegisterFactories", err))
+			panic(registrationError("RegisterFactory", err))
 		}
 		app.recordInitError(err)
 		app.logger.ErrorContext(app.ctx, "failed to register service factories", "error", err)
@@ -258,7 +258,7 @@ func (app *lynx) recordInitError(err error) {
 }
 
 // errRunStarted 由 addServices 在持锁登记事务中发现 Run 已开始时返回，
-// 调用方（Register/RegisterFactories/Command）翻译为各自的明确错误/panic
+// 调用方（Register/RegisterFactory/Command）翻译为各自的明确错误/panic
 // （所有注册必须先于 Run）。
 var errRunStarted = errors.New("lynx: registration after Run() has started")
 

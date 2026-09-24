@@ -66,5 +66,5 @@ func (b *Bootstrap) Apply(app lynx.App) {
 	app.OnPreStop(b.PreStopHooks...)
 	app.OnPostStop(b.PostStopHooks...)
 	app.Register(b.Services...)
-	app.RegisterFactories(b.ServiceFactories...)
+	app.RegisterFactory(b.ServiceFactories...)
 }

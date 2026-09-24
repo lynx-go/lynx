@@ -904,7 +904,7 @@ type App interface {
     OnDrain(fns ...HookFunc) // 新增：SetDraining 之后与 drain sleep 并发
     OnStop(fns ...HookFunc)
     Register(services ...Service)
-    RegisterFactories(factories ...ServiceFactory)
+    RegisterFactory(factories ...ServiceFactory)
     Run() error
     SetLogger(logger *slog.Logger)
 }

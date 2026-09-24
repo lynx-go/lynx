@@ -231,9 +231,9 @@ func (f *fakeApp) OnPostStop(...lynx.CleanupFunc)                        {}
 func (f *fakeApp) Register(services ...lynx.Service) {
 	f.registered = append(f.registered, services...)
 }
-func (f *fakeApp) RegisterFactories(...lynx.ServiceFactory) {}
-func (f *fakeApp) Run() error                               { return nil }
-func (f *fakeApp) SetLogger(*slog.Logger)                   {}
+func (f *fakeApp) RegisterFactory(...lynx.ServiceFactory) {}
+func (f *fakeApp) Run() error                             { return nil }
+func (f *fakeApp) SetLogger(*slog.Logger)                 {}
 
 func TestApply(t *testing.T) {
 	t.Run("nil registrar is no-op", func(t *testing.T) {

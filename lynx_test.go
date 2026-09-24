@@ -444,7 +444,7 @@ func TestRegisterSkippedAfterInitError(t *testing.T) {
 	}
 
 	factory := &recordingFactory{instances: 1}
-	app.RegisterFactories(factory)
+	app.RegisterFactory(factory)
 	if got := factory.builds.Load(); got != 0 {
 		t.Errorf("New() called %d times after a failed registration, want 0", got)
 	}
@@ -468,7 +468,7 @@ func TestServiceFactoriesInstances(t *testing.T) {
 				t.Fatalf("newLynx() error = %v", err)
 			}
 			factory := &recordingFactory{instances: tt.instances}
-			app.RegisterFactories(factory)
+			app.RegisterFactory(factory)
 			if got := factory.builds.Load(); got != tt.wantBuilds {
 				t.Errorf("New() called %d times, want %d", got, tt.wantBuilds)
 			}
@@ -711,7 +711,7 @@ func TestCLICommandRunsAndClosesApp(t *testing.T) {
 }
 
 // TestRegisterAfterRunRejected 回归：Run 开始后注册为禁止操作——
-// Register/RegisterFactories panic 报明确错误，Command 返回错误；
+// Register/RegisterFactory panic 报明确错误，Command 返回错误；
 // 晚到的注册不得触碰 lifecycle 的 actors（此前为 data race 且服务
 // 永不 Start 却被 Stop）。
 func TestRegisterAfterRunRejected(t *testing.T) {
@@ -736,7 +736,7 @@ func TestRegisterAfterRunRejected(t *testing.T) {
 		fn()
 	}
 	assertPanics("Register", func() { app.Register(&blockingService{name: "late"}) })
-	assertPanics("RegisterFactories", func() { app.RegisterFactories(&recordingFactory{instances: 1}) })
+	assertPanics("RegisterFactory", func() { app.RegisterFactory(&recordingFactory{instances: 1}) })
 	if err := app.Command(func(ctx context.Context) error { return nil }); err == nil ||
 		!strings.Contains(err.Error(), "must not be called after Run") {
 		t.Fatalf("Command() error = %v, want explicit after-Run error", err)

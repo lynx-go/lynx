@@ -17,17 +17,17 @@
 - `Start`：`Run()` 启动后并发调用，通常是阻塞式的（如监听端口、消费消息），其 `ctx` 被取消时应返回。
 - `Stop(ctx) error`：关闭阶段调用，用于释放资源；返回的错误由框架收集，与 OnPreStop 钩子错误一起随 `Run()` 上抛。
 
-### 并发模型：run group
+### 并发模型：lifecycle actor 调度
 
-Lynx 使用 oklog/run 的 `run.Group` 管理所有并发执行单元。每个通过 `app.Register` / `app.RegisterFactories` 注册的服务是一个 actor；此外 `Run()` 还会注册一个信号 actor 和一个 post-start actor。
+Lynx 使用自有的 lifecycle 模块（`lifecycle.go`）管理所有并发执行单元：每个通过 `app.Register` / `app.RegisterFactory` 注册的服务是一个 actor，`Run()` 并发启动全部 actor 并等待首个触发（任一 actor 返回 / 退出信号 / `Close` / `OnPostStart` 钩子错误）。
 
-- `OnPreStart` 钩子不占用 run group actor：在 `Run()` 中、服务启动前按注册顺序串行执行，全部成功后才启动服务（见 3.2 节）。
-- 信号 actor：监听退出信号（见 3.7 节）或应用 Context 取消。一旦触发，先在 actor 内按顺序执行所有 `OnPreStop` 钩子，然后返回，run group 随之中断各服务。
-- post-start actor：等待所有服务 actor 进入执行体后执行 `OnPostStart` 钩子（见 3.2 节）。
+- `OnPreStart` 钩子不占用 actor：在 `Run()` 中、服务启动前按注册顺序串行执行，全部成功后才启动服务（见 3.2 节）。
+- 触发后进入固定阶段序列（与 actor 注册顺序无关）：置位 drain（可选窗口）→ 取消应用 Context → 执行 `OnPreStop` 钩子 → **逆序**停止服务（LIFO）→ 停总线 → 等全部 actor 退出 → 聚合错误返回。
+- `OnPostStart` 钩子在所有服务 actor 进入执行体（`startWG` 归零）后执行，由独立 goroutine 承载，被关停打断时不等待（见 3.2 节）。
 
-run group 的语义是：所有服务 actor 并发运行；一旦有任何一个 actor 返回——服务 `Start` 出错、CLI 命令执行完毕（`app.Command` 注册的命令结束时调用 `app.Close()`）、或信号 actor 返回——框架会中断其余所有 actor，整个应用随之进入统一关闭流程。这意味着任何一个服务失败都会触发整体优雅关闭，不会出现"半个应用还在跑"的状态。
+任何触发——服务 `Start` 出错、CLI 命令执行完毕、退出信号、`Close`——都会让整个应用进入统一的关停流程。这意味着任何一个服务失败都会触发整体优雅关闭，不会出现"半个应用还在跑"的状态；且阶段顺序是机制（`lifecycle.go` 文件头即契约），不依赖 actor 注册顺序。
 
-需要注意一个细节：每个服务拥有独立的 Context（注册服务时创建）。关闭时 run group 对每个服务 actor 先调用 `Stop(ctx)`，再取消其 Context。因此服务的 `Stop` 实现不要等待 `ctx.Done()`——它永远不会等到；`Start` 中阻塞在 `<-ctx.Done()` 上的逻辑会在 `Stop` 返回后被解除。
+需要注意一个细节：每个服务拥有独立的 Context（注册服务时创建）。关停时框架对每个服务先调用 `Stop(ctx)`，再取消其 Context。因此服务的 `Stop` 实现不要等待 `ctx.Done()`——它永远不会等到；`Start` 中阻塞在 `<-ctx.Done()` 上的逻辑会在 `Stop` 返回后被解除。
 
 ## 3.2 Hooks 与错误聚合
 

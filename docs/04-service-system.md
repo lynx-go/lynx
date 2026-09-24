@@ -23,8 +23,8 @@ type Service interface {
 
 - `Name() string`：服务名称，用于启动/停止日志中的标识。框架不检查唯一性，多个实例可以重名。
 - `Init(ctx AppContext) error`：注册服务时（即 `app.Register(...)` 调用时）**同步**执行，用于初始化依赖——可以通过参数 `ctx` 访问 `ctx.Config()`、`ctx.Logger()`、`ctx.Context()` 等（`AppContext` 是 `App` 的窄化子集，见 3.6 节）。返回 error 不会在注册时立即返回，而是被记录为首个注册错误，由 `Run()` 统一返回导致启动失败。
-- `Start(ctx context.Context) error`：`cli.Run()` 启动后，每个服务在 run group 中作为独立 actor **并发**调用。通常是阻塞式的（监听端口、消费消息），收到 `ctx` 取消时应返回。任何一个服务的 `Start` 返回（无论是否出错）都会触发整个应用的优雅关闭（见 3.1 节并发模型）。
-- `Stop(ctx context.Context) error`：关闭阶段由 run group 的中断函数调用，用于释放资源；返回的错误由框架收集，随 `Run()` 上抛。注意框架是先调用 `Stop` 再取消服务 Context（见 3.1 节），因此 `Stop` 中不要等待 `ctx.Done()`；`Stop` 必须容忍先于 `Start` 被调用（Init 成功但 Start 未执行时，框架会逆序调用 Stop 做资源清理）。
+- `Start(ctx context.Context) error`：`cli.Run()` 启动后，每个服务由 lifecycle 模块作为独立 actor **并发**调用。通常是阻塞式的（监听端口、消费消息），收到 `ctx` 取消时应返回。任何一个服务的 `Start` 返回（无论是否出错）都会触发整个应用的优雅关闭（见 3.1 节并发模型）。
+- `Stop(ctx context.Context) error`：关停阶段由 lifecycle 的停止序列调用，用于释放资源；返回的错误由框架收集，随 `Run()` 上抛。注意框架是先调用 `Stop` 再取消服务 Context（见 3.1 节），因此 `Stop` 中不要等待 `ctx.Done()`；`Stop` 必须容忍先于 `Start` 被调用（Init 成功但 Start 未执行时，框架会逆序调用 Stop 做资源清理）。
 
 注册服务通过 `app.Register` 完成：
 
@@ -49,17 +49,17 @@ type FactoryOptions struct {
 }
 ```
 
-注册方式与服务类似，使用 `app.RegisterFactories`：
+注册方式与服务类似，使用 `app.RegisterFactory`：
 
 ```go
-app.RegisterFactories(myFactory)
+app.RegisterFactory(myFactory)
 ```
 
 框架对工厂的处理逻辑（`lynx.go` 的 `addServiceFactories`）：
 
 1. 调用 `Options()` 获取构建选项，`Instances` 小于 1 时按 1 处理；
 2. 循环调用 `Instances` 次 `New()`，每次得到一个**全新**的服务实例；
-3. 把这些实例逐一走与 `app.Register` 相同的注册流程（各自独立 `Init`/独立 Context/独立 run group actor）。
+3. 把这些实例逐一走与 `app.Register` 相同的注册流程（各自独立 `Init`/独立 Context/独立 actor）。
 
 也就是说，`Instances: 3` 等价于注册三个互不影响的服务实例，`New()` 必须每次返回新对象，各实例之间不应共享会互相干扰的状态。
 
@@ -84,7 +84,7 @@ HealthCheckers() []Checker
 它有两个消费方：
 
 - HTTP 服务器的就绪端点：传入 `http.WithHealthCheckers(app.HealthCheckers)`（方法值天然匹配 `lynx.HealthCheckersFunc` 签名）后，`/healthz/readiness` 会并发调用所有收集到的检查器（单个限时，默认 3 秒，见 5.1 节），全部通过才返回 200（见 2.5 节）。
-- `app.Command` 注册的命令：执行前等待依赖就绪，三级优先解析与 `OrderedServices` 启动排序共用 `ready.go` 的同一模块（`probeServiceReady`）——实现 `Ready` 的服务等 channel 关闭（单次有界等待，依赖失败经 run group 中断即时退出）；否则实现 `Checker` 的单次有界健康检查（单次限时 3 秒，`WithProbeTimeout`；挂死的 checker 不会挂死等待循环）；两者皆无视为随启动即就绪。`MaxTries`/`WithBackoff` 仍是总预算。保证 CLI 命令不会抢在依赖服务就绪之前运行。
+- `app.Command` 注册的命令：执行前等待依赖就绪，三级优先解析与 `OrderedServices` 启动排序共用 `ready.go` 的同一模块（`probeServiceReady`）——实现 `Ready` 的服务等 channel 关闭（单次有界等待，依赖失败经 lifecycle 中断即时退出）；否则实现 `Checker` 的单次有界健康检查（单次限时 3 秒，`WithProbeTimeout`；挂死的 checker 不会挂死等待循环）；两者皆无视为随启动即就绪。`MaxTries`/`WithBackoff` 仍是总预算。保证 CLI 命令不会抢在依赖服务就绪之前运行。
 
 框架内置服务中，`server/grpc` 的 Server、`contrib/watermill-kafka` 的 Transport、`contrib/schedule` 的 Scheduler 都实现了 `CheckHealth`（核心 `eventbus` 默认内存 Bus 不进入 readiness 聚合）。典型的实现语义是：未 `Start` 前返回 error，`Start` 成功后返回 nil，`Stop` 后再次返回 error（以 `contrib/schedule` 为例）：
 
@@ -109,7 +109,7 @@ func (s *Scheduler) CheckHealth() error {
 1. 实现 `Name/Init/Start/Stop` 四个方法，`Start` 一般阻塞在 `ctx.Done()` 上；
 2. 需要多实例时再配一个实现 `New/Options` 的工厂，`New()` 每次返回新实例；
 3. 需要参与就绪检查就实现 `CheckHealth() error`，或直接内嵌 `lynx.HealthChecker`；
-4. 在 `setup` 回调中用 `app.Register`（或 `app.RegisterFactories` 注册工厂）挂载服务。
+4. 在 `setup` 回调中用 `app.Register`（或 `app.RegisterFactory` 注册工厂）挂载服务。
 
 下面是一个完整可编译的示例：一个 worker 服务内嵌 `HealthChecker` 参与就绪检查，并通过工厂以 2 个实例运行：
 
@@ -124,7 +124,7 @@ import (
 
 func main() {
 	cli := lynx.NewRunner(func(app lynx.App) error {
-		app.RegisterFactories(NewWorkerFactory("worker", 2))
+		app.RegisterFactory(NewWorkerFactory("worker", 2))
 		return nil
 	},
 		lynx.WithName("custom-service"),

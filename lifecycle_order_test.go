@@ -157,7 +157,7 @@ func TestRegisterAfterCloseRejected(t *testing.T) {
 		fn()
 	}
 	assertPanics("Register", func() { app.Register(&blockingService{name: "late"}) })
-	assertPanics("RegisterFactories", func() { app.RegisterFactories(&recordingFactory{instances: 1}) })
+	assertPanics("RegisterFactory", func() { app.RegisterFactory(&recordingFactory{instances: 1}) })
 	if err := app.Command(func(ctx context.Context) error { return nil }); !errors.Is(err, ErrAppClosed) {
 		t.Fatalf("Command() error = %v, want ErrAppClosed", err)
 	}

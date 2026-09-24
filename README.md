@@ -7,13 +7,14 @@ Lynx 是一个轻量级 Go 微服务框架：统一的应用生命周期、`Serv
 
 ## 特性
 
-- **生命周期** — 启动 / 排水（Drain）/ 优雅关闭；`OnStart` / `OnDrain` / `OnStop` 钩子
+- **生命周期** — 启动 / 排水（Drain）/ 优雅关闭；`OnPreStart` / `OnPostStart` / `OnDrain` / `OnPreStop` / `OnPostStop` 钩子
 - **服务系统** — `Service` + `ServiceFactory`；实现 `Checker` 的服务自动进入健康检查
-- **HTTP / gRPC** — 内置服务器与客户端（otel、请求日志、健康端点、中间件）
+- **HTTP / gRPC** — 内置服务器与客户端（otel、请求日志、健康端点、中间件；默认 `request_id` / `user_id` 传播，HTTP 头与 gRPC metadata 同源）
 - **EventBus** — 一等 `Bus` / `Topic[T]` / `Event[T]`，默认内存开箱即用
 - **跨进程消息** — `contrib/watermill` Bus + `contrib/watermill-kafka` Transport
 - **配置** — `Config` / `ConfigSource` 与具体库解耦，默认适配 Viper
 - **可观测性** — OpenTelemetry（`contrib/telemetry`）、pprof（`debug`）
+- **可测试性** — `lynxtest` 三层测试套件（组装测试 / 服务级 AppContext / 拨号辅助）
 - **扩展** — 注册发现（`registry` / `consul`）、Cron（`schedule`）、Zap（`zap`）、CLI、Wire
 
 ## 安装
@@ -68,6 +69,8 @@ go run main.go
 
 - 业务：http://localhost:8080
 - 存活 / 就绪：`/healthz/liveness`、`/healthz/readiness`
+- 服务端默认安装 `request_id` / `user_id` 传播：合法的 `x-request-id` / `x-user-id`
+  还原进请求 ctx 并回写响应头（`WithDisableRequestID()` 关闭）
 
 更多完整示例见 [`_examples/http`](./_examples/http)。
 
@@ -227,7 +230,8 @@ type Service interface {
 
 `Init` 接收 `AppContext`（`Context` / `Config` / `Logger` / `HealthCheckers` / `Bus` / `Close`），不依赖完整 `App`。`Stop` 与钩子错误由 `Run()` 聚合上抛。
 
-注册须在 `Run()` 之前；`Run()` 开始后 `Register` / `RegisterFactories` 会 panic。
+注册须在 `Run()` 与 `Close()` 之前；`Run()` 开始后或 `Close()` 之后
+`Register` / `RegisterFactory` 会 panic、`Command` 返回错误。
 
 ### 钩子与排水
 
@@ -263,6 +267,8 @@ lynx/
 ├── server/{http,grpc}/   # 入站服务器
 ├── debug/                # pprof（默认本机回环）
 ├── logging/              # slog 属性 / trace 注入
+├── lynxtest/             # 测试套件（Run / NewContext / 拨号辅助）
+├── internal/             # serverkit（server 共享规则）、clock（时间源）
 ├── contrib/
 │   ├── watermill/        # Watermill 驱动的 eventbus.Bus
 │   ├── watermill-kafka/  # Kafka Transport

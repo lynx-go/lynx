@@ -180,7 +180,7 @@ func (app *lynx) serviceActor(ctx context.Context, cancel context.CancelFunc, se
 // checkRegistration 是注册协议的唯一入口（调用方在服务 Init 之前调用）：
 //   - (nil, nil)：放行；
 //   - (initErr, nil)：注册阶段的 poison-pill——首个注册错误已记录，
-//     Register/RegisterFactories 静默返回，Command 返回该错误；
+//     Register/RegisterFactory 静默返回，Command 返回该错误；
 //   - (nil, err)：errRunStarted（运行中）或 ErrAppClosed（已关闭），
 //     由调用方经 registrationError 翻译为 panic / 错误。
 func (app *lynx) checkRegistration() (initErr, err error) {

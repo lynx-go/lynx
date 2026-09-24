@@ -1,6 +1,6 @@
 # Lynx 路线图
 
-> 最后更新：2026-09-22（对账 E1/E2 已实现项，制定 Phase G）
+> 最后更新：2026-09-24（v1.15.0 架构收敛批次对账：新增 Phase H，G4 时钟项补注）
 
 ## 定位与目标
 
@@ -11,7 +11,7 @@ Lynx 目前为团队内部使用的 Go 微服务框架，计划对外推广开�
 - 测试齐全：核心包与主要 contrib 模块具备单元测试，CI 强制 `-race`（全部 7 模块）与覆盖率门槛（根与 5 个 contrib 均 70%，`_examples` 除外）
       （v1.0 时点口径；现已扩至 11 模块/9 个 contrib，见 ci.yml）
 - 文档完整：GoDoc 全覆盖、`docs/` 教程补齐、示例自带 README
-- API 冻结：导出符号经过全量审查，v1.0 后保持向后兼容
+- API 冻结：导出符号经过全量审查；破坏性变更按文末"原则"节政策集中到 minor 版本发布（v1.10 / v1.11 / v1.14 / v1.15 均按此执行）
 
 ## Phase A — 还债（计划 v0.8.0，实际随 v1.0.0 发布）
 
@@ -102,8 +102,8 @@ v1.0 发布前全量审查（功能缺失/设计缺陷/实现缺陷）的修复�
 
 目标：围绕"服务间调用、流量治理、运维诊断"补齐生产通用能力。
 核心生命周期 API 自 v1.0 冻结；历史上另有若干破坏性更名（v1.10 钩子
-更名、v1.11 `Bind`→`Apply` 等），均在 CHANGELOG 明示且无兼容别名，
-政策见文末"原则"节。（来源：2026-08-07 封版评审的缺口分析，参照
+更名、v1.11 `Bind`→`Apply`、v1.14/v1.15 架构收敛批次等），均在 CHANGELOG
+明示且无兼容别名，政策见文末"原则"节。（来源：2026-08-07 封版评审的缺口分析，参照
 kratos/go-zero 等成熟框架的能力面。）
 
 ### E1 生产通用刚需（v1.1+，按优先级排序）
@@ -216,7 +216,9 @@ G3 提前，且先启动其"开源准备"子列。
 ### G4 测试与安全网（延续 v1.12 lynxtest 方向）
 
 - [x] schedule/bus 测试假件或时钟注入（G1 配置热更新的测试前置，
-      建议与 G1 同期或先行）
+      建议与 G1 同期或先行；v1.15.0 起统一为公开 `lynx.Clock` 接缝 +
+      `internal/clock.Fake`——cluster 续约/TTL 与 registry 缓存 stale
+      均可确定性推进，见 Phase H）
 - [ ] Kafka testcontainers 集成测试（WK-19，Phase F 遗留承接，
       已积压月余，建议尽早），模式沉淀为 contrib 可复用的测试辅助
 - [x] CI 增加 govulncheck 依赖漏洞扫描（开源后供应链关注度陡增，
@@ -235,6 +237,41 @@ etcd registry、Nacos/Apollo 配置中心、RabbitMQ/NATS transport、
 Outbox 发送盒与 DLQ 死信转投（总线故事的自然延伸，watermill 生态有
 forwarder 组件）、CORS/gzip 等通用中间件、OTLP Logs（可观测三支柱
 缺一）：有真实使用需求再以 contrib 收录，不做能力面竞赛。
+
+## Phase H — 架构收敛（v1.15.0，2026-09-24）
+
+以 2026-09-23 架构评审报告的候选 1-8 为主线的重构批次（明细与迁移
+总览见 `CHANGELOG.md` v1.15.0）：不做能力扩展，只把重复规则收敛成唯一
+模块、把注释级不变量变成机制、把测试从 sleep 改为确定性断言。
+
+- [x] 应用生命周期自有关停调度（`lifecycle.go`；移除 oklog/run；阶段
+      顺序与 actor 注册顺序解耦、服务 Stop 统一 LIFO）
+- [x] readiness 有界收敛（Ready 等待与 CheckHealth 调用不越预算；修复
+      OrderedServices 与总线就绪两处可永久挂起的路径）
+- [x] Bus 共享核心下沉（`eventbus.Resolver` / `InvokeHandler` /
+      `GroupClaims` / `RedeliveryLimiter`；watermill 只接线）
+- [x] server 共享规则收敛至 `internal/serverkit`（健康执行 / 有界关停 /
+      请求标识 / 生命周期事件；`lynx.server.*` 主题统一，HTTP 默认传播）
+- [x] Watcher 骨架与订阅契约（`registry.WatcherCore[T]`；
+      `Resolver.Subscribe(name, filter)`；sentinel 统一）
+- [x] 时间源接缝（公开 `lynx.Clock` + `internal/clock.Fake`；cluster
+      租约与 registry 缓存边界确定性断言）
+- [x] lynxtest 补全为唯一测试上下文（Meta / Checkers 注入；7 个手写
+      AppContext 替身迁移删除）
+- [x] 剩余小项：schedule identity 与引擎 parser 同源、`Topic.PublishRaw`
+      等价面删除（原始载荷单入口）、`telemetry.Options` / `schedule.Options`
+      未导出、`WithMetadata` 克隆修复
+- [ ] 时钟接缝向其余真实 ticker 延伸（campaign 退避、grpc 兜底轮询、
+      dns 轮询、registrar 心跳/探测）——有确定性测试需求时再接，避免
+      无消费方的管道
+
+本批明确不做（有意保留，评审记录在案）：
+
+- `Config` / `ConfigSource` 的 17 方法直通接口：viper 替换接缝是刻意
+  设计，代价（自定义实现与测试替身需写全方法）由 lynxtest 的配置注入
+  覆盖绝大部分；
+- App 级注册协议替身（boot/fromconfig）与 debug `/loglevel` 控制面：
+  非 AppContext 适用面，保持手写。
 
 ## 原则
 

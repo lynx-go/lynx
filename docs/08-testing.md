@@ -141,5 +141,7 @@ mise run test-integration   # 集成（-tags integration，需要本地/容器�
 | `lynx.WithIsolated()` | 不触碰进程级全局（并行多 App） |
 | `lynxhttp.WithListener(ln)` / `lynxgrpc.WithListener(ln)` | 注入监听器（bufconn） |
 | `lynx.Server` 接口 | `Addr()/AdvertiseAddr()/Ready()` 泛化（两个 server 均实现） |
+| `lynx.ContextWithMeta(ctx, meta)` | 给任意 ctx 附加应用元数据（`lynx.Meta` 的对称写入口） |
+| `lynx.Clock` + `internal/clock.Fake` | 时间源接缝：`cluster.WithClock` / `registry.WithResolverClock` 注入假时钟，TTL / 续约 / stale 边界确定性断言（不再 sleep） |
 
 完整可运行示例见 `_examples/testing`。

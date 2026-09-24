@@ -34,7 +34,7 @@ func (f *fakeLynx) OnPostStop(fns ...lynx.CleanupFunc) {
 func (f *fakeLynx) Register(cs ...lynx.Service) {
 	f.services = append(f.services, cs...)
 }
-func (f *fakeLynx) RegisterFactories(fs ...lynx.ServiceFactory) {
+func (f *fakeLynx) RegisterFactory(fs ...lynx.ServiceFactory) {
 	f.factories = append(f.factories, fs...)
 }
 
