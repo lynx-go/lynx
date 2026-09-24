@@ -21,7 +21,6 @@ import (
 	"os"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/consul/api"
@@ -64,9 +63,6 @@ const (
 
 // errClosed 在 Close 之后的读写操作上返回。
 var errClosed = errors.New("consul: client closed")
-
-// errWatcherStopped 在 Watcher.Stop 之后阻塞中的 Next 上返回。
-var errWatcherStopped = errors.New("consul: watcher stopped")
 
 // Option 配置 Client。
 type Option func(*Client)
@@ -371,15 +367,12 @@ func (c *Client) Watch(ctx context.Context, name string, filter registry.Filter)
 	if name == "" {
 		return nil, registry.ErrBadName
 	}
-	w := &watcher{
-		c:      c,
-		name:   name,
-		filter: filter,
-		ctx:    ctx,
-		ch:     make(chan []registry.Instance, 1),
-		done:   make(chan struct{}),
-	}
-	w.first.Store(true)
+	w := &watcher{c: c, name: name, filter: filter}
+	w.core = registry.NewWatcherCore[registry.Instance](ctx, func() {
+		c.mu.Lock()
+		delete(c.watchers, w)
+		c.mu.Unlock()
+	})
 	// closed 检查必须与注册同临界区（RC-09）：此前 checkOpen 释放锁后才
 	// 注册 watcher，Close 若落在窗口内，该 watcher 无人停（直连使用时
 	// goroutine 泄漏）。
@@ -531,11 +524,7 @@ type watcher struct {
 	c      *Client
 	name   string
 	filter registry.Filter
-	ctx    context.Context
-	ch     chan []registry.Instance // 缓冲 1，最新替换
-	done   chan struct{}
-	once   sync.Once
-	first  atomic.Bool
+	core   *registry.WatcherCore[registry.Instance]
 
 	mu        sync.Mutex
 	lastIndex uint64
@@ -544,61 +533,48 @@ type watcher struct {
 // Next 首次调用立即查询并返回当前快照（含空列表）；之后阻塞至集合变化、
 // ctx 取消或 Stop。
 func (w *watcher) Next() ([]registry.Instance, error) {
-	if w.first.CompareAndSwap(true, false) {
-		instances, meta, err := w.c.query(w.ctx, w.name, w.filter, 0, 0)
-		if err != nil {
-			return nil, err
-		}
-		// 顺序论证（RC-10，窗口测试不可行故以确定性顺序保证）：
-		// 1) 先排空 ch——排空前 loop 推入的快照内容已包含在本次查询
-		//    结果中（其触发变化的 index ≤ meta.LastIndex），丢弃是去重；
-		// 2) 再写 lastIndex——排空之后、写入之前 loop 新推入的快照
-		//    不会被本次排空波及，保留下一次 Next 消费；
-		// 3) lastIndex 写的是本次查询的（可能较小的）index：若第 1 步
-		//    丢掉了更新的快照，下一轮 blocking query 会以较小 WaitIndex
-		//    立即重新取回该状态，自愈；不会出现「推送被丢且 lastIndex
-		//    停在过期值」的永久丢失。
-		// 已知边界：index 单调假设被破坏（stale 读到新 index + 旧数据）
-		// 时仍可能丢一次推送，仅 allow_stale=true 且极小概率，接受。
-		w.mu.Lock()
-		select {
-		case <-w.ch:
-		default:
-		}
-		w.lastIndex = meta.LastIndex
-		w.mu.Unlock()
-		return instances, nil
+	return w.core.Next(w.firstSnapshot)
+}
+
+// firstSnapshot 查询首快照并排空期间 loop 可能已推入的重复快照。
+// 顺序论证（RC-10，窗口测试不可行故以确定性顺序保证）：
+//  1. 先排空 ch——排空前 loop 推入的快照内容已包含在本次查询结果中
+//     （其触发变化的 index ≤ meta.LastIndex），丢弃是去重；
+//  2. 再写 lastIndex——排空之后、写入之前 loop 新推入的快照不会被本次
+//     排空波及，保留下一次 Next 消费；
+//  3. lastIndex 写的是本次查询的（可能较小的）index：若第 1 步丢掉了
+//     更新的快照，下一轮 blocking query 会以较小 WaitIndex 立即重新取回
+//     该状态，自愈；不会出现「推送被丢且 lastIndex 停在过期值」的永久丢失。
+//
+// 已知边界：index 单调假设被破坏（stale 读到新 index + 旧数据）时仍可能
+// 丢一次推送，仅 allow_stale=true 且极小概率，接受。
+func (w *watcher) firstSnapshot() ([]registry.Instance, error) {
+	instances, meta, err := w.c.query(w.core.Ctx(), w.name, w.filter, 0, 0)
+	if err != nil {
+		return nil, err
 	}
-	select {
-	case instances := <-w.ch:
-		return instances, nil
-	case <-w.ctx.Done():
-		return nil, w.ctx.Err()
-	case <-w.done:
-		return nil, errWatcherStopped
-	}
+	w.mu.Lock()
+	w.core.Drain()
+	w.lastIndex = meta.LastIndex
+	w.mu.Unlock()
+	return instances, nil
 }
 
 // Stop 停止 Watcher 并从 Client 注销；幂等，返回 nil。
 func (w *watcher) Stop() error {
-	w.once.Do(func() {
-		close(w.done)
-		w.c.mu.Lock()
-		delete(w.c.watchers, w)
-		w.c.mu.Unlock()
-	})
-	return nil
+	return w.core.Stop()
 }
 
 // loop 执行 blocking query：WaitIndex 推进，每次返回即推送（Consul 仅在
 // 集合变化或超时后返回）；错误按 1s–30s 指数退避重连。
 func (w *watcher) loop() {
+	ctx := w.core.Ctx()
 	backoff := watchBackoffMin
 	for {
 		select {
-		case <-w.ctx.Done():
+		case <-ctx.Done():
 			return
-		case <-w.done:
+		case <-w.core.Done():
 			return
 		default:
 		}
@@ -607,14 +583,14 @@ func (w *watcher) loop() {
 		index := w.lastIndex
 		w.mu.Unlock()
 
-		instances, meta, err := w.c.query(w.ctx, w.name, w.filter, index, watchWaitTime)
+		instances, meta, err := w.c.query(ctx, w.name, w.filter, index, watchWaitTime)
 		if err != nil {
-			if w.ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return
 			}
 			timer := time.NewTimer(backoff)
 			select {
-			case <-w.done:
+			case <-w.core.Done():
 				timer.Stop()
 				return
 			case <-timer.C:
@@ -640,14 +616,6 @@ func (w *watcher) loop() {
 		}
 		w.lastIndex = meta.LastIndex
 		w.mu.Unlock()
-		select {
-		case w.ch <- instances:
-		default:
-			select {
-			case <-w.ch:
-			default:
-			}
-			w.ch <- instances
-		}
+		w.core.Push(instances)
 	}
 }

@@ -88,7 +88,7 @@ func (b *grpcBuilder) Build(target resolver.Target, cc resolver.ClientConn, _ re
 		done:         make(chan struct{}),
 		subCh:        make(chan subEvent, 1),
 	}
-	if sub, err := b.rslv.Subscribe(name); err != nil {
+	if sub, err := b.rslv.Subscribe(name, gr.filter); err != nil {
 		// Subscribe 仅在 Resolver 关闭后失败：退化为纯兜底轮询，
 		// Build 不因此失败（连接仍可由 lastState 服务）。
 		b.rslv.logger.Debug("registry: grpc subscribe failed, falling back to polling only",
@@ -203,8 +203,8 @@ func (gr *grpcResolver) resolveViaGetAll() {
 	gr.resolveFromSnapshot(insts)
 }
 
-// resolveFromSnapshot 把实例快照（订阅推送为全量含非 Passing，GetAll
-// 为已过滤集——统一先过 MatchFilter）翻译为地址集并按需 UpdateState。
+// resolveFromSnapshot 把实例快照（订阅推送与 GetAll 均已按 Filter 过滤）
+// 翻译为地址集并按需 UpdateState。
 // 空列表同样 UpdateState：服务下线立即生效（空快照语义）。
 // 地址集与上次相同（排序后比较）则跳过 UpdateState：Resolver 缓存快照
 // 顺序不稳定（map 遍历），无 diff 时重复 UpdateState 会触发无意义的
@@ -212,9 +212,6 @@ func (gr *grpcResolver) resolveViaGetAll() {
 func (gr *grpcResolver) resolveFromSnapshot(all []Instance) {
 	addrs := make([]resolver.Address, 0, len(all))
 	for _, inst := range all {
-		if !MatchFilter(gr.filter, inst) {
-			continue
-		}
 		for _, ep := range inst.Endpoints {
 			if ep.Protocol != gr.filter.Protocol {
 				continue

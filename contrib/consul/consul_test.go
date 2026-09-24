@@ -397,6 +397,23 @@ func TestGetServiceFiltersCritical(t *testing.T) {
 	}
 }
 
+// TestWatchStopReturnsSharedSentinel：Stop 之后的 Next 返回共享 sentinel
+// registry.ErrWatcherStopped（此前是 consul 私有错误值）。
+func TestWatchStopReturnsSharedSentinel(t *testing.T) {
+	_, srv := newFakeConsul(t)
+	c := newTestClient(t, srv)
+	w, err := c.Watch(context.Background(), "svc", registry.Filter{})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	if err := w.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := w.Next(); !errors.Is(err, registry.ErrWatcherStopped) {
+		t.Fatalf("Next after Stop = %v, want registry.ErrWatcherStopped", err)
+	}
+}
+
 func TestWatchBlockingQuery(t *testing.T) {
 	_, srv := newFakeConsul(t)
 	c := newTestClient(t, srv)

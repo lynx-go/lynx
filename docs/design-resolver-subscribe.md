@@ -25,37 +25,38 @@
 // 兜底已由 Resolver 内部维护，订阅者对后端形态无感（DNS 后端下
 // 缓存由轮询维护，同样触发通知）。
 // 契约与 Discovery.Watcher 同构：
-//   - 缓存已填充时首个 Next 立即返回当前快照；
+//   - 缓存已填充时首个 Next 立即返回当前快照；未填充则等待首次 store；
 //   - 后续 Next 返回最近一次快照变化，慢消费者不排队陈旧快照
-//     （信号合并，总是最新）；
-//   - 返回全量快照（含非 Passing），消费方自行 MatchFilter——
-//     与 GetAll 读路径一致，每个服务名共享一条缓存与通知通道；
-//   - 返回切片只读、不拷贝（与后端 Watcher.Next 一致）；
+//     （推送缓冲 1 最新替换，总是最新）；
+//   - 快照已按 filter 过滤（MatchFilter 语义，与 Watch/GetAll 读路径
+//     一致）；每个服务名共享一条缓存与推送源，过滤在订阅边界应用；
+//   - 返回切片只读（不深拷贝，与后端 Watcher.Next 一致）；
 //   - Stop 退订且幂等；Stop 后 Next 返回 ErrWatcherStopped，
 //     Resolver.Close 后返回 ErrResolverClosed。
-func (r *Resolver) Subscribe(name string) (Watcher, error)
+func (r *Resolver) Subscribe(name string, filter Filter) (Watcher, error)
 ```
 
 校验：空 name → `ErrBadName`；`Resolver` 已关闭 → `ErrResolverClosed`；未查询过的 name 经 `entryFor` 惰性创建（与 `Get` 行为一致，触发 watchLoop）。
 
 ### 2.2 内部机制（`cacheEntry` 扩展）
 
-- `cacheEntry` 增加 `subs map[uint64]chan struct{}`（信号容量 1）与自增 ID；
-- **触发点统一为 `store()`**：watchLoop 推送、轮询回退、`ensureFilled` 同步首填全部经 store，天然全覆盖；store 末尾遍历 subs 非阻塞发信号（`select default` 丢弃 = 信号合并）。无订阅者时空 map 判断零成本；
-- **首推**：`Subscribe` 注册时若 `filled`，向新订阅者预发一个信号（Next 逻辑保持单一：等信号 → RLock 读快照返回）；
+- `cacheEntry` 增加 `subs map[uint64]*subscription` 与自增 ID；
+- **触发点统一为 `store()`**：watchLoop 推送、轮询回退、`ensureFilled` 同步首填全部经 store，天然全覆盖；store 末尾对每个订阅应用其 Filter 后 `Push`（缓冲 1 最新替换 = 慢消费者不排队陈旧快照）。无订阅者时空 map 判断零成本；
+- **首推**：`addSub` 时若 `filled`，向新订阅者预推一份当前过滤快照（首个 Next 立即返回）；未填充则等待首次 store；
+- **骨架**：订阅与三个后端 watcher 共用 `registry.WatcherCore[T]`（首次语义注入、Push 合并、Stop 幂等 + 注销钩子）；停止/取消优先于挂起推送；
 - **stale 丢弃不通知**：与 grpcResolver"解析出错保留上次状态"的既有惯例一致，兜底轮询覆盖；
-- 新哨兵 `ErrWatcherStopped`。
+- 哨兵统一为 `ErrWatcherStopped`（后端与订阅同词；此前 registry/consul 各持私有副本）。
 
 ### 2.3 grpcResolver 改造（订阅驱动 + 兜底轮询）
 
-- loop 增加订阅消费：`Subscribe(name)` 的 `Next()` 返回即走既有翻译路径（Protocol 过滤 → `resolver.Address` → 排序比较去重 → `UpdateState`）。去重、空快照立即生效、出错保态三条语义原样保留；
+- loop 增加订阅消费：`Subscribe(name, filter)` 的 `Next()` 返回即走既有翻译路径（Protocol 过滤 → `resolver.Address` → 排序比较去重 → `UpdateState`）。去重、空快照立即生效、出错保态三条语义原样保留；
 - 兜底轮询保留：`grpcDefaultPollInterval`（5s）改名 `grpcFallbackPollInterval` 并放宽为 **30s**——正常路径零轮询，异常时 30s 内自愈；`ResolveNow` 保留（直接走既有 `GetAll` 路径）；
 - 订阅 `Next` 返回 `ErrWatcherStopped`/`ErrResolverClosed` 时退出订阅 goroutine，主循环退回纯兜底轮询（不退出——gRPC 连接可能仍由 lastState 服务）。
 
 ## 三、关键决策及理由
 
 1. **`Subscribe` 返回 `Watcher`（复用接口）而非回调/channel**——回调需定义并发调用与 panic 归属；裸信号 chan 不通用。与 `Discovery.Watcher` 同构让消费方代码形态统一，阻塞 Next + Stop 的生命周期语义现成。否掉了 `grpc_resolver.go` 注释里提的 "OnChange 回调"形态。
-2. **全量快照而非增量 diff**——消费方过滤需求各异（grpcResolver 只取 Protocol=grpc），diff 责任留在消费方（排序比较去重已存在）；Resolver 侧保持每 name 一条通道的简单结构。
+2. **快照而非增量 diff**——消费方合并需求各异，diff 责任留在消费方（排序比较去重已存在）；Resolver 侧保持每 name 一条缓存与推送源的简单结构。**修订（骨架收敛批次）**：过滤下沉到订阅边界——`Subscribe(name, filter)` 返回已过 MatchFilter 的快照，与 Watch/GetAll 读路径一致；缓存仍按服务名共享一条，消费方不再自行补过滤。
 3. **信号合并不排队**——服务发现订阅的标准语义：慢消费者只关心最新集合，陈旧快照队列毫无价值。
 4. **兜底轮询保留但放宽至 30s**——完全去掉轮询会让订阅链路故障不可自愈；正常路径订阅已在毫秒级推送，30s 兜底无常态成本。
 5. **不加 filter 参数**——缓存以 name 为单位全量存储（`filterAll` 的既有设计），过滤在读路径应用；订阅通道同构共享。

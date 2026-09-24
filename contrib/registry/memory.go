@@ -5,14 +5,11 @@ import (
 	"errors"
 	"maps"
 	"sync"
-	"sync/atomic"
 )
 
 var (
 	// errClosed 在 Memory.Close 之后的写操作或 Watch 上返回。
 	errClosed = errors.New("registry: memory backend closed")
-	// errWatcherStopped 在 Watcher.Stop 之后阻塞中的 Next 上返回。
-	errWatcherStopped = errors.New("registry: watcher stopped")
 )
 
 // Memory 是进程内 Registry + Discovery，用于测试与单进程场景。
@@ -116,15 +113,17 @@ func (m *Memory) Watch(ctx context.Context, name string, filter Filter) (Watcher
 	if m.closed {
 		return nil, errClosed
 	}
-	w := &memoryWatcher{
-		m:      m,
-		name:   name,
-		filter: filter,
-		ctx:    ctx,
-		ch:     make(chan []Instance, 1),
-		done:   make(chan struct{}),
-	}
-	w.first.Store(true)
+	w := &memoryWatcher{m: m, name: name, filter: filter}
+	w.core = NewWatcherCore[Instance](ctx, func() {
+		m.mu.Lock()
+		if set, ok := m.watchers[name]; ok {
+			delete(set, w)
+			if len(set) == 0 {
+				delete(m.watchers, name)
+			}
+		}
+		m.mu.Unlock()
+	})
 	set, ok := m.watchers[name]
 	if !ok {
 		set = make(map[*memoryWatcher]struct{})
@@ -138,17 +137,7 @@ func (m *Memory) Watch(ctx context.Context, name string, filter Filter) (Watcher
 // 调用方必须持有 m.mu（写锁）。
 func (m *Memory) notifyLocked(name string) {
 	for w := range m.watchers[name] {
-		snap := m.snapshotLocked(w.name, w.filter)
-		// 缓冲 1 + 最新替换：Watcher 不消费时只保留最新快照。
-		select {
-		case w.ch <- snap:
-		default:
-			select {
-			case <-w.ch:
-			default:
-			}
-			w.ch <- snap
-		}
+		w.core.Push(m.snapshotLocked(w.name, w.filter))
 	}
 }
 
@@ -180,50 +169,26 @@ type memoryWatcher struct {
 	m      *Memory
 	name   string
 	filter Filter
-	ctx    context.Context
-	ch     chan []Instance // 缓冲 1，最新替换
-	done   chan struct{}
-	once   sync.Once
-	first  atomic.Bool
+	core   *WatcherCore[Instance]
 }
 
 // Next 首次调用立即返回当前快照（含空列表）；之后阻塞至集合变化、
 // ctx 取消或 Stop。
 func (w *memoryWatcher) Next() ([]Instance, error) {
-	if w.first.CompareAndSwap(true, false) {
-		// 在 RLock 内取快照并排空积压通知：先于首次 Next 发生的变化
-		// 已包含在当前快照中，不应再重复推送。
-		w.m.mu.RLock()
-		snap := w.m.snapshotLocked(w.name, w.filter)
-		select {
-		case <-w.ch:
-		default:
-		}
-		w.m.mu.RUnlock()
-		return snap, nil
-	}
-	select {
-	case snap := <-w.ch:
-		return snap, nil
-	case <-w.ctx.Done():
-		return nil, w.ctx.Err()
-	case <-w.done:
-		return nil, errWatcherStopped
-	}
+	return w.core.Next(w.firstSnapshot)
+}
+
+// firstSnapshot 在锁内取快照并排空积压通知：先于首次 Next 发生的变化
+// 已包含在当前快照中，不应再重复推送。
+func (w *memoryWatcher) firstSnapshot() ([]Instance, error) {
+	w.m.mu.RLock()
+	defer w.m.mu.RUnlock()
+	snap := w.m.snapshotLocked(w.name, w.filter)
+	w.core.Drain()
+	return snap, nil
 }
 
 // Stop 停止 Watcher 并从 Memory 注销；幂等，返回 nil。
 func (w *memoryWatcher) Stop() error {
-	w.once.Do(func() {
-		close(w.done)
-		w.m.mu.Lock()
-		if set, ok := w.m.watchers[w.name]; ok {
-			delete(set, w)
-			if len(set) == 0 {
-				delete(w.m.watchers, w.name)
-			}
-		}
-		w.m.mu.Unlock()
-	})
-	return nil
+	return w.core.Stop()
 }

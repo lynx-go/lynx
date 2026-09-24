@@ -142,6 +142,18 @@ func MatchFilter(f Filter, i Instance) bool {
 	return true
 }
 
+// filterInstances 返回符合 Filter 的新切片（始终新建，订阅推送与缓存
+// 快照隔离；Instance 内部切片仍按只读契约共享）。
+func filterInstances(f Filter, insts []Instance) []Instance {
+	out := make([]Instance, 0, len(insts))
+	for _, inst := range insts {
+		if MatchFilter(f, inst) {
+			out = append(out, inst)
+		}
+	}
+	return out
+}
+
 // Registry 是写接口。实现必须并发安全。Deregister / Close 必须幂等。
 type Registry interface {
 	Register(ctx context.Context, inst Instance) error

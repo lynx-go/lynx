@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -152,15 +151,8 @@ func (d *dnsDiscovery) Watch(ctx context.Context, name string, filter Filter) (W
 	if name == "" {
 		return nil, ErrBadName
 	}
-	w := &dnsWatcher{
-		d:      d,
-		name:   name,
-		filter: filter,
-		ctx:    ctx,
-		ch:     make(chan []Instance, 1),
-		done:   make(chan struct{}),
-	}
-	w.first.Store(true)
+	w := &dnsWatcher{d: d, name: name, filter: filter}
+	w.core = NewWatcherCore[Instance](ctx, nil)
 	go w.loop()
 	return w, nil
 }
@@ -343,11 +335,7 @@ type dnsWatcher struct {
 	d      *dnsDiscovery
 	name   string
 	filter Filter
-	ctx    context.Context
-	ch     chan []Instance // 缓冲 1，最新替换
-	done   chan struct{}
-	once   sync.Once
-	first  atomic.Bool
+	core   *WatcherCore[Instance]
 
 	mu   sync.Mutex
 	last []Instance // 已投递的最新快照（首快照或轮询推送）
@@ -356,57 +344,49 @@ type dnsWatcher struct {
 // Next 首次调用立即解析并返回当前快照（含空列表）；之后阻塞至集合变化、
 // ctx 取消或 Stop。
 func (w *dnsWatcher) Next() ([]Instance, error) {
-	if w.first.CompareAndSwap(true, false) {
-		snap, err := w.d.resolve(w.ctx, w.name, w.filter)
-		if err != nil && !isNotFound(err) {
-			return nil, err
-		}
-		if isNotFound(err) {
-			snap = []Instance{}
-		}
-		w.mu.Lock()
-		w.last = snap
-		// 排空首快照前轮询 goroutine 可能已推入的重复快照。
-		select {
-		case <-w.ch:
-		default:
-		}
-		w.mu.Unlock()
-		return snap, nil
+	return w.core.Next(w.firstSnapshot)
+}
+
+// firstSnapshot 解析首快照并排空首快照前轮询 goroutine 可能已推入的
+// 重复快照；NXDOMAIN 记为合法空快照。
+func (w *dnsWatcher) firstSnapshot() ([]Instance, error) {
+	snap, err := w.d.resolve(w.core.Ctx(), w.name, w.filter)
+	if err != nil && !isNotFound(err) {
+		return nil, err
 	}
-	select {
-	case snap := <-w.ch:
-		return snap, nil
-	case <-w.ctx.Done():
-		return nil, w.ctx.Err()
-	case <-w.done:
-		return nil, errWatcherStopped
+	if isNotFound(err) {
+		snap = []Instance{}
 	}
+	w.mu.Lock()
+	w.last = snap
+	w.core.Drain()
+	w.mu.Unlock()
+	return snap, nil
 }
 
 // Stop 停止轮询；幂等，返回 nil。
 func (w *dnsWatcher) Stop() error {
-	w.once.Do(func() { close(w.done) })
-	return nil
+	return w.core.Stop()
 }
 
 // loop 按 poll_interval 轮询：变化才推送；NXDOMAIN 推空快照并放慢到
 // 负缓存钳制区间；其它查询错误保留旧快照、不推送。
 func (w *dnsWatcher) loop() {
+	ctx := w.core.Ctx()
 	delay := w.d.pollInterval
 	for {
 		timer := time.NewTimer(delay)
 		select {
-		case <-w.ctx.Done():
+		case <-ctx.Done():
 			timer.Stop()
 			return
-		case <-w.done:
+		case <-w.core.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
 		}
 
-		snap, err := w.d.resolve(w.ctx, w.name, w.filter)
+		snap, err := w.d.resolve(ctx, w.name, w.filter)
 		notFound := isNotFound(err)
 		if err != nil && !notFound {
 			// 查询失败：保留旧快照，负缓存钳制后重试。
@@ -423,15 +403,7 @@ func (w *dnsWatcher) loop() {
 		w.mu.Lock()
 		if !equalDNSSnapshots(w.last, snap) {
 			w.last = snap
-			select {
-			case w.ch <- snap:
-			default:
-				select {
-				case <-w.ch:
-				default:
-				}
-				w.ch <- snap
-			}
+			w.core.Push(snap)
 		}
 		w.mu.Unlock()
 	}

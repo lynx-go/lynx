@@ -44,7 +44,7 @@ func TestSubscribeFirstNextImmediate(t *testing.T) {
 	if _, err := r.Get(context.Background(), "svc", Filter{}); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	w, err := r.Subscribe("svc")
+	w, err := r.Subscribe("svc", Filter{})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestSubscribeReceivesUpdates(t *testing.T) {
 	fd := &fakeDiscovery{snap: []Instance{inst("a")}}
 	r := NewResolver(fd, WithPollInterval(50*time.Millisecond))
 	defer func() { _ = r.Close() }()
-	w, err := r.Subscribe("svc")
+	w, err := r.Subscribe("svc", Filter{})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestSubscribeSignalCoalescing(t *testing.T) {
 		t.Fatal("entryFor failed")
 	}
 	e.store([]Instance{inst("a")})
-	w, err := r.Subscribe("svc")
+	w, err := r.Subscribe("svc", Filter{})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -125,13 +125,58 @@ func TestSubscribeSignalCoalescing(t *testing.T) {
 	}
 }
 
+// TestSubscribeAppliesFilter：订阅返回已按 Filter 过滤的快照（此前为全量、
+// 消费方自行 MatchFilter）——非 Passing 与非匹配协议在订阅边界被过滤。
+func TestSubscribeAppliesFilter(t *testing.T) {
+	fd := &fakeDiscovery{snap: []Instance{inst("a")}, silent: true}
+	r := NewResolver(fd, WithPollInterval(50*time.Millisecond))
+	defer func() { _ = r.Close() }()
+	e, ok := r.entryFor("svc")
+	if !ok {
+		t.Fatal("entryFor failed")
+	}
+
+	passing := inst("passing")
+	httpOnly := Instance{
+		ID: "http", Name: "svc", Status: StatusPassing,
+		Endpoints: []Endpoint{{Protocol: "http", Address: "h"}},
+	}
+	critical := inst("critical")
+	critical.Status = StatusCritical
+	e.store([]Instance{passing, httpOnly, critical})
+
+	w, err := r.Subscribe("svc", Filter{Protocol: "grpc"})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer func() { _ = w.Stop() }()
+
+	insts, err := nextWithTimeout(t, w)
+	if err != nil {
+		t.Fatalf("first Next: %v", err)
+	}
+	if len(insts) != 1 || insts[0].ID != "passing" {
+		t.Fatalf("first filtered Next = %+v, want only passing grpc", insts)
+	}
+
+	// 更新推送同样过滤。
+	e.store([]Instance{passing, httpOnly, critical, inst("b")})
+	insts, err = nextWithTimeout(t, w)
+	if err != nil {
+		t.Fatalf("updated Next: %v", err)
+	}
+	if len(insts) != 2 {
+		t.Fatalf("updated filtered Next = %+v, want 2", insts)
+	}
+}
+
 // TestSubscribeStop：Stop 幂等且之后 Next 返回 ErrWatcherStopped；
 // Stop 后的变更不再产生通知（Next 保持错误语义）。
 func TestSubscribeStop(t *testing.T) {
 	fd := &fakeDiscovery{snap: []Instance{inst("a")}}
 	r := NewResolver(fd, WithPollInterval(50*time.Millisecond))
 	defer func() { _ = r.Close() }()
-	w, err := r.Subscribe("svc")
+	w, err := r.Subscribe("svc", Filter{})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -155,7 +200,7 @@ func TestSubscribeStop(t *testing.T) {
 func TestSubscribeAfterResolverClose(t *testing.T) {
 	fd := &fakeDiscovery{snap: []Instance{inst("a")}}
 	r := NewResolver(fd, WithPollInterval(50*time.Millisecond))
-	w, err := r.Subscribe("svc")
+	w, err := r.Subscribe("svc", Filter{})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -173,7 +218,7 @@ func TestSubscribePollingBackend(t *testing.T) {
 	fd := &fakeDiscovery{snap: []Instance{inst("a")}, watchErr: errWatchBroken}
 	r := NewResolver(fd, WithPollInterval(50*time.Millisecond))
 	defer func() { _ = r.Close() }()
-	w, err := r.Subscribe("svc")
+	w, err := r.Subscribe("svc", Filter{})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -195,13 +240,13 @@ func TestSubscribePollingBackend(t *testing.T) {
 
 func TestSubscribeBadNameAndClosed(t *testing.T) {
 	r := NewResolver(&fakeDiscovery{})
-	if _, err := r.Subscribe(""); !errors.Is(err, ErrBadName) {
+	if _, err := r.Subscribe("", Filter{}); !errors.Is(err, ErrBadName) {
 		t.Errorf("Subscribe(\"\") = %v, want ErrBadName", err)
 	}
 	if err := r.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := r.Subscribe("svc"); !errors.Is(err, ErrResolverClosed) {
+	if _, err := r.Subscribe("svc", Filter{}); !errors.Is(err, ErrResolverClosed) {
 		t.Errorf("Subscribe after Close = %v, want ErrResolverClosed", err)
 	}
 }
