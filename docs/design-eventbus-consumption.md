@@ -121,6 +121,7 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
 | R5 | `instances` 与 `max_in_flight` 混淆（以为 `instances` 会并行处理） | 文档明确分工：`instances` = 后端成员数（抢分区 / 连接），`max_in_flight` = 进程内在途处理上限 |
 | R6 | 存量用户破坏性迁移 | §6 迁移对照 + CHANGELOG + 版本说明 |
 | R7 | 部署盲区：不同逻辑 topic 路由到同一物理 topic 且组相同 | 组现在只来自 kafka 条目 → 物理 topics 重叠时必须拆成不同条目；文档警示 |
+| R8 | **Kafka 提交乱序窗口**：watermill-kafka 在 Ack 时 `MarkMessage(offset+1)`（AutoCommit 周期提交或显式 `Commit`），提交高 offset 隐含提交更低 offset——`max_in_flight>1` 时高 offset 先确认、崩溃会跳过仍在处理的低 offset 消息（at-least-once 弱化）。默认 1（串行）严格按投递顺序确认，窗口关闭；旧模型无界并发下该窗口本来就存在 | 文档明示「要严格 at-least-once 保持 `max_in_flight=1`」；按分区最低未确认 offset 提交属后续项（需 transport 感知 partition） |
 
 ---
 

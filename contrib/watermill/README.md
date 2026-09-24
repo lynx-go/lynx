@@ -72,7 +72,7 @@ func main() {
 
 - **`lynx.*` 强制内存 Transport**：`lynx.` 前缀的 topic 解析优先于路由表与 `DefaultTransport`，固定走 Bus 内置的 MemoryTransport（`bus.go:541`）。跨实例协同不应依赖生命周期事件。
 - **事件订阅复用**（`subscription.go`）：订阅单元是事件（逻辑 topic）——同一事件的多个 handler 共享一条 transport 订阅并进程内并行扇出，每个 handler 都收到每条消息。消费组 / 消费者成员数是后端配置（kafka `consumer.group_id` / `consumer.instances`），Bus 不建模。已知边界：物理 topics 重叠的不同逻辑 topic 需拆成不同 kafka 条目。
-- **订阅级在途上限**（`bus.topics.<topic>.max_in_flight`，默认 1）：适配器在把消息交给 Router 之前占用槽位、Ack/Nack/订阅关停时释放——在途消息有界（goroutine 上界 ≈ handler 数 + 2）并对 transport 形成背压；默认串行且恢复投递顺序，调大即并发处理，负数 = 不限制（不推荐）。只限 dispatcher 执行挡不住 Router 的每消息 goroutine 堆积，限流点必须在适配器。
+- **订阅级在途上限**（`bus.topics.<topic>.max_in_flight`，默认 1）：适配器在把消息交给 Router 之前占用槽位、Ack/Nack/订阅关停时释放——在途消息有界（goroutine 上界 ≈ handler 数 + 2）并对 transport 形成背压；默认串行且恢复投递顺序，调大即并发处理，负数 = 不限制（不推荐）。只限 dispatcher 执行挡不住 Router 的每消息 goroutine 堆积，限流点必须在适配器。**Kafka 提交顺序注意**：watermill-kafka 在 Ack 时 `MarkMessage(offset+1)` 并提交，提交高 offset 隐含提交更低 offset——`max_in_flight>1` 时乱序确认会打开「崩溃跳过仍在处理的低 offset 消息」的窗口（at-least-once 弱化）；要严格 at-least-once 保持默认 1。
 - **毒消息止损**（`redelivery.go` / `subscription.go`）：handler 终态失败（重试耗尽）后 Nack → Transport 重投（Kafka 默认约 100ms 一轮）。Bus 按 `handler|messageID` 计数累计终态失败轮数；共享 offset 下全部 handler 成功才 Ack，某 handler 超过 `max_redeliveries` 后被跳过并记 Error（不连坐其他 handler）；重投会整条重投，成功过的 handler 也需幂等。`auto_ack` handler 不参与确认裁决。
 - **Transport 生命周期独立于 Bus**：`Stop` 只关 Router 与内置生命周期 MemoryTransport，不关 `opts.Transports` / `DefaultTransport`（`bus.go:239`）——Kafka 等后端必须作为独立服务 Register 交框架托管，漏注册则永不关闭。
 - **健康与就绪**：`CheckHealth` 仅反映 Router 运行标志，不做 broker 连通性检查（`bus.go:171`）；框架启动期按 `lynx.WithBusReadyTimeout`（默认 10s）有界轮询就绪，超时构造失败。

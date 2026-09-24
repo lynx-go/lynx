@@ -253,6 +253,8 @@ go get github.com/lynx-go/lynx/contrib/zap
 
 消息路径以核心包 `eventbus` 为契约：**Bus / Topic[T] / Event[T]**。默认内存 Bus 开箱即用（`app.Bus()`）；跨进程用 `contrib/watermill` 的 Bus + `contrib/watermill-kafka` 的 Transport，经 `lynx.WithBus(...)` 注入。
 
+> **v1.16 消费模型（破坏性）**：订阅单元是事件（逻辑 topic）——同一事件的多个 handler 共享一条 transport 订阅并进程内并行扇出；消费组 / 消费者成员数是后端配置（kafka `consumer.*`）；Bus 层并行度旋钮为 `bus.topics.<t>.max_in_flight`（默认 1，串行且保序）。从旧模型（`WithGroup` / `WithInstances` / `WithTopicGroup`）迁移见 `CHANGELOG.md` Unreleased 与 [design-eventbus-consumption.md](design-eventbus-consumption.md) §6。
+
 业务主路径（对齐 `_examples/bus`）：
 
 ```go

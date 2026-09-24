@@ -1,6 +1,6 @@
 # Lynx 路线图
 
-> 最后更新：2026-09-24（v1.15.0 架构收敛批次对账：新增 Phase H，G4 时钟项补注）
+> 最后更新：2026-09-24（v1.16.0 消费模型收敛：新增 Phase I，G4 WK-19 由 Phase I 承接）
 
 ## 定位与目标
 
@@ -220,7 +220,7 @@ G3 提前，且先启动其"开源准备"子列。
       `internal/clock.Fake`——cluster 续约/TTL 与 registry 缓存 stale
       均可确定性推进，见 Phase H）
 - [ ] Kafka testcontainers 集成测试（WK-19，Phase F 遗留承接，
-      已积压月余，建议尽早），模式沉淀为 contrib 可复用的测试辅助
+      已积压月余，建议尽早；由 Phase I 承接推进），模式沉淀为 contrib 可复用的测试辅助
 - [x] CI 增加 govulncheck 依赖漏洞扫描（开源后供应链关注度陡增，
       v1.10.0 的 grpc CVE 修复说明风险面真实）
 
@@ -272,6 +272,29 @@ forwarder 组件）、CORS/gzip 等通用中间件、OTLP Logs（可观测三支
   覆盖绝大部分；
 - App 级注册协议替身（boot/fromconfig）与 debug `/loglevel` 控制面：
   非 AppContext 适用面，保持手写。
+
+## Phase I — 消费模型收敛（v1.16.0，2026-09-24）
+
+以「订阅单元 = 事件」为核心的破坏性收敛（迁移总览见 `CHANGELOG.md`
+Unreleased，设计与理由见 `docs/design-eventbus-consumption.md`）：
+
+- [x] 订阅复用 + 进程内扇出（watermill `subscription.go` 订阅注册表与
+      订阅级 dispatcher；聚合确认：全成功 Ack、超限 handler 跳过止损、
+      per-handler 成功清计数）
+- [x] 组 / 消费者成员数下沉后端：删 `WithGroup` / `WithInstances` /
+      `WithTopicGroup` / `WithTopicInstances`、`GroupClaims` /
+      `EffectiveGroup` / `DefaultGrouper`、`Transport.DeliveryMode`、
+      kafka `DefaultGroup`；订阅复用键 = 逻辑 topic
+- [x] 订阅级在途上限 `bus.topics.<t>.max_in_flight`（默认 1 = 串行且保序；
+      限流点在适配器，防 router 每消息 goroutine 无界堆积并形成背压）
+- [x] `lynx.NewHandlerService` / `EventHandler[T]`：订阅型 handler 的
+      Service 适配器（先 Init 注入依赖再订阅）
+- [ ] handler 超时（`bus.topics.<t>.handler_timeout`）：有界并发下挂死
+      handler 永久占槽的止损闭环（超时 → 终态失败 → 重投 → 毒消息止损）
+- [ ] Kafka 提交乱序窗口：文档明示已完成（design R8）；按分区最低未确认
+      offset 提交待评估（需 transport 感知 partition）
+- [ ] Kafka testcontainers 集成测试（承接 G4 WK-19）：真 broker 钉住订阅
+      复用、组 / 成员数只来自配置、`max_in_flight` 的提交顺序
 
 ## 原则
 

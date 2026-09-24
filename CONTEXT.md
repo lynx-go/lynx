@@ -47,6 +47,18 @@ _Avoid_: 消息队列、broker（那是 Bus 后面的 Transport）
 Bus 背后可插拔的后端：topic 一律为 Transport 侧键；消费组 / 消费者成员数等后端特有概念由各后端自己的配置承担（Bus 不建模）。
 _Avoid_: 驱动、连接器
 
+**订阅（Subscription）**:
+一个事件（逻辑 topic）在进程内的唯一 transport 订阅；同一事件的多个 handler 挂载其上、每条消息并行扇出。消费组 / 成员数是后端配置，不属于订阅语义。
+_Avoid_: 消费者、消费者组（那是后端概念）
+
+**在途上限（Max in flight）**:
+订阅级「未确认消息」的并发上限（默认 1 = 串行且保序）；限流点在适配器（交给调度前占槽），形成对 Transport 的背压。
+_Avoid_: 并发数（会与后端消费者成员数混淆）
+
+**扇出（Fan-out）**:
+一条消息触发同一订阅的全部 handler；与「竞争消费」（同组多成员瓜分）相对。
+_Avoid_: 广播（那是 Transport 侧的投递模式，不在 Bus 层建模）
+
 **解析器（Resolver）**:
 Bus 配置解析的唯一归属：marshaler / retry / 收发日志 / 传播键的查找与 Topic 级合并都在此；适配器只消费结果。
 _Avoid_: 配置管理器
