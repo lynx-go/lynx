@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 )
 
-// WatcherCore[T] 是推送式 watcher 的共享骨架（泛型化元素类型，供 registry
+// WatcherCore 是推送式 watcher 的共享骨架（泛型化元素类型，供 registry
 // 内外的 Discovery 实现复用）：首次 Next 的语义由生产者注入，之后阻塞于
 // 推送 / ctx 取消 / Stop 三路；推送为「缓冲 1 最新替换」（慢消费者不排队
 // 陈旧快照）；Stop 幂等，并在首次停止时执行注销钩子。
