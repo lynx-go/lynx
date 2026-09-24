@@ -95,6 +95,15 @@ watermill 路径同时生效；`Topic.WithTopicHandlerTimeout` 提供编程式�
 注意：Go 无法终止 goroutine——handler 不尊重 ctx 时，超时只释放调用方，
 handler goroutine 仍会运行到自行返回（可能与被重投的尝试重叠执行）。
 
+### 测试：Kafka testcontainers 集成测试（WK-19）
+
+`contrib/watermill-kafka` 新增 `//go:build integration` 冒烟：testcontainers
+启动 confluent-local，验证 v1.16 消费模型——同一事件的两个 handler 共享一条
+transport 订阅、各自收到全部消息；消费组 / 成员数只来自模块配置；发布走
+类型化 Topic 的完整 wire 路径。Docker 或镜像不可用时自动跳过（`t.Skipf`）；
+运行：`go test -tags integration ./...`。测试依赖新增 testcontainers-go
+v0.44.0（仅测试路径）。
+
 ## v1.15.0 (2026-09-24)
 
 本次发布 tag：根 `v1.15.0`、`contrib/watermill/v1.8.0`、

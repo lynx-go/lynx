@@ -19,6 +19,9 @@ cd _examples/bus-kafka && go run .   # watermill+kafka 跨进程 Bus（WithBusPr
 cd _examples/schedule && go run main.go
 cd _examples/boot && go run main.go
 
+# Kafka 集成测试（testcontainers，需 Docker；默认 go test 不含）
+go test -tags integration ./contrib/watermill-kafka/...
+
 # Generate Wire dependency injection code
 cd _examples/boot && wire
 # Or use go generate

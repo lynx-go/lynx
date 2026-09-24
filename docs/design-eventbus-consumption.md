@@ -156,7 +156,7 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
   - 在途上限：`max_in_flight=2` 峰值恰为 2；默认 1 串行且保序；负数不限；Nack 释放槽位；
   - handler 超时：挂死 handler 超时 Nack 且槽位释放（后续消息仍被处理）；超时可重试；解析优先级（调用 > 主题 > 全局，负值禁用）；
   - panic 恢复为 Nack；动态挂载；handlerName 唯一；Stop 收口。
-- **watermill-kafka**：组必须来自配置（缺失报错）；`instances` 钳制；删除 `DeliveryMode` / `DefaultGroup` 测试。
+- **watermill-kafka**：组必须来自配置（缺失报错）；`instances` 钳制；删除 `DeliveryMode` / `DefaultGroup` 测试；**testcontainers 集成测试**（`//go:build integration`）真 broker 验证单订阅扇出与配置驱动组。
 - **示例**：`_examples/bus-kafka` 三路 fan-out（audit + 两 handler，无 group 参数）。
 - **回归**：`_examples/bus`、lifecycle、lynxtest 全绿。
 

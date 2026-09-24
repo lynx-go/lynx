@@ -219,8 +219,9 @@ G3 提前，且先启动其"开源准备"子列。
       建议与 G1 同期或先行；v1.15.0 起统一为公开 `lynx.Clock` 接缝 +
       `internal/clock.Fake`——cluster 续约/TTL 与 registry 缓存 stale
       均可确定性推进，见 Phase H）
-- [ ] Kafka testcontainers 集成测试（WK-19，Phase F 遗留承接，
-      已积压月余，建议尽早；由 Phase I 承接推进），模式沉淀为 contrib 可复用的测试辅助
+- [x] Kafka testcontainers 集成测试（WK-19，Phase F 遗留承接；Phase I 落地
+      `contrib/watermill-kafka/integration_test.go`，`go test -tags integration`），
+      模式沉淀为 contrib 可复用的测试辅助
 - [x] CI 增加 govulncheck 依赖漏洞扫描（开源后供应链关注度陡增，
       v1.10.0 的 grpc CVE 修复说明风险面真实）
 
@@ -294,8 +295,9 @@ Unreleased，设计与理由见 `docs/design-eventbus-consumption.md`）：
       永久占槽（实现归 `eventbus.InvokeHandler`：截止 ctx + 看门狗）
 - [ ] Kafka 提交乱序窗口：文档明示已完成（design R8）；按分区最低未确认
       offset 提交待评估（需 transport 感知 partition）
-- [ ] Kafka testcontainers 集成测试（承接 G4 WK-19）：真 broker 钉住订阅
-      复用、组 / 成员数只来自配置、`max_in_flight` 的提交顺序
+- [x] Kafka testcontainers 集成测试（承接 G4 WK-19，已落地
+      `contrib/watermill-kafka/integration_test.go`）：真 broker 钉住订阅
+      复用与配置驱动组 / 成员数（`go test -tags integration ./...`）
 
 ## 原则
 

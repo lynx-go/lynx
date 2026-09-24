@@ -157,6 +157,18 @@ func busFromConfig(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
 - 代码直接构造：`wmkafka.NewTransport(opts)` 后 `app.Register(kafkaT)`。注意 `Bus.Stop` 不关闭传入的 Transports（`watermill/bus.go:239`），漏注册则 Transport 永不关闭。
 - 客户端惰性建立：首次 Publish/Subscribe 才创建连接；`Init` 仅离线校验配置，不触网（`transport.go:227`）。
 
+## 集成测试（testcontainers）
+
+真实 Kafka 冒烟：验证 v1.16 消费模型——同一事件的两个 handler 共享一条
+transport 订阅、各自收到全部消息；消费组 / 成员数只来自本模块配置；发布走
+类型化 Topic 的完整 wire 路径。
+
+```bash
+go test -tags integration ./...   # 需要 Docker；镜像 confluentinc/confluent-local:7.5.0
+```
+
+Docker 或镜像不可用时用例自动跳过（`t.Skipf`）；默认 `go test ./...` 不含该用例。
+
 ## 相关文档
 
 - [_examples/bus-kafka](../../_examples/bus-kafka)：完整可运行示例（含消费组语义的观察方法）
