@@ -15,6 +15,17 @@
 
 方法与语义不变：`Next` / `Receive` / `Push` / `Drain` / `Stop` / `Done` / `Ctx`。
 
+### 新增：`wmkafka.NewBusFromConfig`——Kafka 版总线装配入口
+
+`contrib/watermill-kafka` 新增 `NewBusFromConfig(cfg)`（`eventbus.Bus` +
+`[]lynx.Service` + error）：返回值签名与 `lynx.WithBusProvider` 直接兼容。
+装配语义为既有示例/文档中 `busFromConfig` 胶水的沉淀——始终提供
+`"memory"` transport（兼作 DefaultTransport，承接 `lynx.*` 与未 route
+的 topic）；`kafka:` 段启用时构建 Transport、加为 `"kafka"` route 并作为
+配套服务返回（框架托管生命周期）；段缺失或为空时为纯内存总线（配置即
+开关）。自定义 transport 集合仍走 `watermill.NewFromConfig(cfg, transports)`
+手工装配；示例与文档已收敛为一行接入。
+
 ## v1.15.0 (2026-09-24)
 
 本次发布 tag：根 `v1.15.0`、`contrib/watermill/v1.8.0`、

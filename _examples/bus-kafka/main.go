@@ -1,9 +1,11 @@
 // bus-kafka 示例：watermill + kafka 跨进程 EventBus。
 //
 // 演示 v1.12.0 的 lynx.WithBusProvider：总线依赖配置（bus:/kafka: 段），
-// 由框架在配置装配完成后调用 provider 构造——kafka Transport 作为配套
-// 服务返回，生命周期（Start/Stop/健康聚合）由框架托管，无需在
-// NewRunner 之前自行读配置再 WithBus 注入。
+// 由框架在配置装配完成后调用 provider 构造。kafka 版装配入口
+// wmkafka.NewBusFromConfig 直接匹配 provider 签名——kafka Transport 作为
+// 配套服务返回，生命周期（Start/Stop/健康聚合）由框架托管，无需在
+// NewRunner 之前自行读配置再 WithBus 注入；装配细节见 watermill-kafka
+// README（含自定义 transport 的手工路径）。
 //
 // 需要本地 kafka：启动方式见 README.md。双终端各跑一个实例可观察
 // 消费组语义（同 group 竞争消费，每条消息只投递给其中一个）。
@@ -16,7 +18,6 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/watermill"
 	wmkafka "github.com/lynx-go/lynx/contrib/watermill-kafka"
 	"github.com/lynx-go/lynx/eventbus"
 )
@@ -31,27 +32,6 @@ type OrderCreated struct {
 // bus.topics.order.created.route 路由到 kafka transport（跨进程投递），
 // Payload 自动 JSON 序列化。
 var OrderCreatedTopic = eventbus.NewTopic[OrderCreated]("order.created")
-
-// busFromConfig 是 WithBusProvider 的 provider：框架装配好配置后调用。
-// kafka 段缺失时 wmkafka.NewFromConfig 返回 (nil, nil)——transport 不
-// 加入、总线退回纯内存，配置即开关。
-func busFromConfig(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
-	kafkaT, err := wmkafka.NewFromConfig(cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-	transports := map[string]eventbus.Transport{"memory": watermill.NewMemoryTransport()}
-	var svcs []lynx.Service
-	if kafkaT != nil {
-		transports["kafka"] = kafkaT
-		svcs = append(svcs, kafkaT) // Transport 生命周期由框架托管
-	}
-	bus, err := watermill.NewFromConfig(cfg, transports)
-	if err != nil {
-		return nil, nil, err
-	}
-	return bus, svcs, nil
-}
 
 // orderService 周期发布订单事件：WithMessageKey 决定 Kafka 分区键
 // （record Key），同键保证有序。
@@ -105,6 +85,6 @@ func main() {
 		return nil
 	},
 		lynx.WithName("bus-kafka-example"),
-		lynx.WithBusProvider(busFromConfig),
+		lynx.WithBusProvider(wmkafka.NewBusFromConfig),
 	).Run()
 }

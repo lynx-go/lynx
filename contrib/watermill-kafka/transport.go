@@ -6,6 +6,10 @@
 // 配置驱动：NewFromConfig 从配置 "kafka" 段加载 Options 并创建 Transport；
 // 段缺失或为空时返回 (nil, nil) 表示 Kafka 未启用——**返回 nil 时不得
 // Register**（框架对 plain nil 服务注册会返回明确错误）。
+//
+// 总线装配：NewBusFromConfig 一行返回 WithBusProvider 所需的 bus 与配套
+// 服务——始终含 memory transport 兜底，Kafka 段启用时把 Transport 一并
+// 托管（自定义 transport 集合的手工装配见本模块 README）。
 package kafka
 
 import (

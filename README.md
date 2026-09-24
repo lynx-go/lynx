@@ -119,33 +119,19 @@ err = UserCreated.Publish(ctx, User{Name: "alice"},
 ### Watermill Bus + Kafka
 
 跨进程时用配置装配 Watermill Bus（`bus:` + `kafka:` 段）。总线依赖配置，
-经 `WithBusProvider` 在框架装配好配置后构造——不必在 `NewRunner` 之前
-自行读配置；返回的 Transport 由框架托管生命周期：
+经 `WithBusProvider` 在框架装配好配置后构造（kafka 版装配入口
+`wmkafka.NewBusFromConfig`）——不必在 `NewRunner` 之前自行读配置；返回的
+Transport 由框架托管生命周期：
 
 ```go
 import (
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/watermill"
 	wmkafka "github.com/lynx-go/lynx/contrib/watermill-kafka"
-	"github.com/lynx-go/lynx/eventbus"
 )
 
 lynx.NewRunner(setup,
 	lynx.WithName("my-app"),
-	lynx.WithBusProvider(func(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
-		kafkaT, err := wmkafka.NewFromConfig(cfg) // nil = kafka 段未启用
-		if err != nil {
-			return nil, nil, err
-		}
-		transports := map[string]eventbus.Transport{"memory": watermill.NewMemoryTransport()}
-		var svcs []lynx.Service
-		if kafkaT != nil {
-			transports["kafka"] = kafkaT
-			svcs = append(svcs, kafkaT)
-		}
-		bus, err := watermill.NewFromConfig(cfg, transports)
-		return bus, svcs, err
-	}),
+	lynx.WithBusProvider(wmkafka.NewBusFromConfig),
 ).Run()
 ```
 

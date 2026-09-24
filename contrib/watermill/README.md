@@ -81,7 +81,7 @@ func main() {
 ## 与 lynx 核心的集成
 
 - `lynx.WithBus(bus)`：框架执行 `Init` → 提前 `Start` → 有界等待就绪 → 关停时 last-actor `Stop`；业务经 `app.Bus()` / `Topic[T]` 使用，无需感知 Router。
-- `lynx.WithBusProvider(fn)`：总线依赖配置（`bus:` / `kafka:` 段）时，由框架在配置装配完成后调用 fn 构造；fn 可一并返回配套服务（如 Kafka Transport）交框架托管。注入示例见 [watermill-kafka](../watermill-kafka/README.md)。
+- `lynx.WithBusProvider(fn)`：总线依赖配置（`bus:` / `kafka:` 段）时，由框架在配置装配完成后调用 fn 构造；fn 可一并返回配套服务（如 Kafka Transport）交框架托管（kafka 版一行接入：`wmkafka.NewBusFromConfig`）。注入示例见 [watermill-kafka](../watermill-kafka/README.md)。
 - 脱离框架单用：`New` → `Init(nil)` → `go Start(ctx)` → `Stop(ctx)`，见 `bus_test.go`。
 
 ## 相关文档

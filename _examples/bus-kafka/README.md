@@ -1,7 +1,8 @@
 # bus-kafka 示例：watermill + kafka 跨进程 EventBus
 
 演示 v1.12.0 的 `lynx.WithBusProvider`：总线依赖配置（`bus:`/`kafka:`
-段），由框架在配置装配完成后调用 provider 构造；kafka Transport 作为
+段），由框架在配置装配完成后调用 provider 构造。kafka 版装配入口
+`wmkafka.NewBusFromConfig` 直接匹配 provider 签名：kafka Transport 作为
 配套服务返回，生命周期由框架托管——**不需要**在 `NewRunner` 之前自行
 读配置再 `WithBus` 注入。
 
@@ -30,11 +31,12 @@ config.yaml）；在别处运行会找不到 `kafka:` 段，Transport 不加入�
 
 ## 关键代码点
 
-- `busFromConfig`（`WithBusProvider` 的 provider）：`wmkafka.NewFromConfig(cfg)`
-  构建 kafka Transport、`watermill.NewFromConfig(cfg, transports)` 组装
-  Bus；Transport 加入返回的 `[]lynx.Service`，框架 Register 托管其
-  Start/Stop 与健康聚合（命令的依赖等待因此能等它就绪）。`kafka:` 段
-  缺失时 Transport 为 nil 不加入，总线退回纯内存——配置即开关。
+- `wmkafka.NewBusFromConfig`（`WithBusProvider` 的 provider，`main.go`
+  里只有一行）：`kafka:` 段启用时构建 Transport 并作为配套服务返回，
+  框架 Register 托管其 Start/Stop 与健康聚合（命令的依赖等待因此能等它
+  就绪）；段缺失时为纯内存总线——配置即开关。memory 兜底与自定义
+  transport 的手工装配路径见
+  [watermill-kafka README](../../contrib/watermill-kafka/README.md)。
 - `OrderCreatedTopic`：类型化主题，路由由 `bus.topics.order.created.route`
   声明（`route.key` 映射到 `kafka:` 段的同名条目，物理 topic 与客户端
   配置都在那里）；逐消息的 Kafka 分区键由 `WithMessageKey` 决定

@@ -60,7 +60,7 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./_examples` - Example applications
 - `./contrib/zap` - Zap logger integration
 - `./contrib/watermill` - Watermill-driven `eventbus.Bus`（`NewFromConfig` 读 `bus:` 段）
-- `./contrib/watermill-kafka` - Kafka Transport service (watermill-kafka/v3)，package `kafka`，实现 `eventbus.Transport`
+- `./contrib/watermill-kafka` - Kafka Transport service (watermill-kafka/v3)，package `kafka`，实现 `eventbus.Transport`；`NewFromConfig` 建 Transport，`NewBusFromConfig` 是 kafka 版总线装配入口（签名直接匹配 `WithBusProvider`）
 - `./contrib/telemetry` - OpenTelemetry lifecycle management (trace/metrics providers)
 - `./contrib/schedule` - Cron scheduler；`Exclusive` 任务经 `cluster.TryOnce` 按格子互斥
 - `./contrib/cluster` - 进程间协调：`Coordinator`（Claim/Acquire）、`TryOnce`、`Campaign`、`Singleton`；续约等待与内存协调器 TTL 判定经 `lynx.Clock`（`cluster.WithClock` 注入，测试用 `internal/clock.Fake` 确定性推进，不再 sleep）
@@ -213,7 +213,7 @@ This pattern is particularly useful for complex applications with many services.
 - 一等消息总线：`Bus` / `Topic[T]` / `Event[T]`；默认 `NewMemoryBus`，`app.Bus()` / Context / Default 解析
 - 业务主路径：`Topic.Publish` / `Topic.Subscribe`（不必手传 Bus）
 - 共享核心：`Resolver` 是 marshaler/retry/log-message/传播键解析与 Topic 级合并的唯一归属（contrib Bus 复用，`Bus.MarshalerFor` 委托它）；`InvokeHandler` 是订阅投递语义的唯一执行点（ctx 传播属性、固定退避重试、AutoAck/ContinueOnError 裁决；ack 时序留在适配器）。memory/watermill 不再各自复制查找链与重试循环
-- `lynx.WithBusProvider(fn)` 配置驱动构造跨进程 Bus：框架装配好配置后调用 fn（cfg → bus + 配套 Services，如 kafka Transport 托管生命周期），是 watermill `NewFromConfig` 的推荐注入路径；已有现成实例仍用 `lynx.WithBus(bus)`（显式实例优先）
+- `lynx.WithBusProvider(fn)` 配置驱动构造跨进程 Bus：框架装配好配置后调用 fn（cfg → bus + 配套 Services，如 kafka Transport 托管生命周期），是 watermill `NewFromConfig` 的推荐注入路径（kafka 版一行接入：`wmkafka.NewBusFromConfig`）；已有现成实例仍用 `lynx.WithBus(bus)`（显式实例优先）
 
 **Watermill Bus** (contrib/watermill/)
 - Watermill Router 驱动的 `eventbus.Bus`；`lynx.*` 生命周期强制内存 Transport

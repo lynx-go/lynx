@@ -7,7 +7,8 @@ Kafka 的 `eventbus.Transport`：按逻辑 topic 配置集群、物理主题与�
 ## 能力要点
 
 - `NewTransport(opts Options) (*Transport, error)`（`transport.go:186`）：`Options.Topics` 为 `map[逻辑topic]TopicOptions`（`transport.go:40`）
-- `NewFromConfig(cfg lynx.Config) (*Transport, error)`（`fromconfig.go:14`）：从 `kafka:` 段装配；**段缺失或为空返回 `(nil, nil)` 表示未启用，返回 nil 时不得 Register**
+- `NewFromConfig(cfg lynx.Config) (*Transport, error)`（`fromconfig.go:13`）：从 `kafka:` 段装配；**段缺失或为空返回 `(nil, nil)` 表示未启用，返回 nil 时不得 Register**
+- `NewBusFromConfig(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error)`（`fromconfig.go:34`）：kafka 版总线装配入口，签名直接匹配 `lynx.WithBusProvider`；始终含 `"memory"` transport（兼作 DefaultTransport），`kafka:` 段启用时把 Transport 作为配套服务返回（见[快速开始](#快速开始)）
 - 同时实现 `eventbus.Transport`、`lynx.Service`、`lynx.Checker`、`lynx.Ready`（`transport.go:925`）：Register 后 Start/Stop、健康聚合、就绪等待由框架托管
 - 订阅按（消费组 × 物理 topic × 实例数）展开并 fan-in 到单一 channel（`transport.go:393`）；每实例一条独立消费组连接，上限 64（`transport.go:516`）
 - Kafka record Key = `Event.Key` / `eventbus.WithMessageKey`（`marshaler.go:14`），同键同分区有序；消费侧缺 header 时从 record Key 回填
@@ -17,34 +18,15 @@ Kafka 的 `eventbus.Transport`：按逻辑 topic 配置集群、物理主题与�
 
 ## 快速开始
 
-推荐经 `lynx.WithBusProvider` 注入：框架装配好配置后调用 provider，Transport 作为配套服务返回，生命周期由框架托管（完整可运行示例见 [_examples/bus-kafka](../../_examples/bus-kafka)）。
+推荐经 `lynx.WithBusProvider` 注入（完整可运行示例见 [_examples/bus-kafka](../../_examples/bus-kafka)）。kafka 版装配入口 `NewBusFromConfig` 的返回值直接匹配 provider 签名，应用侧一行接入：
 
 ```go
 package main
 
 import (
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/contrib/watermill"
 	wmkafka "github.com/lynx-go/lynx/contrib/watermill-kafka"
-	"github.com/lynx-go/lynx/eventbus"
 )
-
-// kafka: 段缺失时 NewFromConfig 返回 (nil, nil)——Transport 不加入，
-// 总线退回纯内存（配置即开关）。
-func busFromConfig(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
-	kafkaT, err := wmkafka.NewFromConfig(cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-	transports := map[string]eventbus.Transport{"memory": watermill.NewMemoryTransport()}
-	var svcs []lynx.Service
-	if kafkaT != nil {
-		transports["kafka"] = kafkaT
-		svcs = append(svcs, kafkaT) // Transport 生命周期由框架托管
-	}
-	bus, err := watermill.NewFromConfig(cfg, transports)
-	return bus, svcs, err
-}
 
 func main() {
 	lynx.NewRunner(func(app lynx.App) error {
@@ -52,7 +34,7 @@ func main() {
 		return nil
 	},
 		lynx.WithName("my-app"),
-		lynx.WithBusProvider(busFromConfig),
+		lynx.WithBusProvider(wmkafka.NewBusFromConfig),
 	).Run()
 }
 ```
@@ -68,6 +50,29 @@ kafka:
     topics: [orders_v1]
     consumer: { group_id: my-app, instances: 1 }
     producer: { log_message: true }
+```
+
+### 手工装配（自定义 transport）
+
+`NewBusFromConfig` 固定组合 `"memory"` + `"kafka"` 两个 transport；需要额外后端或替换 memory 时手工组装（`kafka:` 段缺失时 `NewFromConfig` 返回 `(nil, nil)`，此时不加入 transports、不注册）：
+
+```go
+// import: lynx "github.com/lynx-go/lynx"、watermill、wmkafka、
+// "github.com/lynx-go/lynx/eventbus"
+func busFromConfig(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
+	kafkaT, err := wmkafka.NewFromConfig(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	transports := map[string]eventbus.Transport{"memory": watermill.NewMemoryTransport()}
+	var svcs []lynx.Service
+	if kafkaT != nil {
+		transports["kafka"] = kafkaT
+		svcs = append(svcs, kafkaT) // Transport 生命周期由框架托管
+	}
+	bus, err := watermill.NewFromConfig(cfg, transports)
+	return bus, svcs, err
+}
 ```
 
 业务代码与内存 Bus 无差别：`eventbus.NewTopic[T]` + `Subscribe` / `Publish`；逐消息 Kafka 分区键用 `eventbus.WithMessageKey`（同键分区有序）。`lynx.*` 生命周期事件强制内存 Transport，route 到 kafka 会在 Bus `Init` 期报错。
@@ -147,7 +152,7 @@ kafka:
 
 ## 与 lynx 核心的集成
 
-- `WithBusProvider` 返回的 `[]lynx.Service` 含 Transport：按 Register 语义托管——Init 同步执行、Start/Stop 纳入生命周期、实现 `Checker` 的进入健康聚合（`options.go:352`），CLI 命令的依赖等待因此能等 Transport 就绪。
+- `NewBusFromConfig` 是 `WithBusProvider` 的 kafka 版装配入口：返回的 `[]lynx.Service` 含 Transport，按 Register 语义托管——Init 同步执行、Start/Stop 纳入生命周期、实现 `Checker` 的进入健康聚合（`options.go:352`），CLI 命令的依赖等待因此能等 Transport 就绪。
 - 代码直接构造：`wmkafka.NewTransport(opts)` 后 `app.Register(kafkaT)`。注意 `Bus.Stop` 不关闭传入的 Transports（`watermill/bus.go:239`），漏注册则 Transport 永不关闭。
 - 客户端惰性建立：首次 Publish/Subscribe 才创建连接；`Init` 仅离线校验配置，不触网（`transport.go:227`）。
 
