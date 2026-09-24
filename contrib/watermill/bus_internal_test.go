@@ -91,54 +91,6 @@ func TestDynamicSubscribeDuplicateHandlerPanicTranslated(t *testing.T) {
 	}
 }
 
-// TestRedeliveryLimiter 单元验证 WK-02 的有界计数器：
-// 计数累加、成功清除、环形淘汰最老条目；计数键按 handler 隔离（复审-4）。
-func TestRedeliveryLimiter(t *testing.T) {
-	l := newRedeliveryLimiter(3)
-	if got := l.failure("h", "a"); got != 1 {
-		t.Fatalf("a first failure = %d, want 1", got)
-	}
-	if got := l.failure("h", "a"); got != 2 {
-		t.Fatalf("a second failure = %d, want 2", got)
-	}
-	l.success("h", "a")
-	if got := l.failure("h", "a"); got != 1 {
-		t.Fatalf("counter must reset after success, got %d", got)
-	}
-	// 复审-4：同一消息 ID 投给两个 handler 时计数互不干扰——成功侧的
-	// success 不得清零失败侧的累计（修复前纯 ID 键 Bus 级共享，会清零）。
-	if got := l.failure("h1", "same"); got != 1 {
-		t.Fatalf("h1 first failure = %d, want 1", got)
-	}
-	if got := l.failure("h1", "same"); got != 2 {
-		t.Fatalf("h1 second failure = %d, want 2", got)
-	}
-	l.success("h2", "same") // 另一 handler 处理成功
-	if got := l.failure("h1", "same"); got != 3 {
-		t.Fatalf("h1 count must survive h2's success, got %d, want 3", got)
-	}
-	l.success("h1", "same")
-	if got := l.failure("h1", "same"); got != 1 {
-		t.Fatalf("own success must clear own counter, got %d", got)
-	}
-	// 环形淘汰：容量 3，第 4 个键顶掉最老的 b（计数归 1），
-	// 未被顶掉的 d 保持原计数。
-	l2 := newRedeliveryLimiter(3)
-	l2.failure("x", "b")
-	l2.failure("x", "c")
-	l2.failure("x", "d")
-	l2.failure("x", "e")
-	if got := l2.failure("x", "b"); got != 1 {
-		t.Fatalf("b should restart at 1 after ring eviction, got %d", got)
-	}
-	if got := l2.failure("x", "d"); got != 2 {
-		t.Fatalf("d count = %d, want 2 (not evicted)", got)
-	}
-	if l2.failure("x", "") == 0 {
-		t.Fatal("empty ID must be treated as immediately terminal")
-	}
-}
-
 // TestMaxRedeliveriesFor 验证上限解析优先级：主题级非零 > Bus 级；
 // 负数（Bus 级或主题级）禁用；缺省 = DefaultMaxRedeliveries。
 func TestMaxRedeliveriesFor(t *testing.T) {
@@ -279,12 +231,12 @@ func (fakeNonMemoryTransport) DeliveryMode() eventbus.DeliveryMode {
 	return eventbus.DeliveryConsumerGroup
 }
 
-// TestSubscribeAddHandlerFailureReleasesGroupClaim 回归复审-1：claimGroup
-// 在锁内登记后，addHandlerSafe 失败（非 errHandlerNameTaken，handler 未
-// 进入 router）时必须同时回滚 groupClaims——只回滚 handlerNames 会留下
-// 残留 claim，一次订阅失败即永久锁死该 topic+组。构造：forceStarted 但
-// 不 Init（router 为 nil），addHandler 在 AddConsumerHandler 处必然
-// panic，被 addHandlerSafe 翻译为非 taken 错误。
+// TestSubscribeAddHandlerFailureReleasesGroupClaim 回归复审-1：claim 在
+// 锁内登记后，addHandlerSafe 失败（非 errHandlerNameTaken，handler 未
+// 进入 router）时必须同时回滚占用——只回滚 handlerNames 会留下残留
+// claim，一次订阅失败即永久锁死该 topic+组。构造：forceStarted 但不
+// Init（router 为 nil），addHandler 在 AddConsumerHandler 处必然 panic，
+// 被 addHandlerSafe 翻译为非 taken 错误。
 func TestSubscribeAddHandlerFailureReleasesGroupClaim(t *testing.T) {
 	b := New(eventbus.Options{DefaultTransport: fakeNonMemoryTransport{}})
 	forceStarted(b)
@@ -295,10 +247,9 @@ func TestSubscribeAddHandlerFailureReleasesGroupClaim(t *testing.T) {
 	}
 	b.mu.Lock()
 	_, nameTaken := b.handlerNames["h1"]
-	claimCount := len(b.groupClaims)
 	b.mu.Unlock()
-	if nameTaken || claimCount != 0 {
-		t.Fatalf("rollback incomplete: handlerNames taken=%v, groupClaims entries=%d", nameTaken, claimCount)
+	if nameTaken {
+		t.Fatal("rollback incomplete: handlerNames entry not removed")
 	}
 
 	// 同 topic+组、不同 handler 名必须可再次订阅成功（修复前被残留

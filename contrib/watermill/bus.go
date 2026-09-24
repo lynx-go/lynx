@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"reflect"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -31,9 +30,10 @@ type Bus struct {
 	warnBufferSize bool
 
 	// redeliver 是 Bus 级毒消息重投计数（WK-02）：handler 终态失败按
-	// handler × 消息 ID 有界累计（复审-4：键含 handlerName，避免成功侧
-	// 清零失败侧计数），超过上限后 Ack 丢弃，阻断 Transport 的无限重投。
-	redeliver *redeliveryLimiter
+	// handler × 消息 ID 有界累计（键含 handlerName，避免成功侧清零失败侧
+	// 计数），超过上限后 Ack 丢弃，阻断 Transport 的无限重投。实现见
+	// eventbus.RedeliveryLimiter（核心归属，适配器只接线）。
+	redeliver *eventbus.RedeliveryLimiter
 
 	lifecycle *MemoryTransport // 专用于 lynx.*，Bus 拥有并 Close
 
@@ -44,22 +44,14 @@ type Bus struct {
 	mu           sync.Mutex
 	pending      []pendingSubscription
 	handlerNames map[string]struct{}
-	// groupClaims 记录非内存 Transport 上（transport × 订阅键 × 消费组）
+	// claims 记录非内存 Transport 上（transport × 订阅键 × 有效消费组）
 	// 的 handler 占用（WK-01）：Kafka 等消费组后端上两个 handler 共用
 	// 同一 topic+组会静默瓜分分区。内存 Transport 是广播语义，不登记。
-	groupClaims map[claimKey]string
-	runCtx      context.Context
-	started     bool
-	stopped     bool
-}
-
-// claimKey 是 groupClaims 的键。group 为空串表示"Transport 配置的默认组"
-// （如 kafka consumer.group_id）：同键下第二个 handler 仍会落到同一组，
-// 同样必须拒绝。t 必须可比较（仓库内 Transport 实现均为指针型）。
-type claimKey struct {
-	t     eventbus.Transport
-	key   string
-	group string
+	// 实现见 eventbus.GroupClaims（核心归属，适配器只接线）。
+	claims  *eventbus.GroupClaims
+	runCtx  context.Context
+	started bool
+	stopped bool
 }
 
 type routeEntry struct {
@@ -84,8 +76,8 @@ func New(opts eventbus.Options, ext ...Option) *Bus {
 		routes:         map[string]routeEntry{},
 		explicit:       map[string]routeEntry{},
 		handlerNames:   map[string]struct{}{},
-		groupClaims:    map[claimKey]string{},
-		redeliver:      newRedeliveryLimiter(4096),
+		claims:         &eventbus.GroupClaims{},
+		redeliver:      eventbus.NewRedeliveryLimiter(4096),
 		logger:         slog.Default(),
 		warnBufferSize: bufferSizeSet,
 	}
@@ -322,9 +314,11 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 			return fmt.Errorf("duplicate handler name %q", handlerName)
 		}
 	}
-	if err := b.claimGroup(t, topic, key, o.Group, handlerName); err != nil {
+	if err := b.claims.Claim(t, key, o.Group, handlerName); err != nil {
 		b.mu.Unlock()
-		return err
+		return fmt.Errorf("watermill: topic %q: %w; "+
+			"use a distinct group per handler (WithGroup or bus topic group) for broadcast semantics, "+
+			"or keep a single handler with WithInstances for competing consumers", topic, err)
 	}
 	started := b.started
 	if !started {
@@ -347,7 +341,7 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 			// 复审-1：handler 未进入 router 时消费组占用同样必须回滚——
 			// 只回滚 handlerNames 会留下 groupClaims 残留，一次订阅失败即
 			// 永久锁死该 topic+组（同组不同名的后续订阅全部被拒绝）。
-			b.releaseGroupClaim(t, key, o.Group)
+			b.claims.Release(t, key, o.Group)
 			b.mu.Unlock()
 		}
 		return err
@@ -376,77 +370,6 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 // errHandlerNameTaken 标记"router 内已存在同名 handler"（panic 翻译而来）：
 // 此名已被占用，Subscribe 失败但不得回滚 handlerNames（WK-03）。
 var errHandlerNameTaken = errors.New("handler name already exists in router")
-
-// effectiveGroup 计算订阅键上的有效消费组：显式 WithGroup 优先，为空时
-// 取 ConsumerGroup 后端声明的配置默认组（eventbus.DefaultGrouper，如 kafka
-// consumer.group_id）。占用检查与回滚都必须用有效组——原已知局限一
-// （"显式组恰好等于另一 handler 留空的默认组"检测不到）由此闭合。
-func effectiveGroup(t eventbus.Transport, key, group string) string {
-	if group != "" {
-		return group
-	}
-	if t == nil {
-		return ""
-	}
-	if dg, ok := t.(eventbus.DefaultGrouper); ok {
-		if g, ok := dg.DefaultGroup(key); ok {
-			return g
-		}
-	}
-	return ""
-}
-
-// claimGroup 登记 ConsumerGroup 后端上（订阅键 × 有效消费组）的 handler
-// 占用，已被其他 handlerName 占用时返回明确错误（WK-01）。投递模式经
-// Transport.DeliveryMode 声明（原 isMemoryTransport 类型断言已由契约取代：
-// 广播后端不受组占用约束）。Bus 无 Unsubscribe API、进程内订阅一般不撤销，
-// 因此占用后不释放（宁可误拒，不可静默瓜分）。
-// 已知局限（复审-9，claim 粒度）：两个不同逻辑 topic 路由到同一 Transport、
-// 各自配置的物理 topics 重叠、又共用同一（显式或默认）消费组时，claim 键
-// （transport × 订阅键 × 组）互不相同，本检查不拦截——Kafka 侧它们仍会并入
-// 同一消费组瓜分分区。物理 topics 存在重叠的部署必须为各逻辑 topic 显式
-// 配置互不相同的消费组。
-func (b *Bus) claimGroup(t eventbus.Transport, topic, key, group, handlerName string) error {
-	if t == nil || t.DeliveryMode() != eventbus.DeliveryConsumerGroup {
-		return nil
-	}
-	// 不可比较的值类型 Transport 无法作为 map key 跟踪（仓库内实现均为
-	// 指针型），放弃占用检查而非在 map 写入时 panic。
-	if !reflect.TypeOf(t).Comparable() {
-		return nil
-	}
-	eff := effectiveGroup(t, key, group)
-	k := claimKey{t: t, key: key, group: eff}
-	if prev, ok := b.groupClaims[k]; ok && prev != handlerName {
-		groupLabel := eff
-		if groupLabel == "" {
-			groupLabel = "(no group)"
-		}
-		return fmt.Errorf(
-			"watermill: topic %q (transport key %q, group %s) is already consumed by handler %q on %T; "+
-				"two handlers sharing one consumer group silently split partitions and each receives only part of the messages. "+
-				"Use a distinct group per handler (WithGroup or bus topic group) for broadcast semantics, "+
-				"or keep a single handler with WithInstances for competing consumers",
-			topic, key, groupLabel, prev, t)
-	}
-	b.groupClaims[k] = handlerName
-	return nil
-}
-
-// releaseGroupClaim 回滚 claimGroup 的登记（复审-1）：动态订阅在登记后、
-// handler 进入 router 前失败时调用，避免残留 claim 永久锁死该 topic+组。
-// 与 claimGroup 的跳过条件保持一致（DeliveryMode 判定 + 有效组键）——
-// 不可比较的 Transport 键连 delete 都会 panic，绝不能直接 delete。
-// 调用方必须已持有 b.mu。
-func (b *Bus) releaseGroupClaim(t eventbus.Transport, key, group string) {
-	if t == nil || t.DeliveryMode() != eventbus.DeliveryConsumerGroup {
-		return
-	}
-	if !reflect.TypeOf(t).Comparable() {
-		return
-	}
-	delete(b.groupClaims, claimKey{t: t, key: key, group: effectiveGroup(t, key, group)})
-}
 
 // addHandlerSafe 是 addHandler 的 panic 安全包装（WK-03）：watermill router
 // 对重名 handler 直接 panic（DuplicateHandlerNameError），正常路径已由

@@ -1,8 +1,6 @@
 package watermill
 
 import (
-	"sync"
-
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx/eventbus"
 )
@@ -68,85 +66,22 @@ func (b *Bus) maxRedeliveriesFor(topic string) (limit int, ok bool) {
 	}
 }
 
-// redeliveryLimiter 按（handler × 消息 ID）计数终态失败轮数。有界：容量
-// 满后按插入序环形淘汰最老条目——计数是止损机制而非精确语义，被淘汰的
-// 陈旧键重新计数是可接受的误差，换取消耗与流量无关的常数内存（防止键
-// 空间无限增长撑爆 map）。
-type redeliveryLimiter struct {
-	mu     sync.Mutex
-	counts map[string]int
-	order  []string // 环形槽位：新键顶掉最老槽位
-	pos    int
-}
-
-func newRedeliveryLimiter(capacity int) *redeliveryLimiter {
-	if capacity <= 0 {
-		capacity = 4096
-	}
-	return &redeliveryLimiter{
-		counts: make(map[string]int, capacity),
-		order:  make([]string, capacity),
-	}
-}
-
-// limiterKey 拼接计数键：handlerName + "|" + 消息 ID（复审-4）。同一消息
-// 可能同时投给多个 handler（如 Kafka 上两个不同消费组各收一份），纯消息
-// ID 的 Bus 级共享键会让成功侧的 success 清零失败侧的累计计数，毒消息
-// 永不达上限。handlerName 在 Bus 内全局唯一（handlerNames 查重），足以
-// 区分同消息的并发订阅。
-func limiterKey(handlerName, id string) string {
-	return handlerName + "|" + id
-}
-
-// failure 记录该 handler 对该消息的一轮终态失败，返回累计轮数（含本次）。
-func (r *redeliveryLimiter) failure(handlerName, id string) int {
-	if id == "" {
-		// 无 ID 的消息无法跨轮追踪，返回一个大值让调用方立即止损。
-		return 1 << 30
-	}
-	key := limiterKey(handlerName, id)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.counts[key]; !ok {
-		if victim := r.order[r.pos]; victim != "" {
-			delete(r.counts, victim)
-		}
-		r.order[r.pos] = key
-		r.pos = (r.pos + 1) % len(r.order)
-	}
-	r.counts[key]++
-	return r.counts[key]
-}
-
-// success 清除该 handler 对该消息的计数：消息处理成功即生命周期结束，
-// 腾出容量给活跃键，也避免同 ID 的陈旧计数误伤后续投递（如上游按 ID
-// 重发的新消息）。键含 handlerName，只清自身，不动其他 handler 对同一
-// 消息的计数（见 limiterKey）。
-func (r *redeliveryLimiter) success(handlerName, id string) {
-	if id == "" {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.counts, limiterKey(handlerName, id))
-}
-
 // redeliveryMiddleware 返回按投递轮次计数毒消息的中间件（WK-02）。
 // 内层 handler（含 Retry）返回错误即是一轮终态失败：Router 会 Nack →
 // Transport 重投（Kafka ResendLoop）→ 再进 handler……无 DLQ 时唯一止损
 // 是超过上限后丢弃：记 Error 留痕并返回 nil（Router 视为成功并 Ack），
-// 阻断重投循环。必须先于 Retry 中间件添加（先添加者位于调用栈最外层），
+// 阻断重投循环。先于 Retry 中间件添加（先添加者位于调用栈最外层），
 // 这样 Retry 的内层多次重试不会被重复计数，每轮只计一次；计数按
-// handlerName 隔离（复审-4，见 limiterKey）。
+// handlerName 隔离（见 eventbus.RedeliveryLimiter 的键语义）。
 func (b *Bus) redeliveryMiddleware(handlerName, topic string, limit int) message.HandlerMiddleware {
 	return func(h message.HandlerFunc) message.HandlerFunc {
 		return func(msg *message.Message) ([]*message.Message, error) {
 			produced, err := h(msg)
 			if err == nil {
-				b.redeliver.success(handlerName, msg.UUID)
+				b.redeliver.Success(handlerName, msg.UUID)
 				return produced, nil
 			}
-			if n := b.redeliver.failure(handlerName, msg.UUID); n > limit {
+			if n := b.redeliver.Failure(handlerName, msg.UUID); n > limit {
 				b.logger.Error("message exceeded max redeliveries, dropping",
 					"topic", topic,
 					"key", msg.Metadata.Get(eventbus.MetaMessageKey),

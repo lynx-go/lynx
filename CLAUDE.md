@@ -219,8 +219,8 @@ This pattern is particularly useful for complex applications with many services.
 - Watermill Router 驱动的 `eventbus.Bus`；`lynx.*` 生命周期强制内存 Transport
 - 投递语义（重试/AutoAck/ContinueOnError）委托 `eventbus.InvokeHandler`；ack 时序与 Nack 映射留在本适配器（AutoAck 先 Ack，WK-13）
 - `NewFromConfig(cfg, transports)` 从 `bus` 段加载 topics/route；标识 `memory` 兼作 DefaultTransport
-- 消费组语义：同 topic 多 handler 共用同组（含空 group 的 Transport 默认组）会被 `Subscribe` 拒绝——Kafka 组内瓜分分区是静默半量丢消息；广播用不同 group（`WithGroup` / topic group），竞争消费用单 handler + instances；内存 Transport 广播不受限
-- 毒消息止损：`bus.max_redeliveries`（默认 10，主题级可覆盖）限制终态失败后的累计重投轮数，超过即 Ack 丢弃并记 Error
+- 消费组语义：同 topic 多 handler 共用同组（含空 group 的 Transport 默认组）会被 `Subscribe` 拒绝——Kafka 组内瓜分分区是静默半量丢消息；广播用不同 group（`WithGroup` / topic group），竞争消费用单 handler + instances；内存 Transport 广播不受限。规则实现归 `eventbus.GroupClaims`（含 `EffectiveGroup` 的 DefaultGrouper 解析），适配器只接线
+- 毒消息止损：`bus.max_redeliveries`（默认 10，主题级可覆盖）限制终态失败后的累计重投轮数，超过即 Ack 丢弃并记 Error。计数实现归 `eventbus.RedeliveryLimiter`（handler×消息 ID、有界环形淘汰），配置解析留在本适配器
 - Transports / DefaultTransport 生命周期独立于 Bus：需 Register 托管，`Bus.Stop` 不关闭它们
 
 **Kafka Transport** (contrib/watermill-kafka/transport.go)
