@@ -97,14 +97,14 @@ func main() {
 	runner := lynx.NewRunner(func(app lynx.App) error {
 		// Bus 开箱即用，无需 Register；直接通过 Topic / app.Bus() 发布/订阅
 		// lifecycleCoordinator 需最先注册，以便捕获后续服务的 Registered/Started 事件
-		app.Register(&lifecycleCoordinator{}, &orderService{}, &auditService{}, &inventoryService{})
+		app.Register(lynx.OrderedServices("ordered-services", &lifecycleCoordinator{}, &orderService{}, &auditService{}, &inventoryService{}))
 
 		// 演示：OnPreStart 中发布事件，所有订阅者（同进程）即时收到
 		app.OnPreStart(func(ctx context.Context) error {
 			// 方式1：类型化发布（Topic.Publish）
 			_ = OrderCreatedTopic.Publish(ctx, OrderCreated{OrderID: "123", UserID: "u1"})
 			// 方式2：原始/字符串 topic 发布
-			_ = app.Bus().Publish(ctx, "order.created", map[string]string{"order_id": "456"})
+			_ = app.Bus().Publish(ctx, OrderCreatedTopic.Name(), map[string]string{"order_id": "456"})
 			return nil
 		})
 		return nil
