@@ -13,6 +13,8 @@ type busFileConfig struct {
 	Debug      bool              `mapstructure:"debug"`
 	LogMessage *logMessageConfig `mapstructure:"log_message"`
 	Retry      *retryConfig      `mapstructure:"retry"`
+	// HandlerTimeout 是 handler 单次尝试的全局超时（0 = 不限制；主题级可覆盖）。
+	HandlerTimeout time.Duration `mapstructure:"handler_timeout"`
 	// MaxRedeliveries 是 Bus 级毒消息重投上限（WK-02，见 Options.MaxRedeliveries）。
 	MaxRedeliveries int                        `mapstructure:"max_redeliveries"`
 	Topics          map[string]topicFileConfig `mapstructure:"topics"`
@@ -24,6 +26,7 @@ type topicFileConfig struct {
 	AutoAck         bool              `mapstructure:"auto_ack"`
 	ContinueOnError bool              `mapstructure:"continue_on_error"`
 	MaxInFlight     int               `mapstructure:"max_in_flight"`
+	HandlerTimeout  time.Duration     `mapstructure:"handler_timeout"`
 	Retry           *retryConfig      `mapstructure:"retry"`
 	// MaxRedeliveries 覆盖该主题的重投上限（0 = 沿用 Bus 级）。
 	MaxRedeliveries int `mapstructure:"max_redeliveries"`
@@ -69,10 +72,11 @@ func NewFromConfig(cfg lynx.Config, transports map[string]eventbus.Transport) (*
 		return nil, err
 	}
 	opts := eventbus.Options{
-		Debug:      file.Debug,
-		LogMessage: file.LogMessage.toOptions(),
-		Retry:      file.Retry.toOptions(),
-		Topics:     map[string]eventbus.TopicConfig{},
+		Debug:          file.Debug,
+		LogMessage:     file.LogMessage.toOptions(),
+		Retry:          file.Retry.toOptions(),
+		HandlerTimeout: file.HandlerTimeout,
+		Topics:         map[string]eventbus.TopicConfig{},
 	}
 	for name, t := range transports {
 		if t == nil {
@@ -86,6 +90,7 @@ func NewFromConfig(cfg lynx.Config, transports map[string]eventbus.Transport) (*
 	for topic, tc := range file.Topics {
 		opts.Topics[topic] = eventbus.TopicConfig{
 			MaxInFlight:     tc.MaxInFlight,
+			HandlerTimeout:  tc.HandlerTimeout,
 			AutoAck:         tc.AutoAck,
 			ContinueOnError: tc.ContinueOnError,
 			Retry:           tc.Retry.toOptions(),

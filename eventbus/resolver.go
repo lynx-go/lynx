@@ -1,6 +1,8 @@
 package eventbus
 
 import (
+	"time"
+
 	"github.com/lynx-go/lynx/logging"
 )
 
@@ -44,6 +46,29 @@ func (r *Resolver) RetryFor(topic string, call *RetryOptions) RetryOptions {
 		return *r.opts.Retry
 	}
 	return RetryOptions{MaxRetries: 3}
+}
+
+// HandlerTimeoutFor 解析 handler 单次尝试超时（高→低）：调用/Topic 携带值
+// call（SubscribeOptions.HandlerTimeout，经 WithTopicHandlerTimeout 注入）>
+// Topics[t].HandlerTimeout > 全局 HandlerTimeout > 0（不限制）。负值 =
+// 显式禁用（即使全局设置了）。
+func (r *Resolver) HandlerTimeoutFor(topic string, call time.Duration) time.Duration {
+	if call != 0 {
+		if call < 0 {
+			return 0
+		}
+		return call
+	}
+	if cfg, ok := r.opts.Topics[topic]; ok && cfg.HandlerTimeout != 0 {
+		if cfg.HandlerTimeout < 0 {
+			return 0
+		}
+		return cfg.HandlerTimeout
+	}
+	if r.opts.HandlerTimeout > 0 {
+		return r.opts.HandlerTimeout
+	}
+	return 0
 }
 
 // LogMessageFor 返回 topic 的收发日志选项（Topics[t].LogMessage > 全局）。

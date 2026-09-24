@@ -289,8 +289,9 @@ Unreleased，设计与理由见 `docs/design-eventbus-consumption.md`）：
       限流点在适配器，防 router 每消息 goroutine 无界堆积并形成背压）
 - [x] `lynx.NewHandlerService` / `EventHandler[T]`：订阅型 handler 的
       Service 适配器（先 Init 注入依赖再订阅）
-- [ ] handler 超时（`bus.topics.<t>.handler_timeout`）：有界并发下挂死
-      handler 永久占槽的止损闭环（超时 → 终态失败 → 重投 → 毒消息止损）
+- [x] handler 超时（`bus.handler_timeout` / `bus.topics.<t>.handler_timeout`）：
+      单次尝试超时 → 终态失败 → 重试 / 重投 / 毒消息止损，防挂死 handler
+      永久占槽（实现归 `eventbus.InvokeHandler`：截止 ctx + 看门狗）
 - [ ] Kafka 提交乱序窗口：文档明示已完成（design R8）；按分区最低未确认
       offset 提交待评估（需 transport 感知 partition）
 - [ ] Kafka testcontainers 集成测试（承接 G4 WK-19）：真 broker 钉住订阅

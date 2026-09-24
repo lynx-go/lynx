@@ -149,6 +149,10 @@ type SubscribeOptions struct {
 	// 路径是 Topic 默认值（WithTopicMaxInFlight）与 Options.Topics[t]，由 Bus
 	// 合并后由适配器消费（消费组 / 成员数是后端配置，不在此结构）。
 	MaxInFlight int
+	// HandlerTimeout 是 handler 单次尝试的执行上限（0 = 不限制；负值 =
+	// 显式禁用），同样由 Topic 默认值（WithTopicHandlerTimeout）与
+	// Options.Topics[t] 填充；解析见 Resolver.HandlerTimeoutFor。
+	HandlerTimeout time.Duration
 	// Retry 是订阅级重试默认（高→低：本字段 > Options.Topics[t].Retry > Options.Retry）。
 	// Topic[T] 会把 WithTopicRetry 作为本字段的基础值注入，调用方选项可覆盖。
 	Retry *RetryOptions
@@ -191,6 +195,11 @@ func WithContinueOnError() SubscribeOption {
 // 调用者不能直接设置，见 SubscribeOptions.MaxInFlight）。
 func withMaxInFlight(n int) SubscribeOption {
 	return subscribeOptionFunc(func(o *SubscribeOptions) { o.MaxInFlight = n })
+}
+
+// withHandlerTimeout 注入 handler 单次尝试超时（同 withMaxInFlight）。
+func withHandlerTimeout(d time.Duration) SubscribeOption {
+	return subscribeOptionFunc(func(o *SubscribeOptions) { o.HandlerTimeout = d })
 }
 
 // WithSubscribeRetry 覆盖本次订阅的重试默认，优先级高于 Topic / Topics 配置 / 全局。

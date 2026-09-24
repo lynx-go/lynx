@@ -173,8 +173,9 @@ Kafka 消费语义要点：
   每个 handler 都收到每条消息。消费组 / 消费者成员数是 kafka 配置
   （`kafka.<key>.consumer.group_id` / `.instances`），多实例部署按该组
   竞争消费。进程内在途上限由 `bus.topics.<topic>.max_in_flight` 控制
-  （默认 1，串行且保序；调大并发，goroutine 有界）。不同逻辑 topic 路由
-  到同一物理 topic 且组相同时仍会互相瓜分，部署时应拆成不同 kafka 条目。
+  （默认 1，串行且保序；调大并发，goroutine 有界）；挂死 handler 用
+  `bus.handler_timeout` 止损。不同逻辑 topic 路由到同一物理 topic 且组
+  相同时仍会互相瓜分，部署时应拆成不同 kafka 条目。
 - **Transport 生命周期独立于 Bus**：`bus.Stop()` 不关闭 `opts.Transports`
   / `DefaultTransport`；Kafka Transport 必须作为独立服务 Register 交由
   框架托管 Start/Stop，漏注册则永远不会关闭。

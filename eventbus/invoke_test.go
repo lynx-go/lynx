@@ -125,6 +125,80 @@ func TestInvokeHandlerSwallow(t *testing.T) {
 	}
 }
 
+// TestInvokeHandlerTimeout：单次尝试超时按终态失败处理——挂死的 handler
+// 不会永久占用调用方（在途槽位释放），返回 deadline exceeded。
+func TestInvokeHandlerTimeout(t *testing.T) {
+	r := NewResolver(Options{})
+	release := make(chan struct{})
+	defer close(release) // 释放挂起的 handler goroutine，避免测试泄漏
+	start := time.Now()
+	err := InvokeHandler(context.Background(), discardLogger(), func(context.Context, *RawEvent) error {
+		<-release
+		return nil
+	}, testEvent(), r, InvokeOptions{
+		Topic: "t", HandlerName: "h",
+		Retry:   RetryOptions{MaxRetries: 0},
+		Timeout: 50 * time.Millisecond,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("elapsed = %v, want prompt timeout", elapsed)
+	}
+}
+
+// TestInvokeHandlerTimeoutRetries：超时可重试——每次尝试各有独立超时。
+func TestInvokeHandlerTimeoutRetries(t *testing.T) {
+	r := NewResolver(Options{})
+	var calls atomic.Int32
+	release := make(chan struct{})
+	defer close(release)
+	err := InvokeHandler(context.Background(), discardLogger(), func(context.Context, *RawEvent) error {
+		calls.Add(1)
+		<-release
+		return nil
+	}, testEvent(), r, InvokeOptions{
+		Topic: "t", HandlerName: "h",
+		Retry:   RetryOptions{MaxRetries: 1},
+		Timeout: 20 * time.Millisecond,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("calls = %d, want 2 (1 + 1 retry, each timed out)", got)
+	}
+}
+
+// TestInvokeHandlerTimeoutCooperative：handler 尊重 ctx 时自行返回超时错误。
+func TestInvokeHandlerTimeoutCooperative(t *testing.T) {
+	r := NewResolver(Options{})
+	err := InvokeHandler(context.Background(), discardLogger(), func(ctx context.Context, _ *RawEvent) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}, testEvent(), r, InvokeOptions{
+		Topic: "t", HandlerName: "h",
+		Retry:   RetryOptions{MaxRetries: 0},
+		Timeout: 30 * time.Millisecond,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+// TestInvokeHandlerNoTimeoutByDefault：默认不设超时——慢 handler 正常返回。
+func TestInvokeHandlerNoTimeoutByDefault(t *testing.T) {
+	r := NewResolver(Options{})
+	err := InvokeHandler(context.Background(), discardLogger(), func(context.Context, *RawEvent) error {
+		time.Sleep(30 * time.Millisecond)
+		return nil
+	}, testEvent(), r, InvokeOptions{Topic: "t", HandlerName: "h", Retry: RetryOptions{MaxRetries: 0}})
+	if err != nil {
+		t.Fatalf("err = %v, want nil (no timeout by default)", err)
+	}
+}
+
 // TestInvokeHandlerPropagatesHeaders：发布侧传播键还原进 handler ctx。
 func TestInvokeHandlerPropagatesHeaders(t *testing.T) {
 	r := NewResolver(Options{})

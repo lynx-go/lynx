@@ -3,6 +3,7 @@ package eventbus
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // Topic 是类型化主题：编译期绑定 Payload 类型，运行时携带订阅/发布默认值。
@@ -18,6 +19,7 @@ type Topic[T any] struct {
 // 不在 Topic 上声明。
 type TopicOptions struct {
 	MaxInFlight     int
+	HandlerTimeout  time.Duration
 	AutoAck         bool
 	ContinueOnError bool
 	Retry           *RetryOptions
@@ -33,6 +35,14 @@ type TopicOption func(*TopicOptions)
 // 内存 Bus 每 handler 串行处理，无此概念。
 func WithTopicMaxInFlight(n int) TopicOption {
 	return func(o *TopicOptions) { o.MaxInFlight = n }
+}
+
+// WithTopicHandlerTimeout 设置 handler 单次尝试的执行上限：超时按本次尝试
+// 终态失败处理（重试 / 重投 / 毒消息止损），防止挂死的 handler 永久占用
+// 订阅级在途槽位。0 = 全局默认（不限制）；负值 = 显式禁用（即使全局设置了）。
+// 注意 Go 无法终止 goroutine：handler 不尊重 ctx 时，超时只释放调用方。
+func WithTopicHandlerTimeout(d time.Duration) TopicOption {
+	return func(o *TopicOptions) { o.HandlerTimeout = d }
 }
 
 // WithTopicAutoAck 覆盖 AutoAck。
@@ -113,9 +123,12 @@ func subscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], h func(co
 	dec := ResolveMarshaler(b, topic.Name(), topts.Marshaler, nil)
 
 	// Topic 默认值作为基础项注入，调用方 opts 排在末尾最后生效
-	wrappedOpts := make([]SubscribeOption, 0, len(opts)+4)
+	wrappedOpts := make([]SubscribeOption, 0, len(opts)+5)
 	if topts.MaxInFlight != 0 {
 		wrappedOpts = append(wrappedOpts, withMaxInFlight(topts.MaxInFlight))
+	}
+	if topts.HandlerTimeout != 0 {
+		wrappedOpts = append(wrappedOpts, withHandlerTimeout(topts.HandlerTimeout))
 	}
 	if topts.AutoAck {
 		wrappedOpts = append(wrappedOpts, WithAutoAck())

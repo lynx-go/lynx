@@ -214,6 +214,7 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 
 func (b *memoryBus) loop(ctx context.Context, sub *subscriber) {
 	retry := b.resolver.RetryFor(sub.topic, sub.opts.Retry)
+	timeout := b.resolver.HandlerTimeoutFor(sub.topic, sub.opts.HandlerTimeout)
 	for {
 		select {
 		case <-ctx.Done():
@@ -230,6 +231,7 @@ func (b *memoryBus) loop(ctx context.Context, sub *subscriber) {
 				Retry:       retry,
 				Once:        sub.opts.AutoAck,
 				Swallow:     sub.opts.ContinueOnError,
+				Timeout:     timeout,
 			})
 		}
 	}

@@ -63,11 +63,11 @@ kafka 段（`consumer.group_id` / `consumer.instances`）；`concurrency` 改名
 Start 等待关停）沉淀为 `lynx.HandlerService[T]` + `lynx.NewHandlerService`：
 业务结构体实现 `lynx.EventHandler[T]`（`Topic` / `HandlerName` / `Init` /
 `Handle`），适配器保证**先 `Init` 注入依赖、再订阅**——`Init` 可用
-`AppContext` 取构造期拿不到的配置/日志，返回错误则不订阅。订阅选项
-（`WithGroup` / `WithInstances` / `WithSubscribeRetry` / `WithAutoAck` /
-`WithContinueOnError`）在注册点透传；默认 handler 名 = `HandlerName()`，
-显式 `WithHandlerName` 可覆盖。`Name()` 构造后即可用（框架可能在 `Init`
-前调用），`Start` 无需手写 `WaitForShutdown`。
+`AppContext` 取构造期拿不到的配置/日志，返回错误则不订阅。handler 级选项
+（`WithSubscribeRetry` / `WithAutoAck` / `WithContinueOnError`）在注册点
+透传；默认 handler 名 = `HandlerName()`，显式 `WithHandlerName` 可覆盖。
+`Name()` 构造后即可用（框架可能在 `Init` 前调用），`Start` 无需手写
+`WaitForShutdown`。
 
 ```go
 type OrderCreatedHandler struct{ name string; db *sql.DB }
@@ -77,13 +77,23 @@ func (h *OrderCreatedHandler) HandlerName() string                { return h.nam
 func (h *OrderCreatedHandler) Init(ctx lynx.AppContext) error     { return nil } // 依赖注入点
 func (h *OrderCreatedHandler) Handle(ctx context.Context, e *eventbus.Event[OrderCreated]) error { ... }
 
-app.Register(lynx.NewHandlerService(&OrderCreatedHandler{name: "order-created", db: db},
-    eventbus.WithGroup("order-created")))
+app.Register(lynx.NewHandlerService(&OrderCreatedHandler{name: "order-created", db: db}))
 ```
 
-`_examples/bus-kafka` 已改为该形态；同一 topic 的多个 handler 在消费组
-后端（Kafka）上必须使用不同 group（共用组会被消费组占用检查拒绝），
-示例已显式分组。
+`_examples/bus-kafka` 已改为该形态；同一事件的多个 handler 共享一条
+transport 订阅并进程内并行扇出（见上条消费模型）。
+
+### 新增：handler 超时——挂死 handler 的止损闭环
+
+`bus.handler_timeout`（全局）与 `bus.topics.<t>.handler_timeout`（主题级，
+负值 = 显式禁用）为 handler **单次尝试**设置执行上限，默认 0 = 不限制。
+超时按本次尝试终态失败处理：重试 → 重投 → 毒消息止损，防止挂死的 handler
+永久占用订阅级在途槽位（`max_in_flight=1` 时整个订阅停摆）。实现归共享
+执行点 `eventbus.InvokeHandler`（截止 ctx + 看门狗），内存 Bus 与
+watermill 路径同时生效；`Topic.WithTopicHandlerTimeout` 提供编程式入口。
+
+注意：Go 无法终止 goroutine——handler 不尊重 ctx 时，超时只释放调用方，
+handler goroutine 仍会运行到自行返回（可能与被重投的尝试重叠执行）。
 
 ## v1.15.0 (2026-09-24)
 

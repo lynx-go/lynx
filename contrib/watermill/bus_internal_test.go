@@ -290,6 +290,7 @@ bus:
   topics:
     orders:
       max_in_flight: 2
+      handler_timeout: 3s
       auto_ack: true
       continue_on_error: true
 `)); err != nil {
@@ -300,8 +301,8 @@ bus:
 		t.Fatalf("NewFromConfig: %v", err)
 	}
 	tc := bus.opts.Topics["orders"]
-	if tc.MaxInFlight != 2 || !tc.AutoAck || !tc.ContinueOnError {
-		t.Fatalf("topic config = %+v, want max_in_flight/auto_ack/continue_on_error mapped", tc)
+	if tc.MaxInFlight != 2 || tc.HandlerTimeout != 3*time.Second || !tc.AutoAck || !tc.ContinueOnError {
+		t.Fatalf("topic config = %+v, want max_in_flight/handler_timeout/auto_ack/continue_on_error mapped", tc)
 	}
 }
 

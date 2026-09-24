@@ -12,13 +12,18 @@ import (
 //   - Retry：解析后的重试策略（Resolver.RetryFor 的结果）；
 //   - Once：AutoAck 语义——只调用一次、不重试（失败仅记日志、恒返回 nil，
 //     持久化后端上不参与整条消息的确认裁决）；
-//   - Swallow：ContinueOnError 语义——失败记录后吞掉（返回 nil）。
+//   - Swallow：ContinueOnError 语义——失败记录后吞掉（返回 nil）；
+//   - Timeout：单次尝试的 handler 执行上限（0 = 不限制）。超时按本次尝试
+//     终态失败处理（重试 / 重投 / 毒消息止损），保证挂死的 handler 不会
+//     永久占用订阅级在途槽位。注意 Go 无法终止 goroutine：handler 不尊重
+//     ctx 时，超时只释放调用方，handler goroutine 会运行到自行返回。
 type InvokeOptions struct {
 	Topic       string
 	HandlerName string
 	Retry       RetryOptions
 	Once        bool
 	Swallow     bool
+	Timeout     time.Duration
 }
 
 // InvokeHandler 执行一次订阅投递（两种 Bus 的唯一执行点）：构建 handler ctx
@@ -53,7 +58,7 @@ func InvokeHandler(ctx context.Context, logger *slog.Logger, h HandlerFunc, ev *
 
 	if opts.Once {
 		// AutoAck：先确认由适配器完成；这里只调用一次，失败仅记录。
-		if err := h(hCtx, ev); err != nil {
+		if err := invokeOnce(hCtx, h, ev, opts.Timeout); err != nil {
 			logger.ErrorContext(hCtx, "handler failed (auto_ack, not retried)", "error", err, "handler", opts.HandlerName)
 		}
 		return nil
@@ -61,7 +66,7 @@ func InvokeHandler(ctx context.Context, logger *slog.Logger, h HandlerFunc, ev *
 
 	var err error
 	for attempt := 0; attempt <= opts.Retry.MaxRetries; attempt++ {
-		err = h(hCtx, ev)
+		err = invokeOnce(hCtx, h, ev, opts.Timeout)
 		if err == nil {
 			return nil
 		}
@@ -85,4 +90,24 @@ func InvokeHandler(ctx context.Context, logger *slog.Logger, h HandlerFunc, ev *
 	}
 	logger.ErrorContext(hCtx, "handler failed after retries", "error", err, "handler", opts.HandlerName)
 	return err
+}
+
+// invokeOnce 执行一次 handler 调用。timeout > 0 时用带截止的 ctx + 看门狗
+// 返回超时错误：handler 在 goroutine 中运行，超时后调用方立即返回（在途
+// 槽位随之释放），handler goroutine 继续运行到自行返回——Go 无法终止
+// goroutine，业务 handler 必须尊重 ctx（见 InvokeOptions.Timeout）。
+func invokeOnce(ctx context.Context, h HandlerFunc, ev *RawEvent, timeout time.Duration) error {
+	if timeout <= 0 {
+		return h(ctx, ev)
+	}
+	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- h(attemptCtx, ev) }()
+	select {
+	case err := <-done:
+		return err
+	case <-attemptCtx.Done():
+		return attemptCtx.Err()
+	}
 }

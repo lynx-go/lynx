@@ -2,6 +2,7 @@ package eventbus_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/lynx-go/lynx/eventbus"
 )
@@ -9,6 +10,7 @@ import (
 func TestTopicOptionsIsExported(t *testing.T) {
 	topic := eventbus.NewTopic[string]("orders",
 		eventbus.WithTopicMaxInFlight(3),
+		eventbus.WithTopicHandlerTimeout(2*time.Second),
 		eventbus.WithTopicAutoAck(),
 		eventbus.WithTopicContinueOnError(),
 		eventbus.WithTopicMarshaler(eventbus.JSONMarshaler{}),
@@ -17,6 +19,9 @@ func TestTopicOptionsIsExported(t *testing.T) {
 	var _ = opts
 	if opts.MaxInFlight != 3 {
 		t.Fatalf("MaxInFlight = %d, want 3", opts.MaxInFlight)
+	}
+	if opts.HandlerTimeout != 2*time.Second {
+		t.Fatalf("HandlerTimeout = %v, want 2s", opts.HandlerTimeout)
 	}
 	if !opts.AutoAck || !opts.ContinueOnError {
 		t.Fatal("AutoAck/ContinueOnError not set")

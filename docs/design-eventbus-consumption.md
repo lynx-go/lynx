@@ -40,7 +40,7 @@
 
 - **订阅单元是事件（逻辑 topic），不是 handler**。同一逻辑 topic 的 N 个 handler 都收到每一条消息，**进程内并行触发**；内存与 Kafka 语义一致。
 - **消费组 / 消费者成员数是后端配置**（kafka `consumer.group_id` / `consumer.instances`），Bus 不建模：Bus 只负责事件 → 订阅复用、handler 扇出与处理语义。
-- **Bus 层配置**：`max_in_flight`（订阅级在途上限，默认 1）与 handler 级 `auto_ack` / `continue_on_error` / `retry`；跨服务 / 跨进程的消费身份由各服务各自的后端配置承担。
+- **Bus 层配置**：`max_in_flight`（订阅级在途上限，默认 1）、`handler_timeout`（handler 单次尝试超时，默认不限制）与 handler 级 `auto_ack` / `continue_on_error` / `retry`；跨服务 / 跨进程的消费身份由各服务各自的后端配置承担。
 - **进程内一条逻辑 topic 只建一条 transport 订阅**；不变量：同进程内同一事件只可能有一条订阅 → "共组瓜分分区"结构上不可能发生，无需运行时检查。
 
 ### 2.2 架构
@@ -82,6 +82,7 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
 5. **panic**：dispatcher 为每个 handler goroutine 恢复 panic，按该 handler 终态失败处理（对齐现状 watermill Recoverer → error → Nack；注意 router 的 Recoverer 不再覆盖 dispatcher 内部的 goroutine）。
 6. **并发/顺序**：消息内 handler 并行；消息间受**订阅级在途上限**约束（`max_in_flight`，默认 1，见下条）。
 7. **在途上限（goroutine 防爆）**：适配器在把消息交给 router **之前**占用槽位、Ack/Nack/订阅关停时释放——在途消息 ≤ N，goroutine 上界 ≈ N×(H+2)。N=1（默认）时同订阅串行处理、恢复投递顺序；N<0 不限制（逃生口，不推荐）。限流点必须在适配器：只限 dispatcher 执行挡不住 router 的每消息 goroutine 堆积（阻塞的 goroutine 仍持有消息）。
+8. **handler 超时（可选，`handler_timeout`）**：单次尝试超过上限按终态失败处理（重试 → 重投 → 毒消息止损），防止挂死的 handler 永久占用在途槽位。实现为截止 ctx + 看门狗；Go 无法终止 goroutine——handler 必须尊重 ctx，否则超时只释放调用方，goroutine 运行到自行返回（可能与被重投的尝试重叠执行）。
 
 ---
 
@@ -96,6 +97,7 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
 | D5 | **消费者成员数只存在于后端配置**（kafka `consumer.instances`） | Bus 层副本（`bus.topics.<t>.instances`）与后端配置重复 → 删 |
 | D6 | **删除 `DeliveryMode`**（Bus 不再需要投递模式） | 保留为"后端必答属性"：订阅复用键退化为逻辑 topic 后无任何调用方，死接口 → 否 |
 | D7 | 订阅级在途上限命名 **`max_in_flight`**（默认 1），限流点放适配器 | `concurrency`：与 `instances` 产生"重复"错觉（Spring 里 concurrency 就是消费者线程数）→ 否；handler worker 池：H 小且静态，N×H 已有界 → 暂不做 |
+| D8 | handler 超时放共享执行点 `eventbus.InvokeHandler`（截止 ctx + 看门狗），配置 `bus.handler_timeout` / `bus.topics.<t>.handler_timeout` | 放 watermill middleware：内存 Bus 拿不到，且与重试/聚合确认的交互要重复实现 → 否 |
 
 ---
 
@@ -106,7 +108,8 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
 | 0 | 本文档评审，拍板 §8 开放问题 | 已完成 |
 | 1 | watermill 订阅注册表 + dispatcher + 聚合确认 + 在途上限；eventbus 删除 `WithGroup` / `WithInstances` / claim 三件套 | 已实现 |
 | 2 | 组 / 成员数下沉后端；删除 `DeliveryMode` 与 Topic 组选项；`concurrency` → `max_in_flight`；文档 / 示例对齐 | 已实现 |
-| 3 | 版本发布 | 待发布 |
+| 3 | handler 超时（`bus.handler_timeout` / `bus.topics.<t>.handler_timeout`，`InvokeHandler` 截止 ctx + 看门狗） | 已实现 |
+| 4 | 版本发布 | 待发布 |
 
 ---
 
@@ -116,7 +119,7 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
 | --- | --- | --- |
 | R1 | 毒消息连坐（现状一个坏 handler 不影响好 handler） | D3 跳过策略 + Error 日志点名 handler |
 | R2 | 幂等要求升级（重投重复投给成功过的 handler） | 文档醒目标注；示例注释；CHANGELOG 迁移说明 |
-| R3 | 默认串行（`max_in_flight=1`）吞吐下降 | 有界优先；I/O 型 handler 按 topic 调大 `max_in_flight`；handler 超时仍为后续项 |
+| R3 | 默认串行（`max_in_flight=1`）吞吐下降 | 有界优先；I/O 型 handler 按 topic 调大 `max_in_flight`；挂死 handler 由 `handler_timeout` 止损（D8） |
 | R4 | 动态挂载竞态 | handler 集合加锁快照；挂载后从下一条消息生效 |
 | R5 | `instances` 与 `max_in_flight` 混淆（以为 `instances` 会并行处理） | 文档明确分工：`instances` = 后端成员数（抢分区 / 连接），`max_in_flight` = 进程内在途处理上限 |
 | R6 | 存量用户破坏性迁移 | §6 迁移对照 + CHANGELOG + 版本说明 |
@@ -151,6 +154,7 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
   - 聚合 Ack / Nack：全成功 Ack、一失败 Nack、AutoAck / ContinueOnError 不参与；
   - 毒消息：超限 handler 被跳过、其余继续、最终 Ack；per-handler 成功清计数；
   - 在途上限：`max_in_flight=2` 峰值恰为 2；默认 1 串行且保序；负数不限；Nack 释放槽位；
+  - handler 超时：挂死 handler 超时 Nack 且槽位释放（后续消息仍被处理）；超时可重试；解析优先级（调用 > 主题 > 全局，负值禁用）；
   - panic 恢复为 Nack；动态挂载；handlerName 唯一；Stop 收口。
 - **watermill-kafka**：组必须来自配置（缺失报错）；`instances` 钳制；删除 `DeliveryMode` / `DefaultGroup` 测试。
 - **示例**：`_examples/bus-kafka` 三路 fan-out（audit + 两 handler，无 group 参数）。
@@ -179,7 +183,6 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
 - 不做 per-handler offset / 独立 lag / 独立成员数。
 - 不做 per-handler 并发队列（消息内 handler 并行，消息间由订阅级 `max_in_flight` 约束）。
 - 不做 handler 级 worker 池（H 小且静态，N×H 已有界）。
-- 不做 handler 超时（后续项：防挂死 handler 永久占用槽位）。
 - 不引入消息间重排序。
 - 不改 `Transport.Subscribe` 签名（`opts` 保留为后端扩展缝，Bus 不填后端特有字段）。
 - 不改内存 Bus 的投递实现。
@@ -194,6 +197,7 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
 | 订阅注册表 + dispatcher | `contrib/watermill/subscription.go`（key = 逻辑 topic；首 handler 先入集合再注册 router handler） |
 | 聚合确认 + 毒消息跳过 | `Bus.dispatch`：并行 `InvokeHandler`、全成功 Ack、任一失败 Nack、超限 handler 跳过并记 Error、per-handler 成功清计数、Ack 时清除全部计数 |
 | 订阅级在途上限 | `subscriberAdapter.sem`（适配器在交给 router 前占用、Ack/Nack/关停释放）+ `bus.topics.<t>.max_in_flight` / `Topic.WithTopicMaxInFlight`，默认 1 |
+| handler 超时 | `eventbus.InvokeHandler`（`invokeOnce`：截止 ctx + 看门狗）+ `bus.handler_timeout` / `bus.topics.<t>.handler_timeout` / `Topic.WithTopicHandlerTimeout`，默认不限制 |
 | 组 / 成员数 | 只存在于 kafka 配置（`consumer.group_id` / `consumer.instances`）；Bus 不建模 |
 | 删除 | `eventbus.WithGroup` / `WithInstances` / `WithTopicGroup` / `WithTopicInstances` / `GroupClaims` / `EffectiveGroup` / `DefaultGrouper` / `DeliveryMode`、kafka `DefaultGroup`、watermill 消费组占用接线与 claim 测试 |
 | 示例 | `_examples/bus-kafka`：audit + 两个 handler 三路 fan-out，无 group 参数 |

@@ -266,6 +266,51 @@ func TestTopicMaxInFlightUnlimited(t *testing.T) {
 	stopWithin(t, bus, 2*time.Second)
 }
 
+// TestSubscribeHandlerTimeoutReleasesSlot：max_in_flight=1 下挂死的 handler
+// 由 handler_timeout 止损——超时按终态失败 Nack，槽位释放，后续消息仍能被
+// 处理（handler 无视 ctx 也成立：看门狗释放调用方）。
+func TestSubscribeHandlerTimeoutReleasesSlot(t *testing.T) {
+	nacked := make(chan struct{}, 4)
+	rt := &recordingTransport{topic: "order.timeout", onNack: func() { nacked <- struct{}{} }}
+	bus := watermill.New(eventbus.Options{
+		Transports: []eventbus.Transport{rt},
+		Retry:      &eventbus.RetryOptions{MaxRetries: 0},
+		Topics:     map[string]eventbus.TopicConfig{"order.timeout": {HandlerTimeout: 30 * time.Millisecond}},
+	})
+	if err := bus.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = bus.Start(ctx) }()
+	waitBus(t, bus)
+
+	release := make(chan struct{})
+	defer close(release) // 释放挂起的 handler goroutine，避免测试泄漏
+	if err := bus.Subscribe(ctx, "order.timeout", func(context.Context, *eventbus.RawEvent) error {
+		<-release // 无视 ctx 的挂死 handler
+		return nil
+	}, eventbus.WithHandlerName("h-timeout")); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	for i := 0; i < 2; i++ {
+		if err := bus.Publish(ctx, "order.timeout", map[string]string{"id": "x"}); err != nil {
+			t.Fatalf("Publish %d: %v", i, err)
+		}
+	}
+	// 两条都要在超时后 Nack：槽位未释放时第二条永远不会被处理。
+	for i := 0; i < 2; i++ {
+		select {
+		case <-nacked:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("only %d/2 messages nacked; hung handler blocked the slot?", i)
+		}
+	}
+	stopWithin(t, bus, 2*time.Second)
+}
+
 // TestSubscribeMaxInFlightReleasedOnNack 失败（Nack）也必须释放槽位：
 // 上限 1 下第一条失败后，后续消息仍能被处理（槽位不泄漏）。
 func TestSubscribeMaxInFlightReleasedOnNack(t *testing.T) {

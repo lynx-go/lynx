@@ -2,6 +2,7 @@ package eventbus
 
 import (
 	"testing"
+	"time"
 )
 
 // markerMarshaler 是可在断言中按值区分的序列化器。
@@ -87,6 +88,36 @@ func TestResolverApplyTopicDefaults(t *testing.T) {
 	r.ApplyTopicDefaults("missing", untouched)
 	if *untouched != (SubscribeOptions{}) {
 		t.Errorf("unknown topic changed options: %+v", *untouched)
+	}
+}
+
+// TestResolverHandlerTimeoutFor：超时解析优先级（高→低）：调用/Topic 携带值 >
+// Topics[t].HandlerTimeout > 全局 > 0（不限制）；负值显式禁用。
+func TestResolverHandlerTimeoutFor(t *testing.T) {
+	r := NewResolver(Options{
+		HandlerTimeout: 5 * time.Second,
+		Topics: map[string]TopicConfig{
+			"t":  {HandlerTimeout: 2 * time.Second},
+			"t2": {HandlerTimeout: -1},
+		},
+	})
+	if got := r.HandlerTimeoutFor("t", 3*time.Second); got != 3*time.Second {
+		t.Errorf("call-level = %v, want 3s", got)
+	}
+	if got := r.HandlerTimeoutFor("t", 0); got != 2*time.Second {
+		t.Errorf("topic = %v, want 2s", got)
+	}
+	if got := r.HandlerTimeoutFor("other", 0); got != 5*time.Second {
+		t.Errorf("global = %v, want 5s", got)
+	}
+	if got := r.HandlerTimeoutFor("t2", 0); got != 0 {
+		t.Errorf("topic negative = %v, want 0 (disabled)", got)
+	}
+	if got := r.HandlerTimeoutFor("t", -1); got != 0 {
+		t.Errorf("call negative = %v, want 0 (disabled)", got)
+	}
+	if got := NewResolver(Options{}).HandlerTimeoutFor("x", 0); got != 0 {
+		t.Errorf("default = %v, want 0 (unlimited)", got)
 	}
 }
 

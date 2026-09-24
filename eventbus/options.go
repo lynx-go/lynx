@@ -21,6 +21,7 @@ type LogMessageOptions struct {
 // 不在此结构。
 type TopicConfig struct {
 	MaxInFlight     int                `mapstructure:"max_in_flight"`
+	HandlerTimeout  time.Duration      `mapstructure:"handler_timeout"`
 	AutoAck         bool               `mapstructure:"auto_ack"`
 	ContinueOnError bool               `mapstructure:"continue_on_error"`
 	Retry           *RetryOptions      `mapstructure:"retry"`
@@ -47,6 +48,10 @@ type Options struct {
 	// PropagateAttrs 是跨请求传播的日志属性白名单，nil 时为 {request_id,user_id}，
 	// 非 nil 空切片表示关闭。
 	PropagateAttrs []string
+	// HandlerTimeout 是 handler 单次尝试的全局执行上限（0 = 不限制，默认；
+	// 负值等价 0）。主题级 Topics[t].HandlerTimeout 非 0 时覆盖它；解析见
+	// Resolver.HandlerTimeoutFor。
+	HandlerTimeout time.Duration
 	// Topics 按主题的精细选项，Subscribe 时合并为默认值。
 	Topics map[string]TopicConfig
 	// Transports 参与自动路由的后端（内存 Bus 为空，Watermill Bus 由 contrib 注入）。

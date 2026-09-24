@@ -223,6 +223,7 @@ This pattern is particularly useful for complex applications with many services.
 - 消费模型：订阅单元是事件（逻辑 topic）——同一事件的多个 handler 共享一条 transport 订阅并进程内并行扇出；消费组 / 消费者成员数是后端配置（kafka `consumer.group_id` / `consumer.instances`），Bus 不建模；`WithGroup` / `WithInstances` / `WithTopicGroup` / `WithTopicInstances` 与 `DeliveryMode` 已随 v1.16 删除。订阅注册表 + dispatcher 见 `contrib/watermill/subscription.go`
 - 毒消息止损：`bus.max_redeliveries`（默认 10，主题级可覆盖）按 handler×消息 ID 计数终态失败轮数；共享 offset 下超限 handler 被跳过并记 Error，不连坐其他 handler。计数实现归 `eventbus.RedeliveryLimiter`（有界环形淘汰），配置解析留在本适配器
 - 订阅级在途上限：`bus.topics.<t>.max_in_flight`（默认 1，串行且保序；调大并发；负数不限）——限流点在 `subscriberAdapter`（交给 router 前占槽、Ack/Nack/关停释放），防止 router 每消息 goroutine 无界堆积并对 transport 形成背压
+- handler 超时：`bus.handler_timeout` / `bus.topics.<t>.handler_timeout`（默认不限制；超时按终态失败 → 重试 / 重投 / 毒消息止损），实现归 `eventbus.InvokeHandler`（截止 ctx + 看门狗；handler 必须尊重 ctx，Go 无法终止 goroutine）
 - Transports / DefaultTransport 生命周期独立于 Bus：需 Register 托管，`Bus.Stop` 不关闭它们
 
 **Kafka Transport** (contrib/watermill-kafka/transport.go)

@@ -27,7 +27,7 @@ func (d Delivery) NackOnce() {
 
 // Transport 是 Bus 可插拔的后端，topic 一律为 Transport 侧键（缺省=逻辑名）。
 // 消费组 / 消费者成员数等后端特有概念由各 Transport 自己的配置承担
-//（如 kafka consumer.group_id / instances），不进 Bus 层。
+// （如 kafka consumer.group_id / instances），不进 Bus 层。
 //
 // 生命周期归属契约：Transport 独立于 Bus 生存——Bus.Stop 只关闭自身与内置
 // 的生命周期内存后端，不关闭用户传入的 Transport。需要框架托管 Init/Start/

@@ -221,11 +221,13 @@ func (b *Bus) dispatch(sub *topicSubscription, msg *message.Message) error {
 // handler 拿到独立的 RawEvent 副本，避免 raw handler 互相污染。
 func (b *Bus) invokeHandler(ctx context.Context, topic string, h *subscriptionHandler, raw *eventbus.RawEvent) error {
 	retry := b.resolver.RetryFor(topic, h.opts.Retry)
+	timeout := b.resolver.HandlerTimeoutFor(topic, h.opts.HandlerTimeout)
 	return eventbus.InvokeHandler(ctx, b.logger, h.fn, eventbus.CloneRawEvent(raw), b.resolver, eventbus.InvokeOptions{
 		Topic:       topic,
 		HandlerName: h.name,
 		Retry:       retry,
 		Once:        h.opts.AutoAck,
 		Swallow:     h.opts.ContinueOnError,
+		Timeout:     timeout,
 	})
 }
