@@ -4,7 +4,7 @@ go 1.26.5
 
 replace github.com/lynx-go/lynx => ../../
 
-require github.com/lynx-go/lynx v1.0.0
+require github.com/lynx-go/lynx v1.15.0
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

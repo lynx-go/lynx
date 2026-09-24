@@ -1,5 +1,119 @@
 # Changelog
 
+## v1.15.0 (2026-09-24)
+
+本次发布 tag：根 `v1.15.0`、`contrib/watermill/v1.8.0`、
+`contrib/registry/v1.10.0`、`contrib/schedule/v1.10.0`、
+`contrib/consul/v1.9.0`、`contrib/cluster/v1.2.0`、
+`contrib/cluster-redis/v1.2.0`、`contrib/telemetry/v1.8.0`。
+`contrib/zap` 与 `contrib/watermill-kafka` 本批无源码变更，不重复打 tag。
+
+本批为架构评审报告（2026-09-23）候选 1-8 全量落地与剩余小项收敛：
+应用生命周期自有关停调度、readiness 有界收敛、Bus 共享核心再下沉、
+server 共享规则（serverkit）、Watcher 骨架与订阅契约收口、
+claim/毒消息止损下沉、时间源接缝、lynxtest 补全为唯一测试上下文。
+
+**应用迁移总览**（多为机械替换）：
+
+- `Register`/`RegisterFactories`/`Command`：`Close` 之后同样被拒绝
+  （此前迟到的 Register 产生的服务永不 Stop）；`App.Command` 支持
+  `CommandOption` 变参；
+- `Topic.PublishRaw(ctx, raw)` → `Topic.Publish(ctx, raw)`（等价面收敛）；
+- `Resolver.Subscribe(name)` → `Resolver.Subscribe(name, filter)`
+  （返回已过滤快照，消费方删除自行 `MatchFilter`）；
+- `cluster.RunRenewLoop(..., renew)` → 末尾增加 `clk lynx.Clock` 参数
+  （适配器经 `cluster.ClockFrom(opts...)` 获取）；
+- 事件订阅：`lynx.http.*` / `lynx.grpc.*` 六个主题 → 统一的
+  `lynx.server.listening` / `stopping` / `stopped`（`ServerEvent.Service`
+  区分 http/grpc/debug）；
+- 传播 wire 键统一为 `x-request-id` / `x-user-id`（HTTP 头与 gRPC
+  metadata 同源；gRPC 原为 `request_id` / `user_id`）；
+- `telemetry.Options` / `schedule.Options` 未导出（无外部消费路径）。
+
+### 破坏性变更：应用生命周期自有关停调度（移除 oklog/run）
+
+新增 `lifecycle.go` 作为 actor 调度、关停阶段序列与注册状态机的唯一归属：
+任一触发（服务返回 / 信号 / Close / OnPostStart 错误）进入同一序列——
+drain → cancelCtx → OnPreStop → **逆序**停止服务（LIFO）→ AppStopped →
+有界停总线 → 一次性聚合错误；阶段顺序不再由 actor 注册顺序决定（修复
+Start 失败路径上 OnPreStop 排在服务 Stop 之后的倒置）。总线 Start 错误
+作为构造期根因快速失败、Stop 错误进入 Run 返回值；启动期早退路径不再
+泄漏总线；`oklog/run` 依赖移除。
+
+### 破坏性变更：readiness 有界收敛
+
+`ready.go` 收编三级解析（Ready → Checker → 放行）与两种消费模式
+（Command 单次有界探测 / OrderedServices 预算循环）：Ready 等待与
+CheckHealth 调用都不再越过预算，取消优先。修复两处预算失效：OrderedServices
+的 Ready 通道路径此前无界（可永久卡启动）；总线就绪等待挂在
+`context.Background()` 上（挂死 checker 使 `newLynx` 永不返回）。HTTP/gRPC
+重复的 `runHealthChecks` 与两个 `DefaultHealthCheckTimeout` 常量删除。
+
+### 破坏性变更：Bus 共享核心再下沉
+
+- 新增 `eventbus.Resolver`（marshaler/retry/log-message/传播键解析与 Topic
+  默认合并的唯一归属）与 `eventbus.InvokeHandler`（handler ctx、固定退避
+  重试、AutoAck / ContinueOnError 裁决的唯一执行点）；memory 与 watermill
+  的复制实现删除，ack 时序（AutoAck 先 Ack）留在适配器；
+- 新增 `eventbus.GroupClaims`（消费组占用）与 `eventbus.RedeliveryLimiter`
+  （毒消息止损计数）：watermill 只接线，配置解析留在适配器；
+- `Options` 上的 `RetryFor` / `LogMessageFor` / `PropagateKeys` 与
+  `ApplyTopicConfig` 收编进 Resolver；选错后端的选项
+  （Transports/Debug/BufferSize、group/instances）改记 Warn 不再静默；
+- `WithMetadata` 克隆调用方 map（此前 `WithMetadataField` 会反向污染）。
+
+### 破坏性变更：server 共享规则收敛至 internal/serverkit
+
+- 健康执行、有界关停、请求标识、生命周期事件四规则的唯一归属；关停统一
+  min(调用方, 配置)，超时先 force 解除阻塞再等 graceful 退出；
+  debug 新增 `WithShutdownTimeout`（默认 3s）；
+- HTTP 服务端**默认安装** request_id/user_id 传播（`WithDisableRequestID`
+  关闭），补齐此前 user_id 断链；gRPC metadata 键改 `x-request-id` /
+  `x-user-id`（同时消解 Envoy 等代理对下划线 header 的默认拒绝）；
+  client/http 常量去重；两包 `RequestIDFrom` 委托共享实现；
+- 生命周期事件收敛为一组 `lynx.server.*` 主题，debug 接入。
+
+### 破坏性变更：Watcher 骨架与订阅契约收口
+
+- 新增泛型骨架 `registry.WatcherCore[T]`（首次快照注入、缓冲 1 最新替换、
+  Stop 幂等 + 注销钩子；停止/取消优先于挂起推送）；memory/dns/consul
+  三个后端与 resolver 订阅共用，四套手写循环收敛；
+- `Resolver.Subscribe(name, filter)` 返回已过 `MatchFilter` 的快照（与
+  Watch/GetAll 读路径一致；缓存仍按服务名共享一条）；grpc_resolver 的
+  实例级补偿过滤删除；
+- sentinel 统一为 `registry.ErrWatcherStopped`（删除 registry/consul 私有副本）。
+
+### 变更：时间源接缝（`lynx.Clock`）
+
+新增公开 `lynx.Clock`（Now + After）与 `internal/clock`（Real 生产 /
+Fake 可控）：`cluster.WithClock` 使续约等待与内存 TTL 判定可确定性推进；
+`registry.WithResolverClock` 覆盖缓存 updatedAt / stale 判定。TTL 边界、
+续约刻度、stale 边界的测试改为假时钟断言（cluster-redis 删除
+FastForward+sleep 混合时钟）；schedule 既有的 `WithNow` 保持。
+
+### 变更：lynxtest 补全为唯一测试上下文
+
+`NewContext` 新增 `ContextWithMeta` / `ContextWithCheckers`，默认携带稳定
+Meta `{test-service, test-instance}`；新增 `lynx.ContextWithMeta`（Meta 的
+对称写入口）。七个手写 AppContext 替身（consul/schedule/telemetry/zap/
+watermill-kafka/registry + command 包外用例）迁移删除；App 级注册协议
+替身与 debug 控制面保留为文档化例外。
+
+### 变更：schedule identity 与引擎 parser 同源
+
+`fireIdentity` 改用引擎实际解析的 `cron.Schedule`（注册时经 `Entry(id)`
+回读）：`WithCron` 自定义 parser 时不再分叉（5 字段 parser 此前会直接
+报错）；`@every` 经 `ConstantDelaySchedule` 类型识别；私有
+`exclusiveParser` / `parseEvery` 删除。`Topic.Publish` 的原始载荷分支
+（`*RawEvent` / `[]byte`，忽略 Topic marshaler）补 pin 测试。
+
+### 工程化
+
+- workspace `go mod tidy`：清 `oklog/run` 残留间接依赖；
+- 消除两处时序断言 flake（command Ready 等待下界、registry 订阅合并）。
+
+**Full Changelog**: https://github.com/lynx-go/lynx/compare/v1.14.0...v1.15.0
+
 ## v1.14.0 (2026-09-23)
 
 本次发布 tag：根 `v1.14.0`、`contrib/watermill/v1.7.0`、
