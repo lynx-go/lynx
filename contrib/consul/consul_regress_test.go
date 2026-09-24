@@ -19,20 +19,9 @@ import (
 	"time"
 
 	"github.com/hashicorp/consul/api"
-	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/contrib/registry"
-	"github.com/lynx-go/lynx/eventbus"
+	"github.com/lynx-go/lynx/lynxtest"
 )
-
-// fakeAppContext 是 Registrar.Init 需要的最小 lynx.AppContext。
-type fakeAppContext struct{ ctx context.Context }
-
-func (f *fakeAppContext) Context() context.Context       { return f.ctx }
-func (f *fakeAppContext) Config() lynx.Config            { return nil }
-func (f *fakeAppContext) Logger(...any) *slog.Logger     { return slog.Default() }
-func (f *fakeAppContext) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
-func (f *fakeAppContext) HealthCheckers() []lynx.Checker { return nil }
-func (f *fakeAppContext) Close()                         {}
 
 // eventually 在 deadline 内反复调用 cond 直到为真。
 func eventually(t *testing.T, what string, cond func() bool) {
@@ -120,7 +109,7 @@ func TestRegistrarBudgetAgainstHungAgent(t *testing.T) {
 			Protocol: registry.ProtocolHTTP, Address: "10.0.0.1:8080",
 		}),
 	)
-	if err := r.Init(&fakeAppContext{ctx: context.Background()}); err != nil {
+	if err := r.Init(lynxtest.NewContext(t)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,7 +144,7 @@ func TestRegistrarRetryLoopNotHungAgainstHungAgent(t *testing.T) {
 			Protocol: registry.ProtocolHTTP, Address: "10.0.0.1:8080",
 		}),
 	)
-	if err := r.Init(&fakeAppContext{ctx: context.Background()}); err != nil {
+	if err := r.Init(lynxtest.NewContext(t)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -430,7 +419,7 @@ func TestRegistrarConsulHeartbeatCombo(t *testing.T) {
 			Protocol: registry.ProtocolHTTP, Address: "10.0.0.1:8080",
 		}),
 	)
-	if err := r.Init(&fakeAppContext{ctx: context.Background()}); err != nil {
+	if err := r.Init(lynxtest.NewContext(t)); err != nil {
 		t.Fatal(err)
 	}
 

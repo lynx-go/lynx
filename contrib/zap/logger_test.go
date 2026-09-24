@@ -12,33 +12,10 @@ import (
 	"testing"
 
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/eventbus"
-	"github.com/spf13/viper"
+	"github.com/lynx-go/lynx/lynxtest"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
-
-// fakeCtx implements lynx.AppContext minimally for tests.
-type fakeCtx struct {
-	cfg lynx.Config
-}
-
-func (f *fakeCtx) Config() lynx.Config            { return f.cfg }
-func (f *fakeCtx) Context() context.Context       { return context.Background() }
-func (f *fakeCtx) Logger(...any) *slog.Logger     { return slog.Default() }
-func (f *fakeCtx) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
-func (f *fakeCtx) HealthCheckers() []lynx.Checker { return nil }
-func (f *fakeCtx) Close()                         {}
-
-func newFakeCtx(t *testing.T) *fakeCtx {
-	t.Helper()
-	v := viper.New()
-	return &fakeCtx{cfg: lynx.NewViperConfig(v)}
-}
-
-func (f *fakeCtx) set(key, val string) {
-	f.cfg.(lynx.ConfigSource).Set(key, val)
-}
 
 func TestNewZapLogger(t *testing.T) {
 	if _, err := NewZapLogger("info"); err != nil {
@@ -78,7 +55,7 @@ func TestNewSLogger(t *testing.T) {
 }
 
 func TestNewLoggerAndMustNewLogger(t *testing.T) {
-	ctx := newFakeCtx(t)
+	ctx := lynxtest.NewContext(t)
 	logger, err := NewLogger(ctx)
 	if err != nil {
 		t.Fatalf("NewLogger() error = %v", err)
@@ -92,7 +69,7 @@ func TestNewLoggerAndMustNewLogger(t *testing.T) {
 }
 
 func TestSyncOnPreStop(t *testing.T) {
-	ctx := newFakeCtx(t)
+	ctx := lynxtest.NewContext(t)
 	l, err := NewSyncableLogger(ctx)
 	if err != nil {
 		t.Fatalf("NewSyncableLogger() error = %v", err)
@@ -109,8 +86,7 @@ func TestSyncOnPreStop(t *testing.T) {
 // TestNewLoggerInvalidLevelError 回归：非法日志级别配置下 NewLogger
 // 必须返回错误而非静默回退。
 func TestNewLoggerInvalidLevelError(t *testing.T) {
-	ctx := newFakeCtx(t)
-	ctx.set("logging.level", "not-a-level")
+	ctx := lynxtest.NewContext(t, lynxtest.ContextWithConfigMap(map[string]any{"logging.level": "not-a-level"}))
 	if _, err := NewLogger(ctx); err == nil {
 		t.Fatal("expected error for invalid log level")
 	}
@@ -303,21 +279,21 @@ func TestSyncIgnoresBenignErrnos(t *testing.T) {
 // （logging.level 优先，log-level/log_level 为兼容回退），zap 不再
 // 维护独立的键优先级实现。
 func TestLogLevelFromConfigKeys(t *testing.T) {
-	ctx := newFakeCtx(t)
-	ctx.set("logging.level", "warn")
-	ctx.set("log-level", "error")
-	ctx.set("log_level", "debug")
+	ctx := lynxtest.NewContext(t, lynxtest.ContextWithConfigMap(map[string]any{
+		"logging.level": "warn",
+		"log-level":     "error",
+		"log_level":     "debug",
+	}))
 	if got := lynx.LogLevelFromConfig(ctx.Config()); got != "warn" {
 		t.Errorf("LogLevelFromConfig() = %q, want warn", got)
 	}
 
-	ctx = newFakeCtx(t)
-	ctx.set("log_level", "debug")
+	ctx = lynxtest.NewContext(t, lynxtest.ContextWithConfigMap(map[string]any{"log_level": "debug"}))
 	if got := lynx.LogLevelFromConfig(ctx.Config()); got != "debug" {
 		t.Errorf("LogLevelFromConfig() = %q, want debug", got)
 	}
 
-	ctx = newFakeCtx(t)
+	ctx = lynxtest.NewContext(t)
 	if got := lynx.LogLevelFromConfig(ctx.Config()); got != "" {
 		t.Errorf("LogLevelFromConfig() = %q, want empty", got)
 	}

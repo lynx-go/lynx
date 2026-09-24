@@ -116,6 +116,13 @@ func Meta(ctx context.Context) Metadata {
 	return Metadata{}
 }
 
+// ContextWithMeta 返回携带应用元数据的 ctx（Meta 的对称写入口）：框架在
+// init 时经此写入；lynxtest 与宿主嵌入场景可用同一入口构造带元数据的
+// 上下文，使 lynx.Meta 可见。
+func ContextWithMeta(parent context.Context, meta Metadata) context.Context {
+	return context.WithValue(parent, keyMeta, meta)
+}
+
 type lynx struct {
 	mu sync.Mutex
 	o  *Options
@@ -377,7 +384,7 @@ func (app *lynx) init() error {
 	if meta.Version == "" {
 		meta.Version = app.o.Version
 	}
-	app.ctx = context.WithValue(app.ctx, keyMeta, meta)
+	app.ctx = ContextWithMeta(app.ctx, meta)
 
 	app.applyLogLevel()
 	return nil

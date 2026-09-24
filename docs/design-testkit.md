@@ -49,7 +49,7 @@
 
 | 层 | 测什么 | 工具 | 外部依赖 |
 | --- | --- | --- | --- |
-| L1 单元 | biz 纯逻辑、单个 Service 的 Init/Start/Stop | `lynxtest.NewContext()`（可用 AppContext）+ 手写 fake | 无 |
+| L1 单元 | biz 纯逻辑、单个 Service 的 Init/Start/Stop | `lynxtest.NewContext()`（可用 AppContext：配置/日志/Meta/Checkers 可注入）；App 级注册协议与 debug 控制面用手写替身（例外见 08-testing） | 无 |
 | L2 组装测试 | 完整 App：路由、中间件链、健康检查、注册、事件 | `lynxtest.Run()`（生产 Setup + 内存环境） | 无（回环 TCP） |
 | L3 集成 | consul/kafka 等真实后端 | `//go:build integration` + testcontainers | 真实容器 |
 
@@ -74,6 +74,9 @@ func GRPCConn(t testing.TB, s *grpc.Server, copts ...grpc.DialOption) *grpc.Clie
 
 // L1 单元测试：替代散落各模块的手写 fakeAppContext
 func NewContext(t testing.TB, opts ...ContextOption) lynx.AppContext
+    ContextWithConfig / ContextWithConfigMap / ContextWithConfigYAML
+    ContextWithBus / ContextWithLogger / ContextWithBusReadyTimeout
+    ContextWithMeta / ContextWithCheckers   // 应用元数据（缺省 test-service）与健康检查器快照
 ```
 
 `Run` 注入的基线选项：`StopTimeout/ShutdownTimeout/BusReadyTimeout = 1s`（MinTimeout 下限，实际停止很快）、`DrainTimeout = 100ms`（用 `registry.Apply` 的应用必须有非零排水窗口，否则 Run 直接失败 `ErrDrainHooksRequireDrainTimeout`；无下限校验允许压小）。

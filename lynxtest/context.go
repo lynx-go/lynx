@@ -43,6 +43,8 @@ type contextConfig struct {
 	bus       eventbus.Bus
 	logger    *slog.Logger
 	readyWait time.Duration
+	meta      lynx.Metadata
+	checkers  []lynx.Checker
 }
 
 // ContextOption 配置 NewContext 的行为。
@@ -106,6 +108,23 @@ func ContextWithLogger(l *slog.Logger) ContextOption {
 	}
 }
 
+// ContextWithMeta 注入应用元数据（lynx.Meta(ctx.Context()) 可见）；缺省
+// {Name: "test-service", ID: "test-instance"}——与真实 App 一致，context
+// 总是携带元数据（需要特定 service.name 的用例在此覆盖）。
+func ContextWithMeta(meta lynx.Metadata) ContextOption {
+	return func(o *contextConfig) {
+		o.meta = meta
+	}
+}
+
+// ContextWithCheckers 注入健康检查器快照（Service.Init 内
+// ctx.HealthCheckers() 可见，用于驱动依赖健康聚合的代码路径）；缺省为空。
+func ContextWithCheckers(cs ...lynx.Checker) ContextOption {
+	return func(o *contextConfig) {
+		o.checkers = cs
+	}
+}
+
 // ContextWithBusReadyTimeout 设置总线就绪等待预算（缺省 2s）；注入慢
 // 启动后端（Kafka 等）时放宽。
 func ContextWithBusReadyTimeout(d time.Duration) ContextOption {
@@ -117,23 +136,25 @@ func ContextWithBusReadyTimeout(d time.Duration) ContextOption {
 }
 
 // testContext 是 lynx.AppContext 的最小可用实现：真内存总线、注入配置、
-// 接测试输出的日志。Close 取消 Context 并有界停止总线（5s 上界，防注入
-// 的自定义总线 Stop 挂死拖住测试）。
-// 与真实 App 的已知差异：HealthCheckers() 恒为空、Context 不携带应用
-// 元数据（lynx.Meta 为零值）——总线已内嵌，eventbus.BusFromContext 可用。
+// 接测试输出的日志、应用元数据与健康检查器快照（lynx.Meta 与
+// HealthCheckers 语义与真实 App 对齐）。Close 取消 Context 并有界停止
+// 总线（5s 上界，防注入的自定义总线 Stop 挂死拖住测试）。
 type testContext struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	cfg    lynx.Config
-	bus    eventbus.Bus
-	logger *slog.Logger
+	ctx      context.Context
+	cancel   context.CancelFunc
+	cfg      lynx.Config
+	bus      eventbus.Bus
+	logger   *slog.Logger
+	checkers []lynx.Checker
 }
 
 func (c *testContext) Context() context.Context          { return c.ctx }
 func (c *testContext) Config() lynx.Config               { return c.cfg }
 func (c *testContext) Logger(kwargs ...any) *slog.Logger { return c.logger.With(kwargs...) }
 func (c *testContext) Bus() eventbus.Bus                 { return c.bus }
-func (c *testContext) HealthCheckers() []lynx.Checker    { return nil }
+func (c *testContext) HealthCheckers() []lynx.Checker {
+	return append([]lynx.Checker(nil), c.checkers...)
+}
 func (c *testContext) Close() {
 	c.cancel()
 	if c.bus == nil {
@@ -147,11 +168,16 @@ func (c *testContext) Close() {
 var _ lynx.AppContext = (*testContext)(nil)
 
 // NewContext 构造服务级单元测试用的 lynx.AppContext：内存总线走真实
-// 生命周期（Init/Start，用例结束 Stop 后清理），配置与日志可注入。
-// 用于给单个 Service 的 Init/Start/Stop 提供可用上下文，替代手写 fake。
+// 生命周期（Init/Start，用例结束 Stop 后清理），配置、日志、应用元数据
+// 与健康检查器快照可注入；缺省携带稳定 Meta。用于给单个 Service 的
+// Init/Start/Stop 提供可用上下文，替代手写 fake（app 级注册协议与
+// debug /loglevel 控制面例外，见 docs/design-testkit.md）。
 func NewContext(t testing.TB, opts ...ContextOption) lynx.AppContext {
 	t.Helper()
-	c := &contextConfig{readyWait: defaultBusReadyTimeout}
+	c := &contextConfig{
+		readyWait: defaultBusReadyTimeout,
+		meta:      lynx.Metadata{Name: "test-service", ID: "test-instance"},
+	}
 	for _, fn := range opts {
 		fn(c)
 	}
@@ -171,15 +197,17 @@ func NewContext(t testing.TB, opts ...ContextOption) lynx.AppContext {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// 与真实 App 对齐：ctx 内嵌总线，被测服务里 eventbus.BusFromContext
-	// 取到的是本上下文的总线而非进程全局默认。
+	// 与真实 App 对齐：ctx 携带应用元数据，且内嵌总线——被测服务里
+	// lynx.Meta 与 eventbus.BusFromContext 都拿到本上下文的值。
+	ctx = lynx.ContextWithMeta(ctx, c.meta)
 	ctx = eventbus.ContextWithBus(ctx, c.bus)
 	tc := &testContext{
-		ctx:    ctx,
-		cancel: cancel,
-		cfg:    c.cfg,
-		bus:    c.bus,
-		logger: c.logger,
+		ctx:      ctx,
+		cancel:   cancel,
+		cfg:      c.cfg,
+		bus:      c.bus,
+		logger:   c.logger,
+		checkers: c.checkers,
 	}
 	// cleanup 前置：Init/就绪失败路径同样停总线、释放注入总线的资源。
 	t.Cleanup(tc.Close)

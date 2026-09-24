@@ -12,8 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/eventbus"
+	"github.com/lynx-go/lynx/lynxtest"
 	"github.com/robfig/cron/v3"
 )
 
@@ -516,18 +515,6 @@ func TestStartRespectsCtx(t *testing.T) {
 	}
 }
 
-// fakeAppCtx 是 lynx.AppContext 的最小测试替身（Init 注入测试用）。
-type fakeAppCtx struct {
-	logger *slog.Logger
-}
-
-func (f *fakeAppCtx) Context() context.Context       { return context.Background() }
-func (f *fakeAppCtx) Config() lynx.Config            { return nil }
-func (f *fakeAppCtx) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
-func (f *fakeAppCtx) Logger(...any) *slog.Logger     { return f.logger }
-func (f *fakeAppCtx) HealthCheckers() []lynx.Checker { return nil }
-func (f *fakeAppCtx) Close()                         {}
-
 // TestInitKeepsExplicitLogger 回归 AUX-02：WithLogger 显式设置的实例不被
 // Init 的 ctx.Logger 覆盖（对齐 debug 包的 loggerSet 防护）。
 func TestInitKeepsExplicitLogger(t *testing.T) {
@@ -536,7 +523,7 @@ func TestInitKeepsExplicitLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
-	if err := s.Init(&fakeAppCtx{logger: slog.Default()}); err != nil {
+	if err := s.Init(lynxtest.NewContext(t, lynxtest.ContextWithLogger(slog.Default()))); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	if s.logger != explicit {
@@ -545,17 +532,20 @@ func TestInitKeepsExplicitLogger(t *testing.T) {
 }
 
 // TestInitWithoutExplicitLoggerUsesCtxLogger 验证未显式 WithLogger 时 Init
-// 仍取 ctx.Logger（loggerSet 防护不改变默认行为）。
+// 仍取 ctx.Logger（loggerSet 防护不改变默认行为）：经注入 sink 的可观察
+// 输出断言（slog.With 会派生新 handler 实例，handler 身份比较不适用）。
 func TestInitWithoutExplicitLoggerUsesCtxLogger(t *testing.T) {
-	ctxLogger := discardLogger()
+	var buf bytes.Buffer
+	ctxLogger := slog.New(slog.NewTextHandler(&buf, nil))
 	s, err := NewScheduler(nil)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
-	if err := s.Init(&fakeAppCtx{logger: ctxLogger}); err != nil {
+	if err := s.Init(lynxtest.NewContext(t, lynxtest.ContextWithLogger(ctxLogger))); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if s.logger != ctxLogger {
+	s.logger.Info("from-ctx-logger")
+	if !strings.Contains(buf.String(), "from-ctx-logger") {
 		t.Fatal("Init should use ctx.Logger when WithLogger not set")
 	}
 }

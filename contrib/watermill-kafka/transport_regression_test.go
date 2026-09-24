@@ -12,6 +12,7 @@ import (
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx/eventbus"
+	"github.com/lynx-go/lynx/lynxtest"
 )
 
 // captureLogs 收集 Warn 及以上日志（WK-06/WK-15 测试断言用）。
@@ -89,7 +90,7 @@ func TestInitRejectsInvalidSaramaConfigs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tr := newTestTransport(tt.opts, newFakePubSub())
-			if err := tr.Init(newFakeApp()); err == nil {
+			if err := tr.Init(lynxtest.NewContext(t)); err == nil {
 				t.Fatal("expected Init error for invalid sarama config")
 			}
 		})
@@ -109,7 +110,7 @@ func TestInitPrebuildsAndValidatesConfigs(t *testing.T) {
 			SASL:     &SASLOptions{Enabled: true, User: "u", Password: "p", Mechanism: "SCRAM-SHA-256"},
 		},
 	}}, newFakePubSub())
-	if err := tr.Init(newFakeApp()); err != nil {
+	if err := tr.Init(lynxtest.NewContext(t)); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	tr.mu.Lock()

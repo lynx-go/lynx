@@ -3,34 +3,15 @@ package registry
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-
-	"github.com/lynx-go/lynx/eventbus"
 	"time"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/lynxtest"
 )
-
-// fakeAppContext 是 Init 测试用的最小 AppContext。
-type fakeAppContext struct {
-	ctx      context.Context
-	checkers []lynx.Checker
-}
-
-func (f *fakeAppContext) Context() context.Context       { return f.ctx }
-func (f *fakeAppContext) Config() lynx.Config            { return nil }
-func (f *fakeAppContext) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
-func (f *fakeAppContext) Logger(...any) *slog.Logger     { return slog.Default() }
-func (f *fakeAppContext) HealthCheckers() []lynx.Checker { return f.checkers }
-func (f *fakeAppContext) Close()                         {}
-
-func newFakeAppContext() *fakeAppContext {
-	return &fakeAppContext{ctx: context.Background()}
-}
 
 // fakeRegistry 记录调用并可注入失败。
 type fakeRegistry struct {
@@ -90,7 +71,7 @@ func (f *fakeRegistry) heartbeats() int {
 	return f.heartbeatCalls
 }
 
-func mustInit(t *testing.T, r *Registrar, actx *fakeAppContext) {
+func mustInit(t *testing.T, r *Registrar, actx lynx.AppContext) {
 	t.Helper()
 	if err := r.Init(actx); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -101,22 +82,23 @@ func TestRegistrarInitNameValidation(t *testing.T) {
 	valid := []string{"user-service", "a", "A0", strings.Repeat("a", 63), "a-b-c"}
 	for _, name := range valid {
 		r := NewRegistrar(NewMemory(), WithServiceName(name))
-		if err := r.Init(newFakeAppContext()); err != nil {
+		if err := r.Init(lynxtest.NewContext(t)); err != nil {
 			t.Fatalf("name %q should be valid: %v", name, err)
 		}
 	}
-	invalid := []string{"", "-bad", "bad-", "has space", "under_score", strings.Repeat("a", 64), "中文"}
+	invalid := []string{"-bad", "bad-", "has space", "under_score", strings.Repeat("a", 64), "中文"}
 	for _, name := range invalid {
 		r := NewRegistrar(NewMemory(), WithServiceName(name))
-		err := r.Init(newFakeAppContext())
+		err := r.Init(lynxtest.NewContext(t))
 		if !errors.Is(err, ErrBadName) {
 			t.Fatalf("name %q: want ErrBadName, got %v", name, err)
 		}
 	}
-	// 未设置 service_name 且 Meta 为空 → 空名校验失败。
+	// service_name 与 Meta 都为空 → 空名校验失败（显式注入空 Meta，覆盖
+	// lynxtest 的默认 {test-service}）。
 	r := NewRegistrar(NewMemory())
-	if err := r.Init(newFakeAppContext()); !errors.Is(err, ErrBadName) {
-		t.Fatalf("empty meta name: want ErrBadName, got %v", err)
+	if err := r.Init(lynxtest.NewContext(t, lynxtest.ContextWithMeta(lynx.Metadata{}))); !errors.Is(err, ErrBadName) {
+		t.Fatalf("empty service_name and meta: want ErrBadName, got %v", err)
 	}
 }
 
@@ -126,7 +108,7 @@ func TestRegistrarInitAdvertiseHost(t *testing.T) {
 	t.Run("env ipv6 joinhostport", func(t *testing.T) {
 		t.Setenv(advertiseHostEnv, "2001:db8::1")
 		r := NewRegistrar(NewMemory(), WithServiceName("svc"), bare)
-		mustInit(t, r, newFakeAppContext())
+		mustInit(t, r, lynxtest.NewContext(t))
 		if got := r.static[0].Address; got != "[2001:db8::1]:8080" {
 			t.Fatalf("want [2001:db8::1]:8080, got %q", got)
 		}
@@ -135,7 +117,7 @@ func TestRegistrarInitAdvertiseHost(t *testing.T) {
 	t.Run("option beats env", func(t *testing.T) {
 		t.Setenv(advertiseHostEnv, "10.9.9.9")
 		r := NewRegistrar(NewMemory(), WithServiceName("svc"), bare, WithAdvertiseHost("10.0.0.1"))
-		mustInit(t, r, newFakeAppContext())
+		mustInit(t, r, lynxtest.NewContext(t))
 		if got := r.static[0].Address; got != "10.0.0.1:8080" {
 			t.Fatalf("want 10.0.0.1:8080, got %q", got)
 		}
@@ -143,7 +125,7 @@ func TestRegistrarInitAdvertiseHost(t *testing.T) {
 
 	t.Run("missing host fails", func(t *testing.T) {
 		r := NewRegistrar(NewMemory(), WithServiceName("svc"), bare)
-		if err := r.Init(newFakeAppContext()); err == nil {
+		if err := r.Init(lynxtest.NewContext(t)); err == nil {
 			t.Fatal("bare :port without advertise host must fail Init")
 		}
 	})
@@ -151,19 +133,19 @@ func TestRegistrarInitAdvertiseHost(t *testing.T) {
 	t.Run("full hostport skips host", func(t *testing.T) {
 		r := NewRegistrar(NewMemory(), WithServiceName("svc"),
 			WithStaticEndpoints(Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}))
-		mustInit(t, r, newFakeAppContext())
+		mustInit(t, r, lynxtest.NewContext(t))
 	})
 
 	t.Run("no endpoints skips host", func(t *testing.T) {
 		r := NewRegistrar(NewMemory(), WithServiceName("svc"))
-		mustInit(t, r, newFakeAppContext())
+		mustInit(t, r, lynxtest.NewContext(t))
 	})
 
 	t.Run("malformed address fails", func(t *testing.T) {
 		r := NewRegistrar(NewMemory(), WithServiceName("svc"),
 			WithStaticEndpoints(Endpoint{Protocol: ProtocolHTTP, Address: "no-port"}),
 			WithAdvertiseHost("10.0.0.1"))
-		if err := r.Init(newFakeAppContext()); err == nil {
+		if err := r.Init(lynxtest.NewContext(t)); err == nil {
 			t.Fatal("malformed address must fail Init")
 		}
 	})
@@ -172,7 +154,7 @@ func TestRegistrarInitAdvertiseHost(t *testing.T) {
 func TestRegistrarFailFast(t *testing.T) {
 	backend := &fakeRegistry{registerFails: 100}
 	r := NewRegistrar(backend, WithServiceName("svc"))
-	mustInit(t, r, newFakeAppContext())
+	mustInit(t, r, lynxtest.NewContext(t))
 
 	done := make(chan error, 1)
 	go func() { done <- r.Start(context.Background()) }()
@@ -189,7 +171,7 @@ func TestRegistrarFailFast(t *testing.T) {
 func TestRegistrarFailSafeRetriesInBackground(t *testing.T) {
 	backend := &fakeRegistry{registerFails: 1} // 首次失败，重试成功
 	r := NewRegistrar(backend, WithServiceName("svc"), WithFailFast(false))
-	mustInit(t, r, newFakeAppContext())
+	mustInit(t, r, lynxtest.NewContext(t))
 
 	done := make(chan error, 1)
 	go func() { done <- r.Start(context.Background()) }()
@@ -226,7 +208,7 @@ func TestRegistrarFailSafeRetriesInBackground(t *testing.T) {
 func TestRegistrarHeartbeatFailures(t *testing.T) {
 	backend := &fakeRegistry{heartbeatErr: errFakeBackend}
 	r := NewRegistrar(backend, WithServiceName("svc"), WithHeartbeatInterval(20*time.Millisecond))
-	mustInit(t, r, newFakeAppContext())
+	mustInit(t, r, lynxtest.NewContext(t))
 
 	done := make(chan error, 1)
 	go func() { done <- r.Start(context.Background()) }()
@@ -246,7 +228,7 @@ func TestRegistrarHeartbeatFailures(t *testing.T) {
 func TestRegistrarStopBeforeStart(t *testing.T) {
 	backend := &fakeRegistry{}
 	r := NewRegistrar(backend, WithServiceName("svc"))
-	mustInit(t, r, newFakeAppContext())
+	mustInit(t, r, lynxtest.NewContext(t))
 
 	if err := r.Stop(context.Background()); err != nil {
 		t.Fatal(err)
@@ -270,7 +252,7 @@ func TestRegistrarDeregisterHook(t *testing.T) {
 	mem := NewMemory()
 	r := NewRegistrar(mem, WithServiceName("svc"), WithInstanceID("i1"),
 		WithStaticEndpoints(Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}))
-	mustInit(t, r, newFakeAppContext())
+	mustInit(t, r, lynxtest.NewContext(t))
 
 	done := make(chan error, 1)
 	go func() { done <- r.Start(context.Background()) }()
@@ -313,8 +295,7 @@ func (d *drainFlag) CheckHealth() error {
 func TestRegistrarWatchDrain(t *testing.T) {
 	mem := NewMemory()
 	drain := &drainFlag{}
-	actx := newFakeAppContext()
-	actx.checkers = []lynx.Checker{drain}
+	actx := lynxtest.NewContext(t, lynxtest.ContextWithCheckers(drain))
 
 	r := NewRegistrar(mem, WithServiceName("svc"), WithInstanceID("i1"))
 	mustInit(t, r, actx)
@@ -340,7 +321,7 @@ func TestRegistrarWatchDrain(t *testing.T) {
 
 func TestRegistrarAffectReadinessFalse(t *testing.T) {
 	r := NewRegistrar(&fakeRegistry{}, WithServiceName("svc"), WithAffectReadiness(false))
-	mustInit(t, r, newFakeAppContext())
+	mustInit(t, r, lynxtest.NewContext(t))
 	// 未注册也恒 nil：不参与 readiness 聚合的实际效果。
 	if err := r.CheckHealth(); err != nil {
 		t.Fatalf("affect_readiness=false: want nil, got %v", err)
@@ -366,7 +347,7 @@ func TestRegistrarWaitsForAdvertiser(t *testing.T) {
 	adv.delay.Store(2) // 前两次轮询未就绪
 	r := NewRegistrar(mem, WithServiceName("svc"), WithInstanceID("i1"),
 		WithAdvertisers(adv), WithAdvertiseTimeout(2*time.Second))
-	mustInit(t, r, newFakeAppContext())
+	mustInit(t, r, lynxtest.NewContext(t))
 
 	done := make(chan error, 1)
 	go func() { done <- r.Start(context.Background()) }()
@@ -389,7 +370,7 @@ func TestRegistrarAdvertiseTimeout(t *testing.T) {
 	never := Static(ProtocolHTTP, "") // 永远返回 nil
 	r := NewRegistrar(NewMemory(), WithServiceName("svc"),
 		WithAdvertisers(never), WithAdvertiseTimeout(150*time.Millisecond))
-	mustInit(t, r, newFakeAppContext())
+	mustInit(t, r, lynxtest.NewContext(t))
 
 	done := make(chan error, 1)
 	go func() { done <- r.Start(context.Background()) }()
@@ -419,7 +400,7 @@ func TestRegistrarSkipsBarePortWithoutAdvertiseHost(t *testing.T) {
 			WithStaticEndpoints(Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}),
 			WithAdvertisers(&barePortAdvertiser{ep: Endpoint{Protocol: ProtocolGRPC, Address: ":9090"}}),
 		)
-		mustInit(t, r, newFakeAppContext())
+		mustInit(t, r, lynxtest.NewContext(t))
 
 		done := make(chan error, 1)
 		go func() { done <- r.Start(context.Background()) }()
@@ -445,7 +426,7 @@ func TestRegistrarSkipsBarePortWithoutAdvertiseHost(t *testing.T) {
 			WithAdvertiseHost("10.1.1.1"),
 			WithAdvertisers(&barePortAdvertiser{ep: Endpoint{Protocol: ProtocolGRPC, Address: ":9090"}}),
 		)
-		mustInit(t, r, newFakeAppContext())
+		mustInit(t, r, lynxtest.NewContext(t))
 
 		done := make(chan error, 1)
 		go func() { done <- r.Start(context.Background()) }()
@@ -476,7 +457,7 @@ func TestRegistrarStartAbortedSkipsRegister(t *testing.T) {
 		never := Static(ProtocolHTTP, "") // 永不就绪
 		r := NewRegistrar(backend, WithServiceName("svc"),
 			WithAdvertisers(never), WithFailFast(false))
-		mustInit(t, r, newFakeAppContext())
+		mustInit(t, r, lynxtest.NewContext(t))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
@@ -500,7 +481,7 @@ func TestRegistrarStartAbortedSkipsRegister(t *testing.T) {
 		never := Static(ProtocolHTTP, "")
 		r := NewRegistrar(backend, WithServiceName("svc"),
 			WithAdvertisers(never), WithFailFast(false))
-		mustInit(t, r, newFakeAppContext())
+		mustInit(t, r, lynxtest.NewContext(t))
 
 		done := make(chan error, 1)
 		go func() { done <- r.Start(context.Background()) }()

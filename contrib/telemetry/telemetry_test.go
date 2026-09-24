@@ -3,7 +3,6 @@ package telemetry
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,7 +10,7 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/eventbus"
+	"github.com/lynx-go/lynx/lynxtest"
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -233,16 +232,6 @@ func TestConcurrentInitSingleWinner(t *testing.T) {
 	_ = comp.Stop(context.Background())
 }
 
-// fakeAppCtx 是 lynx.AppContext 的最小测试替身（service.name 注入分支用）。
-type fakeAppCtx struct{}
-
-func (f *fakeAppCtx) Context() context.Context       { return context.Background() }
-func (f *fakeAppCtx) Config() lynx.Config            { return nil }
-func (f *fakeAppCtx) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
-func (f *fakeAppCtx) Logger(...any) *slog.Logger     { return slog.Default() }
-func (f *fakeAppCtx) HealthCheckers() []lynx.Checker { return nil }
-func (f *fakeAppCtx) Close()                         {}
-
 // spanRecordingExporter 记录导出的 span，供 resource 属性断言。
 type spanRecordingExporter struct {
 	mu    sync.Mutex
@@ -277,7 +266,7 @@ func TestInitInjectsServiceNameResource(t *testing.T) {
 
 	exporter := &spanRecordingExporter{}
 	comp := New(WithTraceExporter(exporter), WithMetricReader(sdkmetric.NewManualReader()))
-	if err := comp.Init(&fakeAppCtx{}); err != nil {
+	if err := comp.Init(lynxtest.NewContext(t, lynxtest.ContextWithMeta(lynx.Metadata{Name: "aux17-svc"}))); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	defer func() { _ = comp.Stop(context.Background()) }()
@@ -293,10 +282,10 @@ func TestInitInjectsServiceNameResource(t *testing.T) {
 	if len(spans) == 0 {
 		t.Fatal("no spans were exported")
 	}
-	// ctx 非 nil 分支注入了 service.name 资源属性（应用名取自服务环境；
-	// 测试替身未注入 metadata，值为空字符串，但属性本身必须存在）。
-	if _, ok := spans[0].Resource().Set().Value(semconv.ServiceNameKey); !ok {
-		t.Errorf("span resource missing service.name attribute, got: %v", spans[0].Resource())
+	// ctx 非 nil 分支注入 service.name 资源属性（应用名取自
+	// ContextWithMeta 注入的元数据，断言具体值而非仅存在性）。
+	if got, ok := spans[0].Resource().Set().Value(semconv.ServiceNameKey); !ok || got.AsString() != "aux17-svc" {
+		t.Errorf("span resource service.name = %v (present=%v), want aux17-svc", got, ok)
 	}
 }
 

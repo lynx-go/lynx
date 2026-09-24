@@ -4,14 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/lynx-go/lynx/eventbus"
 )
 
 // sequenceChecker fails CheckHealth for the first `failures` calls, then succeeds.
@@ -587,38 +584,6 @@ func TestCommandStartReadyAlreadyClosedWithCancelledContext(t *testing.T) {
 	}
 }
 
-// fakeAppCtx 是外部 AppContext 实现的最小假件：验证非 *lynx 实现回退
-// 健康检查聚合的既有路径。
-type fakeAppCtx struct{ checkers []Checker }
-
-func (f *fakeAppCtx) Context() context.Context   { return context.Background() }
-func (f *fakeAppCtx) Config() Config             { return nil }
-func (f *fakeAppCtx) Logger(...any) *slog.Logger { return slog.Default() }
-func (f *fakeAppCtx) Bus() eventbus.Bus          { return nil }
-func (f *fakeAppCtx) HealthCheckers() []Checker  { return f.checkers }
-func (f *fakeAppCtx) Close()                     {}
-
-// TestCommandFallbackExternalAppContext：appctx 非 *lynx（外部 AppContext
-// 实现）时，依赖等待回退 HealthCheckers 聚合，行为与既有 Checker 轮询
-// 一致。
-func TestCommandFallbackExternalAppContext(t *testing.T) {
-	checker := &sequenceChecker{failures: 1}
-	var ran atomic.Int32
-	cmd := NewCommand(func(ctx context.Context) error {
-		ran.Add(1)
-		return nil
-	}, WithMaxTries(5), WithBackoff(time.Millisecond, 5*time.Millisecond))
-	if err := cmd.Init(&fakeAppCtx{checkers: []Checker{checker}}); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-
-	if err := cmd.Start(context.Background()); err != nil {
-		t.Fatalf("Start() error = %v, want nil after retry", err)
-	}
-	if got := ran.Load(); got != 1 {
-		t.Errorf("command ran %d times, want 1", got)
-	}
-	if got := checker.Calls(); got != 2 {
-		t.Errorf("health checked %d times, want 2 (1 failure + 1 success)", got)
-	}
-}
+// TestCommandFallbackExternalAppContext 见包外测试
+// （command_fallback_test.go，package lynx_test）：外部 AppContext 实现
+// 经 lynxtest.NewContext + ContextWithCheckers 驱动，验证回退路径。

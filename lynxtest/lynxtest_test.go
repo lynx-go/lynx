@@ -21,6 +21,43 @@ import (
 
 func slogDefault() *slog.Logger { return slog.Default() }
 
+// okChecker 恒健康（检查器注入测试用）。
+type okChecker struct{}
+
+func (okChecker) CheckHealth() error { return nil }
+
+// TestNewContextMetaAndCheckers：默认 Meta 稳定可见；ContextWithMeta /
+// ContextWithCheckers 覆盖；HealthCheckers 快照隔离。
+func TestNewContextMetaAndCheckers(t *testing.T) {
+	ctx := lynxtest.NewContext(t)
+	if got := lynx.Meta(ctx.Context()); got != (lynx.Metadata{Name: "test-service", ID: "test-instance"}) {
+		t.Fatalf("default Meta = %+v, want {test-service test-instance}", got)
+	}
+	if got := ctx.HealthCheckers(); len(got) != 0 {
+		t.Fatalf("default HealthCheckers = %d, want 0", len(got))
+	}
+
+	wantMeta := lynx.Metadata{Name: "svc-x", ID: "id-x", Version: "v1"}
+	ctx2 := lynxtest.NewContext(t,
+		lynxtest.ContextWithMeta(wantMeta),
+		lynxtest.ContextWithCheckers(okChecker{}))
+	if got := lynx.Meta(ctx2.Context()); got != wantMeta {
+		t.Fatalf("Meta = %+v, want %+v", got, wantMeta)
+	}
+	got := ctx2.HealthCheckers()
+	if len(got) != 1 {
+		t.Fatalf("HealthCheckers = %d, want 1", len(got))
+	}
+	if err := got[0].CheckHealth(); err != nil {
+		t.Fatalf("injected checker unhealthy: %v", err)
+	}
+	// 快照隔离：修改返回值不影响后续读取。
+	got[0] = nil
+	if again := ctx2.HealthCheckers(); len(again) != 1 || again[0] == nil {
+		t.Fatal("HealthCheckers snapshot must be isolated")
+	}
+}
+
 func newHTTPSetup(hs **lynxhttp.Server, listening chan<- string) lynx.SetupFunc {
 	return func(a lynx.App) error {
 		mux := http.NewServeMux()

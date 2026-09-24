@@ -3,7 +3,6 @@ package kafka
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -14,8 +13,8 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
-	"github.com/lynx-go/lynx"
 	"github.com/lynx-go/lynx/eventbus"
+	"github.com/lynx-go/lynx/lynxtest"
 	"github.com/spf13/viper"
 )
 
@@ -587,7 +586,7 @@ func TestTransportInitValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			pub := newFakePubSub()
 			tr := newTestTransport(tt.opts, pub)
-			if err := tr.Init(newFakeApp()); err == nil {
+			if err := tr.Init(lynxtest.NewContext(t)); err == nil {
 				t.Fatal("expected Init error")
 			}
 		})
@@ -601,7 +600,7 @@ func TestTransportLifecycle(t *testing.T) {
 			"orders": {Brokers: []string{"b"}, Topics: []string{"t"}, Consumer: &ConsumerOptions{GroupID: "g"}},
 		},
 	}, pub)
-	if err := tr.Init(newFakeApp()); err != nil {
+	if err := tr.Init(lynxtest.NewContext(t)); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	if err := tr.CheckHealth(); err == nil {
@@ -685,7 +684,7 @@ func TestTransportStopBeforeStart(t *testing.T) {
 				},
 			}, newFakePubSub())
 			if tt.init {
-				if err := tr.Init(newFakeApp()); err != nil {
+				if err := tr.Init(lynxtest.NewContext(t)); err != nil {
 					t.Fatalf("Init: %v", err)
 				}
 			}
@@ -957,23 +956,6 @@ func TestTransportCloseDelegatesStop(t *testing.T) {
 	}
 }
 
-// --- fakeApp：最小 lynx.AppContext（服务 Init 只依赖 AppContext，无需实现完整 App） ---
-
-type fakeApp struct{}
-
-func newFakeApp() *fakeApp { return &fakeApp{} }
-
-func (a *fakeApp) Context() context.Context       { return context.Background() }
-func (a *fakeApp) Config() lynx.Config            { return lynx.NewViperConfig(viper.New()) }
-func (a *fakeApp) Bus() eventbus.Bus              { return eventbus.NewMemoryBus(eventbus.Options{}) }
-func (a *fakeApp) HealthCheckers() []lynx.Checker { return nil }
-func (a *fakeApp) Close()                         {}
-func (a *fakeApp) Logger(_ ...any) *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-var _ lynx.AppContext = (*fakeApp)(nil)
-
 // TestTransportReadyClosesOnStart 锁定 Ready 契约：Start 置位运行标志后
 // 关闭（一次性里程碑，sync.Once 保证幂等），未启动前不关闭——命令依赖
 // 等待经此获得事件驱动信号。
@@ -1020,7 +1002,7 @@ func TestTransportReadyClosesOnStart(t *testing.T) {
 
 // TestDeliveryModeAndDefaultGroup 钉住接缝契约实现：kafka 声明消费组
 // 模式（Bus 据此启用组占用检查），并经 DefaultGrouper 暴露配置默认组
-//（consumer.group_id），使"显式组 == 他人默认组"的静默瓜分可被识别。
+// （consumer.group_id），使"显式组 == 他人默认组"的静默瓜分可被识别。
 func TestDeliveryModeAndDefaultGroup(t *testing.T) {
 	tr := newTestTransport(Options{Topics: map[string]TopicOptions{
 		"with-group":  {Brokers: []string{"b1"}, Consumer: &ConsumerOptions{GroupID: "svc"}},

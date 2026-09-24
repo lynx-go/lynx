@@ -107,23 +107,19 @@ conn := lynxtest.BufconnGRPCConn(t, gln)      // gRPC 同款（lynxgrpc.WithList
 
 ## L1：服务单元测试（`lynxtest.NewContext`）
 
-给单个 Service 提供可用的 `AppContext`：真内存总线（已启动，可立即订阅/发布、ctx 内嵌可供 `eventbus.BusFromContext` 使用）、注入配置、接测试输出的日志：
+给单个 Service 提供可用的 `AppContext`：真内存总线（已启动，可立即订阅/发布、ctx 内嵌可供 `eventbus.BusFromContext` 使用）、注入配置、接测试输出的日志、应用元数据（`lynx.Meta` 可见，缺省 `{test-service, test-instance}`）与健康检查器快照：
 
 ```go
 func TestGreeterService(t *testing.T) {
     actx := lynxtest.NewContext(t,
-        lynxtest.ContextWithConfigMap(map[string]any{"greeter.name": "test"}))
-
-    svc := &GreeterService{}
-    if err := svc.Init(actx); err != nil { t.Fatal(err) }
-
-    actx.Bus().Subscribe(context.Background(), "greeter.done", handler)
-    actx.Bus().Publish(context.Background(), "greeter.done", evt)
-    // ...断言
+        lynxtest.ContextWithConfigMap(map[string]any{"greeter.name": "test"}),
+        lynxtest.ContextWithMeta(lynx.Metadata{Name: "greeter"}), // 可选：默认 test-service
+        lynxtest.ContextWithCheckers(dep))                        // 可选：HealthCheckers() 快照
+    // ...
 }
 ```
 
-与真实 App 的已知差异：`HealthCheckers()` 恒为空、`lynx.Meta` 为零值。
+仍然手写 AppContext 的例外：测试 **App 级注册协议**的替身（hook/服务注册调用记录，如 boot/fromconfig 的 fakeApp）与 debug 的 `/loglevel` 控制面（需要 App 级 `SetLogLevel`）——`NewContext` 面向服务级 Init/Start/Stop。
 自定义 `Config` 实现经 `ContextWithConfig` 注入；慢总线经
 `ContextWithBusReadyTimeout` 放宽就绪预算（缺省 2s）。
 
