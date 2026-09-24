@@ -9,6 +9,9 @@ package cluster
 import (
 	"context"
 	"time"
+
+	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/internal/clock"
 )
 
 // ValidateCall 校验 Claim/Acquire 的公共入参，返回第一个命中的错误：
@@ -35,17 +38,19 @@ func RenewInterval(ttl time.Duration) time.Duration {
 
 // RunRenewLoop 是租约续约循环的共享骨架：每 interval 触发一次 renew，
 // renew 返回非 nil 即视为租约丢失——cancel（Lease.Context 随之取消）并
-// 退出。renew 自行决定是否携带租约 ctx（Redis 续约刻意用 Background：
+// 退出。等待经注入时钟（clk 为 nil 时用真实时间），测试可确定性推进。
+// renew 自行决定是否携带租约 ctx（Redis 续约刻意用 Background：
 // 续约不受调用侧取消影响，仅由丢失退出）。阻塞调用，适配器以
 // `go RunRenewLoop(...)` 启动。
-func RunRenewLoop(ctx context.Context, cancel context.CancelFunc, interval time.Duration, renew func() error) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
+func RunRenewLoop(ctx context.Context, cancel context.CancelFunc, interval time.Duration, clk lynx.Clock, renew func() error) {
+	if clk == nil {
+		clk = clock.Real()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-clk.After(interval):
 			if err := renew(); err != nil {
 				cancel()
 				return

@@ -63,7 +63,7 @@ func (s *coordinator) Acquire(ctx context.Context, name string, ttl time.Duratio
 		ctx:    leaseCtx,
 		cancel: cancel,
 	}
-	go cluster.RunRenewLoop(l.ctx, l.cancel, cluster.RenewInterval(l.ttl), l.renew)
+	go cluster.RunRenewLoop(l.ctx, l.cancel, cluster.RenewInterval(l.ttl), cluster.ClockFrom(s.opts...), l.renew)
 	return l, true, nil
 }
 

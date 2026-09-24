@@ -63,7 +63,7 @@ func (s *kvCoordinator) Acquire(ctx context.Context, name string, ttl time.Durat
 		ctx:     leaseCtx,
 		cancel:  cancel,
 	}
-	go cluster.RunRenewLoop(l.ctx, l.cancel, cluster.RenewInterval(sessionTTL(ttl)), l.renew)
+	go cluster.RunRenewLoop(l.ctx, l.cancel, cluster.RenewInterval(sessionTTL(ttl)), cluster.ClockFrom(s.opts...), l.renew)
 	return l, true, nil
 }
 

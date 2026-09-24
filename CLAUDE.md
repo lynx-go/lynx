@@ -63,9 +63,9 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./contrib/watermill-kafka` - Kafka Transport service (watermill-kafka/v3)，package `kafka`，实现 `eventbus.Transport`
 - `./contrib/telemetry` - OpenTelemetry lifecycle management (trace/metrics providers)
 - `./contrib/schedule` - Cron scheduler；`Exclusive` 任务经 `cluster.TryOnce` 按格子互斥
-- `./contrib/cluster` - 进程间协调：`Coordinator`（Claim/Acquire）、`TryOnce`、`Campaign`、`Singleton`
+- `./contrib/cluster` - 进程间协调：`Coordinator`（Claim/Acquire）、`TryOnce`、`Campaign`、`Singleton`；续约等待与内存协调器 TTL 判定经 `lynx.Clock`（`cluster.WithClock` 注入，测试用 `internal/clock.Fake` 确定性推进，不再 sleep）
 - `./contrib/cluster-redis` - Redis 实现 `cluster.Coordinator`（仅协调，不是业务 Redis 客户端）
-- `./contrib/registry` - Service registry/discovery: types, Registrar, Resolver (with consumer-side `Subscribe(name, filter)`), Pickers, memory/DNS backends, `registry://` HTTP transport & subscription-driven gRPC resolver; backends and the cache subscription share `WatcherCore[T]` (first-snapshot injection, coalescing push, idempotent Stop)
+- `./contrib/registry` - Service registry/discovery: types, Registrar, Resolver (with consumer-side `Subscribe(name, filter)`), Pickers, memory/DNS backends, `registry://` HTTP transport & subscription-driven gRPC resolver; backends and the cache subscription share `WatcherCore[T]` (first-snapshot injection, coalescing push, idempotent Stop); cache `updatedAt`/stale checks go through `lynx.Clock` (`WithResolverClock`, tests use `internal/clock.Fake`)
 - `./contrib/consul` - Consul registry/discovery backend（`consul.NewFromConfig`），并提供 `Client.Coordinator()` 实现 `cluster.Coordinator`
 
 Server implementations (within main module):

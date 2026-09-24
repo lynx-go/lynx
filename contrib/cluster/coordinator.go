@@ -6,6 +6,9 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/internal/clock"
 )
 
 const (
@@ -44,12 +47,13 @@ type Lease interface {
 	Release(ctx context.Context) error
 }
 
-// Option 配置 Coordinator 的命名空间与实例标识。
+// Option 配置 Coordinator 的命名空间、实例标识与时间源。
 type Option func(*coordinatorOptions)
 
 type coordinatorOptions struct {
 	namespace string
 	instance  string
+	clk       lynx.Clock
 }
 
 func defaultCoordinatorOptions() coordinatorOptions {
@@ -85,6 +89,31 @@ func WithInstance(id string) Option {
 	return func(o *coordinatorOptions) {
 		o.instance = id
 	}
+}
+
+// WithClock 注入时间源（默认 internal/clock.Real()）：续约等待与内存
+// 协调器的 TTL 判定都经它，测试可用 internal/clock.Fake 确定性推进，
+// 不再 sleep 真实时间。
+func WithClock(c lynx.Clock) Option {
+	return func(o *coordinatorOptions) {
+		if c != nil {
+			o.clk = c
+		}
+	}
+}
+
+// clock 返回注入的时间源，未注入时为真实时间。
+func (o coordinatorOptions) clock() lynx.Clock {
+	if o.clk != nil {
+		return o.clk
+	}
+	return clock.Real()
+}
+
+// ClockFrom 返回选项注入的时间源，未注入时为真实时间（适配器在
+// RunRenewLoop 前调用）。
+func ClockFrom(opts ...Option) lynx.Clock {
+	return applyCoordinatorOptions(opts).clock()
 }
 
 func (o coordinatorOptions) key(name string) string {

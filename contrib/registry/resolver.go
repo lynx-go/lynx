@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/internal/clock"
 )
 
 // ErrResolverClosed 在 Resolver.Close 之后的 Get/GetAll 上返回。
@@ -68,6 +71,17 @@ func WithResolverLogger(l *slog.Logger) ResolverOption {
 	}
 }
 
+// WithResolverClock 注入时间源（默认 internal/clock.Real()）：缓存
+// updatedAt 记录与 stale 判定都经它，测试可用 internal/clock.Fake 确定性
+// 断言 stale 边界（不再 sleep 真实时间）。
+func WithResolverClock(c lynx.Clock) ResolverOption {
+	return func(r *Resolver) {
+		if c != nil {
+			r.clock = c
+		}
+	}
+}
+
 // Resolver 是带进程内缓存的客户端发现：每个服务名一条缓存 +
 // 一个后台 watch goroutine（Watch 失败时回退轮询）。
 // 并发安全；Close 幂等。
@@ -77,6 +91,7 @@ type Resolver struct {
 	staleMaxAge  time.Duration
 	pollInterval time.Duration
 	logger       *slog.Logger
+	clock        lynx.Clock
 
 	mu      sync.Mutex
 	entries map[string]*cacheEntry // key = 服务名，见 filterAll 注释
@@ -98,6 +113,7 @@ func NewResolver(d Discovery, opts ...ResolverOption) *Resolver {
 		staleMaxAge:  60 * time.Second,
 		pollInterval: 15 * time.Second,
 		logger:       slog.Default(),
+		clock:        clock.Real(),
 		entries:      make(map[string]*cacheEntry),
 		ctx:          ctx,
 		cancel:       cancel,
@@ -174,7 +190,7 @@ func (r *Resolver) entryFor(name string) (*cacheEntry, bool) {
 	}
 	e, ok := r.entries[name]
 	if !ok {
-		e = &cacheEntry{}
+		e = &cacheEntry{clock: r.clock}
 		r.entries[name] = e
 		r.wg.Add(1)
 		go r.watchLoop(name, e)
@@ -213,14 +229,15 @@ func (r *Resolver) snapshot(name string, e *cacheEntry) ([]Instance, error) {
 	if !filled {
 		return nil, ErrNoInstance
 	}
-	if time.Since(updatedAt) <= r.staleMaxAge {
+	now := r.clock.Now()
+	if now.Sub(updatedAt) <= r.staleMaxAge {
 		return insts, nil
 	}
 	e.mu.Lock()
-	if e.instances != nil && time.Since(e.updatedAt) > r.staleMaxAge {
+	if e.instances != nil && now.Sub(e.updatedAt) > r.staleMaxAge {
 		r.logger.Warn("registry: resolver dropped stale snapshot",
 			"service", name,
-			"age", time.Since(e.updatedAt).Round(time.Millisecond),
+			"age", now.Sub(e.updatedAt).Round(time.Millisecond),
 			"stale_max_age", r.staleMaxAge)
 		e.instances = nil
 	}
@@ -315,11 +332,20 @@ type cacheEntry struct {
 	instances []Instance // 全量快照（含非 Passing），Filter 在订阅/读路径应用
 	updatedAt time.Time
 	filled    bool
+	clock     lynx.Clock
 	// subs 是订阅者表：store 对每个订阅应用其 Filter 后 Push（缓冲 1
 	// 最新替换）——慢订阅者总是拿到最新快照，不排队陈旧快照。
 	// nextSubID 自增分配、不复用。
 	subs      map[uint64]*subscription
 	nextSubID uint64
+}
+
+// now 返回该条目使用的时间源时间（未注入时为真实时间；直构的测试条目兜底）。
+func (e *cacheEntry) now() time.Time {
+	if e.clock != nil {
+		return e.clock.Now()
+	}
+	return time.Now()
 }
 
 // store 写入新快照。空切片也是合法快照（服务下线），立即生效。
@@ -329,7 +355,7 @@ func (e *cacheEntry) store(insts []Instance) {
 	e.mu.Lock()
 	e.instances = insts
 	e.filled = true
-	e.updatedAt = time.Now()
+	e.updatedAt = e.now()
 	for _, sub := range e.subs {
 		sub.push(insts)
 	}

@@ -35,7 +35,7 @@ func (m *memory) Claim(ctx context.Context, name string, ttl time.Duration) (boo
 	if err := ValidateCall(ctx, name, ttl); err != nil {
 		return false, err
 	}
-	now := time.Now()
+	now := m.opts.clock().Now()
 	key := m.opts.key(name)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -51,7 +51,7 @@ func (m *memory) Acquire(ctx context.Context, name string, ttl time.Duration) (L
 	if err := ValidateCall(ctx, name, ttl); err != nil {
 		return nil, false, err
 	}
-	now := time.Now()
+	now := m.opts.clock().Now()
 	key := m.opts.key(name)
 	leaseCtx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
@@ -71,7 +71,7 @@ func (m *memory) Acquire(ctx context.Context, name string, ttl time.Duration) (L
 	m.mu.Unlock()
 
 	l := &memLease{m: m, key: key, gen: gen, ctx: leaseCtx, cancel: cancel, ttl: ttl}
-	go RunRenewLoop(l.ctx, l.cancel, RenewInterval(l.ttl), l.renew)
+	go RunRenewLoop(l.ctx, l.cancel, RenewInterval(l.ttl), m.opts.clock(), l.renew)
 	return l, true, nil
 }
 
@@ -118,7 +118,7 @@ func (l *memLease) renew() error {
 	if !ok || sl.gen != l.gen {
 		return errLost
 	}
-	sl.exp = time.Now().Add(l.ttl)
+	sl.exp = l.m.opts.clock().Now().Add(l.ttl)
 	return nil
 }
 
