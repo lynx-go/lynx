@@ -368,7 +368,7 @@ func (c *Client) Watch(ctx context.Context, name string, filter registry.Filter)
 		return nil, registry.ErrBadName
 	}
 	w := &watcher{c: c, name: name, filter: filter}
-	w.core = registry.NewWatcherCore[registry.Instance](ctx, func() {
+	w.base = registry.NewWatcherBase[registry.Instance](ctx, func() {
 		c.mu.Lock()
 		delete(c.watchers, w)
 		c.mu.Unlock()
@@ -524,7 +524,7 @@ type watcher struct {
 	c      *Client
 	name   string
 	filter registry.Filter
-	core   *registry.WatcherCore[registry.Instance]
+	base   *registry.WatcherBase[registry.Instance]
 
 	mu        sync.Mutex
 	lastIndex uint64
@@ -533,7 +533,7 @@ type watcher struct {
 // Next 首次调用立即查询并返回当前快照（含空列表）；之后阻塞至集合变化、
 // ctx 取消或 Stop。
 func (w *watcher) Next() ([]registry.Instance, error) {
-	return w.core.Next(w.firstSnapshot)
+	return w.base.Next(w.firstSnapshot)
 }
 
 // firstSnapshot 查询首快照并排空期间 loop 可能已推入的重复快照。
@@ -549,12 +549,12 @@ func (w *watcher) Next() ([]registry.Instance, error) {
 // 已知边界：index 单调假设被破坏（stale 读到新 index + 旧数据）时仍可能
 // 丢一次推送，仅 allow_stale=true 且极小概率，接受。
 func (w *watcher) firstSnapshot() ([]registry.Instance, error) {
-	instances, meta, err := w.c.query(w.core.Ctx(), w.name, w.filter, 0, 0)
+	instances, meta, err := w.c.query(w.base.Ctx(), w.name, w.filter, 0, 0)
 	if err != nil {
 		return nil, err
 	}
 	w.mu.Lock()
-	w.core.Drain()
+	w.base.Drain()
 	w.lastIndex = meta.LastIndex
 	w.mu.Unlock()
 	return instances, nil
@@ -562,19 +562,19 @@ func (w *watcher) firstSnapshot() ([]registry.Instance, error) {
 
 // Stop 停止 Watcher 并从 Client 注销；幂等，返回 nil。
 func (w *watcher) Stop() error {
-	return w.core.Stop()
+	return w.base.Stop()
 }
 
 // loop 执行 blocking query：WaitIndex 推进，每次返回即推送（Consul 仅在
 // 集合变化或超时后返回）；错误按 1s–30s 指数退避重连。
 func (w *watcher) loop() {
-	ctx := w.core.Ctx()
+	ctx := w.base.Ctx()
 	backoff := watchBackoffMin
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-w.core.Done():
+		case <-w.base.Done():
 			return
 		default:
 		}
@@ -590,7 +590,7 @@ func (w *watcher) loop() {
 			}
 			timer := time.NewTimer(backoff)
 			select {
-			case <-w.core.Done():
+			case <-w.base.Done():
 				timer.Stop()
 				return
 			case <-timer.C:
@@ -616,6 +616,6 @@ func (w *watcher) loop() {
 		}
 		w.lastIndex = meta.LastIndex
 		w.mu.Unlock()
-		w.core.Push(instances)
+		w.base.Push(instances)
 	}
 }

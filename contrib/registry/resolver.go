@@ -372,7 +372,7 @@ func (e *cacheEntry) addSub(r *Resolver, filter Filter) *subscription {
 	}
 	e.nextSubID++
 	sub := &subscription{r: r, e: e, id: e.nextSubID, filter: filter}
-	sub.core = NewWatcherCore[Instance](r.ctx, nil)
+	sub.base = NewWatcherBase[Instance](r.ctx, nil)
 	e.subs[sub.id] = sub
 	if e.filled {
 		sub.push(e.instances)
@@ -420,12 +420,12 @@ type subscription struct {
 	e      *cacheEntry
 	id     uint64
 	filter Filter
-	core   *WatcherCore[Instance]
+	base   *WatcherBase[Instance]
 }
 
 // Next 阻塞至缓存变化并返回已过滤的最新快照（语义见 Subscribe）。
 func (s *subscription) Next() ([]Instance, error) {
-	insts, err := s.core.Next(nil)
+	insts, err := s.base.Next(nil)
 	if err != nil && errors.Is(err, context.Canceled) {
 		// 订阅没有自己的 ctx：取消只可能来自 Resolver.Close。
 		return nil, ErrResolverClosed
@@ -435,13 +435,13 @@ func (s *subscription) Next() ([]Instance, error) {
 
 // push 应用订阅 Filter 后推送（store 持缓存锁调用；Push 非阻塞）。
 func (s *subscription) push(insts []Instance) {
-	s.core.Push(filterInstances(s.filter, insts))
+	s.base.Push(filterInstances(s.filter, insts))
 }
 
 // Stop 注销订阅并唤醒阻塞中的 Next；幂等，返回 nil。
 func (s *subscription) Stop() error {
-	// core.Stop 幂等；removeSub 对已删除项是 no-op → 整体幂等。
-	err := s.core.Stop()
+	// base.Stop 幂等；removeSub 对已删除项是 no-op → 整体幂等。
+	err := s.base.Stop()
 	s.e.removeSub(s.id)
 	return err
 }

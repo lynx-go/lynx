@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// TestWatcherCoreFirstCalledOnce：first 只在首次 Next 调用一次，后续
+// TestWatcherBaseFirstCalledOnce：first 只在首次 Next 调用一次，后续
 // Next 走推送路径。
-func TestWatcherCoreFirstCalledOnce(t *testing.T) {
-	c := NewWatcherCore[string](context.Background(), nil)
+func TestWatcherBaseFirstCalledOnce(t *testing.T) {
+	c := NewWatcherBase[string](context.Background(), nil)
 	var calls atomic.Int32
 	first := func() ([]string, error) {
 		calls.Add(1)
@@ -29,10 +29,10 @@ func TestWatcherCoreFirstCalledOnce(t *testing.T) {
 	}
 }
 
-// TestWatcherCorePushCoalesces：推送缓冲 1 最新替换——连续推送不消费时
+// TestWatcherBasePushCoalesces：推送缓冲 1 最新替换——连续推送不消费时
 // 只保留最新值。
-func TestWatcherCorePushCoalesces(t *testing.T) {
-	c := NewWatcherCore[string](context.Background(), nil)
+func TestWatcherBasePushCoalesces(t *testing.T) {
+	c := NewWatcherBase[string](context.Background(), nil)
 	c.Push([]string{"old"})
 	c.Push([]string{"new"})
 	got, err := c.Next(nil)
@@ -41,11 +41,11 @@ func TestWatcherCorePushCoalesces(t *testing.T) {
 	}
 }
 
-// TestWatcherCoreStopIdempotent：Stop 幂等、onStop 恰好一次、之后 Next
+// TestWatcherBaseStopIdempotent：Stop 幂等、onStop 恰好一次、之后 Next
 // 返回 ErrWatcherStopped。
-func TestWatcherCoreStopIdempotent(t *testing.T) {
+func TestWatcherBaseStopIdempotent(t *testing.T) {
 	var stops atomic.Int32
-	c := NewWatcherCore[string](context.Background(), func() { stops.Add(1) })
+	c := NewWatcherBase[string](context.Background(), func() { stops.Add(1) })
 	if err := c.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -60,19 +60,19 @@ func TestWatcherCoreStopIdempotent(t *testing.T) {
 	}
 }
 
-// TestWatcherCoreCtxCancel：ctx 取消让阻塞中的 Next 返回 ctx.Err()。
-func TestWatcherCoreCtxCancel(t *testing.T) {
+// TestWatcherBaseCtxCancel：ctx 取消让阻塞中的 Next 返回 ctx.Err()。
+func TestWatcherBaseCtxCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	c := NewWatcherCore[string](ctx, nil)
+	c := NewWatcherBase[string](ctx, nil)
 	cancel()
 	if _, err := c.Next(nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Next = %v, want context.Canceled", err)
 	}
 }
 
-// TestWatcherCoreDrainAndReceive：Drain 排空未消费推送；Receive 等待下一次。
-func TestWatcherCoreDrainAndReceive(t *testing.T) {
-	c := NewWatcherCore[string](context.Background(), nil)
+// TestWatcherBaseDrainAndReceive：Drain 排空未消费推送；Receive 等待下一次。
+func TestWatcherBaseDrainAndReceive(t *testing.T) {
+	c := NewWatcherBase[string](context.Background(), nil)
 	c.Push([]string{"stale"})
 	c.Drain()
 	c.Push([]string{"fresh"})

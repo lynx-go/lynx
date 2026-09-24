@@ -252,7 +252,7 @@ forwarder 组件）、CORS/gzip 等通用中间件、OTLP Logs（可观测三支
       `GroupClaims` / `RedeliveryLimiter`；watermill 只接线）
 - [x] server 共享规则收敛至 `internal/serverkit`（健康执行 / 有界关停 /
       请求标识 / 生命周期事件；`lynx.server.*` 主题统一，HTTP 默认传播）
-- [x] Watcher 骨架与订阅契约（`registry.WatcherCore[T]`；
+- [x] Watcher 骨架与订阅契约（`registry.WatcherBase[T]`；
       `Resolver.Subscribe(name, filter)`；sentinel 统一）
 - [x] 时间源接缝（公开 `lynx.Clock` + `internal/clock.Fake`；cluster
       租约与 registry 缓存边界确定性断言）

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### 破坏性变更：`registry.WatcherCore` 更名为 `registry.WatcherBase`
+
+`Core` 暗示唯一核心实现，实际是各后端 watcher 与消费侧订阅复用的共享
+骨架（典型用法为内嵌）；更名为 `Base` 与定位一致，不留兼容别名。受影响
+模块：`contrib/registry`、`contrib/consul`。迁移对照：
+
+| 旧 | 新 |
+|---|---|
+| `registry.WatcherCore[T]` | `registry.WatcherBase[T]` |
+| `registry.NewWatcherCore` | `registry.NewWatcherBase` |
+
+方法与语义不变：`Next` / `Receive` / `Push` / `Drain` / `Stop` / `Done` / `Ctx`。
+
 ## v1.15.0 (2026-09-24)
 
 本次发布 tag：根 `v1.15.0`、`contrib/watermill/v1.8.0`、

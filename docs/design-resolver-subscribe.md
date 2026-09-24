@@ -43,7 +43,7 @@ func (r *Resolver) Subscribe(name string, filter Filter) (Watcher, error)
 - `cacheEntry` 增加 `subs map[uint64]*subscription` 与自增 ID；
 - **触发点统一为 `store()`**：watchLoop 推送、轮询回退、`ensureFilled` 同步首填全部经 store，天然全覆盖；store 末尾对每个订阅应用其 Filter 后 `Push`（缓冲 1 最新替换 = 慢消费者不排队陈旧快照）。无订阅者时空 map 判断零成本；
 - **首推**：`addSub` 时若 `filled`，向新订阅者预推一份当前过滤快照（首个 Next 立即返回）；未填充则等待首次 store；
-- **骨架**：订阅与三个后端 watcher 共用 `registry.WatcherCore[T]`（首次语义注入、Push 合并、Stop 幂等 + 注销钩子）；停止/取消优先于挂起推送；
+- **骨架**：订阅与三个后端 watcher 共用 `registry.WatcherBase[T]`（首次语义注入、Push 合并、Stop 幂等 + 注销钩子）；停止/取消优先于挂起推送；
 - **stale 丢弃不通知**：与 grpcResolver"解析出错保留上次状态"的既有惯例一致，兜底轮询覆盖；
 - 哨兵统一为 `ErrWatcherStopped`（后端与订阅同词；此前 registry/consul 各持私有副本）。
 

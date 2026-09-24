@@ -114,7 +114,7 @@ func (m *Memory) Watch(ctx context.Context, name string, filter Filter) (Watcher
 		return nil, errClosed
 	}
 	w := &memoryWatcher{m: m, name: name, filter: filter}
-	w.core = NewWatcherCore[Instance](ctx, func() {
+	w.base = NewWatcherBase[Instance](ctx, func() {
 		m.mu.Lock()
 		if set, ok := m.watchers[name]; ok {
 			delete(set, w)
@@ -137,7 +137,7 @@ func (m *Memory) Watch(ctx context.Context, name string, filter Filter) (Watcher
 // 调用方必须持有 m.mu（写锁）。
 func (m *Memory) notifyLocked(name string) {
 	for w := range m.watchers[name] {
-		w.core.Push(m.snapshotLocked(w.name, w.filter))
+		w.base.Push(m.snapshotLocked(w.name, w.filter))
 	}
 }
 
@@ -169,13 +169,13 @@ type memoryWatcher struct {
 	m      *Memory
 	name   string
 	filter Filter
-	core   *WatcherCore[Instance]
+	base   *WatcherBase[Instance]
 }
 
 // Next 首次调用立即返回当前快照（含空列表）；之后阻塞至集合变化、
 // ctx 取消或 Stop。
 func (w *memoryWatcher) Next() ([]Instance, error) {
-	return w.core.Next(w.firstSnapshot)
+	return w.base.Next(w.firstSnapshot)
 }
 
 // firstSnapshot 在锁内取快照并排空积压通知：先于首次 Next 发生的变化
@@ -184,11 +184,11 @@ func (w *memoryWatcher) firstSnapshot() ([]Instance, error) {
 	w.m.mu.RLock()
 	defer w.m.mu.RUnlock()
 	snap := w.m.snapshotLocked(w.name, w.filter)
-	w.core.Drain()
+	w.base.Drain()
 	return snap, nil
 }
 
 // Stop 停止 Watcher 并从 Memory 注销；幂等，返回 nil。
 func (w *memoryWatcher) Stop() error {
-	return w.core.Stop()
+	return w.base.Stop()
 }
