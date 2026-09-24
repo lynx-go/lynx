@@ -141,7 +141,9 @@ func TestPublishRawEventUsesParamTopic(t *testing.T) {
 	}
 }
 
-func TestPublishRawPreservesEnvelope(t *testing.T) {
+// TestTopicPublishForwardsRawEnvelope 转发入口收敛后：Topic.Publish 收到
+// *RawEvent 时整份信封透传（保留 ID/Key/Headers/Time），逻辑名以 Topic 为准。
+func TestTopicPublishForwardsRawEnvelope(t *testing.T) {
 	bus := NewMemoryBus(Options{})
 	_ = bus.Init(nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -150,7 +152,7 @@ func TestPublishRawPreservesEnvelope(t *testing.T) {
 	waitRunning(t, bus)
 
 	ts := time.Unix(100, 0).UTC()
-	topic := NewTopic[[]byte]("fwd.topic")
+	topic := NewTopic[*RawEvent]("fwd.topic")
 	got := make(chan *RawEvent, 1)
 	_ = bus.Subscribe(context.Background(), topic.Name(), func(ctx context.Context, e *RawEvent) error {
 		got <- e
@@ -166,8 +168,8 @@ func TestPublishRawPreservesEnvelope(t *testing.T) {
 		Payload: []byte("body"),
 		Time:    ts,
 	}
-	if err := topic.PublishRaw(context.Background(), raw, WithBus(bus)); err != nil {
-		t.Fatalf("PublishRaw: %v", err)
+	if err := topic.Publish(context.Background(), raw, WithBus(bus)); err != nil {
+		t.Fatalf("Publish(*RawEvent): %v", err)
 	}
 	select {
 	case e := <-got:
@@ -185,6 +187,53 @@ func TestPublishRawPreservesEnvelope(t *testing.T) {
 		}
 		if e.Topic != topic.Name() {
 			t.Errorf("Topic = %q, want %q", e.Topic, topic.Name())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+// TestTopicPublishRawPayloadsBypassMarshaler：原始载荷（*RawEvent / []byte）
+// 按透传处理，Topic 级 marshaler 被忽略——语义钉死而非注释承诺。
+func TestTopicPublishRawPayloadsBypassMarshaler(t *testing.T) {
+	bus := NewMemoryBus(Options{})
+	_ = bus.Init(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = bus.Start(ctx) }()
+	waitRunning(t, bus)
+
+	topicBytes := NewTopic[[]byte]("raw.bypass", WithTopicMarshaler(prefixMarshaler{}))
+	topicRaw := NewTopic[*RawEvent]("raw.bypass", WithTopicMarshaler(prefixMarshaler{}))
+	got := make(chan []byte, 2)
+	_ = bus.Subscribe(context.Background(), topicBytes.Name(), func(ctx context.Context, e *RawEvent) error {
+		got <- e.Payload
+		return nil
+	})
+	time.Sleep(20 * time.Millisecond)
+
+	// []byte 载荷：跳过序列化直发。
+	if err := topicBytes.Publish(context.Background(), []byte("bytes-body"), WithBus(bus)); err != nil {
+		t.Fatalf("Publish([]byte): %v", err)
+	}
+	select {
+	case p := <-got:
+		if string(p) != "bytes-body" {
+			t.Fatalf("[]byte payload = %q, want bytes-body (marshaler must be bypassed)", p)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	// *RawEvent 载荷：整份信封透传，Payload 原样。
+	raw := &RawEvent{ID: "r1", Payload: []byte("raw-body"), Time: time.Now()}
+	if err := topicRaw.Publish(context.Background(), raw, WithBus(bus)); err != nil {
+		t.Fatalf("Publish(*RawEvent): %v", err)
+	}
+	select {
+	case p := <-got:
+		if string(p) != "raw-body" {
+			t.Fatalf("*RawEvent payload = %q, want raw-body (marshaler must be bypassed)", p)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout")

@@ -124,8 +124,9 @@ type Bus interface {
 说明：
 
 - 原始字节发布经 `Publish` 的 `[]byte` payload 分支（跳过序列化）；
-  独立的 `Bus.PublishRaw` 方法已删除（v1.12，一行委托 Publish 的等价面），
-  `*RawEvent` 信封转发用 `Topic.PublishRaw`。
+  原始信封转发经 `*RawEvent` payload 分支（保留 ID/Key/Headers/Time，逻辑名以
+  函数参数为准）。独立的 `Bus.PublishRaw`（v1.12）与 `Topic.PublishRaw`
+  （等价面收敛）均已删除——`Publish` 的类型分支是唯一入口。
 
 说明：
 
@@ -141,7 +142,7 @@ type Topic[T any] struct { /* name + 默认订阅/发布选项 */ }
 
 func (t Topic[T]) Publish(ctx context.Context, payload T, opts ...PublishOption) error
 func (t Topic[T]) Subscribe(ctx context.Context, handlerName string, h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error
-// PublishRaw / 转发等同理，均不把 Bus 作为位置参数
+// 原始载荷（[]byte / *RawEvent）经 Publish 的类型分支透传；不单列 PublishRaw
 ```
 
 **Bus 解析顺序（已拍板）**：
@@ -171,7 +172,7 @@ OrderCreated.Subscribe(ctx, "audit", handler, eventbus.WithBus(other))
 | `lynx.WithBus` | `lynx` | 应用构造 Option，注入整应用的 Bus |
 | `eventbus.WithBus` | `eventbus` | 单次 Publish/Subscribe 的 Option，覆盖解析结果 |
 
-包级 `PublishTyped` / `SubscribeTyped` / `PublishRawTyped`：**已删除**（无兼容别名，见 CHANGELOG），`Topic.Publish` / `Subscribe` / `PublishRaw` 为唯一类型化入口，避免双入口。
+包级 `PublishTyped` / `SubscribeTyped` / `PublishRawTyped`：**已删除**（无兼容别名，见 CHANGELOG），`Topic.Publish` / `Subscribe` 为唯一类型化入口；原始载荷经 `Publish` 的 `[]byte` / `*RawEvent` 分支透传（`Topic.PublishRaw` 已作为等价面删除）。
 
 `NewTopic` 选项（`WithTopicMarshaler` / Group / Instances / AutoAck / ContinueOnError / Retry）须在 Subscribe 路径 **实际生效**（见 §5.2；Retry 四级合并已接通：Topic 携带值经 `WithSubscribeRetry` 转发为基础调用项）。
 
@@ -276,9 +277,9 @@ _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
 - **Kafka**：适配器必须把该键写入 **Kafka record key**（分区/保序），不能仅放 header。实现可选：自定义 Watermill Kafka Marshaler，或在 Transport.Publish 组装 ProducerMessage。
 - `maps.Copy(Headers)` **不得覆盖** 已写入的 `x-message-key`（先 Copy 再 Set key，或 Copy 时跳过协议键）。
 
-### 5.4 Topic.PublishRaw / 转发
+### 5.4 Topic.Publish 的原始信封转发
 
-转发应保留 `ID`、`Key`、`Headers`、`Time`、`Payload`；仅当明确「新事件」语义时才生成新 ID/Time。文档与 API 命名区分 **转发** vs **新发**。
+转发应保留 `ID`、`Key`、`Headers`、`Time`、`Payload`；仅当明确「新事件」语义时才生成新 ID/Time。文档与 API 命名区分 **转发** vs **新发**。实现入口是 `Publish` 的 `*RawEvent` 分支（等价面 `Topic.PublishRaw` 已删除）；`[]byte` 载荷跳过序列化直发。原始载荷不做序列化——Topic/Bus 级 marshaler 被忽略（有 pin 测试钉死）。
 
 ### 5.5 内存路径特殊语义
 

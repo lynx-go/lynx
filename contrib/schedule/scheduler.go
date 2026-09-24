@@ -17,7 +17,7 @@ import (
 
 // Scheduler 是基于 cron 的定时任务调度服务，实现 lynx.Service 接口。
 type Scheduler struct {
-	options *Options
+	options *options
 	tasks   []Task
 	cron    *cron.Cron
 	// logger 是服务日志实例：Init(ctx) 时从 ctx.Logger 取，未 Init 时
@@ -42,7 +42,7 @@ type Scheduler struct {
 }
 
 // Options 是调度器服务的配置项。
-type Options struct {
+type options struct {
 	Cron         *cron.Cron
 	Logger       *slog.Logger
 	DebugEnabled bool
@@ -184,12 +184,12 @@ type Task interface {
 type HandlerFunc func(ctx context.Context) error
 
 // Option 用于配置调度器 Options 的选项函数。
-type Option func(*Options)
+type Option func(*options)
 
 // WithLogger 设置调度器的日志实例；显式设置后 Init 不再以 ctx.Logger
 // 覆盖（见 Init 的 loggerSet 防护）。
 func WithLogger(logger *slog.Logger) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.Logger = logger
 		o.loggerSet = true
 	}
@@ -197,14 +197,14 @@ func WithLogger(logger *slog.Logger) Option {
 
 // WithCron 设置自定义的 cron 实例；未设置时使用内置默认实例。
 func WithCron(cron *cron.Cron) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.Cron = cron
 	}
 }
 
 // WithDebugEnabled 开启 cron 调试日志输出。
 func WithDebugEnabled() Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.DebugEnabled = true
 	}
 }
@@ -214,7 +214,7 @@ func WithDebugEnabled() Option {
 // 被忽略（NewScheduler 会记 Warn 日志提示），请在其构造中自行设置
 // Location。
 func WithLocation(loc *time.Location) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.Location = loc
 	}
 }
@@ -224,14 +224,14 @@ func WithLocation(loc *time.Location) Option {
 // 注意：仅接收任务 HandlerFunc 返回的错误；任务 panic 由调度器恢复并记
 // 日志，不触发该回调。
 func WithErrorHandler(fn func(ctx context.Context, task Task, err error)) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.OnTaskError = fn
 	}
 }
 
 // WithCoordinator 设置进程间协调后端。Exclusive 任务通过 cluster.TryOnce 抢格子。
 func WithCoordinator(s cluster.Coordinator) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.Coordinator = s
 	}
 }
@@ -239,7 +239,7 @@ func WithCoordinator(s cluster.Coordinator) Option {
 // WithNow 设置 Exclusive 互斥格子计算使用的时间来源（缺省 time.Now）。
 // 供测试注入固定/步进时钟，使互斥行为可确定性断言，无需真实等待。
 func WithNow(fn func() time.Time) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.NowFunc = fn
 	}
 }
@@ -253,7 +253,7 @@ var (
 
 // NewScheduler 创建调度器服务并注册所有定时任务，cron 表达式非法时返回错误。
 func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
-	o := &Options{
+	o := &options{
 		Logger: slog.Default(),
 	}
 	for _, opt := range opts {
@@ -308,10 +308,15 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 	for i := range tasks {
 		task := tasks[i]
 		exclusive := isExclusive(task)
-		fire := func() { scheduler.fireTask(task, exclusive, loc) }
-		if _, err := scheduler.cron.AddFunc(task.Cron(), fire); err != nil {
+		// sched 由引擎在同一次 AddFunc 后经 Entry(id) 回读：身份计算与
+		// 引擎实际解析结果同源（WithCron 自定义 parser 时分叉消失）。
+		var sched cron.Schedule
+		fire := func() { scheduler.fireTask(task, exclusive, loc, sched) }
+		id, err := scheduler.cron.AddFunc(task.Cron(), fire)
+		if err != nil {
 			return nil, err
 		}
+		sched = scheduler.cron.Entry(id).Schedule
 		scheduler.entries[task.Name()] = fire
 	}
 
@@ -322,7 +327,7 @@ func NewScheduler(tasks []Task, opts ...Option) (*Scheduler, error) {
 // 错误上报。cron 触发与 Trigger 手动触发共用同一路径，行为一致。
 // 任务上下文取自 Init（ctx.Context，携带应用元数据，关闭时取消）；
 // 未 Init 时回退 Background。
-func (s *Scheduler) fireTask(task Task, exclusive bool, loc *time.Location) {
+func (s *Scheduler) fireTask(task Task, exclusive bool, loc *time.Location, sched cron.Schedule) {
 	ctx := s.taskCtx
 	if ctx == nil {
 		ctx = context.Background()
@@ -339,7 +344,7 @@ func (s *Scheduler) fireTask(task Task, exclusive bool, loc *time.Location) {
 		if s.options.NowFunc != nil {
 			now = s.options.NowFunc
 		}
-		name, ttl, err := fireIdentity(task.Name(), task.Cron(), now().In(loc), loc)
+		name, ttl, err := fireIdentity(task.Name(), sched, now().In(loc), loc)
 		if err != nil {
 			s.reportTaskError(ctx, task, err)
 			return

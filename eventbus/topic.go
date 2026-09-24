@@ -72,6 +72,9 @@ func (t Topic[T]) Name() string { return t.name }
 func (t Topic[T]) Options() TopicOptions { return t.opts }
 
 // Publish 发布类型化负载。Bus 解析：WithBus Option → Context → Default。
+// 原始载荷透传：payload 为 *RawEvent 时整份信封转发（保留 ID/Key/Headers/
+// Time，逻辑名以 Topic 为准）；为 []byte 时跳过序列化直发——两者都不经过
+// Topic/Bus 级 marshaler（见 BuildRawEvent 的类型分支）。
 func (t Topic[T]) Publish(ctx context.Context, payload T, opts ...PublishOption) error {
 	po := &PublishOptions{}
 	applyPublishOptions(po, opts...)
@@ -91,17 +94,6 @@ func (t Topic[T]) Subscribe(ctx context.Context, h func(context.Context, *Event[
 		return err
 	}
 	return subscribeTyped(ctx, b, t, h, opts...)
-}
-
-// PublishRaw 转发原始事件（保留 ID/Key/Headers/Time/Payload；逻辑名以 Topic 为准）。
-func (t Topic[T]) PublishRaw(ctx context.Context, raw *RawEvent, opts ...PublishOption) error {
-	po := &PublishOptions{}
-	applyPublishOptions(po, opts...)
-	b, err := resolveBus(ctx, po.Bus)
-	if err != nil {
-		return err
-	}
-	return publishRawTyped(ctx, b, t, raw, opts...)
 }
 
 func publishTyped[T any](ctx context.Context, b Bus, topic Topic[T], payload T, opts ...PublishOption) error {
@@ -147,12 +139,4 @@ func subscribeTyped[T any](ctx context.Context, b Bus, topic Topic[T], h func(co
 		}
 		return h(ctx, ev)
 	}, wrappedOpts...)
-}
-
-func publishRawTyped[T any](ctx context.Context, b Bus, topic Topic[T], raw *RawEvent, opts ...PublishOption) error {
-	if raw == nil {
-		return fmt.Errorf("bus: nil raw event")
-	}
-	// 转发：整份 RawEvent 交给 Bus，保留 ID/Key/Headers/Time；topic 参数覆盖逻辑名
-	return b.Publish(ctx, topic.Name(), raw, opts...)
 }

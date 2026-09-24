@@ -114,7 +114,7 @@ func TestStopReturnsErrors(t *testing.T) {
 // exporter 时 newProviders 不构造任何 exporter（生产忘配 exporter 不会向
 // stdout 倒 trace），span 只记录不导出。
 func TestDefaultTraceExporterIsNoop(t *testing.T) {
-	tp, mp, err := newProviders(&Options{})
+	tp, mp, err := newProviders(&options{})
 	if err != nil {
 		t.Fatalf("newProviders: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestDefaultTraceExporterIsNoop(t *testing.T) {
 // TestStdoutTraceOption 验证 WithStdoutTrace 显式启用 stdout pretty print
 // exporter。
 func TestStdoutTraceOption(t *testing.T) {
-	tp, mp, err := newProviders(&Options{stdoutTrace: true})
+	tp, mp, err := newProviders(&options{stdoutTrace: true})
 	if err != nil {
 		t.Fatalf("newProviders: %v", err)
 	}

@@ -108,7 +108,7 @@ err = UserCreated.Publish(ctx, User{Name: "alice"},
 	eventbus.WithMessageKey("alice"))
 ```
 
-原始字节：`Topic.PublishRaw` 或 `app.Bus().Publish` / `PublishRaw`。  
+原始字节 / 原始信封：`Topic.Publish` 的 `[]byte` 与 `*RawEvent` payload 按透传处理（跳过序列化、保留信封），或 `app.Bus().Publish`。
 框架生命周期事件（`lynx.*`）始终走进程内内存 Transport。
 
 完整演示：[`_examples/bus`](./_examples/bus)。设计说明：[docs/design-eventbus.md](./docs/design-eventbus.md)。

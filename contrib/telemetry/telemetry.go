@@ -41,7 +41,7 @@ import (
 )
 
 // Options 是 telemetry 服务的配置项。
-type Options struct {
+type options struct {
 	traceExporter sdktrace.SpanExporter
 	metricReader  sdkmetric.Reader
 	propagator    propagation.TextMapPropagator
@@ -56,11 +56,11 @@ type Options struct {
 }
 
 // Option 用于配置 telemetry 服务。
-type Option func(*Options)
+type Option func(*options)
 
 // WithTraceExporter 设置自定义 trace exporter（默认 noop）。
 func WithTraceExporter(exporter sdktrace.SpanExporter) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.traceExporter = exporter
 	}
 }
@@ -68,21 +68,21 @@ func WithTraceExporter(exporter sdktrace.SpanExporter) Option {
 // WithStdoutTrace 以 stdout pretty print exporter 输出 span，供开发调试。
 // 仅在未设置 WithTraceExporter 时生效。
 func WithStdoutTrace() Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.stdoutTrace = true
 	}
 }
 
 // WithMetricReader 设置自定义 metric reader（如 OTLP exporter），默认 Prometheus。
 func WithMetricReader(reader sdkmetric.Reader) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.metricReader = reader
 	}
 }
 
 // WithPropagator 设置自定义 propagator，默认 TraceContext + Baggage 组合。
 func WithPropagator(p propagation.TextMapPropagator) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.propagator = p
 	}
 }
@@ -90,7 +90,7 @@ func WithPropagator(p propagation.TextMapPropagator) Option {
 // WithResource 设置 OTel Resource（如 service.name 等标准属性），
 // nil 时使用 SDK 默认资源，并在 Init 时自动附加应用名。
 func WithResource(r *resource.Resource) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.res = r
 	}
 }
@@ -100,7 +100,7 @@ func WithResource(r *resource.Resource) Option {
 // 输出，零配置获得进程级可观测基线。注意：进程的 CPU 配额感知
 // （容器环境 GOMAXPROCS 修正）由 Go 1.25+ runtime 内建，与本选项无关。
 func WithoutRuntimeMetrics() Option {
-	return func(o *Options) {
+	return func(o *options) {
 		o.runtimeMetrics = false
 	}
 }
@@ -111,7 +111,7 @@ func WithoutRuntimeMetrics() Option {
 // 业务指标（otel.Meter 创建的 instrument）需在服务注册之后创建，
 // 否则拿到的是 noop meter。
 func New(opts ...Option) lynx.Service {
-	o := &Options{
+	o := &options{
 		propagator:     propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}),
 		runtimeMetrics: true,
 	}
@@ -122,7 +122,7 @@ func New(opts ...Option) lynx.Service {
 }
 
 type otelService struct {
-	options *Options
+	options *options
 	tp      *sdktrace.TracerProvider
 	mp      *sdkmetric.MeterProvider
 	// inited 以 CAS 守卫 Init 的唯一进入：并发 Init 时仅一个调用方创建
@@ -211,7 +211,7 @@ func (c *otelService) Stop(ctx context.Context) error {
 // 多次创建本服务（重建/反复测试）会让 collector 在全局注册表累积、
 // 指标重复上报。请按单实例使用；确需重建的场景改用 WithMetricReader
 // 传入自管注册表的 reader。
-func newProviders(o *Options) (tp *sdktrace.TracerProvider, mp *sdkmetric.MeterProvider, err error) {
+func newProviders(o *options) (tp *sdktrace.TracerProvider, mp *sdkmetric.MeterProvider, err error) {
 	traceOpts := []sdktrace.TracerProviderOption{}
 	if o.traceExporter != nil {
 		traceOpts = append(traceOpts, sdktrace.WithBatcher(o.traceExporter))

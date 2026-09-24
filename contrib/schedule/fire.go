@@ -1,19 +1,24 @@
 package schedule
 
 import (
-	"strings"
+	"errors"
 	"time"
 
 	"github.com/robfig/cron/v3"
 )
 
-var exclusiveParser = cron.NewParser(
-	cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
-)
-
 const fireSkew = time.Second
 
-func fireIdentity(taskName, spec string, now time.Time, loc *time.Location) (string, time.Duration, error) {
+// fireIdentity 计算一次 Exclusive 触发（格子）的名称与占位 TTL。
+// sched 是引擎实际解析的 schedule（NewScheduler 注册时经 Entry 回读），
+// 身份计算与引擎同源——WithCron 自定义 parser 时不再分叉：
+//   - @every（ConstantDelaySchedule）：取 epoch 对齐的墙钟槽位——其 Next
+//     相对调用时刻，各节点起点不同，不能用作跨节点格子名；
+//   - 其余 cron 规格：由 schedule 的 Next/Next2 推格子与间隔。
+func fireIdentity(taskName string, sched cron.Schedule, now time.Time, loc *time.Location) (string, time.Duration, error) {
+	if sched == nil {
+		return "", 0, errors.New("schedule: nil schedule")
+	}
 	if loc != nil {
 		now = now.In(loc)
 	} else {
@@ -21,14 +26,10 @@ func fireIdentity(taskName, spec string, now time.Time, loc *time.Location) (str
 	}
 	var slot time.Time
 	var interval time.Duration
-	if d, ok := parseEvery(spec); ok {
-		slot = wallSlot(now, d)
-		interval = d
+	if cd, ok := sched.(cron.ConstantDelaySchedule); ok {
+		interval = cd.Delay
+		slot = wallSlot(now, interval)
 	} else {
-		sched, err := exclusiveParser.Parse(spec)
-		if err != nil {
-			return "", 0, err
-		}
 		slot, interval = cronSlot(sched, now)
 	}
 	ttl := interval + fireSkew
@@ -36,18 +37,6 @@ func fireIdentity(taskName, spec string, now time.Time, loc *time.Location) (str
 		ttl = time.Second
 	}
 	return taskName + "@" + slot.UTC().Format(time.RFC3339), ttl, nil
-}
-
-func parseEvery(spec string) (time.Duration, bool) {
-	const prefix = "@every "
-	if !strings.HasPrefix(spec, prefix) {
-		return 0, false
-	}
-	d, err := time.ParseDuration(strings.TrimSpace(spec[len(prefix):]))
-	if err != nil || d <= 0 {
-		return 0, false
-	}
-	return d, true
 }
 
 func wallSlot(now time.Time, d time.Duration) time.Time {

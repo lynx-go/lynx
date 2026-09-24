@@ -8,6 +8,7 @@ package eventbus
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"time"
 )
 
@@ -99,9 +100,16 @@ func WithMessageKey(key string) PublishOption {
 	return publishOptionFunc(func(o *PublishOptions) { o.MessageKey = key })
 }
 
-// WithMetadata 合并消息头。
+// WithMetadata 把整表写入消息头；克隆调用方 map——后续 WithMetadataField
+// 不会反向污染调用方传入的映射。
 func WithMetadata(md map[string]string) PublishOption {
-	return publishOptionFunc(func(o *PublishOptions) { o.Metadata = md })
+	return publishOptionFunc(func(o *PublishOptions) {
+		if md == nil {
+			o.Metadata = nil
+			return
+		}
+		o.Metadata = maps.Clone(md)
+	})
 }
 
 // WithMetadataField 添加单条消息头。
