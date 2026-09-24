@@ -16,11 +16,11 @@ replace (
 require (
 	github.com/google/wire v0.7.0
 	github.com/lynx-go/commands v0.2.1
-	github.com/lynx-go/lynx v1.0.0
+	github.com/lynx-go/lynx v1.14.0
 	github.com/lynx-go/lynx/contrib/registry v1.0.0
 	github.com/lynx-go/lynx/contrib/schedule v1.0.0
 	github.com/lynx-go/lynx/contrib/telemetry v1.0.0
-	github.com/lynx-go/lynx/contrib/watermill v1.6.0
+	github.com/lynx-go/lynx/contrib/watermill v1.7.0
 	github.com/lynx-go/lynx/contrib/watermill-kafka v1.7.0
 	github.com/lynx-go/lynx/contrib/zap v1.0.0
 	github.com/samber/lo v1.53.0
@@ -50,7 +50,7 @@ require (
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/lithammer/shortuuid/v3 v3.0.7 // indirect
-	github.com/lynx-go/lynx/contrib/cluster v1.0.0 // indirect
+	github.com/lynx-go/lynx/contrib/cluster v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
@@ -61,11 +61,13 @@ require (
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	github.com/sony/gobreaker v1.0.0 // indirect
+	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 	github.com/spf13/viper v1.21.0 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.2.0 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.70.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/runtime v0.67.0 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
@@ -81,7 +83,6 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
-	github.com/oklog/run v1.2.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/prometheus/client_golang v1.24.1
 	github.com/robfig/cron/v3 v3.0.1 // indirect
