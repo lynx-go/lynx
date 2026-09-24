@@ -25,11 +25,11 @@ func (s *orderService) Init(ctx lynx.AppContext) error {
 	slog.Info("order-service init, bus available", "bus", ctx.Bus().Name())
 	return nil
 }
-func (s *orderService) Start(ctx context.Context) error {
-	<-ctx.Done()
-	return nil
-}
-func (s *orderService) Stop(ctx context.Context) error { return nil }
+
+// Start 只做非阻塞动作（订阅已在 Init 完成），用 WaitForShutdown 保持
+// actor 存活至关停。
+func (s *orderService) Start(ctx context.Context) error { return lynx.WaitForShutdown(ctx) }
+func (s *orderService) Stop(ctx context.Context) error  { return nil }
 
 // auditService 订阅订单事件，实现组件间协同。
 type auditService struct{}
@@ -43,7 +43,7 @@ func (s *auditService) Init(ctx lynx.AppContext) error {
 			return nil
 		}, eventbus.WithHandlerName("audit-handler"))
 }
-func (s *auditService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (s *auditService) Start(ctx context.Context) error { return lynx.WaitForShutdown(ctx) }
 func (s *auditService) Stop(ctx context.Context) error  { return nil }
 
 // inventoryService 演示原始事件订阅。
@@ -57,7 +57,7 @@ func (s *inventoryService) Init(ctx lynx.AppContext) error {
 			return nil
 		}, eventbus.WithHandlerName("inventory-handler"))
 }
-func (s *inventoryService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (s *inventoryService) Start(ctx context.Context) error { return lynx.WaitForShutdown(ctx) }
 func (s *inventoryService) Stop(ctx context.Context) error  { return nil }
 
 // lifecycleCoordinator 演示通过内建生命周期事件实现组件间协同：
@@ -90,7 +90,7 @@ func (s *lifecycleCoordinator) Init(ctx lynx.AppContext) error {
 	})
 	return nil
 }
-func (s *lifecycleCoordinator) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (s *lifecycleCoordinator) Start(ctx context.Context) error { return lynx.WaitForShutdown(ctx) }
 func (s *lifecycleCoordinator) Stop(ctx context.Context) error  { return nil }
 
 func main() {

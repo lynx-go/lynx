@@ -26,6 +26,17 @@ type Service interface {
 - `Start(ctx context.Context) error`：`cli.Run()` 启动后，每个服务由 lifecycle 模块作为独立 actor **并发**调用。通常是阻塞式的（监听端口、消费消息），收到 `ctx` 取消时应返回。任何一个服务的 `Start` 返回（无论是否出错）都会触发整个应用的优雅关闭（见 3.1 节并发模型）。
 - `Stop(ctx context.Context) error`：关停阶段由 lifecycle 的停止序列调用，用于释放资源；返回的错误由框架收集，随 `Run()` 上抛。注意框架是先调用 `Stop` 再取消服务 Context（见 3.1 节），因此 `Stop` 中不要等待 `ctx.Done()`；`Stop` 必须容忍先于 `Start` 被调用（Init 成功但 Start 未执行时，框架会逆序调用 Stop 做资源清理）。
 
+`Start` 的实现分两种形态：**阻塞式**（监听端口、消费消息、`http.Server.Serve`）直接写阻塞调用即可；**非阻塞式**（只拉起后台 goroutine、注册回调、启动定时器）必须把启动动作转成阻塞——在动作完成后调用 `lynx.WaitForShutdown(ctx)` 保持服务 actor 存活至应用关停：
+
+```go
+func (s *myService) Start(ctx context.Context) error {
+	go s.loop(ctx)                   // 直接返回的启动动作
+	return lynx.WaitForShutdown(ctx) // 保持 actor 存活至关停
+}
+```
+
+忘记收尾的代价是 `Start` 提前返回 nil，立即触发整个应用关停（见 3.1 节并发模型）。
+
 注册服务通过 `app.Register` 完成：
 
 ```go

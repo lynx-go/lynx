@@ -14,7 +14,7 @@
 即每个服务遵循 `Init → Start → Stop` 的调用顺序：
 
 - `Init(ctx AppContext)`：注册服务时同步调用，用于初始化依赖。参数是 `lynx.AppContext`（`Context`/`Config`/`Logger`/`HealthCheckers`/`Close`），服务不依赖完整的 `App` 接口（见 3.6 节 AppContext 接口说明）。
-- `Start`：`Run()` 启动后并发调用，通常是阻塞式的（如监听端口、消费消息），其 `ctx` 被取消时应返回。
+- `Start`：`Run()` 启动后并发调用，通常是阻塞式的（如监听端口、消费消息），其 `ctx` 被取消时应返回；只有非阻塞启动动作（拉起后台 goroutine、注册回调等）时用 `lynx.WaitForShutdown(ctx)` 收尾——`Start` 提前返回会立即触发应用关停。
 - `Stop(ctx) error`：关闭阶段调用，用于释放资源；返回的错误由框架收集，与 OnPreStop 钩子错误一起随 `Run()` 上抛。
 
 ### 并发模型：lifecycle actor 调度

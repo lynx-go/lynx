@@ -107,7 +107,7 @@ type Lifecycle interface {
 }
 ```
 
-Services are registered via `app.Register(...)` and automatically managed through their lifecycle. Services implementing `lynx.Checker` (`CheckHealth() error`, defined locally in health.go — no gocloud.dev dependency) are automatically added to health checks; `app.HealthCheckers()` returns the snapshot slice. `Stop` errors are collected (bounded by `Options.StopTimeout`) and surfaced by `Run()` together with OnPreStop hook errors.
+Services are registered via `app.Register(...)` and automatically managed through their lifecycle. Services implementing `lynx.Checker` (`CheckHealth() error`, defined locally in health.go — no gocloud.dev dependency) are automatically added to health checks; `app.HealthCheckers()` returns the snapshot slice. `Stop` errors are collected (bounded by `Options.StopTimeout`) and surfaced by `Run()` together with OnPreStop hook errors. `Start` must block until ctx cancellation or return an error (any return triggers app shutdown); a Start whose startup work is non-blocking must end with `lynx.WaitForShutdown(ctx)`.
 
 Optional `lynx.Ready` (`Ready() <-chan struct{}`): close the channel after the service has entered the running state (HTTP/gRPC/debug: after `Listen`, before `Serve`). Listen/Start failure must not close it. All readiness probes are bounded (ready.go is the single owner): a Ready channel that never closes is a timeout, not a hang.
 
@@ -272,6 +272,7 @@ The `lynx.NewRunner()` function creates a `*Runner` instance with two run method
 1. Implement the Service interface
 2. Optionally implement lynx.Checker and/or lynx.Ready (Listen-based servers should close Ready after bind)
 3. Register via `app.Register(myService)`, or sequence dependents with `app.Register(lynx.OrderedServices("name", a, b))`
+4. Non-blocking Start (background goroutine / registration only) must end with `lynx.WaitForShutdown(ctx)` — returning from Start triggers app shutdown
 
 **Adding a Hook**
 ```go

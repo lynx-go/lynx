@@ -96,7 +96,7 @@ func (s *auditService) Init(ctx lynx.AppContext) error {
 			return nil
 		}, eventbus.WithHandlerName("audit-handler"))
 }
-func (s *auditService) Start(ctx context.Context) error { <-ctx.Done(); return nil }
+func (s *auditService) Start(ctx context.Context) error { return lynx.WaitForShutdown(ctx) }
 func (s *auditService) Stop(context.Context) error      { return nil }
 
 func main() {

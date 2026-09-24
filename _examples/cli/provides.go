@@ -81,10 +81,7 @@ func (s *Store) Init(ctx lynx.AppContext) error {
 }
 
 // Start 保持服务 actor 形态：随框架生命周期运行，直到关停。
-func (s *Store) Start(ctx context.Context) error {
-	<-ctx.Done()
-	return nil
-}
+func (s *Store) Start(ctx context.Context) error { return lynx.WaitForShutdown(ctx) }
 
 // Stop 落盘：命令完成 → 框架优雅关停 → 此处把内存态写回文件。
 func (s *Store) Stop(_ context.Context) error {

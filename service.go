@@ -42,6 +42,23 @@ type Service interface {
 	Lifecycle
 }
 
+// WaitForShutdown 阻塞至 ctx 取消后返回 nil，作为 Service.Start 的阻塞收尾：
+// 当 Start 的实际工作直接返回（只拉起后台 goroutine、注册回调、启动定时器
+// 等）时，直接返回会触发应用立即关停；在启动动作完成后调用本方法保持服务
+// actor 存活，直至框架关停取消服务 ctx：
+//
+//	func (s *myService) Start(ctx context.Context) error {
+//		go s.loop(ctx)
+//		return lynx.WaitForShutdown(ctx)
+//	}
+//
+// 阻塞式服务（http.Server.Serve、自身的消费循环等）直接调用即可，不需要
+// 本方法；本方法只等待关停，不做任何清理——资源释放放在 Stop。
+func WaitForShutdown(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
 // Ready 是可选接口：服务在进入可工作状态时关闭返回的 channel
 // （例如 Listen 成功之后、Serve 之前）。
 // OrderedServices 与 command 服务的依赖等待在检测到该接口时优先采用：

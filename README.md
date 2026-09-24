@@ -230,6 +230,8 @@ type Service interface {
 
 `Init` 接收 `AppContext`（`Context` / `Config` / `Logger` / `HealthCheckers` / `Bus` / `Close`），不依赖完整 `App`。`Stop` 与钩子错误由 `Run()` 聚合上抛。
 
+`Start` 通常阻塞至关停（如 `Serve`）；若只有非阻塞启动动作（拉起后台 goroutine、注册回调），用 `lynx.WaitForShutdown(ctx)` 收尾——`Start` 返回会立即触发整个应用关停。
+
 注册须在 `Run()` 与 `Close()` 之前；`Run()` 开始后或 `Close()` 之后
 `Register` / `RegisterFactory` 会 panic、`Command` 返回错误。
 
