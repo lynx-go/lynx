@@ -19,6 +19,7 @@ import (
 
 	"github.com/lynx-go/lynx"
 	wmkafka "github.com/lynx-go/lynx/contrib/watermill-kafka"
+	"github.com/lynx-go/lynx/contrib/zap"
 	"github.com/lynx-go/lynx/eventbus"
 )
 
@@ -81,6 +82,7 @@ func (s *auditService) Stop(context.Context) error      { return nil }
 
 func main() {
 	lynx.NewRunner(func(app lynx.App) error {
+		app.SetLogger(zap.MustNewLogger(app))
 		app.Register(
 			&orderService{},
 			&auditService{},
