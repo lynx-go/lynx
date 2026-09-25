@@ -168,8 +168,10 @@ G3 提前，且先启动其"开源准备"子列。
 - [x] Go runtime metrics 开箱接入：otel `instrument/runtime` 接进
       `contrib/telemetry`（goroutine/GC/内存），含容器 CPU 配额感知
       （automaxprocs 类，K8s 配额下修正 GOMAXPROCS）
-- [ ] `/metrics` 一等挂载选项（当前需自行手挂 promhttp，
-      `contrib/telemetry` 注释亦如此指引，`_examples/http` 为手挂示例）
+- [x] `/metrics` 一等挂载选项：`server/http.WithEndpoint(path, handler)` 运维端点
+      独立挂载（不经过业务中间件 / request log / otel，避免自引用指标；非法
+      配置 Start 期报错）+ `contrib/telemetry.PrometheusHandler()` 一行暴露
+      （核心零新依赖）；`_examples/http` 已切换
 - [x] 总线消息 trace 上下文传播：发布侧 `BuildRawEvent` 注入 W3C
       `traceparent`（仅 active span 时），消费侧 `InvokeHandler` 提取并开
       `consume <topic>` span（含终态错误标记）；未接入 OTel 时零行为变化，

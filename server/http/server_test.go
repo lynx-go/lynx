@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1023,6 +1024,73 @@ func TestDisableHealthCheck(t *testing.T) {
 	}
 	if body != "user" {
 		t.Errorf("body = %q, want 业务 handler 响应（\"user\"）", body)
+	}
+}
+
+// TestWithEndpoint：运维端点独立挂载——正常响应、不经过业务中间件链；
+// 业务路径不受影响，仍走中间件。
+func TestWithEndpoint(t *testing.T) {
+	var middlewareCalls atomic.Int32
+	addr, stop := startHTTPServerForTest(t,
+		WithEndpoint("/metrics", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("metrics-body"))
+		})),
+		WithMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				middlewareCalls.Add(1)
+				next.ServeHTTP(w, r)
+			})
+		}),
+	)
+	defer stop()
+
+	status, body, err := healthzGet(t, "http://"+addr+"/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	if status != http.StatusOK || body != "metrics-body" {
+		t.Fatalf("GET /metrics = (%d, %q), want (200, metrics-body)", status, body)
+	}
+	if got := middlewareCalls.Load(); got != 0 {
+		t.Fatalf("business middleware ran %d times for ops endpoint, want 0", got)
+	}
+
+	// 业务路径不受影响：仍经中间件链（helper 的业务 handler 响应 "user"）。
+	_, body, err = healthzGet(t, "http://"+addr+"/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	if body != "user" || middlewareCalls.Load() != 1 {
+		t.Fatalf("GET / = (%q, middleware=%d), want (user, 1)", body, middlewareCalls.Load())
+	}
+}
+
+// TestWithEndpointValidation：非法端点配置在 Start 期报错（nil handler /
+// 路径非法 / 重复 / 与健康端点冲突），不 panic。
+func TestWithEndpointValidation(t *testing.T) {
+	ok := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	cases := []struct {
+		name string
+		opts []Option
+	}{
+		{"nil handler", []Option{WithEndpoint("/metrics", nil)}},
+		{"missing leading slash", []Option{WithEndpoint("metrics", ok)}},
+		{"root path", []Option{WithEndpoint("/", ok)}},
+		{"empty path", []Option{WithEndpoint("", ok)}},
+		{"duplicate endpoint", []Option{WithEndpoint("/metrics", ok), WithEndpoint("/metrics", ok)}},
+		{"conflicts health endpoint", []Option{WithEndpoint("/healthz/liveness", ok)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append([]Option{WithAddr("127.0.0.1:0")}, tc.opts...)
+			srv := NewServer(ok, opts...)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := srv.Start(ctx); err == nil {
+				_ = srv.Stop(context.Background())
+				t.Fatal("expected Start error for invalid endpoint config")
+			}
+		})
 	}
 }
 

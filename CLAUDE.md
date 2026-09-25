@@ -205,6 +205,7 @@ This pattern is particularly useful for complex applications with many services.
 - Automatically registers health check endpoints at `/healthz/liveness` and `/healthz/readiness` (prefix/disabled via `WithHealthCheckPrefix`/`WithDisableHealthCheck`; checkers run concurrently with a per-check timeout, default 3s, `WithHealthCheckTimeout`)
 - `Serve` returning `http.ErrServerClosed` on normal shutdown is normalized to nil (no spurious `lynx.service.failed` events); 5xx error bodies are generic (`http.StatusText`), details go to logs only
 - Request-id/user_id propagation is installed by default (opt out with `WithDisableRequestID`): incoming `x-request-id`/`x-user-id` are validated and restored into ctx log attrs; the response echoes `x-request-id`
+- Ops endpoints via `WithEndpoint(path, handler)` (e.g. `/metrics` → `telemetry.PrometheusHandler()`) are mounted outside the business chain (no middleware/request log/otel instrumentation — same trade-off as health endpoints, avoids self-referential metrics); invalid config (nil handler, bad path, duplicate/overlapping pattern) fails `Start` instead of panicking
 
 **gRPC Server** (server/grpc/server.go)
 - Wraps `google.golang.org/grpc` with health check and reflection

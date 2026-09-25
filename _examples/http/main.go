@@ -11,7 +11,6 @@ import (
 	"github.com/lynx-go/lynx/contrib/telemetry"
 	"github.com/lynx-go/lynx/contrib/zap"
 	"github.com/lynx-go/lynx/server/http"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/pflag"
 )
 
@@ -65,17 +64,14 @@ func main() {
 
 		addr := app.Config().GetString("addr")
 
-		// Note: /metrics is served on the main router for demo simplicity, so
-		// every Prometheus scrape also flows through the otel instrumentation
-		// and latencyMiddleware. In production, consider serving it on a
-		// separate mux or listener to avoid self-referential spans/metrics.
-		router.Handle("/metrics", promhttp.Handler())
-
 		app.Register(http.NewServer(router,
 			http.WithAddr(addr),
 			http.WithHealthCheckers(app.HealthCheckers),
 			http.WithLogger(app.Logger("logger", "http-requestlog")),
 			http.WithMiddleware(latencyMiddleware),
+			// 运维端点独立挂载：抓取流量不经过业务中间件与 otel
+			// instrumentation，不产生自引用指标（见 server/http WithEndpoint）。
+			http.WithEndpoint("/metrics", telemetry.PrometheusHandler()),
 		))
 
 		app.OnPreStart(func(ctx context.Context) error {

@@ -133,6 +133,19 @@ handler goroutine 仍会运行到自行返回（可能与被重投的尝试重�
 只记 Warn 并继续；采集连接按（brokers × 认证）共享、随 Transport 停止关闭。
 见 [contrib/watermill-kafka/README.md](contrib/watermill-kafka/README.md)。
 
+### 新增：`/metrics` 一等挂载（WithEndpoint + telemetry.PrometheusHandler）
+
+`server/http` 新增 `WithEndpoint(path, handler)`：运维端点独立挂载，不经过
+业务中间件、request log 与 otel instrumentation（与内置健康端点同一取舍，
+抓取/探针流量不产生自引用指标与日志噪声）；路径非法、nil handler、与健康
+端点或彼此冲突（重复 / 模式重叠）在 `Start` 期报错而非 panic。
+
+`contrib/telemetry` 新增 `PrometheusHandler()`（默认注册表 `promhttp.Handler()`），
+与默认 Prometheus reader 配套——一行挂载：
+`http.WithEndpoint("/metrics", telemetry.PrometheusHandler())`。核心模块不引入
+prometheus 依赖（handler 归属 telemetry contrib）。示例 `_examples/http` 已改为
+该挂载方式；见 [docs/05-servers.md](docs/05-servers.md) §5.4.4。
+
 ### 测试：Kafka testcontainers 集成测试（WK-19）
 
 `contrib/watermill-kafka` 新增 `//go:build integration` 冒烟：testcontainers

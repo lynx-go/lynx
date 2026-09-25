@@ -25,11 +25,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"sync/atomic"
 
 	"github.com/lynx-go/lynx"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -117,6 +119,20 @@ func WithoutRuntimeMetrics() Option {
 	return func(o *options) {
 		o.runtimeMetrics = false
 	}
+}
+
+// PrometheusHandler 返回 Prometheus 采集端点（promhttp，默认注册表），供
+// server/http 的运维端点一行挂载：
+//
+//	server := http.NewServer(router,
+//		http.WithEndpoint("/metrics", telemetry.PrometheusHandler()))
+//
+// 与默认 Prometheus metric reader（otel 导出器，写入默认注册表）配套；
+// WithEndpoint 的挂载语义保证抓取流量不经过业务中间件与 otel
+// instrumentation（不产生自引用指标/日志）。自定义注册表（WithMetricReader
+// + prometheus.WithRegisterer）场景请自行使用 promhttp.HandlerFor。
+func PrometheusHandler() http.Handler {
+	return promhttp.Handler()
 }
 
 // New 创建托管 OTel 生命周期的服务：Init 创建 provider 并设置为 otel

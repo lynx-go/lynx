@@ -34,6 +34,7 @@ func NewServer(handler http.Handler, opts ...Option) *Server
 - `WithHealthCheckTimeout(timeout time.Duration)`：单个健康检查器的执行上限，默认 3 秒；超时按不健康处理（防止阻塞型 checker 挂起探测请求）。传 0 表示不限时（退回顺序执行，慎用）。注意：**永不返回**的 checker（死锁类）其 goroutine 无法回收，会随每次探测累积泄漏，只能修复 checker 本身。
 - `WithHealthCheckPrefix(prefix string)`：健康端点路径前缀，默认 `/healthz`（端点为 `<prefix>/liveness` 与 `<prefix>/readiness`）。
 - `WithDisableHealthCheck()`：不注册健康端点（路径让给业务路由）。
+- `WithEndpoint(path string, handler http.Handler)`：挂载运维端点（如 `/metrics` → `telemetry.PrometheusHandler()`，见 5.4.4 节）。端点直接挂在路径上，**不经过业务中间件、request log 与 otel instrumentation**——与健康端点同一取舍：抓取/探针流量不产生自引用指标与日志噪声。路径须以 `/` 开头且不为 `/`；配置非法（nil handler / 路径非法）或与健康端点/彼此冲突（重复、模式重叠）时 `Start` 返回错误，不 panic。
 - `WithLogger(l *slog.Logger)`：请求日志使用的日志器，默认 `slog.Default()`。
 - `WithRequestLog(requestLog bool)`：是否记录访问日志，默认 `false`。开启后每个请求以 Stackdriver 兼容的 JSON 格式输出一条 `Debug` 级别日志（`server/http/requestlog.go`），字段包含方法、URL、状态码、耗时、remote IP 以及 `trace`/`spanId`——注意需要日志器级别为 debug 才能看到。
 - `WithMiddleware(middlewares ...Middleware)`：注册自定义中间件，可多次调用叠加。链序见 5.4.5 节。
@@ -477,17 +478,18 @@ telemetry.New(
 
 ### 5.4.4 Prometheus 指标与 /metrics
 
-metrics 一侧的关键点：`go.opentelemetry.io/otel/exporters/prometheus` 的 exporter 本身就是一个 Prometheus registry，把它作为 `Reader` 装进 `MeterProvider`（5.4.1 托管路径的默认 reader 就是它；手动路径见 5.4.2 节模板），再把标准库 `promhttp.Handler()` 挂到路由上即可暴露指标（取自 `_examples/http/main.go`）：
+metrics 一侧的关键点：`go.opentelemetry.io/otel/exporters/prometheus` 的 exporter 本身就是一个 Prometheus registry，把它作为 `Reader` 装进 `MeterProvider`（5.4.1 托管路径的默认 reader 就是它；手动路径见 5.4.2 节模板），再用 `server/http.WithEndpoint` 一行挂载采集端点（取自 `_examples/http/main.go`）：
 
 ```go
-// Note: /metrics is served on the main router for demo simplicity, so
-// every Prometheus scrape also flows through the otel instrumentation
-// and latencyMiddleware. In production, consider serving it on a
-// separate mux or listener to avoid self-referential spans/metrics.
-router.Handle("/metrics", promhttp.Handler())
+app.Register(http.NewServer(router,
+	// 其他业务选项……
+	// 运维端点独立挂载：抓取流量不经过业务中间件与 otel instrumentation，
+	// 不产生自引用指标（与健康端点同一取舍）。
+	http.WithEndpoint("/metrics", telemetry.PrometheusHandler()),
+))
 ```
 
-注意示例中的提醒：挂在主路由上意味着每次 Prometheus 抓取自己也会产生 span 和指标，生产环境建议把 `/metrics` 放到独立的 mux 或独立的监听端口上。
+`telemetry.PrometheusHandler()` 返回默认注册表的 `promhttp.Handler()`，与默认 Prometheus reader 配套（自定义注册表场景自行用 `promhttp.HandlerFor` + `WithEndpoint`）。需要独立监听端口隔离抓取流量时，仍可另起一个服务自行挂 `promhttp.Handler()`。
 
 **业务自定义指标**：托管路径下 provider 已是全局值，业务代码直接用 `otel.Meter` 创建 instrument 即可，采集与导出自动打通（取自 `_examples/http/metrics.go`）：
 

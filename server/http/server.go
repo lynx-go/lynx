@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -83,6 +84,16 @@ type Options struct {
 	// ServerOptions 透传配置底层 *http.Server（如 MaxHeaderBytes、
 	// BaseContext），在内部超时配置之后应用。
 	ServerOptions func(*http.Server)
+	// Endpoints 是运维端点（WithEndpoint）：挂载在业务 handler 之外，不经过
+	// 业务中间件 / request log / otel instrumentation。
+	Endpoints []Endpoint
+}
+
+// Endpoint 是一个运维端点：路径 + 处理器（如 /metrics → promhttp、
+// /debug/pprof/... → pprof.Handler）。
+type Endpoint struct {
+	Path    string
+	Handler http.Handler
 }
 
 // Option 用于配置 HTTP 服务 Options 的选项函数。
@@ -156,6 +167,17 @@ func WithHealthCheckTimeout(timeout time.Duration) Option {
 func WithHealthCheckPrefix(prefix string) Option {
 	return func(o *Options) {
 		o.HealthCheckPrefix = prefix
+	}
+}
+
+// WithEndpoint 挂载一个运维端点（如 WithEndpoint("/metrics", telemetry.PrometheusHandler())）：
+// 处理器直接挂在该路径上，不经过业务中间件、request log 与 otel
+// instrumentation——与内置健康端点同一取舍：指标抓取/探针流量不产生
+// 自引用指标与日志噪声。路径须以 "/" 开头且不为 "/"；与业务 handler、
+// 健康端点或彼此冲突（重复/模式重叠）时 Start 返回错误，不 panic。
+func WithEndpoint(path string, handler http.Handler) Option {
+	return func(o *Options) {
+		o.Endpoints = append(o.Endpoints, Endpoint{Path: path, Handler: handler})
 	}
 }
 
@@ -358,9 +380,16 @@ func (s *Server) Start(ctx context.Context) error {
 		return errors.New("http server: Start called more than once")
 	}
 
+	handler, err := s.buildHandler(ctx)
+	if err != nil {
+		// 端点配置非法（nil handler / 路径非法 / 模式冲突）：不算已启动，
+		// 允许修正后重试（与 Listen 失败同一处理）。
+		s.started.Store(false)
+		return err
+	}
 	srv := &http.Server{
 		Addr:              s.o.Addr,
-		Handler:           s.buildHandler(ctx),
+		Handler:           handler,
 		ReadHeaderTimeout: s.o.Timeout,
 		ReadTimeout:       s.o.Timeout,
 		WriteTimeout:      s.o.Timeout,
@@ -417,12 +446,25 @@ func (s *Server) Start(ctx context.Context) error {
 	return serveErr
 }
 
-// buildHandler 组装完整请求处理链：健康端点独立挂载（不经过
-// otel/requestlog），业务 handler 按 request log → 中间件 → otel 顺序包装。
-func (s *Server) buildHandler(ctx context.Context) http.Handler {
+// buildHandler 组装完整请求处理链：健康端点与运维端点（WithEndpoint）独立
+// 挂载（不经过 otel/requestlog/业务中间件），业务 handler 按 request log →
+// 中间件 → otel 顺序包装。端点配置非法（nil handler / 路径非法 / 模式冲突）
+// 返回错误，由 Start 上抛。
+func (s *Server) buildHandler(ctx context.Context) (http.Handler, error) {
 	mux := http.NewServeMux()
 	if !s.o.DisableHealthCheck {
 		s.mountHealthEndpoints(mux)
+	}
+	for _, ep := range s.o.Endpoints {
+		if ep.Handler == nil {
+			return nil, fmt.Errorf("http server: endpoint %q has nil handler", ep.Path)
+		}
+		if !strings.HasPrefix(ep.Path, "/") || ep.Path == "/" {
+			return nil, fmt.Errorf("http server: endpoint path %q must start with \"/\" and must not be \"/\"", ep.Path)
+		}
+		if err := mountEndpoint(mux, ep); err != nil {
+			return nil, err
+		}
 	}
 
 	user := chain(s.handler, s.o.Middlewares)
@@ -455,7 +497,19 @@ func (s *Server) buildHandler(ctx context.Context) http.Handler {
 	}
 	user = otelhttp.NewHandler(user, "", otelOpts...)
 	mux.Handle("/", user)
-	return mux
+	return mux, nil
+}
+
+// mountEndpoint 注册运维端点，把 ServeMux 的模式冲突 panic 翻译为错误
+// （重复路径、与健康端点或彼此模式重叠等）。
+func mountEndpoint(mux *http.ServeMux, ep Endpoint) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("http server: mount endpoint %q: %v", ep.Path, r)
+		}
+	}()
+	mux.Handle(ep.Path, ep.Handler)
+	return nil
 }
 
 // mountHealthEndpoints 挂载内置健康检查端点（<prefix>/liveness 与
