@@ -174,8 +174,10 @@ G3 提前，且先启动其"开源准备"子列。
       `traceparent`（仅 active span 时），消费侧 `InvokeHandler` 提取并开
       `consume <topic>` span（含终态错误标记）；未接入 OTel 时零行为变化，
       `contrib/telemetry` 托管后自动生效（见 design-eventbus §5.7）
-- [ ] telemetry 配置驱动与 OTLP：OTLP exporter/采样一等选项、
-      `NewFromConfig` 装配（对齐 bus:/kafka:/registry: 惯例）
+- [x] telemetry 配置驱动与 OTLP：`NewFromConfig` 按 `telemetry:` 段装配
+      （trace：noop|stdout|otlp + sampling_ratio；metric：prometheus|otlp +
+      interval）；OTLP/gRPC exporter 一等选项（endpoint/insecure/headers/
+      timeout/compression）与 `WithTraceSampler`（v1.45.0，对齐根模块 otel）
 - [ ] Kafka consumer lag 指标导出（watermill-kafka 接入生产后的
       第一监控诉求）
 

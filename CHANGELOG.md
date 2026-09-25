@@ -111,6 +111,19 @@ handler goroutine 仍会运行到自行返回（可能与被重投的尝试重�
   带入的 traceparent 在无 active span 时保持原值（桥接场景）。详见
   [docs/design-eventbus.md](docs/design-eventbus.md) §5.7。
 
+### 新增：telemetry 配置驱动与 OTLP 一等选项
+
+`contrib/telemetry` 新增 `NewFromConfig(cfg, opts...)`：按 `telemetry:` 段装配
+（段缺失 / 空段 = 全默认），非法配置在装配期报错、调用方 `opts` 最后覆盖。
+
+- **trace**：`exporter: noop|stdout|otlp`（OTLP/gRPC）、`sampling_ratio`
+  （ParentBased TraceIDRatioBased；省略 = SDK 默认）、`otlp.*`
+  （endpoint / insecure / headers / timeout / compression）。
+- **metric**：`exporter: prometheus|otlp`、`interval`、`otlp.*`。
+- 新增编程式选项 `WithTraceSampler`；依赖 `otlptracegrpc` /
+  `otlpmetricgrpc` v1.45.0（与根模块 otel 版本对齐）。
+- 配置见 [contrib/telemetry/README.md](contrib/telemetry/README.md)。
+
 ### 测试：Kafka testcontainers 集成测试（WK-19）
 
 `contrib/watermill-kafka` 新增 `//go:build integration` 冒烟：testcontainers

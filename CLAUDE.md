@@ -64,7 +64,7 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./contrib/zap` - Zap logger integration
 - `./contrib/watermill` - Watermill-driven `eventbus.Bus`（`NewFromConfig` 读 `bus:` 段）
 - `./contrib/watermill-kafka` - Kafka Transport service (watermill-kafka/v3)，package `kafka`，实现 `eventbus.Transport`；`NewFromConfig` 建 Transport，`NewBusFromConfig` 是 kafka 版总线装配入口（签名直接匹配 `WithBusProvider`）
-- `./contrib/telemetry` - OpenTelemetry lifecycle management (trace/metrics providers)
+- `./contrib/telemetry` - OpenTelemetry lifecycle management (trace/metrics providers)；OTLP exporter / 采样一等选项 + `NewFromConfig`（`telemetry:` 段，对齐 bus:/kafka:/registry: 惯例）
 - `./contrib/schedule` - Cron scheduler；`Exclusive` 任务经 `cluster.TryOnce` 按格子互斥
 - `./contrib/cluster` - 进程间协调：`Coordinator`（Claim/Acquire）、`TryOnce`、`Campaign`、`Singleton`；续约等待与内存协调器 TTL 判定经 `lynx.Clock`（`cluster.WithClock` 注入，测试用 `internal/clock.Fake` 确定性推进，不再 sleep）
 - `./contrib/cluster-redis` - Redis 实现 `cluster.Coordinator`（仅协调，不是业务 Redis 客户端）

@@ -371,7 +371,32 @@ telemetry.New(
 - `WithTraceExporter(exporter sdktrace.SpanExporter)`：自定义 trace exporter；
 - `WithStdoutTrace()`：开发调试——无自定义 exporter 时使用 stdout pretty print；
 - `WithMetricReader(reader sdkmetric.Reader)`：自定义 metric reader（OTLP 等后端 exporter 均实现 `Reader` 接口）；
-- `WithPropagator(p propagation.TextMapPropagator)`：自定义传播器。
+- `WithPropagator(p propagation.TextMapPropagator)`：自定义传播器；
+- `WithTraceSampler(s sdktrace.Sampler)`：自定义采样器（默认 SDK ParentBased AlwaysSample）。
+
+生产环境推荐**配置驱动装配**（无需手工构建 exporter，OTLP/gRPC 已内置）：
+
+```yaml
+telemetry:
+  trace:
+    exporter: otlp
+    sampling_ratio: 0.1
+    otlp: {endpoint: collector:4317, insecure: true}
+  metric:
+    exporter: otlp
+    interval: 30s
+    otlp: {endpoint: collector:4317, insecure: true}
+```
+
+```go
+svc, err := telemetry.NewFromConfig(app.Config())
+if err != nil {
+    return err
+}
+app.Register(svc)
+```
+
+`telemetry:` 段缺失 = 全默认；非法配置（未知 exporter、采样比例越界、压缩不识别）在装配期报错。完整 schema 见 [contrib/telemetry README](../contrib/telemetry/README.md)。
 
 需要完全掌控 provider（共享实例、精细调参、自定义关闭时机）时，可不使用该服务，走手动路径，见 5.4.2 节。
 
@@ -419,7 +444,10 @@ func setupOTel() (shutdown func(context.Context) error, tp *sdktrace.TracerProvi
 
 ### 5.4.3 生产环境：OTLP Exporter
 
-生产环境通常把 span 推给 OTLP collector（Jaeger、Tempo、厂商 APM 等）。框架内置的默认 exporter 不含 OTLP，需要额外引入：
+生产环境通常把 span 推给 OTLP collector（Jaeger、Tempo、厂商 APM 等）。使用
+5.4.1 的托管服务时，**推荐配置驱动**（OTLP/gRPC exporter 已内置，见 5.4.1 节
+的 `telemetry.trace.exporter: otlp`）。手工路径（自定义 HTTP 协议、重试、
+TLS 等）需要额外引入 exporter：
 
 ```bash
 go get go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc

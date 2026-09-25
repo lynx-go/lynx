@@ -43,8 +43,10 @@ import (
 // Options 是 telemetry 服务的配置项。
 type options struct {
 	traceExporter sdktrace.SpanExporter
-	metricReader  sdkmetric.Reader
-	propagator    propagation.TextMapPropagator
+	// traceSampler 是显式采样器；nil = SDK 默认（ParentBased AlwaysSample）。
+	traceSampler sdktrace.Sampler
+	metricReader sdkmetric.Reader
+	propagator   propagation.TextMapPropagator
 	// res 是附加到 trace/metrics 数据的 OTel Resource（如 service.name）；
 	// nil 时使用 SDK 默认资源（Init 时可能自动补 service.name）。
 	res *resource.Resource
@@ -77,6 +79,18 @@ func WithStdoutTrace() Option {
 func WithMetricReader(reader sdkmetric.Reader) Option {
 	return func(o *options) {
 		o.metricReader = reader
+	}
+}
+
+// WithTraceSampler 设置 trace 采样器；未设置时使用 SDK 默认
+// （ParentBased AlwaysSample）。比例采样可用
+// sdktrace.ParentBased(sdktrace.TraceIDRatioBased(r))，或经 NewFromConfig 的
+// telemetry.trace.sampling_ratio 配置。
+func WithTraceSampler(s sdktrace.Sampler) Option {
+	return func(o *options) {
+		if s != nil {
+			o.traceSampler = s
+		}
 	}
 }
 
@@ -223,6 +237,9 @@ func newProviders(o *options) (tp *sdktrace.TracerProvider, mp *sdkmetric.MeterP
 		traceOpts = append(traceOpts, sdktrace.WithBatcher(exporter))
 	}
 	// 无 exporter：noop（span 直接丢弃），生产忘配 exporter 不污染 stdout。
+	if o.traceSampler != nil {
+		traceOpts = append(traceOpts, sdktrace.WithSampler(o.traceSampler))
+	}
 	if o.res != nil {
 		traceOpts = append(traceOpts, sdktrace.WithResource(o.res))
 	}

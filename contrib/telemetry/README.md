@@ -23,6 +23,7 @@ import "github.com/lynx-go/lynx/contrib/telemetry"
 | `WithTraceExporter(exporter sdktrace.SpanExporter)` | 自定义 trace exporter，默认 noop |
 | `WithStdoutTrace()` | stdout pretty print 输出 span，供开发调试；仅在未设置 `WithTraceExporter` 时生效 |
 | `WithMetricReader(reader sdkmetric.Reader)` | 自定义 metric reader（如 OTLP exporter），默认 Prometheus |
+| `WithTraceSampler(s sdktrace.Sampler)` | trace 采样器，默认 SDK（ParentBased AlwaysSample）；比例采样见 `telemetry.trace.sampling_ratio` |
 | `WithPropagator(p propagation.TextMapPropagator)` | 自定义 propagator，默认 TraceContext + Baggage 组合 |
 | `WithResource(r *resource.Resource)` | OTel Resource（如 service.name），nil 时 SDK 默认并自动附加应用名 |
 | `WithoutRuntimeMetrics()` | 关闭 Go runtime 指标注册（goroutine/GC/内存，缺省开启） |
@@ -55,14 +56,47 @@ func main() {
 }
 ```
 
-生产环境接 OTLP collector（完整 exporter 构建见 `docs/05-servers.md` 5.4.3 节）：
+生产环境接 OTLP collector 的推荐路径是配置驱动（见下节）；编程式装配等价：
 
 ```go
 app.Register(telemetry.New(
 	telemetry.WithTraceExporter(otlpTraceExporter), // 替换默认 noop
 	telemetry.WithMetricReader(otlpMetricReader),   // 替换默认 Prometheus
-	telemetry.WithStdoutTrace(),                    // 本地调试：span 打到 stdout
+	telemetry.WithTraceSampler(sampler),            // 可选：采样
 ))
+```
+
+（自定义 exporter 构建见 `docs/05-servers.md` 5.4.3 节。）
+
+## 配置驱动（NewFromConfig）
+
+`NewFromConfig(cfg, opts...)` 按 `telemetry:` 段装配：段缺失 / 空段 = 全默认
+（noop trace + Prometheus metrics + runtime metrics），非法配置在装配期报错；
+调用方 `opts` 最后应用（覆盖配置值）。
+
+```yaml
+telemetry:
+  trace:
+    exporter: otlp              # noop（默认）| stdout（调试）| otlp（gRPC）
+    sampling_ratio: 0.1         # 省略 = SDK 默认（ParentBased AlwaysSample）；0 = 不采样
+    otlp:
+      endpoint: collector:4317  # 空 = SDK 默认 localhost:4317
+      insecure: true            # 明文连接；默认 TLS
+      headers: {authorization: "Bearer <token>"}
+      timeout: 10s              # 单次导出上限；空 = SDK 默认 10s
+      compression: gzip         # none（默认）| gzip
+  metric:
+    exporter: otlp              # prometheus（默认，自行挂 /metrics）| otlp
+    interval: 30s               # otlp 推送间隔；空 = SDK 默认 60s
+    otlp: {endpoint: collector:4317, insecure: true}
+```
+
+```go
+svc, err := telemetry.NewFromConfig(app.Config())
+if err != nil {
+	return err
+}
+app.Register(svc)
 ```
 
 ## 与 lynx 核心的集成
