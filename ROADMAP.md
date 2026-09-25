@@ -293,8 +293,10 @@ Unreleased，设计与理由见 `docs/design-eventbus-consumption.md`）：
 - [x] handler 超时（`bus.handler_timeout` / `bus.topics.<t>.handler_timeout`）：
       单次尝试超时 → 终态失败 → 重试 / 重投 / 毒消息止损，防挂死 handler
       永久占槽（实现归 `eventbus.InvokeHandler`：截止 ctx + 看门狗）
-- [ ] Kafka 提交乱序窗口：文档明示已完成（design R8）；按分区最低未确认
-      offset 提交待评估（需 transport 感知 partition）
+- [x] Kafka 提交乱序窗口：**核实为非问题并撤销论断**——watermill-kafka
+      每分区同步确认（`ConsumeClaim` 等 Ack 才取下一条），同分区确认 /
+      提交天然有序；集成测试 `TestIntegrationPerPartitionOrder` 钉住
+      （原「按分区最低未确认 offset 提交」修复项撤销，不引入有序提交器）
 - [x] Kafka testcontainers 集成测试（承接 G4 WK-19，已落地
       `contrib/watermill-kafka/integration_test.go`）：真 broker 钉住订阅
       复用与配置驱动组 / 成员数（`go test -tags integration ./...`）

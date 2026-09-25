@@ -81,7 +81,7 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
 4. **不参与裁决**：`AutoAck`（结果不影响 Ack；不再"先 Ack 后执行"，见 Q3）与 `ContinueOnError`（自身吞错）的 handler。
 5. **panic**：dispatcher 为每个 handler goroutine 恢复 panic，按该 handler 终态失败处理（对齐现状 watermill Recoverer → error → Nack；注意 router 的 Recoverer 不再覆盖 dispatcher 内部的 goroutine）。
 6. **并发/顺序**：消息内 handler 并行；消息间受**订阅级在途上限**约束（`max_in_flight`，默认 1，见下条）。
-7. **在途上限（goroutine 防爆）**：适配器在把消息交给 router **之前**占用槽位、Ack/Nack/订阅关停时释放——在途消息 ≤ N，goroutine 上界 ≈ N×(H+2)。N=1（默认）时同订阅串行处理、恢复投递顺序；N<0 不限制（逃生口，不推荐）。限流点必须在适配器：只限 dispatcher 执行挡不住 router 的每消息 goroutine 堆积（阻塞的 goroutine 仍持有消息）。
+7. **在途上限（goroutine 防爆）**：适配器在把消息交给 router **之前**占用槽位、Ack/Nack/订阅关停时释放——在途消息 ≤ N，goroutine 上界 ≈ N×(H+2)。N=1（默认）时同订阅串行处理、恢复投递顺序；N<0 不限制（逃生口，不推荐）。限流点必须在适配器：只限 dispatcher 执行挡不住 router 的每消息 goroutine 堆积（阻塞的 goroutine 仍持有消息）。注：watermill-kafka 的每分区消费本身同步确认（`ConsumeClaim` 等 Ack 才取下一条），同分区在途恒为 1——`max_in_flight` 的并发只在跨分区 / 跨物理 topic 时生效。
 8. **handler 超时（可选，`handler_timeout`）**：单次尝试超过上限按终态失败处理（重试 → 重投 → 毒消息止损），防止挂死的 handler 永久占用在途槽位。实现为截止 ctx + 看门狗；Go 无法终止 goroutine——handler 必须尊重 ctx，否则超时只释放调用方，goroutine 运行到自行返回（可能与被重投的尝试重叠执行）。
 
 ---
@@ -124,7 +124,7 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
 | R5 | `instances` 与 `max_in_flight` 混淆（以为 `instances` 会并行处理） | 文档明确分工：`instances` = 后端成员数（抢分区 / 连接），`max_in_flight` = 进程内在途处理上限 |
 | R6 | 存量用户破坏性迁移 | §6 迁移对照 + CHANGELOG + 版本说明 |
 | R7 | 部署盲区：不同逻辑 topic 路由到同一物理 topic 且组相同 | 组现在只来自 kafka 条目 → 物理 topics 重叠时必须拆成不同条目；文档警示 |
-| R8 | **Kafka 提交乱序窗口**：watermill-kafka 在 Ack 时 `MarkMessage(offset+1)`（AutoCommit 周期提交或显式 `Commit`），提交高 offset 隐含提交更低 offset——`max_in_flight>1` 时高 offset 先确认、崩溃会跳过仍在处理的低 offset 消息（at-least-once 弱化）。默认 1（串行）严格按投递顺序确认，窗口关闭；旧模型无界并发下该窗口本来就存在 | 文档明示「要严格 at-least-once 保持 `max_in_flight=1`」；按分区最低未确认 offset 提交属后续项（需 transport 感知 partition） |
+| R8 | ~~Kafka 提交乱序窗口~~（**核实为非问题、论断撤销**）：watermill-kafka 的 `ConsumeClaim` 同步执行 `processMessage`，其重投循环等 `Acked()` 才取下一条——同一分区同时仅一条未确认消息，同分区内确认 / 提交天然严格有序，不存在「提交越过未确认低 offset」的窗口。`max_in_flight` 的并发只体现在跨分区 / 跨物理 topic（以及内存 Bus） | 集成测试 `TestIntegrationPerPartitionOrder`（单分区 + 阻塞一条：处理数不增长、已提交 offset 恰等于处理数）钉住；原「按分区最低未确认 offset 提交」修复项撤销 |
 
 ---
 
@@ -156,7 +156,7 @@ dispatcher(msg)   // 每条消息一个 goroutine（在途数受槽位约束）
   - 在途上限：`max_in_flight=2` 峰值恰为 2；默认 1 串行且保序；负数不限；Nack 释放槽位；
   - handler 超时：挂死 handler 超时 Nack 且槽位释放（后续消息仍被处理）；超时可重试；解析优先级（调用 > 主题 > 全局，负值禁用）；
   - panic 恢复为 Nack；动态挂载；handlerName 唯一；Stop 收口。
-- **watermill-kafka**：组必须来自配置（缺失报错）；`instances` 钳制；删除 `DeliveryMode` / `DefaultGroup` 测试；**testcontainers 集成测试**（`//go:build integration`）真 broker 验证单订阅扇出与配置驱动组。
+- **watermill-kafka**：组必须来自配置（缺失报错）；`instances` 钳制；删除 `DeliveryMode` / `DefaultGroup` 测试；**testcontainers 集成测试**（`//go:build integration`）真 broker 验证单订阅扇出、配置驱动组与每分区串行确认 / 提交顺序（`TestIntegrationPerPartitionOrder`）。
 - **示例**：`_examples/bus-kafka` 三路 fan-out（audit + 两 handler，无 group 参数）。
 - **回归**：`_examples/bus`、lifecycle、lynxtest 全绿。
 

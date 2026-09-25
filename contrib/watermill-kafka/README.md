@@ -144,7 +144,7 @@ func busFromConfig(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error) {
 
 - **nil = 未启用**：`kafka:` 段缺失或为空时 `NewFromConfig` 返回 `(nil, nil)`；nil Transport 不得 Register，也不得放进 `watermill.NewFromConfig` 的 transports。
 - **消费组语义**：同 `group_id` 多实例竞争消费（组内每条消息只投递给一个实例）；不同 `group_id` 各自收全量（跨服务 / 跨实例扇出）。同一进程内同一逻辑 topic 只建一条 transport 订阅（Bus 侧订阅复用），组冲突结构上不可能。已知边界：物理 topics 重叠的不同逻辑 topic 共享同一 kafka 条目的组时会互相瓜分——为它们拆成不同 kafka 条目。
-- **确认与提交顺序**：Ack 触发 `MarkMessage(offset+1)`（`auto_commit_enabled=false` 时立即 `Commit`），提交高 offset 隐含提交更低 offset。Bus 侧 `max_in_flight>1` 会乱序确认，崩溃可能跳过仍在处理的低 offset 消息——严格 at-least-once 请保持默认 `max_in_flight=1`（串行）。
+- **确认与提交顺序**：每分区消费是同步确认的——`ConsumeClaim` 同步执行 `processMessage`，其重投循环等 `Acked()` 才取下一条：同一分区同时仅一条未确认消息，Ack / 提交（`MarkMessage(offset+1)`，`auto_commit_enabled=false` 时立即 `Commit`）天然严格有序，不存在提交越过未确认低 offset 的窗口。Bus 侧 `max_in_flight` 的并发只在跨分区 / 跨物理 topic 时体现。
 - **毒消息止损**：handler 终态失败后 Nack 重投（默认约 100ms 一轮）；上限由 `bus.max_redeliveries`（默认 10）控制，超过后 Bus 记 Error 并 Ack 丢弃。详见 [watermill README](../watermill/README.md)。
 - **Ready 就绪信号**（`transport.go:290`）：`Ready()` 返回一次性 channel，`Start` 跨过启动门槛（置位运行标志）后关闭；未启动或 `Init` 失败不关闭。命令依赖等待经此事件驱动等待，无需轮询。
 - **健康检查**：`CheckHealth` 仅是进程内运行标志（`transport.go:323`），不做 broker 连通性检查——断连要等 Publish/Subscribe 报错才暴露。

@@ -102,7 +102,13 @@ handler goroutine 仍会运行到自行返回（可能与被重投的尝试重�
 transport 订阅、各自收到全部消息；消费组 / 成员数只来自模块配置；发布走
 类型化 Topic 的完整 wire 路径。Docker 或镜像不可用时自动跳过（`t.Skipf`）；
 运行：`go test -tags integration ./...`。测试依赖新增 testcontainers-go
-v0.44.0（仅测试路径）。
+v0.41.0（仅测试路径；该版本不抬高仓库现有 otelhttp 版本）。
+
+另以 `TestIntegrationPerPartitionOrder` 钉住每分区消费性质，并**撤销此前
+文档中的「Kafka 提交乱序窗口」论断**：watermill-kafka 的 `ConsumeClaim`
+同步执行 `processMessage`（等 `Acked()` 才取下一条），同一分区同时仅一条
+未确认消息——同分区内确认 / 提交天然严格有序；`max_in_flight` 的并发只体现
+在跨分区 / 跨物理 topic（以及内存 Bus）。
 
 ## v1.15.0 (2026-09-24)
 
