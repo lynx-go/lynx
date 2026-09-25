@@ -170,8 +170,10 @@ G3 提前，且先启动其"开源准备"子列。
       （automaxprocs 类，K8s 配额下修正 GOMAXPROCS）
 - [ ] `/metrics` 一等挂载选项（当前需自行手挂 promhttp，
       `contrib/telemetry` 注释亦如此指引，`_examples/http` 为手挂示例）
-- [ ] 总线消息 trace 上下文传播：消息头带 W3C traceparent，跨进程
-      Bus 追踪不断链（现仅传播 `request_id/user_id` 日志属性白名单）
+- [x] 总线消息 trace 上下文传播：发布侧 `BuildRawEvent` 注入 W3C
+      `traceparent`（仅 active span 时），消费侧 `InvokeHandler` 提取并开
+      `consume <topic>` span（含终态错误标记）；未接入 OTel 时零行为变化，
+      `contrib/telemetry` 托管后自动生效（见 design-eventbus §5.7）
 - [ ] telemetry 配置驱动与 OTLP：OTLP exporter/采样一等选项、
       `NewFromConfig` 装配（对齐 bus:/kafka:/registry: 惯例）
 - [ ] Kafka consumer lag 指标导出（watermill-kafka 接入生产后的

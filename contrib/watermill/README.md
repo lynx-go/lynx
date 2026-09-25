@@ -77,6 +77,7 @@ func main() {
 - **订阅级在途上限**（`bus.topics.<topic>.max_in_flight`，默认 1）：适配器在把消息交给 Router 之前占用槽位、Ack/Nack/订阅关停时释放——在途消息有界（goroutine 上界 ≈ handler 数 + 2）并对 transport 形成背压；默认串行且恢复投递顺序，调大即并发处理，负数 = 不限制（不推荐）。只限 dispatcher 执行挡不住 Router 的每消息 goroutine 堆积，限流点必须在适配器。**Kafka 备注**：watermill-kafka 的每分区消费是同步确认的（`ConsumeClaim` 等 Ack 才取下一条），同分区在途恒为 1、确认 / 提交天然严格有序；`max_in_flight` 的并发只体现在跨分区 / 跨物理 topic（以及内存 Bus）。
 - **handler 超时**（`bus.handler_timeout` / `bus.topics.<topic>.handler_timeout`，默认不限制）：单次尝试超过上限按终态失败处理（重试 → 重投 → 毒消息止损），防止挂死的 handler 永久占用在途槽位。实现为截止 ctx + 看门狗（`eventbus.InvokeHandler`）；Go 无法终止 goroutine——handler 必须尊重 ctx，否则超时只释放调用方，goroutine 仍会运行到自行返回。
 - **毒消息止损**（`redelivery.go` / `subscription.go`）：handler 终态失败（重试耗尽）后 Nack → Transport 重投（Kafka 默认约 100ms 一轮）。Bus 按 `handler|messageID` 计数累计终态失败轮数；共享 offset 下全部 handler 成功才 Ack，某 handler 超过 `max_redeliveries` 后被跳过并记 Error（不连坐其他 handler）；重投会整条重投，成功过的 handler 也需幂等。`auto_ack` handler 不参与确认裁决。
+- **trace 跨进程续链**：事件头携带 W3C `traceparent` / `tracestate`（发布侧 `BuildRawEvent` 注入 active span、消费侧 `InvokeHandler` 提取并开 `consume <topic>` span），随 metadata 跨 Kafka 流转；未接入 OTel 时零行为变化。见 [design-eventbus §5.7](../../docs/design-eventbus.md)。
 - **Transport 生命周期独立于 Bus**：`Stop` 只关 Router 与内置生命周期 MemoryTransport，不关 `opts.Transports` / `DefaultTransport`（`bus.go:239`）——Kafka 等后端必须作为独立服务 Register 交框架托管，漏注册则永不关闭。
 - **健康与就绪**：`CheckHealth` 仅反映 Router 运行标志，不做 broker 连通性检查（`bus.go:171`）；框架启动期按 `lynx.WithBusReadyTimeout`（默认 10s）有界轮询就绪，超时构造失败。
 - **日志级别**：`log_message.*` 实际输出 Debug 级日志，需 `--log-level=debug` 或 `bus.debug: true` 才可见（`bus.go:322`）。

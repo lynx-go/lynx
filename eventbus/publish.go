@@ -99,6 +99,9 @@ func BuildRawEvent(ctx context.Context, b Bus, topic string, payload any, o *Pub
 			}
 		}
 	}
+	// 传播 trace 上下文（W3C traceparent / tracestate）：当前有 active span
+	// 时注入，跨进程消费侧据此续链（全局 no-op propagator 下不写入）。
+	injectTrace(ctx, headers)
 	if eventTime.IsZero() {
 		eventTime = time.Now()
 	}

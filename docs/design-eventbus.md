@@ -307,6 +307,25 @@ _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
 - **已知边界**：不同逻辑 topic 路由到同一 Transport 且物理 topics 重叠、组相同时
   会互相瓜分（部署时应为物理重叠的 topic 显式配置互不相同的组）。
 
+### 5.7 Trace 上下文传播（v1.17 落地）
+
+跨进程 Bus 的 trace 续链走消息头（W3C Trace Context）：
+
+- **发布侧**：`BuildRawEvent`（发布组装的唯一归属）在末尾用全局 propagator
+  （`otel.GetTextMapPropagator()`）把 ctx 的当前 span 注入事件头
+  （`traceparent` / `tracestate`）。当前无 active span 时不写入；事件头已有
+  traceparent 且无 active span 时保持原值（显式桥接场景）。
+- **消费侧**：`InvokeHandler`（投递语义的唯一执行点）从事件头提取远端上下文，
+  有效时在其上开 `consume <topic>` span（SpanKind=Consumer，附带
+  `messaging.destination.name` / `messaging.message.id`，覆盖该消息的全部重试
+  尝试；终态失败记 error 状态）。无可提取上下文时不新增 span。
+- **默认零行为变化**：全局 tracer/propagator 为 no-op（未接入 OTel）时既不写头
+  也不开 span；`contrib/telemetry` 托管时自动设置 TraceContext+Baggage
+  propagator，接入即生效。手动接入 OTel 时需自行
+  `otel.SetTextMapPropagator(propagation.TraceContext{})`。
+- 头随 wire 契约（§5.1）作为普通业务头跨进程（Kafka 为 record headers）；与
+  `PropagateAttrs` 的日志属性白名单（request_id/user_id）互相独立。
+
 ---
 
 ## 6. 底座选型结论

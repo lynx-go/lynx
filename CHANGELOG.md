@@ -95,6 +95,22 @@ watermill 路径同时生效；`Topic.WithTopicHandlerTimeout` 提供编程式�
 注意：Go 无法终止 goroutine——handler 不尊重 ctx 时，超时只释放调用方，
 handler goroutine 仍会运行到自行返回（可能与被重投的尝试重叠执行）。
 
+### 新增：总线消息 trace 上下文传播（W3C traceparent）
+
+跨进程 Bus 追踪不再断链：发布侧 `BuildRawEvent` 在组装末尾用全局 propagator
+把当前 active span 注入事件头（`traceparent` / `tracestate`）；消费侧
+`InvokeHandler` 提取远端上下文并开 `consume <topic>` span（SpanKind=Consumer，
+附带 `messaging.destination.name` / `messaging.message.id`，覆盖全部重试尝试，
+终态失败记 error 状态）。
+
+- **零行为变化**：未接入 OTel（全局 tracer/propagator 为 no-op）时既不写头也
+  不开 span；无远端上下文的消费不新增 span。
+- **接入即生效**：`contrib/telemetry` 托管时自动设置 TraceContext+Baggage
+  propagator；手动接入需自行 `otel.SetTextMapPropagator`。
+- 与 `PropagateAttrs` 的日志属性白名单（request_id/user_id）互相独立；显式
+  带入的 traceparent 在无 active span 时保持原值（桥接场景）。详见
+  [docs/design-eventbus.md](docs/design-eventbus.md) §5.7。
+
 ### 测试：Kafka testcontainers 集成测试（WK-19）
 
 `contrib/watermill-kafka` 新增 `//go:build integration` 冒烟：testcontainers

@@ -216,6 +216,7 @@ This pattern is particularly useful for complex applications with many services.
 - 一等消息总线：`Bus` / `Topic[T]` / `Event[T]`；默认 `NewMemoryBus`，`app.Bus()` / Context / Default 解析
 - 业务主路径：`Topic.Publish` / `Topic.Subscribe`（不必手传 Bus）
 - 共享核心：`Resolver` 是 marshaler/retry/log-message/传播键解析与 Topic 级合并的唯一归属（contrib Bus 复用，`Bus.MarshalerFor` 委托它）；`InvokeHandler` 是订阅投递语义的唯一执行点（ctx 传播属性、固定退避重试、AutoAck/ContinueOnError 裁决；ack 时序留在适配器）。memory/watermill 不再各自复制查找链与重试循环
+- trace 传播：发布侧 `BuildRawEvent` 注入 W3C `traceparent`（仅 active span 时），消费侧 `InvokeHandler` 提取并开 `consume <topic>` span；未接入 OTel 时零行为变化（`contrib/telemetry` 托管后自动生效，见 design-eventbus.md §5.7）
 - `lynx.NewHandlerService` / `lynx.EventHandler[T]`：订阅型 handler 的 Service 适配器——业务结构体实现 `Topic`/`HandlerName`/`Init`/`Handle`，适配器保证先 `Init` 注入依赖（可用 AppContext）再订阅；handler 级选项（retry/auto_ack/continue_on_error）透传，默认 handler 名 = `HandlerName()`；同一事件的多个 handler 共享一条 transport 订阅并进程内并行扇出
 - `lynx.WithBusProvider(fn)` 配置驱动构造跨进程 Bus：框架装配好配置后调用 fn（cfg → bus + 配套 Services，如 kafka Transport 托管生命周期），是 watermill `NewFromConfig` 的推荐注入路径（kafka 版一行接入：`wmkafka.NewBusFromConfig`）；已有现成实例仍用 `lynx.WithBus(bus)`（显式实例优先）
 

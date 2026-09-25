@@ -599,6 +599,8 @@ bus := watermill.New(eventbus.Options{
 
 注意：消息头传播的字段是"日志关联"级别的；发布侧的 ctx 属性优先级最低，消息自身 `Headers` 与 `WithMetadata` 显式设置的值不被覆盖。
 
+4. **跨进程 trace 续链**：`eventbus.Bus` 发布时把当前 active span 的 W3C `traceparent`/`tracestate` 注入消息头，消费侧（`InvokeHandler`）提取并开 `consume <topic>` span——跨进程 Bus 追踪不断链。未接入 OTel 时不产生头与 span（零行为变化）；`contrib/telemetry` 托管时会自动设置全局 propagator，接入即生效。与上一条的日志属性白名单互相独立，详见 [design-eventbus §5.7](design-eventbus.md)。
+
 ### 5.4.8 HTTP 恢复与限流中间件
 
 `server/http` 提供两个开箱即用的防御性中间件：**Recovery**（panic 恢复）与 **RateLimit**（服务器级限流）。两者都通过既有的 `WithMiddleware` 挂载（5.4.5 节），**不改变默认中间件链**——用户显式启用。

@@ -27,13 +27,17 @@ type InvokeOptions struct {
 }
 
 // InvokeHandler 执行一次订阅投递（两种 Bus 的唯一执行点）：构建 handler ctx
-// （传播键日志属性 + 逻辑 topic 值）、记录 received 日志、按固定退避重试
-// （WK-17：不做指数退避）、逐次失败日志；返回终态错误。
+// （传播键日志属性 + 逻辑 topic 值 + trace 续链）、记录 received 日志、按固定
+// 退避重试（WK-17：不做指数退避）、逐次失败日志；返回终态错误。
+//
+// trace 续链：事件头带 W3C traceparent 时开 consumer span（"consume <topic>"，
+// 覆盖全部重试尝试）并记终态错误；无远端上下文时不新增 span，行为与未接入
+// trace 时一致。
 //
 // 返回 nil 表示成功或已被 Once/Swallow 吞掉；非 nil 表示重试耗尽仍失败
 // （或退避期间 ctx 取消），由适配器决定 Nack / 丢弃。ack 时序（AutoAck
 // 先 Ack，WK-13）留在适配器：本执行器不接触消息确认。
-func InvokeHandler(ctx context.Context, logger *slog.Logger, h HandlerFunc, ev *RawEvent, resolver *Resolver, opts InvokeOptions) error {
+func InvokeHandler(ctx context.Context, logger *slog.Logger, h HandlerFunc, ev *RawEvent, resolver *Resolver, opts InvokeOptions) (err error) {
 	// 逻辑 topic 值：历史键型保持兼容（内存 Bus 既有语义）。
 	hCtx := context.WithValue(ctx, struct{ string }{"x-bus-topic"}, ev.Topic)
 	// 还原发布侧日志属性：只补 handler ctx 中尚不存在的键。
@@ -52,19 +56,24 @@ func InvokeHandler(ctx context.Context, logger *slog.Logger, h HandlerFunc, ev *
 	}
 	hCtx = logging.WithAttrs(hCtx, attrs...)
 
+	hCtx, span := startConsumeSpan(hCtx, ev, opts.Topic)
+	defer func() {
+		recordSpanError(span, err)
+		span.End()
+	}()
+
 	if lm := resolver.LogMessageFor(opts.Topic); lm.Subscribe {
 		logger.DebugContext(hCtx, "received event", "topic", opts.Topic, "handler", opts.HandlerName)
 	}
 
 	if opts.Once {
 		// AutoAck：先确认由适配器完成；这里只调用一次，失败仅记录。
-		if err := invokeOnce(hCtx, h, ev, opts.Timeout); err != nil {
-			logger.ErrorContext(hCtx, "handler failed (auto_ack, not retried)", "error", err, "handler", opts.HandlerName)
+		if herr := invokeOnce(hCtx, h, ev, opts.Timeout); herr != nil {
+			logger.ErrorContext(hCtx, "handler failed (auto_ack, not retried)", "error", herr, "handler", opts.HandlerName)
 		}
 		return nil
 	}
 
-	var err error
 	for attempt := 0; attempt <= opts.Retry.MaxRetries; attempt++ {
 		err = invokeOnce(hCtx, h, ev, opts.Timeout)
 		if err == nil {
