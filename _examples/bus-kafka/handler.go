@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 
 	"github.com/lynx-go/lynx"
@@ -32,6 +31,7 @@ func (h *OrderCreatedHandler) Handle(ctx context.Context, e *eventbus.Event[Orde
 }
 
 func logOrder(ctx context.Context, e *eventbus.Event[OrderCreated], name string) {
-	s, _ := json.Marshal(e)
-	slog.InfoContext(ctx, "recv order created", "handler", name, "event", string(s))
+	// Event 实现 slog.LogValuer：直接传指针即输出结构化字段
+	// （TextHandler: event.id=... / JSONHandler: "event":{...}）。
+	slog.InfoContext(ctx, "recv order created", "handler", name, "event", e)
 }

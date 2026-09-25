@@ -78,6 +78,34 @@ type Event[T any] struct {
 	Time    time.Time         `json:"time"`
 }
 
+// LogValue 实现 slog.LogValuer：事件信封以结构化 group 参与日志输出——
+// 字段名与 JSON 标签一致、键序与结构体声明一致。订阅方直接
+//
+//	logger.InfoContext(ctx, "recv order created", "handler", name, "event", e)
+//
+// 即可：TextHandler 输出 event.id=... event.topic=... 的独立键值对，
+// JSONHandler 输出 "event":{...} 嵌套对象。相比直接打印结构体（TextHandler
+// 回落 fmt.Sprintf("%+v")：整段 Go 语法、字段不可单独检索、map 顺序不定）
+// 或 json.Marshal 转字符串（被转义、JSONHandler 下二次编码），结构化字段可
+// 被日志系统按 event.id / event.topic 过滤聚合。
+//
+// LogValue 在 handler 真正写记录时才解析，级别未启用零开销；nil 指针安全
+// （返回 "<nil>"，不 panic）。headers 可能与 ctx 传播属性重复、payload 可能
+// 大或敏感，调用方按需只记录子集。
+func (e *Event[T]) LogValue() slog.Value {
+	if e == nil {
+		return slog.StringValue("<nil>")
+	}
+	return slog.GroupValue(
+		slog.String("id", e.ID),
+		slog.String("topic", e.Topic),
+		slog.String("key", e.Key),
+		slog.Any("headers", e.Headers),
+		slog.Any("payload", e.Payload),
+		slog.Time("time", e.Time),
+	)
+}
+
 // PublishOptions 是发布行为的配置项。
 type PublishOptions struct {
 	MessageKey string
