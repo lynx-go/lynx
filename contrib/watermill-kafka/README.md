@@ -52,6 +52,35 @@ kafka:
     producer: { log_message: true }
 ```
 
+### consumer lag 指标（保留键 `metrics`）
+
+`kafka.metrics` 是保留键（不是逻辑 topic 名）。显式启用后 Transport 周期性
+采集 **消费 lag = 高水位 − 已提交 offset**，按（物理 topic × 分区 × 消费组）
+记录为 OTel `Int64Gauge`：
+
+| 指标 | 单位 | 属性 |
+| --- | --- | --- |
+| `lynx.kafka.consumer.lag` | `{message}` | `messaging.destination.name`（物理 topic）、`messaging.consumer.group.name`、`messaging.kafka.partition` |
+
+```yaml
+kafka:
+  metrics:
+    enabled: true     # 默认 false（显式启用：采集会周期性查询 broker 元数据与 offset）
+    interval: 30s     # 默认 30s
+  order.created:
+    brokers: ["127.0.0.1:9092"]
+    topics: [orders_v1]
+    consumer: { group_id: my-app, instances: 1 }
+```
+
+要点：
+
+- 指标经全局 meter provider 导出：`contrib/telemetry` 托管（Prometheus 或 OTLP
+  reader）后即可采集；未接入时记录进 noop，不报错。
+- 从未提交 offset 的分区本轮跳过——不会把「尚无提交」误报为满 backlog。
+- 采集失败只记 Warn 并继续其余 topic（监控面不得影响数据面）；采集连接按
+  （brokers × 认证）分组共享，随 Transport 停止关闭。
+
 ### 手工装配（自定义 transport）
 
 `NewBusFromConfig` 固定组合 `"memory"` + `"kafka"` 两个 transport；需要额外后端或替换 memory 时手工组装（`kafka:` 段缺失时 `NewFromConfig` 返回 `(nil, nil)`，此时不加入 transports、不注册）：

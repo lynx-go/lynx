@@ -13,6 +13,9 @@ bus:
 # consumer.group_id 相同的多实例构成消费组（组内竞争消费，每条消息
 # 只投递给一个实例）；广播改用不同 group_id。
 kafka:
+  # metrics:            # consumer lag 指标（保留键，不是逻辑 topic；默认关闭）
+  #   enabled: true
+  #   interval: 30s
   order.created:
     brokers: ["127.0.0.1:9092"]
     topics: [orders_v1]

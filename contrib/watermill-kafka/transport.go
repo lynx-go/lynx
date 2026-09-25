@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"reflect"
 	"sort"
@@ -35,14 +36,17 @@ import (
 	watermillkafka "github.com/ThreeDotsLabs/watermill-kafka/v3/pkg/kafka"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/eventbus"
 	lynxwatermill "github.com/lynx-go/lynx/contrib/watermill"
+	"github.com/lynx-go/lynx/eventbus"
 )
 
 // Options 是 Kafka Transport 的配置；可用 app.Config().UnmarshalKey("kafka", &opts)
 // 从配置文件整表加载，结构为 map[逻辑topic]TopicOptions。
+// 保留键 `metrics` 是 consumer lag 指标配置（不是逻辑 topic 名，见 MetricsOptions）。
 type Options struct {
-	Topics map[string]TopicOptions `mapstructure:",remain"`
+	// Metrics 是 consumer lag 指标导出配置；nil = 默认（启用，30s 间隔）。
+	Metrics *MetricsOptions         `mapstructure:"metrics"`
+	Topics  map[string]TopicOptions `mapstructure:",remain"`
 }
 
 // TopicOptions 是一个逻辑 topic 的完整配置。
@@ -186,8 +190,19 @@ type subscriberParams struct {
 	reconnectRetrySleep time.Duration
 }
 
+// metricsConfigKey 是 kafka 段的保留键（consumer lag 指标配置）；
+// mapstructure 的 ",remain" 会把它同时收进 Topics，NewTransport 统一剔除。
+const metricsConfigKey = "metrics"
+
 // NewTransport 创建 Kafka Transport。
 func NewTransport(opts Options) (*Transport, error) {
+	// 归一化：剔除保留键，避免 "metrics" 被当成逻辑 topic（拷贝 map，不改调用方）。
+	if len(opts.Topics) > 0 {
+		topics := make(map[string]TopicOptions, len(opts.Topics))
+		maps.Copy(topics, opts.Topics)
+		delete(topics, metricsConfigKey)
+		opts.Topics = topics
+	}
 	t := &Transport{
 		opts:             opts,
 		logger:           slog.Default(),
@@ -280,6 +295,18 @@ func (t *Transport) Init(ctx lynx.AppContext) error {
 func (t *Transport) Start(ctx context.Context) error {
 	t.running.Store(true)
 	t.readyOnce.Do(func() { close(t.ready) })
+	// consumer lag 指标采集（显式启用；生命周期同时跟随 Start ctx 与 Stop）。
+	if enabled, interval := t.opts.metricsConfig(); enabled {
+		collector := newLagCollector(t.opts, t.logger)
+		collector.interval = interval
+		mctx, mcancel := context.WithCancel(ctx)
+		stopStop := context.AfterFunc(t.ctx, mcancel)
+		go func() {
+			defer mcancel()
+			defer stopStop()
+			collector.run(mctx)
+		}()
+	}
 	select {
 	case <-ctx.Done():
 	case <-t.ctx.Done():

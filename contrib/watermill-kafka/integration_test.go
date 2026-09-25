@@ -17,6 +17,10 @@ import (
 	"github.com/lynx-go/lynx/lynxtest"
 	"github.com/testcontainers/testcontainers-go"
 	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // startKafka 启动 confluent-local 容器并返回 broker 列表；用例结束终止容器。
@@ -155,18 +159,31 @@ func TestIntegrationPerPartitionOrder(t *testing.T) {
 
 	const n = 10
 	const blockKey = "it-5"
-	tr, err := NewTransport(Options{Topics: map[string]TopicOptions{
-		topic: {
-			Brokers: brokers,
-			Topics:  []string{physical},
-			// 关闭自动提交：每次 Ack 显式 Commit，提交时序可直接观测。
-			Consumer: &ConsumerOptions{GroupID: group, Instances: 1, AutoCommitEnabled: boolPtr(false)},
-			Producer: &ProducerOptions{Topic: physical},
+	tr, err := NewTransport(Options{
+		Metrics: &MetricsOptions{Enabled: boolPtr(true), Interval: 300 * time.Millisecond},
+		Topics: map[string]TopicOptions{
+			topic: {
+				Brokers: brokers,
+				Topics:  []string{physical},
+				// 关闭自动提交：每次 Ack 显式 Commit，提交时序可直接观测。
+				Consumer: &ConsumerOptions{GroupID: group, Instances: 1, AutoCommitEnabled: boolPtr(false)},
+				Producer: &ProducerOptions{Topic: physical},
+			},
 		},
-	}})
+	})
 	if err != nil {
 		t.Fatalf("NewTransport: %v", err)
 	}
+	// lag 指标端到端：把 SDK meter provider（手动 reader）装上全局，采集器
+	// 在 Start 时据此启动。
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	prevMP := otel.GetMeterProvider()
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() {
+		otel.SetMeterProvider(prevMP)
+		_ = mp.Shutdown(context.Background())
+	})
 	appCtx := lynxtest.NewContext(t)
 	if err := tr.Init(appCtx); err != nil {
 		t.Fatalf("transport Init: %v", err)
@@ -241,6 +258,41 @@ func TestIntegrationPerPartitionOrder(t *testing.T) {
 		"blocked message did not complete after release")
 	waitUntil(t, 30*time.Second, func() bool { return committedOffset(t, brokers, group, physical) == n },
 		"committed offset did not catch up after release")
+	// lag 指标：全部提交后 partition 0 的 lag 应收敛到 0（真 broker 端到端）。
+	waitUntil(t, 30*time.Second, func() bool {
+		lag, ok := lagMetricValue(t, reader, physical, group)
+		return ok && lag == 0
+	}, "lag metric did not converge to 0")
+}
+
+// lagMetricValue 从手动 reader 采集结果中取（物理 topic, 分区 0, 消费组）的
+// consumer lag；指标缺失时 ok=false。
+func lagMetricValue(t *testing.T, reader *sdkmetric.ManualReader, physical, group string) (int64, bool) {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != lagMetricName {
+				continue
+			}
+			g, ok := m.Data.(metricdata.Gauge[int64])
+			if !ok {
+				t.Fatalf("metric %s data type = %T", m.Name, m.Data)
+			}
+			for _, dp := range g.DataPoints {
+				dest, _ := dp.Attributes.Value(attribute.Key("messaging.destination.name"))
+				grp, _ := dp.Attributes.Value(attribute.Key("messaging.consumer.group.name"))
+				part, _ := dp.Attributes.Value(attribute.Key("messaging.kafka.partition"))
+				if dest.AsString() == physical && grp.AsString() == group && part.AsInt64() == 0 {
+					return dp.Value, true
+				}
+			}
+		}
+	}
+	return 0, false
 }
 
 // createPartitionedTopic 显式创建指定分区数的物理 topic（幂等）。

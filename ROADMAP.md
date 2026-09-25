@@ -178,8 +178,9 @@ G3 提前，且先启动其"开源准备"子列。
       （trace：noop|stdout|otlp + sampling_ratio；metric：prometheus|otlp +
       interval）；OTLP/gRPC exporter 一等选项（endpoint/insecure/headers/
       timeout/compression）与 `WithTraceSampler`（v1.45.0，对齐根模块 otel）
-- [ ] Kafka consumer lag 指标导出（watermill-kafka 接入生产后的
-      第一监控诉求）
+- [x] Kafka consumer lag 指标导出：`kafka.metrics.enabled`（保留键，默认关）
+      启用后按间隔导出 `lynx.kafka.consumer.lag`（高水位 − 已提交 offset，
+      属性 = 物理 topic / 消费组 / 分区）；单元 + testcontainers 集成验证
 
 ### G2 流量韧性（出站治理与入站 gRPC 对齐）
 

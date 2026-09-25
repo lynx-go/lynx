@@ -124,6 +124,15 @@ handler goroutine 仍会运行到自行返回（可能与被重投的尝试重�
   `otlpmetricgrpc` v1.45.0（与根模块 otel 版本对齐）。
 - 配置见 [contrib/telemetry/README.md](contrib/telemetry/README.md)。
 
+### 新增：Kafka consumer lag 指标导出
+
+`contrib/watermill-kafka` 新增 `kafka.metrics`（保留键）配置：显式启用后按
+`interval`（默认 30s）采集「高水位 − 已提交 offset」，以 OTel Int64Gauge
+`lynx.kafka.consumer.lag` 导出，属性为物理 topic / 消费组 / 分区。默认关闭
+（显式启用——采集会周期性查询 broker）；未提交 offset 的分区跳过，采集失败
+只记 Warn 并继续；采集连接按（brokers × 认证）共享、随 Transport 停止关闭。
+见 [contrib/watermill-kafka/README.md](contrib/watermill-kafka/README.md)。
+
 ### 测试：Kafka testcontainers 集成测试（WK-19）
 
 `contrib/watermill-kafka` 新增 `//go:build integration` 冒烟：testcontainers
