@@ -1162,9 +1162,9 @@ func TestSetLogger(t *testing.T) {
 		t.Fatalf("newLynx() error = %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	app.SetLogger(logger)
+	app.(*lynx).setLogger(logger)
 	if app.Logger() != logger {
-		t.Error("Logger() should return the logger set via SetLogger")
+		t.Error("Logger() should return the logger set via setLogger")
 	}
 }
 

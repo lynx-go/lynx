@@ -119,8 +119,8 @@ type Service struct {
 	// lynx.Meta），/version 端点输出；ctx 为 nil 时为零值。
 	meta lynx.Metadata
 	// logLevelCtrl 非 nil（AppContext 实现 SetLogLevel/LogLevel）时
-	// /loglevel 端点可用；自定义 logger（SetLogger 定制）的 App 不实现，
-	// 端点返回 501。
+	// /loglevel 端点可用；用户定制过 logger（WithLoggerProvider）的 App
+	// 返回 false，端点返回 501。
 	logLevelCtrl interface {
 		SetLogLevel(slog.Level) bool
 		LogLevel() slog.Level
@@ -307,8 +307,8 @@ func (s *Service) newMux() *http.ServeMux {
 // POST/PUT /loglevel?level=debug      → 调整（query 参数）
 // POST/PUT /loglevel  body {"level":"debug"} → 调整（JSON body）
 //
-// AppContext 未实现级别控制（或用户 SetLogger 定制过 handler）时返回
-// 501，GET 返回记账值。非法级别返回 400。
+// AppContext 未实现级别控制（或用户经 WithLoggerProvider 定制过 logger
+// handler）时返回 501，GET 返回记账值。非法级别返回 400。
 func (s *Service) handleLogLevel(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch r.Method {

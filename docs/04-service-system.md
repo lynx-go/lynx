@@ -365,11 +365,16 @@ app.Register(telemetry.New())
 
 ### zap：日志集成
 
-`contrib/zap` 把 zap 包装成 `*slog.Logger`，日志级别复用框架统一的 `lynx.LogLevelFromConfig` 解析（`logging.level` 优先，`log-level`/`log_level` 兼容回退，均未设置时默认 `info`）；并自动附加 `service_id`、`service_name`、`version` 三个字段。一行接入（取自 `_examples/http/main.go`）：
+`contrib/zap` 把 zap 包装成 `*slog.Logger`，日志级别复用框架统一的 `lynx.LogLevelFromConfig` 解析（`logging.level` 优先，`log-level`/`log_level` 兼容回退，均未设置时默认 `info`）；并自动附加 `service_id`、`service_name`、`version` 三个字段。一行接入（选项版，取自 `_examples/http/main.go`；`NewLogger` 的签名与 `lynx.WithLoggerProvider` 直接匹配）：
 
 ```go
-app.SetLogger(zap.MustNewLogger(app))
+lynx.NewRunner(setup,
+    lynx.WithLoggerProvider(zap.NewLogger),
+    // ...
+)
 ```
+
+logger 是构造期依赖：provider 在框架装配好配置之后、总线构造之前被调用，总线及其配套服务捕获到的即最终 logger，装配期与运行期日志格式一致（v1.13 及以前的 `App.SetLogger` 在 SetupFunc 内事后注入，晚于总线侧捕获，会产生格式分裂，已在 v1.14.0 移除）。
 
 如果需要在退出前 flush 缓冲日志，可以改用 `NewSyncableLogger`，并用 `zap.SyncOnPreStop(logger)` 生成一个 `OnPreStop` 钩子注册进应用：
 

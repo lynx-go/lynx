@@ -20,8 +20,6 @@ type Config struct {
 
 func main() {
 	runner := lynx.NewRunner(func(app lynx.App) error {
-		app.SetLogger(zap.MustNewLogger(app))
-
 		config := &Config{}
 		if err := app.Config().Unmarshal(config); err != nil {
 			return err
@@ -81,6 +79,7 @@ func main() {
 
 		return nil
 	},
+		lynx.WithLoggerProvider(zap.NewLogger),
 		lynx.WithBindFlagsFunc(func(f *pflag.FlagSet) {
 			f.StringP("config", "c", "./config.yaml", "config file path")
 			f.String("addr", "", "http listen address")

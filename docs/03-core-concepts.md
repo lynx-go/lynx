@@ -244,7 +244,7 @@ type AppContext interface {
 }
 ```
 
-`App` 是 `AppContext` 的超集（`App` 内嵌 `AppContext`，额外提供 `Register`/`OnPreStart`/`OnPostStart`/`OnDrain`/`OnPreStop`/`OnPostStop`/`Command`/`Run`/`SetLogger`）。服务在 `Init` 中只依赖 `AppContext` 的五个方法：读取配置、取日志、访问应用元信息（经 Context）、获取健康检查快照、或请求关闭应用（如一次性命令执行完毕）。测试时只需实现这五个方法，无需为 `App` 的其余方法写空实现。
+`App` 是 `AppContext` 的超集（`App` 内嵌 `AppContext`，额外提供 `Register`/`OnPreStart`/`OnPostStart`/`OnDrain`/`OnPreStop`/`OnPostStop`/`Command`/`Run`）。服务在 `Init` 中只依赖 `AppContext` 的五个方法：读取配置、取日志、访问应用元信息（经 Context）、获取健康检查快照、或请求关闭应用（如一次性命令执行完毕）。测试时只需实现这五个方法，无需为 `App` 的其余方法写空实现。
 
 框架的职责边界：服务不能通过 `AppContext` 注册其他服务或修改生命周期钩子——`Init` 阶段（注册时同步执行）只允许"读取环境、准备资源"。
 

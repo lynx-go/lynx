@@ -89,7 +89,7 @@ func TestOrderedServicesLogsChildLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(app.Close)
-	app.SetLogger(slog.New(h))
+	app.(*lynx).setLogger(slog.New(h))
 
 	log := &orderLog{}
 	g := OrderedServices("infra",
@@ -143,7 +143,7 @@ func TestOrderedServicesInitFailureLogsCleanupStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(app.Close)
-	app.SetLogger(slog.New(h))
+	app.(*lynx).setLogger(slog.New(h))
 
 	g := OrderedServices("infra",
 		&seqProbe{name: "a", log: &orderLog{}},

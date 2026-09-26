@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### 破坏性变更：logger 迁移为构造期依赖（WithLoggerProvider），移除 App.SetLogger
+
+- 新增 `lynx.WithLoggerProvider(func(AppContext) (*slog.Logger, error))`：
+  框架在配置装配与元数据解析完成后、总线构造前调用 provider（`contrib/zap`
+  的 `NewLogger` 签名直接匹配，可直接传入），产物即 app.logger 并同步
+  `slog.SetDefault`（WithIsolated 时不触碰全局）；provider 出错或返回
+  nil logger 时构造失败（快失败，与 WithBusProvider 一致）。
+- 动机：v1.13 及以前 logger 在 SetupFunc 里经 `App.SetLogger` 事后注入，
+  晚于总线及其配套服务的构造期捕获（bus/router/transport 在构造期捕获
+  `slog.Default()` 后即冻结）——装配期日志以框架默认格式输出，`slog.SetDefault`
+  之后又经 std log 桥接（`slog.SetDefault` 的文档化副作用）变成 info 级的
+  嵌套渲染文本，同一应用出现三种日志形态。provider 路径下总线构造前
+  logger 即已就位，从结构上消除分裂。
+- **移除** `App.SetLogger`（破坏性）：logger 是构造期依赖，运行期事后替换
+  正是格式分裂的根源。迁移：`app.SetLogger(zap.MustNewLogger(app))` →
+  选项 `lynx.WithLoggerProvider(zap.NewLogger)`；框架内部与包内测试改用
+  未导出的 `setLogger`。
+- 配置 provider 后框架跳过 `logging.level` 的默认 TextHandler 重建
+  （applyLogLevel）——级别归 provider 自己的装配逻辑；并视为用户定制：
+  `SetLogLevel` 不再代理级别调整，debug `/loglevel` 端点返回 501（语义与
+  原 SetLogger 一致）。
+- `lynxtest` 的 TB logger（`WithTBLogger`）改经 provider 在构造期注入：
+  测试里总线与配套服务的装配期日志同样接到 testing.TB 输出并随用例关联。
+- `Runner.Run` 的启动失败输出弃用 `log.Fatalln`：应用构造成功时经 app
+  logger 输出结构化 error（与用户日志格式一致，不再被 std log 桥接成
+  info 级文本）；构造失败（尚无 logger 可用）时回退标准库 log。
+- 迁移面：4 个 `_examples`（bus-kafka/boot/http/schedule）、`contrib/zap`
+  README、`docs/` 02/03/04/05 章同步更新。
+
 ### 修复：两处边界外缺口（登记竞态清理 + readiness 聚合 Ready 门槛）
 
 - `registerService` 因 Run/Close 竞态失败时，刚 Init 成功的服务此前只取消

@@ -190,6 +190,23 @@ func Run(t testing.TB, setup lynx.SetupFunc, opts ...Option) *App {
 	base = append(base, lynx.WithConfig(lynx.NewViperConfig(v)))
 	base = append(base, o.lynxOpts...)
 
+	// TB logger 经 WithLoggerProvider 在构造序列内注入（配置装配后即
+	// 就位）：总线及其配套服务捕获到的就是测试 logger，装配期日志也随
+	// 用例关联，而不是先以框架默认格式输出再被事后替换。
+	if o.tbLogger {
+		base = append(base, lynx.WithLoggerProvider(func(ctx lynx.AppContext) (*slog.Logger, error) {
+			level := slog.LevelInfo
+			if s := lynx.LogLevelFromConfig(ctx.Config()); s != "" {
+				lv, perr := lynx.ParseLogLevel(s)
+				if perr != nil {
+					return nil, perr
+				}
+				level = lv
+			}
+			return slog.New(slog.NewTextHandler(tbWriter{t: t}, &slog.HandlerOptions{Level: level})), nil
+		}))
+	}
+
 	// 基线不隔离全局：保存/恢复三个进程级全局，使依赖全局取值的业务代码
 	// 在测试里与生产行为一致（见包注释的并行限制）。
 	prevLynx := lynx.Get()
@@ -205,16 +222,6 @@ func Run(t testing.TB, setup lynx.SetupFunc, opts ...Option) *App {
 	if err != nil {
 		restore()
 		t.Fatalf("lynxtest: NewApp() error = %v", err)
-	}
-
-	if o.tbLogger {
-		level := slog.LevelInfo
-		if s := lynx.LogLevelFromConfig(app.Config()); s != "" {
-			if lv, perr := lynx.ParseLogLevel(s); perr == nil {
-				level = lv
-			}
-		}
-		app.SetLogger(slog.New(slog.NewTextHandler(tbWriter{t: t}, &slog.HandlerOptions{Level: level})))
 	}
 
 	// cleanup 在 setup 之前注册：setup 失败或 panic（Goexit 也会执行已

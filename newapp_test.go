@@ -85,11 +85,11 @@ func TestNewApp_WithIsolatedSkipsGlobals(t *testing.T) {
 		t.Errorf("isolated app registered its bus into eventbus.Default()")
 	}
 
-	// SetLogger 的 slog.SetDefault 副作用同样被隔离。
+	// logger 定制路径的 slog.SetDefault 副作用同样被隔离。
 	prevSlog := slog.Default()
-	app.SetLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app.(*lynx).setLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if slog.Default() != prevSlog {
-		t.Errorf("isolated app SetLogger changed slog default")
+		t.Errorf("isolated app setLogger changed slog default")
 	}
 }
 

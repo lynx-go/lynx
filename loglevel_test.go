@@ -75,13 +75,13 @@ func TestSetLogLevelConfiguredPath(t *testing.T) {
 	}
 }
 
-// TestSetLogLevelAfterSetLogger：用户 SetLogger 定制后框架不再代理级别
-// 调整。
+// TestSetLogLevelAfterSetLogger：用户经 WithLoggerProvider/setLogger 定制
+// 后框架不再代理级别调整。
 func TestSetLogLevelAfterSetLogger(t *testing.T) {
 	app := newTestApp(t)
-	app.SetLogger(slog.Default())
+	app.setLogger(slog.Default())
 	if ok := app.SetLogLevel(slog.LevelDebug); ok {
-		t.Fatal("SetLogLevel() = true after SetLogger, want false (customized)")
+		t.Fatal("SetLogLevel() = true after setLogger, want false (customized)")
 	}
 	if got := app.LogLevel(); got != slog.LevelInfo {
 		t.Errorf("LogLevel() = %v, want unchanged Info", got)

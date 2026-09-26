@@ -27,10 +27,12 @@ func (w tbWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// LogWriter 返回接到 testing.TB 的 io.Writer：应用侧 SetLogger 接 slog
-// handler 时使用，例如
+// LogWriter 返回接到 testing.TB 的 io.Writer：应用侧经 WithLoggerProvider
+// 定制 logger 接 slog handler 时使用，例如
 //
-//	app.SetLogger(slog.New(slog.NewTextHandler(lynxtest.LogWriter(t), nil)))
+//	lynx.WithLoggerProvider(func(ctx lynx.AppContext) (*slog.Logger, error) {
+//		return slog.New(slog.NewTextHandler(lynxtest.LogWriter(t), nil)), nil
+//	})
 func LogWriter(t testing.TB) io.Writer {
 	return tbWriter{t: t}
 }

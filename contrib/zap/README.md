@@ -25,7 +25,7 @@ import "github.com/lynx-go/lynx/contrib/zap"
 
 ## 快速开始
 
-一行替换默认 logger（取自 `_examples/http/main.go:24`）：
+经 `lynx.WithLoggerProvider` 一行接入（`NewLogger` 签名直接匹配，取自 `_examples/http/main.go`）：
 
 ```go
 package main
@@ -37,27 +37,41 @@ import (
 
 func main() {
 	lynx.NewRunner(func(app lynx.App) error {
-		app.SetLogger(lynxzap.MustNewLogger(app))
 		app.Logger().Info("hello zap") // 输出已带 service.id/name/version
 		return nil
-	}, lynx.WithName("zap-demo")).Run()
+	},
+		lynx.WithName("zap-demo"),
+		lynx.WithLoggerProvider(lynxzap.NewLogger),
+	).Run()
 }
 ```
 
-需要在退出前 flush 缓冲日志时改用 `NewSyncableLogger`：
+provider 在配置装配后、总线构造前被框架调用：总线及其配套服务捕获到的就是 zap logger，装配期与运行期日志格式一致。
+
+需要在退出前 flush 缓冲日志时改用 `NewSyncableLogger`（`AppContext` 不暴露钩子注册，用闭包把 `*SyncableLogger` 带到 SetupFunc 里挂 `OnPreStop`）：
 
 ```go
-logger, err := lynxzap.NewSyncableLogger(app)
-if err != nil {
-	return err
-}
-app.SetLogger(logger.Logger)                 // 内嵌的 *slog.Logger
-app.OnPreStop(lynxzap.SyncOnPreStop(logger)) // 关停前 Sync
+var syncable *lynxzap.SyncableLogger
+
+lynx.NewRunner(func(app lynx.App) error {
+	app.OnPreStop(lynxzap.SyncOnPreStop(syncable)) // 关停前 Sync
+	// ...
+	return nil
+},
+	lynx.WithLoggerProvider(func(ctx lynx.AppContext) (*slog.Logger, error) {
+		l, err := lynxzap.NewSyncableLogger(ctx)
+		if err != nil {
+			return nil, err
+		}
+		syncable = l
+		return l.Logger, nil // 内嵌的 *slog.Logger
+	}),
+).Run()
 ```
 
 ## 与 lynx 核心的集成
 
-- 构建回调内 `app.SetLogger(...)` 替换默认 logger；框架会同步 `slog.SetDefault`，全局默认 logger 与应用保持一致。
+- `lynx.WithLoggerProvider(lynxzap.NewLogger)` 在构造序列内产出应用 logger；框架会同步 `slog.SetDefault`，全局默认 logger 与应用保持一致。
 - `SyncOnPreStop` 返回的 `lynx.HookFunc` 注册进 `app.OnPreStop`，在服务 Stop 之前执行；v1.10.0 前名为 `SyncOnStop`（logger.go:202）。
 - 级别来自应用配置键（`lynx.LogLevelFromConfig`），配置了非法级别（如 `not-a-level`）时 `NewLogger` / `NewSyncableLogger` 返回错误而非静默回退。
 - 输出格式为 zap 生产 JSON（ISO8601 时间戳）；需要 trace 字段时按 `docs/05-servers.md` 5.4.6 节在 handler 外层包 `logging.NewTraceHandler`。

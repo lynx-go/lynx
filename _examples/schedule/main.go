@@ -15,7 +15,6 @@ import (
 
 func main() {
 	runner := lynx.NewRunner(func(app lynx.App) error {
-		app.SetLogger(zap.MustNewLogger(app))
 		task1 := &task{}
 		app.OnPreStart(func(ctx context.Context) error {
 			return task1.HandlerFunc()(ctx)
@@ -31,6 +30,7 @@ func main() {
 	},
 		lynx.WithID(lo.Must1(os.Hostname())),
 		lynx.WithName("schedule-example"),
+		lynx.WithLoggerProvider(zap.NewLogger),
 	)
 	runner.Run()
 }

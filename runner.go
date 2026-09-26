@@ -1,7 +1,9 @@
 package lynx
 
 import (
+	"context"
 	"log"
+	"os"
 	"sync"
 )
 
@@ -37,9 +39,17 @@ func NewRunner(setup SetupFunc, opts ...Option) *Runner {
 	return b
 }
 
-// Run 运行 Runner 应用，发生错误时输出到 stderr 并以非零状态码退出进程。
+// Run 运行 Runner 应用，发生错误时以非零状态码退出进程。应用已构造
+// 成功时经 app logger 输出结构化错误（与用户配置的日志格式一致，级别
+// error——此前走 log.Fatalln，WithLoggerProvider 路径下会被 std log
+// 桥接成 info 级的嵌套渲染文本）；构造失败（尚无 logger 可用）时回退
+// 标准库 log。
 func (b *Runner) Run() {
 	if err := b.RunE(); err != nil {
+		if l, ok := b.app.(*lynx); ok {
+			l.Logger().ErrorContext(context.Background(), "lynx: application run failed", "error", err)
+			os.Exit(1)
+		}
 		log.Fatalln(err)
 	}
 }

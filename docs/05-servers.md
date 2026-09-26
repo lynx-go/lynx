@@ -569,7 +569,7 @@ func NewTraceHandler(h slog.Handler) slog.Handler
 1. 打日志必须用带 Context 的方法（`InfoContext`/`ErrorContext` 等），否则装饰器拿不到 SpanContext；
 2. Context 里要有有效的 span——HTTP handler 与 gRPC 拦截器链内天然满足（见 5.4.5 节），应用初始化阶段的日志则没有 span，不加字段。
 
-**slog 路线**：直接包装标准库 handler，再 `SetLogger` 给应用：
+**slog 路线**：直接包装标准库 handler，再经 `WithLoggerProvider` 给应用：
 
 ```go
 // newSlogLogger 纯 slog 路线：在任意 slog.Handler 外包一层 NewTraceHandler。
@@ -592,7 +592,7 @@ func newZapLogger() (*slog.Logger, error) {
 }
 ```
 
-其中 `logging` 是 `github.com/lynx-go/lynx/logging` 的别名，`lynxzap` 是 `github.com/lynx-go/lynx/contrib/zap` 的别名，`slogzap` 是 `github.com/samber/slog-zap/v2`。组装出的 logger 传给 `app.SetLogger(...)` 后，服务内所有 `InfoContext` 日志都会携带链路字段；再把它传给 `http.WithLogger`，访问日志（含 `trace`/`spanId` 字段，见 5.1 节 `WithRequestLog`）也走同一条管线。
+其中 `logging` 是 `github.com/lynx-go/lynx/logging` 的别名，`lynxzap` 是 `github.com/lynx-go/lynx/contrib/zap` 的别名，`slogzap` 是 `github.com/samber/slog-zap/v2`。组装出的 logger 经 `lynx.WithLoggerProvider(func(lynx.AppContext) (*slog.Logger, error) { return newZapLogger() })` 注入后，服务内所有 `InfoContext` 日志都会携带链路字段；再把它传给 `http.WithLogger`，访问日志（含 `trace`/`spanId` 字段，见 5.1 节 `WithRequestLog`）也走同一条管线。
 
 ### 5.4.7 请求级日志字段：request_id/user_id 全链路传播
 

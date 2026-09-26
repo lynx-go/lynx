@@ -199,7 +199,6 @@ type App struct {
 // 整个二进制写一次的 helper：新增命令 = 新 cmd 类型 + 一个函数，图零改动。
 func runLynx(configFile string, fn func(ctx context.Context, a *App) error) error {
 	return lynx.NewRunner(func(app lynx.App) error {
-		app.SetLogger(zap.MustNewLogger(app))
 		a, cleanup, err := wireApp(app)
 		if err != nil {
 			return err
@@ -207,11 +206,13 @@ func runLynx(configFile string, fn func(ctx context.Context, a *App) error) erro
 		app.OnPostStop(cleanup) // Wire cleanup 属于终局阶段（同 _examples/boot）
 		a.Apply(app)            // Transport 等服务注册：Start/Stop 归框架
 		return app.Command(func(ctx context.Context) error { return fn(ctx, a) })
-	}, lynx.WithConfigFile(configFile)).RunE()
+	},
+		lynx.WithLoggerProvider(zap.NewLogger),
+		lynx.WithConfigFile(configFile)).RunE()
 }
 ```
 
-依赖配置的总线（如 watermill/kafka）经 `lynx.WithBusProvider` 在框架装配好配置后构造（用法见第 4 章 Watermill 节与 README），命令经 ctx 发布即命中该总线，无需逐调用传递。
+依赖配置的总线（如 watermill/kafka）经 `lynx.WithBusProvider` 在框架装配好配置后构造（用法见第 4 章 Watermill 节与 README），命令经 ctx 发布即命中该总线，无需逐调用传递。logger 同理是构造期依赖：`lynx.WithLoggerProvider` 在配置装配后、总线构造前被调用（`contrib/zap` 的 `NewLogger` 签名直接匹配），总线与配套服务捕获到的就是最终 logger。
 
 ## 2.5 健康检查端点
 

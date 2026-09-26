@@ -82,7 +82,6 @@ func (s *auditService) Stop(context.Context) error      { return nil }
 
 func main() {
 	lynx.NewRunner(func(app lynx.App) error {
-		app.SetLogger(zap.MustNewLogger(app))
 		app.Register(
 			&orderService{},
 			&auditService{},
@@ -95,6 +94,9 @@ func main() {
 		return nil
 	},
 		lynx.WithName("bus-kafka-example"),
+		// logger 是构造期依赖：provider 在配置装配后、总线构造前被调用，
+		// bus/transport 捕获到的即最终 logger，装配期与运行期日志格式一致。
+		lynx.WithLoggerProvider(zap.NewLogger),
 		lynx.WithBusProvider(wmkafka.NewBusFromConfig),
 	).Run()
 }

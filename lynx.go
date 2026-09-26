@@ -84,10 +84,6 @@ type App interface {
 	// Run 开始后或 Close 之后，Register/RegisterFactory 为禁止操作（panic），
 	// Command 返回错误。
 	Run() error
-	// SetLogger 设置 logger。注意：同时调用 slog.SetDefault 同步全局默认
-	// logger，使进程内不经框架的裸 slog 调用（如 slog.Info）落到同一
-	// logger——这是有意的全局副作用。
-	SetLogger(logger *slog.Logger)
 }
 
 type metaCtx struct{}
@@ -266,10 +262,13 @@ func (app *lynx) recordInitError(err error) {
 // （所有注册必须先于 Run）。
 var errRunStarted = errors.New("lynx: registration after Run() has started")
 
-// SetLogger 设置 logger，并同步 slog.SetDefault 使全局默认 logger 与应用
-// 一致（全局副作用见 App 接口注释；WithIsolated 可关闭该副作用）。
-// 设置后视为用户定制：SetLogLevel 不再代理该 logger 的级别调整。
-func (app *lynx) SetLogger(logger *slog.Logger) {
+// setLogger 设置应用 logger（仅框架内部与包内测试使用；用户注入走
+// WithLoggerProvider——logger 是构造期依赖，装配序列内就位，总线及其
+// 配套服务捕获到的即最终形态。运行期事后替换正是 v1.13 及以前日志格式
+// 分裂的根源）。同步 slog.SetDefault 使全局默认 logger 与应用一致
+// （WithIsolated 可关闭该副作用）。设置后视为用户定制：SetLogLevel
+// 不再代理该 logger 的级别调整。
+func (app *lynx) setLogger(logger *slog.Logger) {
 	if !app.o.isolated {
 		slog.SetDefault(logger)
 	}
@@ -390,16 +389,40 @@ func (app *lynx) init() error {
 	}
 	app.ctx = ContextWithMeta(app.ctx, meta)
 
+	if app.o.LoggerProvider != nil {
+		return app.applyLoggerProvider()
+	}
 	app.applyLogLevel()
 	return nil
 }
 
+// applyLoggerProvider 调用 WithLoggerProvider 注入的 logger 构造器并把
+// 结果落位（app.logger + slog.SetDefault）。执行时机在配置装配与元数据
+// 解析之后、总线构造之前：provider 可读 Config()/Meta()，而总线及其
+// 配套服务在构造期捕获的 logger 已是最终形态。级别归 provider 自己的
+// 装配逻辑（如 zap 从 ctx.Config() 读 logging.level），框架跳过
+// applyLogLevel；定制语义与 setLogger 一致（loggerCustom，SetLogLevel
+// 不再代理）。provider 出错或返回 nil logger 时构造失败（快失败）。
+func (app *lynx) applyLoggerProvider() error {
+	logger, err := app.o.LoggerProvider(app)
+	if err != nil {
+		return fmt.Errorf("lynx: logger provider failed: %w", err)
+	}
+	if logger == nil {
+		return errors.New("lynx: logger provider returned nil logger")
+	}
+	app.logger = logger
+	app.loggerCustom = true
+	if !app.o.isolated {
+		slog.SetDefault(logger)
+	}
+	return nil
+}
+
 // applyLogLevel 读取配置中的日志级别并应用到应用默认 logger 上。
-// 执行时机在构建回调（SetupFunc）之前：此处 app.logger 尚未经过用户
-// SetLogger 定制，重建 TextHandler 不会丢弃用户已设置的 handler 形态——
-// 构建回调中的 SetLogger 在其后运行，其结果最终生效（用户优先）。
-// 代价是若用户依赖 slog.SetDefault 预设非 TextHandler，此处会覆盖回
-// TextHandler，需在回调内再次 SetLogger。
+// 仅在未配置 WithLoggerProvider 时执行（provider 路径级别归 provider
+// 的装配逻辑）。执行时机在总线构造之前：此处 app.logger 尚未被用户
+// 定制，重建 TextHandler 不会丢弃用户已设置的 handler 形态。
 func (app *lynx) applyLogLevel() {
 	levelStr := LogLevelFromConfig(app.Config())
 	if levelStr == "" {

@@ -3,6 +3,7 @@ package lynx
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"syscall"
 	"time"
@@ -63,6 +64,12 @@ type Options struct {
 	// 以构造应用总线（依赖配置的总线如 watermill.NewFromConfig）及其配套
 	// 服务（如 kafka Transport）。与 WithBus 并存时 WithBus 优先。
 	BusProvider func(cfg Config) (eventbus.Bus, []Service, error) `json:"-"`
+	// LoggerProvider 非 nil 时，在配置装配与元数据解析完成后、总线构造前
+	// 由框架调用，产出应用 logger（依赖配置与 meta 的 logger，如
+	// contrib/zap 的 NewLogger）。配置了 provider 时框架跳过 logging.level
+	// 的默认 TextHandler 重建（applyLogLevel）——级别归 provider 自己的
+	// 装配逻辑（zap 侧从 ctx.Config() 读取）。
+	LoggerProvider func(ctx AppContext) (*slog.Logger, error) `json:"-"`
 	// ConfigWatch 启用配置文件热更新（WithConfigWatch）：Run 启动期注册
 	// viper WatchConfig，文件变更时框架经总线发布 lynx.config.updated
 	// 事件（eventbus.ConfigUpdatedTopic），后续 Config() 读取返回新值；
@@ -112,7 +119,7 @@ type Options struct {
 	// os.Args 与工作目录不参与配置。用于测试与宿主进程注入。
 	Config Config `json:"-"`
 	// isolated 标记 WithIsolated：应用不触碰进程级全局（构造时不执行
-	// eventbus.SetDefault 与 lynx.Set，SetLogger/日志级别不同步
+	// eventbus.SetDefault 与 lynx.Set，logger provider/日志级别不同步
 	// slog.SetDefault）。用于同进程多 App（并行测试、宿主内嵌）场景。
 	isolated bool
 }
@@ -368,6 +375,25 @@ func WithBusProvider(fn func(cfg Config) (eventbus.Bus, []Service, error)) Optio
 	}
 }
 
+// WithLoggerProvider 设置依赖配置的 logger 构造器：框架在构造序列内、
+// 配置装配与元数据解析完成后以 AppContext 调用——provider 可读
+// Config()（如 logging.level）与 Context() 里的 Meta，用于依赖配置的
+// logger（如 contrib/zap 的 NewLogger，签名直接匹配可直接传入）。
+// 此前这类 logger 只能在 SetupFunc 里经 App.SetLogger 事后注入，晚于
+// 总线及其配套服务的 logger 捕获（bus/router/transport 构造期捕获
+// slog.Default() 后即冻结），导致装配期日志格式与运行期不一致；
+// provider 路径下总线构造前 logger 即已就位，从结构上消除该分裂。
+// 产出的 logger 即 app.logger 并同步 slog.SetDefault（WithIsolated
+// 时不触碰全局）；返回 nil logger 或错误均使构造失败（快失败）。
+// 配置 provider 后视为用户定制：框架跳过 logging.level 的默认
+// TextHandler 重建（级别归 provider 装配逻辑），SetLogLevel 不再代理
+// 级别调整（debug /loglevel 端点返回 501）。
+func WithLoggerProvider(fn func(ctx AppContext) (*slog.Logger, error)) Option {
+	return func(o *Options) {
+		o.LoggerProvider = fn
+	}
+}
+
 // WithConfigWatch 启用配置文件热更新（viper WatchConfig）：文件变更时
 // 框架发布 lynx.config.updated 事件（eventbus.ConfigUpdatedTopic，
 // 订阅示例见该 Topic 注释），此后 Config() 读取返回新值——订阅方收到
@@ -396,7 +422,7 @@ func WithConfig(c Config) Option {
 }
 
 // WithIsolated 使应用不触碰进程级全局状态：构造时不执行 eventbus.SetDefault
-// 与 lynx.Set，SetLogger 与日志级别应用不再同步 slog.SetDefault。用于同一
+// 与 lynx.Set，logger provider 与日志级别应用不再同步 slog.SetDefault。用于同一
 // 进程内构造多个 App（表驱动/并行测试、宿主内嵌）互不污染全局。
 // 代价：依赖全局取值的代码（eventbus.Default()、lynx.Get()、裸 slog 调用）
 // 看不到该实例，需要改用注入的 AppContext/Bus。默认关闭。

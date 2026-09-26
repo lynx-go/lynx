@@ -13,7 +13,6 @@ import (
 
 func main() {
 	runner := lynx.NewRunner(func(app lynx.App) error {
-		app.SetLogger(zap.MustNewLogger(app))
 		boot, cleanup, err := wireBootstrap(app, app.Logger())
 		if err != nil {
 			log.Fatal(err)
@@ -27,6 +26,7 @@ func main() {
 		boot.Apply(app)
 		return nil
 	},
+		lynx.WithLoggerProvider(zap.NewLogger),
 		lynx.WithBindFlagsFunc(func(f *pflag.FlagSet) {
 			f.String("addr", ":8080", "http listen address")
 			f.StringP("loglevel", "l", "debug", "log level")
