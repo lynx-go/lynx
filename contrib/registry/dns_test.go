@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -147,12 +148,14 @@ func TestDNSFallbackToHostWithPorts(t *testing.T) {
 		{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"},
 		{Protocol: ProtocolHTTPS, Address: "10.0.0.1:8443"},
 	}
-	if !equalDNSSnapshots([]Instance{{ID: inst.ID, Endpoints: inst.Endpoints}},
-		[]Instance{{ID: inst.ID, Endpoints: want}}) {
+	if !slices.Equal(inst.Endpoints, want) {
 		t.Fatalf("unexpected endpoints: %+v", inst.Endpoints)
 	}
 }
 
+// TestDNSProtocolFilterAndPortsOverride 钉住协议过滤的统一形状：查询始终
+// 解析全部已配置协议（Endpoints 全量，不因 Filter 修剪），Filter 只决定
+// 实例是否保留（实例需含该协议 Endpoint）——与 memory/consul 语义一致。
 func TestDNSProtocolFilterAndPortsOverride(t *testing.T) {
 	lookup := newFakeLookup()
 	lookup.hosts = []string{"10.0.0.1"}
@@ -162,11 +165,16 @@ func TestDNSProtocolFilterAndPortsOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || len(got[0].Endpoints) != 1 {
-		t.Fatalf("protocol filter must yield single-endpoint instance: %+v", got)
+	if len(got) != 1 {
+		t.Fatalf("protocol filter must keep the instance: %+v", got)
 	}
-	if got[0].Endpoints[0] != (Endpoint{Protocol: ProtocolGRPC, Address: "10.0.0.1:19090"}) {
-		t.Fatalf("ports override not applied: %+v", got[0].Endpoints[0])
+	want := []Endpoint{
+		{Protocol: ProtocolGRPC, Address: "10.0.0.1:19090"},
+		{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"},
+		{Protocol: ProtocolHTTPS, Address: "10.0.0.1:8443"},
+	}
+	if !slices.Equal(got[0].Endpoints, want) {
+		t.Fatalf("endpoints must be full set with ports override applied: %+v", got[0].Endpoints)
 	}
 }
 

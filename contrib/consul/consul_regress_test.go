@@ -272,7 +272,9 @@ func TestWatchIndexRewindRecovers(t *testing.T) {
 		return false
 	})
 
-	// 恢复证明 2：回绕后的目录变更仍能推送到 Next。
+	// 恢复证明 2：回绕后的目录变更仍能推送到 Next。回绕重查拿到的旧快照
+	// 与已投递内容规范相等，被会话核心抑制（不再产生重复推送）；i3 注册后
+	// 的下一次推送即包含全部三个实例。
 	inst3 := twoEndpointInstance()
 	inst3.ID = "i3"
 	inst3.Endpoints = []registry.Endpoint{
@@ -292,7 +294,7 @@ func TestWatchIndexRewindRecovers(t *testing.T) {
 	}()
 	select {
 	case s := <-nextDone:
-		if len(s) != 2 {
+		if len(s) != 3 {
 			t.Fatalf("watch must recover after index rewind, got %+v", idsOf(s))
 		}
 	case <-time.After(5 * time.Second):

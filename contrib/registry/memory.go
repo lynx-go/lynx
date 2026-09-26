@@ -113,8 +113,8 @@ func (m *Memory) Watch(ctx context.Context, name string, filter Filter) (Watcher
 	if m.closed {
 		return nil, errClosed
 	}
-	w := &memoryWatcher{m: m, name: name, filter: filter}
-	w.base = NewWatcherBase[Instance](ctx, func() {
+	w := &memoryWatcher{m: m, name: name}
+	w.session = NewWatcherSession(ctx, name, filter, func() {
 		m.mu.Lock()
 		if set, ok := m.watchers[name]; ok {
 			delete(set, w)
@@ -133,15 +133,16 @@ func (m *Memory) Watch(ctx context.Context, name string, filter Filter) (Watcher
 	return w, nil
 }
 
-// notifyLocked 向该服务的全部 Watcher 推送各自的过滤后快照。
+// notifyLocked 向该服务的全部 Watcher 提交全量快照（过滤 + 规范相等 +
+// 推送由 WatcherSession 统一完成；无变化写入不再唤醒消费者）。
 // 调用方必须持有 m.mu（写锁）。
 func (m *Memory) notifyLocked(name string) {
 	for w := range m.watchers[name] {
-		w.base.Push(m.snapshotLocked(w.name, w.filter))
+		w.session.Submit(m.rawSnapshotLocked(w.name))
 	}
 }
 
-// snapshotLocked 返回过滤后的深拷贝快照。调用方必须持有 m.mu。
+// snapshotLocked 返回过滤后的深拷贝快照（读路径）。调用方必须持有 m.mu。
 func (m *Memory) snapshotLocked(name string, filter Filter) []Instance {
 	set := m.services[name]
 	out := make([]Instance, 0, len(set))
@@ -149,6 +150,17 @@ func (m *Memory) snapshotLocked(name string, filter Filter) []Instance {
 		if MatchFilter(filter, inst) {
 			out = append(out, copyInstance(inst))
 		}
+	}
+	return out
+}
+
+// rawSnapshotLocked 返回未过滤的深拷贝快照（WatcherSession 提交入口：
+// 过滤统一在会话核心后置应用）。调用方必须持有 m.mu。
+func (m *Memory) rawSnapshotLocked(name string) []Instance {
+	set := m.services[name]
+	out := make([]Instance, 0, len(set))
+	for _, inst := range set {
+		out = append(out, copyInstance(inst))
 	}
 	return out
 }
@@ -164,31 +176,31 @@ func copyInstance(in Instance) Instance {
 	return out
 }
 
-// memoryWatcher 是 Memory.Watch 返回的 Watcher。
+// memoryWatcher 是 Memory.Watch 返回的 Watcher：触发为写入侧推送
+// （notifyLocked → session.Submit），会话核心负责过滤/相等/推送。
 type memoryWatcher struct {
-	m      *Memory
-	name   string
-	filter Filter
-	base   *WatcherBase[Instance]
+	m       *Memory
+	name    string
+	session *WatcherSession
 }
 
 // Next 首次调用立即返回当前快照（含空列表）；之后阻塞至集合变化、
 // ctx 取消或 Stop。
 func (w *memoryWatcher) Next() ([]Instance, error) {
-	return w.base.Next(w.firstSnapshot)
+	return w.session.Next(w.firstSnapshot)
 }
 
-// firstSnapshot 在锁内取快照并排空积压通知：先于首次 Next 发生的变化
-// 已包含在当前快照中，不应再重复推送。
-func (w *memoryWatcher) firstSnapshot() ([]Instance, error) {
+// firstSnapshot 在锁内取全量快照并排空积压通知：先于首次 Next 发生的变化
+// 已包含在当前快照中，不应再重复推送；过滤由会话核心后置应用。
+func (w *memoryWatcher) firstSnapshot(context.Context) ([]Instance, error) {
 	w.m.mu.RLock()
 	defer w.m.mu.RUnlock()
-	snap := w.m.snapshotLocked(w.name, w.filter)
-	w.base.Drain()
+	snap := w.m.rawSnapshotLocked(w.name)
+	w.session.Drain()
 	return snap, nil
 }
 
 // Stop 停止 Watcher 并从 Memory 注销；幂等，返回 nil。
 func (w *memoryWatcher) Stop() error {
-	return w.base.Stop()
+	return w.session.Stop()
 }

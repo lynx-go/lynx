@@ -359,7 +359,9 @@ Resolver 带进程内缓存：每个服务名一条缓存 + 一个后台 watch g
 （Watch 失败回退轮询）。Watch 断开期间继续提供最后一次成功快照
 （stale-while-revalidate），快照年龄超过 `WithStaleMaxAge`（默认 60s
 = 2 × 默认 `heartbeat_ttl`）即丢弃并返回 `ErrNoInstance`——分区后
-不会无限供应死实例。
+不会无限供应死实例。stale 丢弃不通知 `Subscribe` 订阅者（last-known
+语义），后端恢复后的下一次推送自动送达；订阅快照为深拷贝副本，且与
+已投递快照规范相等的变化不重复推送。
 
 ### HTTP
 
@@ -406,7 +408,8 @@ gRPC resolver 按 5s 周期把 Resolver 缓存翻译成连接地址；解析出�
   推送），按排序后比较去重，避免每轮轮询触发虚假的地址抖动。
 
 > **订阅（v1.13+）**：`Resolver.Subscribe(name, filter)` 返回缓存变更订阅
-> （`Next` 阻塞至变化，快照已按 filter 过滤，与 `Watch`/`GetAll` 语义一致）；
+> （`Next` 阻塞至变化，快照已按 filter 过滤并深拷贝为规范快照，与
+> `Watch`/`GetAll` 语义一致；规范相等的变化不重复推送）；
 > gRPC 侧由订阅驱动（异常时 30s 兜底轮询），实例增删在下一次推送即反映到
 > 连接地址，不再等一个轮询周期。
 
@@ -421,10 +424,12 @@ gRPC resolver 按 5s 周期把 Resolver 缓存翻译成连接地址；解析出�
 
 `backend: dns` 时 `NewBackendFromConfig` 返回 `(nil, dnsDiscovery, nil)`
 ——DNS **只读**，没有 Registrar，不要 `Apply`。查询名为
-`{name}.{namespace}.{domain}`；端口先查 SRV（`_http._tcp.…` 等，按
-协议选服务标签），无 SRV 再查 A/AAAA，端口取自 `registry.dns.ports`
+`{name}.{namespace}.{domain}`；端口先查 SRV（`_http._tcp.…` 等，
+**始终解析全部已配置协议**——协议过滤只决定实例是否保留，返回的
+Endpoints 为全量），无 SRV 再查 A/AAAA，端口取自 `registry.dns.ports`
 （缺省 http=8080、https=8443、grpc=9090）。Watch 即轮询
-（`discovery.poll_interval`），NXDOMAIN 负缓存 TTL 钳制在 [5s, 30s]。
+（`discovery.poll_interval`），NXDOMAIN 推空快照（服务下线立即生效）
+并进入负缓存钳制 [5s, 30s]。
 
 **ClusterIP vs Headless**：
 

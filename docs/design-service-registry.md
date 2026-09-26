@@ -593,6 +593,14 @@ func EndpointOf(inst Instance, protocol string) (Endpoint, error)
 - `Get` 在缓存未填充时同步 `GetService` 一次。
 - Watch 默认 **consistent read**（Consul `QueryOptions.AllowStale=false`）。打开 `registry.consul.allow_stale` 才允许陈旧读。
 
+后端 Watcher 的会话语义（首快照基线、规范相等、后置过滤、失败退避）统一由
+`registry.WatcherSession` 承载：查询闭包返回**未过滤全量快照**，`MatchFilter`
+后置应用；快照规范化为全字段、顺序无关形态（实例按 ID、Endpoints/Tags 排序），
+与已投递快照相等的变化**不推送**（无变化写入 / 无关 index 跳变不唤醒消费者）。
+DNS 与 Consul 只提供查询闭包与节奏策略（DNS 负缓存用固定钳制值，Consul 用
+1s–30s 倍增）。`Resolver.Subscribe` 推送同一规范形态的**深拷贝副本**（与
+`Get` 的「快照副本」契约一致）。
+
 #### URI 语法（scheme = `registry`，仅此一种）
 
 **HTTP**（标准 URL，服务名在 Host）：
@@ -757,15 +765,15 @@ registry:
   - `ttl`：`Heartbeat` → `Agent.UpdateTTL`；`DeregisterCriticalServiceAfter=60s`。gRPC-only **必须**用这个（加上 `OnDrain` Deregister）。
   - `http`：`http://{advertise}{path}`，推荐 `/healthz/readiness`。Heartbeat no-op。有 HTTP 口时的默认。
   - `grpc`：打 `grpc.health.v1`，摘流最多滞后 `HealthCheckPeriod`（10s）。**不得**作为唯一摘流手段。
-- Watch：blocking `Health.Service(..., QueryOptions{WaitIndex, AllowStale: 配置值})`。默认 `AllowStale=false`。
+- Watch：blocking `Health.Service(..., QueryOptions{WaitIndex, AllowStale: 配置值})`（`WatcherSession` 长轮询模式；index 回绕重置 WaitIndex，内容无变化的 index 跳变被规范相等抑制）。默认 `AllowStale=false`。
 - 排水写路径是 **delete**，不是改成 draining 状态。
 
 ### DNS 后端要点
 
 - 只实现 `Discovery`。`NewBackendFromConfig` 在 `backend: dns` 时返回 `(nil, dnsDiscovery, nil)`。**不要** `Apply` Registrar。
 - 查询名：`{name}.{namespace}.{domain}`。
-- **端口**：先查 SRV（`_http._tcp.{name}.{ns}.{domain}` 等，按 Filter.Protocol 选服务标签 `_http`/`_https`/`_grpc`）。有 SRV 则用记录里的 port + target。无 SRV 再查 A/AAAA，端口来自 `registry.dns.ports`（缺省 http=8080、https=8443、grpc=9090）。一条 A 记录 + 多协议 = 多条 Endpoint（同一 host、不同 port）。
-- Watch = poll；NXDOMAIN 负缓存 TTL 钳制 [5s, 30s]。
+- **端口**：先查 SRV（`_http._tcp.{name}.{ns}.{domain}` 等，**始终解析全部已配置协议**；Filter.Protocol 由会话核心后置应用，只决定实例是否保留，Endpoints 返回全量、不因过滤修剪）。有 SRV 则用记录里的 port + target。无 SRV 再查 A/AAAA，端口来自 `registry.dns.ports`（缺省 http=8080、https=8443、grpc=9090）。一条 A 记录 + 多协议 = 多条 Endpoint（同一 host、不同 port）。
+- Watch = poll；NXDOMAIN 推空快照（服务下线立即生效）并进入负缓存钳制 [5s, 30s]。
 - 无 version/tag/weight；`IncludeUnhealthy` 对 DNS 无意义（全部视为 Passing）。
 - **ClusterIP Service**：通常只有一个 A（Service VIP），kube-proxy 已经在做 LB。此时 Resolver + Picker 是冗余的，文档写明「直接拨 `http://user-service` 即可」。**Headless**（`clusterIP: None`）才有多条 A，Picker 才有意义。
 - 覆盖 ROADMAP「K8s 以 DNS 为主」：多数集群用 ClusterIP、不用本模块；headless 或多端口才值得开 DNS Discovery。

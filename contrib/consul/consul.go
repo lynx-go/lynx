@@ -357,18 +357,29 @@ func (c *Client) GetService(ctx context.Context, name string, filter registry.Fi
 	if name == "" {
 		return nil, registry.ErrBadName
 	}
-	instances, _, err := c.query(ctx, name, filter, 0, 0)
-	return instances, err
+	instances, _, err := c.query(ctx, name, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := instances[:0]
+	for _, inst := range instances {
+		if registry.MatchFilter(filter, inst) {
+			out = append(out, inst)
+		}
+	}
+	return out, nil
 }
 
-// Watch 返回 blocking-query Watcher：首次 Next 立即推当前快照（含空
-// 列表），之后 WaitIndex 推进、集合变化即推送；错误按 1s–30s 退避重连。
+// Watch 返回 blocking-query Watcher（WatcherSession 长轮询模式）：首次
+// Next 立即推当前快照（含空列表），之后 WaitIndex 推进、规范变化即推送；
+// 错误按 1s–30s 退避重连；Filter 由会话核心后置应用（查询返回全量，三
+// 后端返回形状一致）。
 func (c *Client) Watch(ctx context.Context, name string, filter registry.Filter) (registry.Watcher, error) {
 	if name == "" {
 		return nil, registry.ErrBadName
 	}
-	w := &watcher{c: c, name: name, filter: filter}
-	w.base = registry.NewWatcherBase[registry.Instance](ctx, func() {
+	w := &watcher{c: c, name: name}
+	w.session = registry.NewWatcherSession(ctx, name, filter, func() {
 		c.mu.Lock()
 		delete(c.watchers, w)
 		c.mu.Unlock()
@@ -383,12 +394,16 @@ func (c *Client) Watch(ctx context.Context, name string, filter registry.Filter)
 	}
 	c.watchers[w] = struct{}{}
 	c.mu.Unlock()
-	go w.loop()
+	go w.session.RunPull(w.query, registry.PullPolicy{
+		MinDelay: watchBackoffMin,
+		MaxDelay: watchBackoffMax,
+	})
 	return w, nil
 }
 
-// query 执行一次健康目录查询：waitIndex=0 为非阻塞读，否则 blocking。
-func (c *Client) query(ctx context.Context, name string, filter registry.Filter, waitIndex uint64, waitTime time.Duration) ([]registry.Instance, *api.QueryMeta, error) {
+// query 执行一次健康目录查询（不经过 Filter：过滤由会话核心/GetService
+// 后置应用）：waitIndex=0 为非阻塞读，否则 blocking。
+func (c *Client) query(ctx context.Context, name string, waitIndex uint64, waitTime time.Duration) ([]registry.Instance, *api.QueryMeta, error) {
 	qo := (&api.QueryOptions{
 		WaitIndex:  waitIndex,
 		AllowStale: c.allowStale,
@@ -406,9 +421,7 @@ func (c *Client) query(ctx context.Context, name string, filter registry.Filter,
 		if !ok {
 			continue // 无可拨号地址：已 Warn，跳过（RC-03）
 		}
-		if registry.MatchFilter(filter, inst) {
-			instances = append(instances, inst)
-		}
+		instances = append(instances, inst)
 	}
 	return instances, meta, nil
 }
@@ -519,12 +532,12 @@ func writeCtx(ctx context.Context) *api.QueryOptions {
 	return (&api.QueryOptions{}).WithContext(ctx)
 }
 
-// watcher 是 blocking-query Watcher。
+// watcher 是 blocking-query Watcher（WatcherSession 长轮询模式：过滤/
+// 规范相等/退避由会话核心承载）。
 type watcher struct {
-	c      *Client
-	name   string
-	filter registry.Filter
-	base   *registry.WatcherBase[registry.Instance]
+	c       *Client
+	name    string
+	session *registry.WatcherSession
 
 	mu        sync.Mutex
 	lastIndex uint64
@@ -533,7 +546,7 @@ type watcher struct {
 // Next 首次调用立即查询并返回当前快照（含空列表）；之后阻塞至集合变化、
 // ctx 取消或 Stop。
 func (w *watcher) Next() ([]registry.Instance, error) {
-	return w.base.Next(w.firstSnapshot)
+	return w.session.Next(w.firstSnapshot)
 }
 
 // firstSnapshot 查询首快照并排空期间 loop 可能已推入的重复快照。
@@ -548,13 +561,13 @@ func (w *watcher) Next() ([]registry.Instance, error) {
 //
 // 已知边界：index 单调假设被破坏（stale 读到新 index + 旧数据）时仍可能
 // 丢一次推送，仅 allow_stale=true 且极小概率，接受。
-func (w *watcher) firstSnapshot() ([]registry.Instance, error) {
-	instances, meta, err := w.c.query(w.base.Ctx(), w.name, w.filter, 0, 0)
+func (w *watcher) firstSnapshot(ctx context.Context) ([]registry.Instance, error) {
+	instances, meta, err := w.c.query(ctx, w.name, 0, 0)
 	if err != nil {
 		return nil, err
 	}
 	w.mu.Lock()
-	w.base.Drain()
+	w.session.Drain()
 	w.lastIndex = meta.LastIndex
 	w.mu.Unlock()
 	return instances, nil
@@ -562,60 +575,35 @@ func (w *watcher) firstSnapshot() ([]registry.Instance, error) {
 
 // Stop 停止 Watcher 并从 Client 注销；幂等，返回 nil。
 func (w *watcher) Stop() error {
-	return w.base.Stop()
+	return w.session.Stop()
 }
 
-// loop 执行 blocking query：WaitIndex 推进，每次返回即推送（Consul 仅在
-// 集合变化或超时后返回）；错误按 1s–30s 指数退避重连。
-func (w *watcher) loop() {
-	ctx := w.base.Ctx()
-	backoff := watchBackoffMin
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.base.Done():
-			return
-		default:
-		}
+// query 是长轮询查询闭包（RunPull 调用）：WaitIndex 推进，每次返回即提交
+// （Consul 仅在集合变化或 WaitTime 超时后返回）；内容相等的返回由会话核心
+// 抑制推送。错误由 RunPull 按 1s–30s 退避重连。
+func (w *watcher) query(ctx context.Context) ([]registry.Instance, error) {
+	w.mu.Lock()
+	index := w.lastIndex
+	w.mu.Unlock()
 
-		w.mu.Lock()
-		index := w.lastIndex
-		w.mu.Unlock()
-
-		instances, meta, err := w.c.query(ctx, w.name, w.filter, index, watchWaitTime)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			timer := time.NewTimer(backoff)
-			select {
-			case <-w.base.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-			backoff = min(backoff*2, watchBackoffMax)
-			continue
-		}
-		backoff = watchBackoffMin
-
-		w.mu.Lock()
-		// index 回绕 sanity check（RC-05，Consul 官方 blocking query 模式）：
-		// Raft index 回退（leader 变更 / 快照恢复）后，以过期的 WaitIndex
-		// 查询会整轮阻塞到 WaitTime 超时、且推重复快照。检测到
-		// LastIndex < 本次使用的 WaitIndex 时重置为 0 立即重查（不 sleep）。
-		if meta.LastIndex < index {
-			w.lastIndex = 0
-			w.mu.Unlock()
-			continue
-		}
-		if meta.LastIndex == w.lastIndex {
-			w.mu.Unlock()
-			continue // WaitTime 超时返回同 index：无变化，不推送
-		}
-		w.lastIndex = meta.LastIndex
-		w.mu.Unlock()
-		w.base.Push(instances)
+	instances, meta, err := w.c.query(ctx, w.name, index, watchWaitTime)
+	if err != nil {
+		return nil, err
 	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// index 回绕 sanity check（RC-05，Consul 官方 blocking query 模式）：
+	// Raft index 回退（leader 变更 / 快照恢复）后，以过期的 WaitIndex
+	// 查询会整轮阻塞到 WaitTime 超时、且推重复快照。检测到
+	// LastIndex < 本次使用的 WaitIndex 时重置为 0，下一轮立即重查。
+	if meta.LastIndex < index {
+		w.lastIndex = 0
+		return instances, nil
+	}
+	if meta.LastIndex == w.lastIndex {
+		return instances, nil // WaitTime 超时同 index：内容不变，提交后被相等抑制
+	}
+	w.lastIndex = meta.LastIndex
+	return instances, nil
 }

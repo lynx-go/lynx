@@ -392,17 +392,18 @@ func (e *cacheEntry) removeSub(id uint64) {
 // 轮询维护，同样触发通知）。契约与 Discovery.Watcher 同构：
 //
 //   - 缓存已填充时首个 Next 立即返回当前快照；未填充则等待首次 store；
-//   - 后续 Next 返回最近一次快照变化；慢消费者不排队陈旧快照（推送
+//   - 后续 Next 返回最近一次规范快照变化；慢消费者不排队陈旧快照（推送
 //     缓冲 1 最新替换，总是最新）；空切片同样是合法推送（服务下线立即
-//     生效）；
-//   - 快照已按 filter 过滤（MatchFilter 语义），与 Watch/GetAll 读路径
-//     一致；每个服务名共享一条缓存与推送源，过滤在订阅边界应用；
-//   - 返回切片只读（不深拷贝，Instance 内部切片与缓存共享）；
+//     生效）；与已投递快照规范相等的变化不重复推送；
+//   - 快照已按 filter 过滤（MatchFilter 语义）并深拷贝为规范快照（与
+//     Get 的「快照副本，调用方可原地改」契约一致），与 Watch/GetAll
+//     读路径语义一致；每个服务名共享一条缓存与推送源，过滤在订阅边界应用；
 //   - Stop 退订且幂等，之后 Next 返回 ErrWatcherStopped；
 //     Resolver.Close 后 Next 返回 ErrResolverClosed。
 //
-// stale 丢弃（快照超龄）不触发通知：与 gRPC resolver"解析出错保留
-// 上次状态"的惯例一致，由消费方自行处理。
+// stale 丢弃（快照超龄）不触发通知（last-known 语义）：与 gRPC resolver
+// "解析出错保留上次状态"的惯例一致，由消费方自行处理；后端恢复后下一次
+// store 自动推送，订阅不丢。
 func (r *Resolver) Subscribe(name string, filter Filter) (Watcher, error) {
 	if name == "" {
 		return nil, ErrBadName
@@ -421,6 +422,10 @@ type subscription struct {
 	id     uint64
 	filter Filter
 	base   *WatcherBase[Instance]
+
+	mu       sync.Mutex
+	last     []Instance // 已投递的最新规范快照（深拷贝副本）
+	hasState bool       // 是否已建立基线（未建立时首次推送必投递）
 }
 
 // Next 阻塞至缓存变化并返回已过滤的最新快照（语义见 Subscribe）。
@@ -433,9 +438,20 @@ func (s *subscription) Next() ([]Instance, error) {
 	return insts, err
 }
 
-// push 应用订阅 Filter 后推送（store 持缓存锁调用；Push 非阻塞）。
+// push 应用订阅 Filter、深拷贝为规范快照后推送（store 持缓存锁调用；
+// Push 非阻塞）：与 Get 的「快照副本」契约一致，消除订阅者原地修改污染
+// 共享缓存；与已投递快照规范相等则不推送。
 func (s *subscription) push(insts []Instance) {
-	s.base.Push(filterInstances(s.filter, insts))
+	snap := canonicalSnapshot(filterInstances(s.filter, insts))
+	s.mu.Lock()
+	if s.hasState && snapshotsEqual(s.last, snap) {
+		s.mu.Unlock()
+		return
+	}
+	s.last = snap
+	s.hasState = true
+	s.mu.Unlock()
+	s.base.Push(snap)
 }
 
 // Stop 注销订阅并唤醒阻塞中的 Next；幂等，返回 nil。

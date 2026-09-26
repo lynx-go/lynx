@@ -7,7 +7,6 @@ import (
 	"net"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -134,26 +133,33 @@ func (d *dnsDiscovery) GetService(ctx context.Context, name string, filter Filte
 	if name == "" {
 		return nil, ErrBadName
 	}
-	instances, err := d.resolve(ctx, name, filter)
+	instances, err := d.resolveRaw(ctx, name)
 	if isNotFound(err) {
 		return []Instance{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return instances, nil
+	return filterInstances(filter, instances), nil
 }
 
-// Watch 返回轮询式 Watcher：首次 Next 立即解析并推送当前快照（含空
-// 列表），之后每 poll_interval 重新解析，集合变化才推送；NXDOMAIN 推送
-// 空快照并按负缓存钳制 [5s, 30s] 放慢轮询，其它查询错误保留旧快照。
+// Watch 返回轮询式 Watcher（WatcherSession 拉模式）：首次 Next 立即解析
+// 并推送当前快照（含空列表），之后每 poll_interval 重新解析，规范变化才
+// 推送；NXDOMAIN 推送空快照并按负缓存钳制 [5s, 30s] 放慢轮询，其它查询
+// 错误保留旧快照并按同一区间退避。查询始终解析全部已配置协议，Filter
+// 由会话核心后置应用（三后端返回形状一致）。
 func (d *dnsDiscovery) Watch(ctx context.Context, name string, filter Filter) (Watcher, error) {
 	if name == "" {
 		return nil, ErrBadName
 	}
-	w := &dnsWatcher{d: d, name: name, filter: filter}
-	w.base = NewWatcherBase[Instance](ctx, nil)
-	go w.loop()
+	w := &dnsWatcher{d: d, name: name}
+	w.session = NewWatcherSession(ctx, name, filter, nil)
+	go w.session.RunPull(w.query, PullPolicy{
+		Interval:   d.pollInterval,
+		MinDelay:   negativeCacheDelay(d.pollInterval),
+		MaxDelay:   negativeCacheDelay(d.pollInterval),
+		EmptyDelay: negativeCacheDelay(d.pollInterval),
+	})
 	return w, nil
 }
 
@@ -168,12 +174,10 @@ func (d *dnsDiscovery) queryName(name string) string {
 	return strings.Join(parts, ".")
 }
 
-// protocols 返回本次解析要查的协议集合：Filter.Protocol 非空则只查它，
-// 否则查端口表中的全部协议。
-func (d *dnsDiscovery) protocols(filter Filter) []string {
-	if filter.Protocol != "" {
-		return []string{filter.Protocol}
-	}
+// protocols 返回本次解析要查的协议集合：始终为端口表中的全部协议——
+// Filter 由调用方后置应用（Watch 走 WatcherSession，GetService 走
+// filterInstances），保证返回的 Endpoints 形状与 memory/consul 一致。
+func (d *dnsDiscovery) protocols() []string {
 	out := make([]string, 0, len(d.ports))
 	for protocol := range d.ports {
 		out = append(out, protocol)
@@ -182,28 +186,11 @@ func (d *dnsDiscovery) protocols(filter Filter) []string {
 	return out
 }
 
-// resolve 执行一次完整解析：SRV 优先，无 SRV（NXDOMAIN）回落 A/AAAA +
-// 端口表。返回的实例按 ID 排序，保证快照可比较。结果再过一遍
-// MatchFilter：DNS 实例无 Tags，带 Tags 的 Filter 恒不匹配（与 memory
-// 后端语义一致）。
-func (d *dnsDiscovery) resolve(ctx context.Context, name string, filter Filter) ([]Instance, error) {
-	instances, err := d.resolveRaw(ctx, name, filter)
-	if err != nil {
-		return nil, err
-	}
-	out := instances[:0]
-	for _, inst := range instances {
-		if MatchFilter(filter, inst) {
-			out = append(out, inst)
-		}
-	}
-	return out, nil
-}
-
-// resolveRaw 是不经过 MatchFilter 过滤的解析实现（过滤在 resolve 统一做）。
-func (d *dnsDiscovery) resolveRaw(ctx context.Context, name string, filter Filter) ([]Instance, error) {
+// resolveRaw 执行一次完整解析（不经过 MatchFilter）：SRV 优先，无 SRV
+// （NXDOMAIN）回落 A/AAAA + 端口表。返回的实例按 ID 排序，保证快照可比较。
+func (d *dnsDiscovery) resolveRaw(ctx context.Context, name string) ([]Instance, error) {
 	qname := d.queryName(name)
-	protocols := d.protocols(filter)
+	protocols := d.protocols()
 
 	instances, err := d.resolveSRV(ctx, qname, protocols)
 	if err == nil {
@@ -321,90 +308,43 @@ func negativeCacheDelay(d time.Duration) time.Duration {
 	return min(max(d, negativeCacheMin), negativeCacheMax)
 }
 
-// equalDNSSnapshots 比较两份 DNS 快照（实例已由 resolve 排序，DNS 实例
-// 无 Tags/Meta/Weight，比较 Name/ID/Status/Endpoints 即可）。
-func equalDNSSnapshots(a, b []Instance) bool {
-	return slices.EqualFunc(a, b, func(x, y Instance) bool {
-		return x.Name == y.Name && x.ID == y.ID && x.Status == y.Status &&
-			slices.Equal(x.Endpoints, y.Endpoints)
-	})
-}
-
-// dnsWatcher 是轮询式 Watcher（Watch = poll）。
+// dnsWatcher 是轮询式 Watcher（Watch = poll；会话核心承载过滤/相等/退避）。
 type dnsWatcher struct {
-	d      *dnsDiscovery
-	name   string
-	filter Filter
-	base   *WatcherBase[Instance]
-
-	mu   sync.Mutex
-	last []Instance // 已投递的最新快照（首快照或轮询推送）
+	d       *dnsDiscovery
+	name    string
+	session *WatcherSession
 }
 
 // Next 首次调用立即解析并返回当前快照（含空列表）；之后阻塞至集合变化、
 // ctx 取消或 Stop。
 func (w *dnsWatcher) Next() ([]Instance, error) {
-	return w.base.Next(w.firstSnapshot)
+	return w.session.Next(w.firstSnapshot)
 }
 
 // firstSnapshot 解析首快照并排空首快照前轮询 goroutine 可能已推入的
 // 重复快照；NXDOMAIN 记为合法空快照。
-func (w *dnsWatcher) firstSnapshot() ([]Instance, error) {
-	snap, err := w.d.resolve(w.base.Ctx(), w.name, w.filter)
+func (w *dnsWatcher) firstSnapshot(ctx context.Context) ([]Instance, error) {
+	snap, err := w.d.resolveRaw(ctx, w.name)
 	if err != nil && !isNotFound(err) {
 		return nil, err
 	}
 	if isNotFound(err) {
 		snap = []Instance{}
 	}
-	w.mu.Lock()
-	w.last = snap
-	w.base.Drain()
-	w.mu.Unlock()
+	w.session.Drain()
 	return snap, nil
+}
+
+// query 是拉模式查询闭包：NXDOMAIN 映射为合法空快照（服务下线立即生效）。
+func (w *dnsWatcher) query(ctx context.Context) ([]Instance, error) {
+	snap, err := w.d.resolveRaw(ctx, w.name)
+	if isNotFound(err) {
+		return []Instance{}, nil
+	}
+	return snap, err
 }
 
 // Stop 停止轮询；幂等，返回 nil。
 func (w *dnsWatcher) Stop() error {
-	return w.base.Stop()
-}
-
-// loop 按 poll_interval 轮询：变化才推送；NXDOMAIN 推空快照并放慢到
-// 负缓存钳制区间；其它查询错误保留旧快照、不推送。
-func (w *dnsWatcher) loop() {
-	ctx := w.base.Ctx()
-	delay := w.d.pollInterval
-	for {
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-w.base.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-
-		snap, err := w.d.resolve(ctx, w.name, w.filter)
-		notFound := isNotFound(err)
-		if err != nil && !notFound {
-			// 查询失败：保留旧快照，负缓存钳制后重试。
-			delay = negativeCacheDelay(w.d.pollInterval)
-			continue
-		}
-		if notFound {
-			snap = []Instance{}
-			delay = negativeCacheDelay(w.d.pollInterval)
-		} else {
-			delay = w.d.pollInterval
-		}
-
-		w.mu.Lock()
-		if !equalDNSSnapshots(w.last, snap) {
-			w.last = snap
-			w.base.Push(snap)
-		}
-		w.mu.Unlock()
-	}
+	return w.session.Stop()
 }
