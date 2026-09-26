@@ -75,6 +75,9 @@ type Options struct {
 	// TLSConfig 非 nil 时启用 TLS 传输（credentials.NewTLS），与 HTTP 侧
 	// WithTLSConfig 语义对齐。
 	TLSConfig *tls.Config
+	// DisableRequestID 关闭内置 request_id/user_id 解析与回写拦截器
+	// （缺省安装，与 HTTP 侧 WithDisableRequestID 对称）。
+	DisableRequestID bool
 }
 
 // Option 用于配置 gRPC 服务 Options 的选项函数。
@@ -177,6 +180,15 @@ func WithHealthCheckTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithDisableRequestID 关闭内置 request_id/user_id 解析与回写拦截器
+// （缺省安装）：关闭后不再从 incoming metadata 还原、不再生成 UUID、也
+// 不回写响应 metadata。与 HTTP 侧 WithDisableRequestID 对称。
+func WithDisableRequestID() Option {
+	return func(o *Options) {
+		o.DisableRequestID = true
+	}
+}
+
 // WithRequestLog 控制内置 gRPC 请求日志拦截器（缺省 true 保持兼容，
 // SC-07）：false 时每 RPC 不再产生两条日志。与 HTTP 侧差异：HTTP 的
 // 请求日志默认关闭且为 Debug 级，gRPC 历史行为默认 Info 级全开——
@@ -259,14 +271,17 @@ func NewServer(opts ...Option) *Server {
 	}
 	// Recovery 在最外层：链内任意一环（含用户拦截器）panic 都能被恢复，
 	// 恢复时记录 panic 值 + 调用栈并返回通用错误（SC-04/SC-06）。
-	// RequestID 还原紧随其后（与 HTTP 侧 Recovery → RequestID 推荐链
-	// 一致），使后续请求日志与用户拦截器都能拿到 request_id/user_id。
+	// RequestID 解析紧随其后（与 HTTP 侧 Recovery → RequestID 推荐链
+	// 一致），使后续请求日志与用户拦截器都能拿到 request_id/user_id；
+	// WithDisableRequestID 可关闭（与 HTTP 侧对称）。
 	// Bus 注入在请求时读取 s.bus（Init 后可用），供 Topic API 经 Context 解析。
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		interceptor.RecoveryWithLogger(options.Logger),
-		interceptor.RequestIDPropagation(),
-		s.injectBusUnary(),
 	}
+	if !options.DisableRequestID {
+		unaryInterceptors = append(unaryInterceptors, interceptor.RequestIDPropagation())
+	}
+	unaryInterceptors = append(unaryInterceptors, s.injectBusUnary())
 	if options.RequestLog {
 		unaryInterceptors = append(unaryInterceptors,
 			interceptor.LoggingWithLevel(options.Logger, options.RequestLogLevel))
@@ -276,9 +291,11 @@ func NewServer(opts ...Option) *Server {
 	// 没有内置保护，不加拦截器会直接崩溃整个进程。
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		interceptor.RecoveryStreamWithLogger(options.Logger),
-		interceptor.RequestIDPropagationStream(),
-		s.injectBusStream(),
 	}
+	if !options.DisableRequestID {
+		streamInterceptors = append(streamInterceptors, interceptor.RequestIDPropagationStream())
+	}
+	streamInterceptors = append(streamInterceptors, s.injectBusStream())
 	if options.RequestLog {
 		streamInterceptors = append(streamInterceptors,
 			interceptor.LoggingStreamWithLevel(options.Logger, options.RequestLogLevel))

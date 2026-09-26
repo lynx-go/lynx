@@ -12,7 +12,10 @@ type Middleware func(http.Handler) http.Handler
 
 // WithMiddleware registers middlewares applied to the server's handler in
 // declaration order: the first declared middleware is the outermost. The
-// final chain is: otel instrumentation -> request log -> bus inject -> middlewares -> handler.
+// final chain is: otel instrumentation -> request log -> bus inject ->
+// request_id/user_id propagation -> middlewares -> handler. The propagation
+// middleware therefore wraps the whole user chain (a user-declared Recovery
+// runs inside it and its panic logs carry request_id).
 func WithMiddleware(middlewares ...Middleware) Option {
 	return func(o *Options) {
 		o.Middlewares = append(o.Middlewares, middlewares...)

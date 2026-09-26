@@ -60,6 +60,34 @@ func TestAttrsFromValues(t *testing.T) {
 	}
 }
 
+// TestResolveInbound：合法 request_id 沿用；缺失/非法生成新值（返回给
+// 调用方回写）；user_id 非法丢弃（不生成）。
+func TestResolveInbound(t *testing.T) {
+	rid, attrs := ResolveInbound("rid-1", "user-1")
+	if rid != "rid-1" {
+		t.Errorf("ResolveInbound(valid) rid = %q, want rid-1", rid)
+	}
+	if len(attrs) != 2 {
+		t.Fatalf("attrs = %v, want 2", attrs)
+	}
+
+	rid, attrs = ResolveInbound("bad id", "bad user")
+	if !ValidPropagationValue(rid) || rid == "bad id" {
+		t.Errorf("invalid request_id not regenerated: %q", rid)
+	}
+	if len(attrs) != 1 || attrs[0].Key != logging.FieldRequestID {
+		t.Errorf("attrs = %v, want only regenerated request_id", attrs)
+	}
+
+	rid, attrs = ResolveInbound("", "")
+	if !ValidPropagationValue(rid) {
+		t.Errorf("missing request_id not generated: %q", rid)
+	}
+	if len(attrs) != 1 || attrs[0].Key != logging.FieldRequestID {
+		t.Errorf("attrs = %v, want only request_id (user_id is never generated)", attrs)
+	}
+}
+
 // TestRequestIDFrom：注入后取值，未注入为空串。
 func TestRequestIDFrom(t *testing.T) {
 	if got := RequestIDFrom(context.Background()); got != "" {

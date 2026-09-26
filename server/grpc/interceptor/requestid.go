@@ -2,7 +2,6 @@ package interceptor
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/lynx-go/lynx/internal/serverkit"
 	"github.com/lynx-go/lynx/logging"
@@ -10,56 +9,53 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-// RequestIDPropagation 返回把 incoming metadata 中的 x-request-id/x-user-id
-// 还原为日志属性的一元拦截器：lynx grpc client（client/grpc）的传播
-// 拦截器把 ctx 日志属性写入 outgoing metadata，本拦截器在服务端对称还原，
-// 经 logging.WithAttrs 注入 RPC ctx——链内所有日志自动携带，handler 发起
-// 的下游调用（HTTP/gRPC client）继续透传，与 server/http 的内置传播
-// 共同形成框架两侧的传播闭环（共享键与校验见 internal/serverkit）。
-//
-// 校验规则与 HTTP 侧一致（长度 ≤128、字符集 [A-Za-z0-9-_]）：非法值
-// 丢弃；缺失的字段不注入。注入为 logging.WithAttrs 覆盖语义（与 HTTP
-// 侧一致）；gRPC 服务端每 RPC 新建 ctx，不存在既有属性冲突。
+// RequestIDPropagation 返回解析并回写请求标识的一元拦截器：从 incoming
+// metadata 的 x-request-id/x-user-id 还原日志属性（校验规则与 HTTP 侧一致，
+// 见 internal/serverkit.ResolveInbound）——合法 request_id 沿用，缺失/非法
+// 生成 UUID；user_id 非法丢弃。解析结果回写响应 metadata（与 HTTP 回写响应
+// 头对称，客户端可关联），并经 logging.WithAttrs 注入 RPC ctx——链内所有
+// 日志自动携带，handler 发起的下游调用（HTTP/gRPC client）继续透传，与
+// server/http 的内置传播共同形成框架两侧的传播闭环（共享键与校验见
+// internal/propagation）。
 func RequestIDPropagation() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler) (any, error) {
-		if attrs := attrsFromMetadata(ctx); len(attrs) > 0 {
-			ctx = logging.WithAttrs(ctx, attrs...)
-		}
-		return handler(ctx, req)
+		return handler(resolveInbound(ctx), req)
 	}
 }
 
 // RequestIDPropagationStream 返回 RequestIDPropagation 的流式版本：
-// 还原时机在 handler 拦截链内（首条消息前），流全程生效。
+// 解析与回写时机在 handler 拦截链内（首条消息前），流全程生效。
 func RequestIDPropagationStream() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler) error {
-		attrs := attrsFromMetadata(ss.Context())
-		if len(attrs) == 0 {
-			return handler(srv, ss)
-		}
-		return handler(srv, &ctxStream{ServerStream: ss, ctx: logging.WithAttrs(ss.Context(), attrs...)})
+		return handler(srv, &ctxStream{ServerStream: ss, ctx: resolveInbound(ss.Context())})
 	}
 }
 
-// ctxStream 以还原后的 ctx 包装 ServerStream，其余行为透传。
+// resolveInbound 解析入站请求标识（合法沿用 / request_id 缺失或非法生成
+// UUID），回写响应 metadata 并把日志属性注入 ctx。
+func resolveInbound(ctx context.Context) context.Context {
+	md, _ := metadata.FromIncomingContext(ctx)
+	rid, attrs := serverkit.ResolveInbound(
+		firstValue(md, serverkit.RequestIDKey), firstValue(md, serverkit.UserIDKey))
+	// 回写响应 metadata（与 HTTP 回写响应头对称）。拦截器先于 handler
+	// 执行；无传输流（如直接单测调用拦截器）时 SetHeader 返回错误，不影响
+	// 请求处理。
+	_ = grpc.SetHeader(ctx, metadata.Pairs(serverkit.RequestIDKey, rid))
+	if len(attrs) == 0 {
+		return ctx
+	}
+	return logging.WithAttrs(ctx, attrs...)
+}
+
+// ctxStream 以解析后的 ctx 包装 ServerStream，其余行为透传。
 type ctxStream struct {
 	grpc.ServerStream
 	ctx context.Context
 }
 
 func (s *ctxStream) Context() context.Context { return s.ctx }
-
-// attrsFromMetadata 从 incoming metadata 提取合法的传播属性：
-// 键为共享 wire 键（x-request-id / x-user-id）；多值取首个。
-func attrsFromMetadata(ctx context.Context) []slog.Attr {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return nil
-	}
-	return serverkit.AttrsFromValues(firstValue(md, serverkit.RequestIDKey), firstValue(md, serverkit.UserIDKey))
-}
 
 // firstValue 取 metadata 多值中的首个，缺失时返回空字符串。
 func firstValue(md metadata.MD, key string) string {

@@ -4,51 +4,45 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/google/uuid"
+	"github.com/lynx-go/lynx/internal/propagation"
 	"github.com/lynx-go/lynx/logging"
 )
 
-// wire 键：HTTP header 名与 gRPC metadata 键同源。gRPC metadata 规范要求
-// 小写；HTTP 头名大小写不敏感（net/http 会规格化），同一常量两侧通用。
-// 中划线键同时规避 Envoy 等代理对下划线 header 的默认拒绝（SC-18）。
+// wire 键与校验规则的中性归属是 internal/propagation（server 适配器、
+// 客户端与 eventbus 共用）；serverkit 只做面向 server 的转发与入站解析。
 const (
-	RequestIDKey = "x-request-id"
-	UserIDKey    = "x-user-id"
+	// RequestIDKey / UserIDKey 是 request_id / user_id 的共享 wire 键。
+	RequestIDKey = propagation.RequestIDHeader
+	UserIDKey    = propagation.UserIDHeader
+	// MaxPropagationValueLength 是入站传播值的最大长度（SC-22）。
+	MaxPropagationValueLength = propagation.MaxValueLength
 )
 
-// MaxPropagationValueLength 是入站传播值的最大长度（SC-22）：超长或含
-// 非法字符的值通常是异常客户端/攻击载荷，直接丢弃/重新生成，不注入
-// 日志（避免刷日志与污染下游）。
-const MaxPropagationValueLength = 128
-
-// ValidPropagationValue 判定入站传播值是否可安全沿用：非空、长度 ≤128、
-// 字符集限定 [A-Za-z0-9-_]（UUID/常见追踪 ID 均落在该集合内）。
-func ValidPropagationValue(v string) bool {
-	if v == "" || len(v) > MaxPropagationValueLength {
-		return false
-	}
-	for i := 0; i < len(v); i++ {
-		c := v[i]
-		switch {
-		case c >= '0' && c <= '9', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z',
-			c == '-', c == '_':
-		default:
-			return false
-		}
-	}
-	return true
-}
+// ValidPropagationValue 判定入站传播值是否可安全沿用。
+func ValidPropagationValue(v string) bool { return propagation.Valid(v) }
 
 // AttrsFromValues 构造传播日志属性（request_id / user_id）：值为空或非法
 // 时跳过对应字段（不注入日志）。
 func AttrsFromValues(requestID, userID string) []slog.Attr {
-	var attrs []slog.Attr
-	if ValidPropagationValue(requestID) {
-		attrs = append(attrs, slog.String(logging.FieldRequestID, requestID))
+	return propagation.Attrs(requestID, userID)
+}
+
+// ResolveInbound 解析入站请求标识（HTTP 中间件与 gRPC 拦截器共用）：
+// 合法值沿用；request_id 缺失/非法时生成新 UUID（返回给调用方回写响应
+// 头/metadata）；user_id 非法时丢弃（没有可生成的语义）。返回解析后的
+// request_id 与日志属性。
+func ResolveInbound(requestID, userID string) (string, []slog.Attr) {
+	if !propagation.Valid(requestID) {
+		requestID = uuid.NewString()
 	}
-	if ValidPropagationValue(userID) {
-		attrs = append(attrs, slog.String(logging.FieldUserID, userID))
-	}
-	return attrs
+	return requestID, propagation.Attrs(requestID, userID)
+}
+
+// PropagateOutbound 把 ctx 中待传播的请求标识经 set 写入出站载体（委托
+// internal/propagation.Outbound）：键为共享 wire 键，已存在不覆盖。
+func PropagateOutbound(ctx context.Context, set func(key, value string) bool) bool {
+	return propagation.Outbound(ctx, set)
 }
 
 // RequestIDFrom 返回 ctx 中的 request_id，未设置时返回空字符串。

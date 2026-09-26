@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/google/uuid"
 	"github.com/lynx-go/lynx/internal/serverkit"
 	"github.com/lynx-go/lynx/logging"
 )
@@ -22,18 +21,15 @@ const UserIDHeader = serverkit.UserIDKey
 // 合法时一并还原；两者经 logging.WithAttrs 写入请求 ctx，使请求链内所有
 // InfoContext 日志自动携带。服务端默认安装（WithDisableRequestID 关闭）。
 //
-// 注册顺序：建议紧随 Recovery 之后（推荐链 Recovery → RequestID →
-// 其余中间件）——Recovery 必须保持最外层保命，RequestID 在其内侧的代价
-// 是 panic 日志拿不到 request_id，属已知取舍（详见 Recovery 的注释）。
+// 注册顺序：默认装配中本中间件包在用户中间件（WithMiddleware）外侧——
+// 用户挂的 Recovery 位于其内侧，panic 日志能拿到 request_id；若手动装配
+// 并希望 Recovery 拿到最外层保命位置，把本中间件放在 Recovery 内侧即可
+// （代价是 Recovery 的 panic 日志不再带 request_id，详见 Recovery 注释）。
 func WithRequestID() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			rid := r.Header.Get(RequestIDHeader)
-			if !serverkit.ValidPropagationValue(rid) {
-				rid = uuid.NewString()
-			}
+			rid, attrs := serverkit.ResolveInbound(r.Header.Get(RequestIDHeader), r.Header.Get(UserIDHeader))
 			w.Header().Set(RequestIDHeader, rid)
-			attrs := serverkit.AttrsFromValues(rid, r.Header.Get(UserIDHeader))
 			r = r.WithContext(logging.WithAttrs(r.Context(), attrs...))
 			next.ServeHTTP(w, r)
 		})

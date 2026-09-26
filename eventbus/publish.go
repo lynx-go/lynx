@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lynx-go/lynx/internal/propagation"
 	"github.com/lynx-go/lynx/logging"
 )
 
@@ -87,16 +88,23 @@ func BuildRawEvent(ctx context.Context, b Bus, topic string, payload any, o *Pub
 			delete(headers, k)
 		}
 	}
-	// 传播日志属性（白名单），已存在的不覆盖
+	// 传播日志属性（白名单），已存在的不覆盖；request_id/user_id 的值
+	// 过共享校验（internal/propagation），非法值不进入消息头（下游会直接
+	// 还原进日志）。
 	for _, k := range propagateKeys {
 		if _, ok := headers[k]; ok {
 			continue
 		}
 		for _, a := range logging.AttrsFrom(ctx) {
-			if a.Key == k {
-				headers[k] = a.Value.String()
-				break
+			if a.Key != k {
+				continue
 			}
+			v := a.Value.String()
+			if isPropagationField(k) && !propagation.Valid(v) {
+				continue
+			}
+			headers[k] = v
+			break
 		}
 	}
 	// 传播 trace 上下文（W3C traceparent / tracestate）：当前有 active span

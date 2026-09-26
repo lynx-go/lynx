@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### 变更：请求标识解析与传播统一（internal/propagation；gRPC 补齐生成/回写）
+
+- 新增中性 `internal/propagation`：wire 键、值校验、日志属性与出站传播的
+  唯一归属；`serverkit` 转发并提供 `ResolveInbound`（合法沿用 / request_id
+  缺失或非法生成 UUID / user_id 非法丢弃）；`client/http` 与 `client/grpc`
+  只保留传输写入形态（提取、键映射、不覆盖裁决单点）
+- gRPC 服务端行为对齐 HTTP：解析后生成/回写 request_id（响应 metadata），
+  新增 `WithDisableRequestID`；`server/grpc` 与 `client/grpc` 导出
+  `RequestIDHeader`/`UserIDHeader` 常量
+- eventbus 消息头传播纳入同一校验：非法的 request_id/user_id 值不再写入
+  消息头、消费侧不还原（自定义 `PropagateAttrs` 键不受影响）
+- 修正 docs/05 与 Recovery/RequestID 注释中的链序表述（默认装配 RequestID
+  包在用户中间件外侧，panic 日志带 request_id），补顺序钉子与 gRPC
+  client→server 闭环测试
+
+行为变更：gRPC 服务端开始生成并回写 request_id（可关）；gRPC 响应
+metadata 新增 x-request-id；非法请求标识值在 bus 路径不再传播/还原。
+
 ### 变更：server 生命周期收敛为 serverkit.Lifecycle（HTTP/gRPC/debug）
 
 三个适配器各自复制的生命周期状态机收敛为 `internal/serverkit.Lifecycle`

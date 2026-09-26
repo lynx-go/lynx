@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/lynx-go/lynx/internal/serverkit"
-	"github.com/lynx-go/lynx/logging"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -23,6 +22,14 @@ import (
 
 // DefaultTimeout 是默认调用超时（30s）。
 const DefaultTimeout = 30 * time.Second
+
+// RequestIDHeader / UserIDHeader 是 request_id / user_id 的 gRPC metadata
+// 键：与 HTTP 头及 server/grpc 同源的共享 wire 键（中性归属
+// internal/propagation）。调用方显式设置 outgoing metadata 时使用本常量。
+const (
+	RequestIDHeader = serverkit.RequestIDKey
+	UserIDHeader    = serverkit.UserIDKey
+)
 
 // Options 是 gRPC 客户端的配置项。
 type Options struct {
@@ -213,34 +220,20 @@ func applyDefaults(ctx context.Context, timeout time.Duration) (context.Context,
 }
 
 // injectAttrs 把 ctx 的日志属性（request_id/user_id）写入 outgoing
-// metadata，键为共享 wire 键 x-request-id / x-user-id（internal/serverkit）：
-// 中划线键与 HTTP 头同源，同时规避 Envoy 等代理对下划线 header 的默认
-// 拒绝（SC-18）。调用方已显式设置的键不被覆盖。
+// metadata，键为共享 wire 键 x-request-id / x-user-id（提取、键映射与
+// 不覆盖规则由 internal/propagation 单点实现）：中划线键与 HTTP 头同源，
+// 同时规避 Envoy 等代理对下划线 header 的默认拒绝（SC-18）。调用方已
+// 显式设置的键不被覆盖。
 func injectAttrs(ctx context.Context) context.Context {
-	attrs := logging.AttrsFrom(ctx)
-	if len(attrs) == 0 {
-		return ctx
-	}
 	existing, _ := metadata.FromOutgoingContext(ctx)
 	md := metadata.New(nil)
-	added := false
-	for _, a := range attrs {
-		var key string
-		switch a.Key {
-		case logging.FieldRequestID:
-			key = serverkit.RequestIDKey
-		case logging.FieldUserID:
-			key = serverkit.UserIDKey
-		default:
-			continue
-		}
+	if !serverkit.PropagateOutbound(ctx, func(key, value string) bool {
 		if len(existing.Get(key)) > 0 {
-			continue
+			return false
 		}
-		md.Set(key, a.Value.String())
-		added = true
-	}
-	if !added {
+		md.Set(key, value)
+		return true
+	}) {
 		return ctx
 	}
 	return metadata.NewOutgoingContext(ctx, metadata.Join(existing, md))

@@ -14,7 +14,6 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 	"github.com/lynx-go/lynx/internal/serverkit"
-	"github.com/lynx-go/lynx/logging"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -303,21 +302,17 @@ func (c *Client) Post(ctx context.Context, url string, body io.Reader) (*http.Re
 }
 
 // propagateAttrs 把 req.Context() 的日志属性写入请求头：request_id →
-// X-Request-Id、user_id → X-User-Id。已存在的同名请求头不覆盖
-// （显式设置的头部优先）。
+// x-request-id、user_id → x-user-id（提取、键映射与不覆盖规则由
+// internal/propagation 单点实现）。已存在的同名请求头不覆盖（显式设置
+// 的头部优先）。
 func propagateAttrs(req *http.Request) {
-	for _, a := range logging.AttrsFrom(req.Context()) {
-		switch a.Key {
-		case logging.FieldRequestID:
-			if req.Header.Get(RequestIDHeader) == "" {
-				req.Header.Set(RequestIDHeader, a.Value.String())
-			}
-		case logging.FieldUserID:
-			if req.Header.Get(UserIDHeader) == "" {
-				req.Header.Set(UserIDHeader, a.Value.String())
-			}
+	serverkit.PropagateOutbound(req.Context(), func(key, value string) bool {
+		if req.Header.Get(key) != "" {
+			return false
 		}
-	}
+		req.Header.Set(key, value)
+		return true
+	})
 }
 
 // doWithRetry 按重试策略循环发送：指数退避等待，429/503 的

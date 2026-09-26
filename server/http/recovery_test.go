@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/lynx-go/lynx/logging"
 )
 
 // TestRecoveryPanicWritesResponse：panic handler → 500 + 通用 JSON 错误体
@@ -65,6 +68,50 @@ func TestRecoveryPanicWritesResponse(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || string(body) != "ok" {
 		t.Errorf("request after panic: status = %d body = %q, want 200 ok", resp.StatusCode, body)
+	}
+}
+
+// TestDefaultChainPanicLogCarriesRequestID：默认装配中 RequestID 中间件包
+// 在用户中间件外侧——用户挂的 Recovery 位于其内侧，panic 日志带
+// request_id（修正此前文档/注释中"传播已在内侧、panic 拿不到 request_id"
+// 的相反表述）。
+func TestDefaultChainPanicLogCarriesRequestID(t *testing.T) {
+	capture, restore := useCaptureLogger(true)
+	defer restore()
+
+	srv := NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	}), WithAddr("127.0.0.1:0"), WithMiddleware(Recovery()))
+	startErr := make(chan error, 1)
+	go func() { startErr <- srv.Start(context.Background()) }()
+	select {
+	case <-srv.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not become ready")
+	}
+
+	resp, err := http.Get("http://" + srv.Addr() + "/boom")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+
+	rec, ok := capture.hasError("http handler panic recovered")
+	if !ok {
+		t.Fatal("no panic log record")
+	}
+	if rec.attrs[logging.FieldRequestID] == "" {
+		t.Fatalf("panic log missing request_id (RequestID must wrap user middlewares): %v", rec.attrs)
+	}
+
+	_ = srv.Stop(context.Background())
+	select {
+	case <-startErr:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after Stop")
 	}
 }
 

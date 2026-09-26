@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/lynx-go/lynx/internal/propagation"
 	"github.com/lynx-go/lynx/logging"
 )
 
@@ -50,9 +51,15 @@ func InvokeHandler(ctx context.Context, logger *slog.Logger, h HandlerFunc, ev *
 		if _, ok := existing[k]; ok {
 			continue
 		}
-		if v, ok := ev.Headers[k]; ok && v != "" {
-			attrs = append(attrs, slog.String(k, v))
+		v, ok := ev.Headers[k]
+		if !ok || v == "" {
+			continue
 		}
+		// request_id/user_id 过共享校验：非法头值不还原进日志。
+		if isPropagationField(k) && !propagation.Valid(v) {
+			continue
+		}
+		attrs = append(attrs, slog.String(k, v))
 	}
 	hCtx = logging.WithAttrs(hCtx, attrs...)
 

@@ -627,7 +627,7 @@ bus := watermill.New(eventbus.Options{
 // lynx.NewRunner(setup, lynx.WithBus(bus), ...)
 ```
 
-注意：消息头传播的字段是"日志关联"级别的；发布侧的 ctx 属性优先级最低，消息自身 `Headers` 与 `WithMetadata` 显式设置的值不被覆盖。
+注意：消息头传播的字段是"日志关联"级别的；发布侧的 ctx 属性优先级最低，消息自身 `Headers` 与 `WithMetadata` 显式设置的值不被覆盖。`request_id`/`user_id` 的值经共享校验（超长/字符集外不写入消息头、消费侧也不还原，与入站 HTTP/gRPC 同一规则）；自定义 `PropagateAttrs` 键不做校验。
 
 4. **跨进程 trace 续链**：`eventbus.Bus` 发布时把当前 active span 的 W3C `traceparent`/`tracestate` 注入消息头，消费侧（`InvokeHandler`）提取并开 `consume <topic>` span——跨进程 Bus 追踪不断链。未接入 OTel 时不产生头与 span（零行为变化）；`contrib/telemetry` 托管时会自动设置全局 propagator，接入即生效。与上一条的日志属性白名单互相独立，详见 [design-eventbus §5.7](design-eventbus.md)。
 
@@ -640,8 +640,9 @@ bus := watermill.New(eventbus.Options{
 ```go
 srv := http.NewServer(router,
 	http.WithAddr(addr),
-	// Recovery 建议声明在最外层：链内任意一环的 panic 都能被恢复
-	//（request_id 传播已默认安装在其内侧，无需重复添加）
+	// Recovery 建议声明在最外层：链内任意一环的 panic 都能被恢复。
+	// 默认装配的 request_id 传播包在用户中间件外侧，Recovery 位于其
+	// 内侧——panic 日志带 request_id，无需重复添加传播中间件。
 	http.WithMiddleware(http.Recovery()),
 	http.WithLogger(app.Logger("logger", "http-requestlog")),
 )

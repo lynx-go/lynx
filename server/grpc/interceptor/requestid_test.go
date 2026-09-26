@@ -68,7 +68,7 @@ func TestRequestIDPropagationRestoresBothFields(t *testing.T) {
 	}
 }
 
-func TestRequestIDPropagationDropsInvalidValues(t *testing.T) {
+func TestRequestIDPropagationInvalidValues(t *testing.T) {
 	cases := map[string]string{
 		"overlong":      strings.Repeat("a", serverkit.MaxPropagationValueLength+1),
 		"illegal chars": "bad id\n<script>",
@@ -80,17 +80,60 @@ func TestRequestIDPropagationDropsInvalidValues(t *testing.T) {
 			metadata.Pairs(serverkit.RequestIDKey, v, serverkit.UserIDKey, strings.Repeat("é", 5)))
 		f := runPropagation(ctx)
 		for kind, attrs := range map[string][]slog.Attr{"unary": f.unaryAttrs, "stream": f.streamAttrs} {
-			if attrValue(attrs, logging.FieldRequestID) != "" || attrValue(attrs, logging.FieldUserID) != "" {
-				t.Errorf("%s/%s: invalid values leaked into %s attrs", name, kind, kind)
+			// 非法 request_id 重新生成（与 HTTP 侧一致）；user_id 丢弃。
+			if got := attrValue(attrs, logging.FieldRequestID); !serverkit.ValidPropagationValue(got) {
+				t.Errorf("%s/%s: invalid request_id not regenerated: %q", name, kind, got)
+			}
+			if got := attrValue(attrs, logging.FieldUserID); got != "" {
+				t.Errorf("%s/%s: invalid user_id leaked: %q", name, kind, got)
 			}
 		}
 	}
 }
 
-func TestRequestIDPropagationNoMetadata(t *testing.T) {
+func TestRequestIDPropagationGeneratesWithoutMetadata(t *testing.T) {
 	f := runPropagation(context.Background())
-	if len(f.unaryAttrs) != 0 || len(f.streamAttrs) != 0 {
-		t.Errorf("attrs injected without metadata: unary=%v stream=%v", f.unaryAttrs, f.streamAttrs)
+	unary := attrValue(f.unaryAttrs, logging.FieldRequestID)
+	stream := attrValue(f.streamAttrs, logging.FieldRequestID)
+	if !serverkit.ValidPropagationValue(unary) || !serverkit.ValidPropagationValue(stream) {
+		t.Fatalf("generated request_ids = %q/%q, want valid values", unary, stream)
+	}
+	if got := attrValue(f.unaryAttrs, logging.FieldUserID); got != "" {
+		t.Errorf("user_id must not be generated, got %q", got)
+	}
+}
+
+// headerCaptureStream 捕获 SetHeader 的 ServerTransportStream 桩（回写断言用）。
+type headerCaptureStream struct {
+	md metadata.MD
+}
+
+func (s *headerCaptureStream) Method() string { return "/test/Svc" }
+func (s *headerCaptureStream) SetHeader(md metadata.MD) error {
+	s.md = metadata.Join(s.md, md)
+	return nil
+}
+func (s *headerCaptureStream) SendHeader(md metadata.MD) error { return s.SetHeader(md) }
+func (s *headerCaptureStream) SetTrailer(metadata.MD) error    { return nil }
+
+// TestRequestIDPropagationGeneratesAndEchoes：无 incoming metadata 时生成
+// request_id，并把解析结果回写响应 metadata（与 HTTP 回写响应头对称）。
+func TestRequestIDPropagationGeneratesAndEchoes(t *testing.T) {
+	cap := &headerCaptureStream{}
+	ctx := grpc.NewContextWithServerTransportStream(context.Background(), cap)
+	var attrs []slog.Attr
+	info := &grpc.UnaryServerInfo{FullMethod: "/test/Svc"}
+	_, _ = RequestIDPropagation()(ctx, nil, info,
+		func(ctx context.Context, _ any) (any, error) {
+			attrs = logging.AttrsFrom(ctx)
+			return nil, nil
+		})
+	rid := attrValue(attrs, logging.FieldRequestID)
+	if !serverkit.ValidPropagationValue(rid) {
+		t.Fatalf("generated request_id = %q, want valid value", rid)
+	}
+	if got := cap.md.Get(serverkit.RequestIDKey); len(got) != 1 || got[0] != rid {
+		t.Fatalf("echoed metadata = %v, want [%s]", got, rid)
 	}
 }
 

@@ -153,10 +153,12 @@ conn, err := clientgrpc.Dial("user-service:9090",
 ### 传播闭环（gRPC）
 
 `client/grpc` 写入 outgoing metadata（`x-request-id`/`x-user-id`），
-`server/grpc` 内置的 `interceptor.RequestIDPropagation` 拦截器默认把
-incoming metadata 中的这两个键还原为日志属性（非法值丢弃）——client →
-server 全链路日志同 id，与 HTTP 链路（6.2 节）使用同一组共享 wire 键。
-业务代码在 handler 内用 `grpc.RequestIDFrom(ctx)` 取当前 request_id。
+`server/grpc` 内置的 `interceptor.RequestIDPropagation` 拦截器默认解析
+incoming metadata：合法的 `x-request-id` 沿用，缺失/非法生成 UUID；
+`x-user-id` 合法才还原；解析结果回写响应 metadata（客户端可关联）——与
+HTTP 链路（6.2 节）行为对齐，使用同一组共享 wire 键。业务代码在 handler
+内用 `grpc.RequestIDFrom(ctx)` 取当前 request_id；`WithDisableRequestID`
+可关闭整个解析/生成/回写（与 HTTP 侧同名选项对称）。
 
 ## 下一步
 
