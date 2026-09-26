@@ -35,8 +35,10 @@ type subscriber struct {
 	topic       string
 	ch          chan *RawEvent
 	handler     HandlerFunc
-	opts        SubscribeOptions
-	cancel      context.CancelFunc
+	// resolved 是订阅时一次解析的有效配置（Resolver 唯一归属）：投递路径
+	// 直接消费，不再逐次解析。
+	resolved ResolvedSubscription
+	cancel   context.CancelFunc
 }
 
 // NewMemoryBus 创建内存 Bus，opts 为空时使用默认值。
@@ -172,17 +174,14 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 	}
 	o := &SubscribeOptions{}
 	applySubscribeOptions(o, opts...)
-	handlerName := o.HandlerName
-	if handlerName == "" {
-		handlerName = topic
-	}
-	// 合并 Topic 默认值（显式优先），由共享 Resolver 统一完成。
-	b.resolver.ApplyTopicDefaults(topic, o)
-	if o.MaxInFlight != 0 {
+	// 有效订阅一次解析（Topic 默认值 + 调用级 + Options.Topics/全局）。
+	resolved := b.resolver.ResolveSubscription(topic, *o)
+	handlerName := resolved.HandlerName
+	if resolved.MaxInFlight != 0 {
 		// 订阅级在途上限只对持久化（at-least-once）后端有意义；内存 Bus 是
 		// 广播语义且每 handler 串行处理，静默忽略会让配置意图落空——记 Warn 可见。
 		b.logger.Warn("eventbus: memory bus ignores max_in_flight (in-flight limit is for persistent backends)",
-			"topic", topic, "handler", handlerName, "max_in_flight", o.MaxInFlight)
+			"topic", topic, "handler", handlerName, "max_in_flight", resolved.MaxInFlight)
 	}
 
 	b.mu.Lock()
@@ -201,7 +200,7 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 		topic:       topic,
 		ch:          ch,
 		handler:     h,
-		opts:        *o,
+		resolved:    resolved,
 		cancel:      cancel,
 	}
 	b.subs[topic] = append(b.subs[topic], sub)
@@ -213,8 +212,6 @@ func (b *memoryBus) Subscribe(ctx context.Context, topic string, h HandlerFunc, 
 }
 
 func (b *memoryBus) loop(ctx context.Context, sub *subscriber) {
-	retry := b.resolver.RetryFor(sub.topic, sub.opts.Retry)
-	timeout := b.resolver.HandlerTimeoutFor(sub.topic, sub.opts.HandlerTimeout)
 	for {
 		select {
 		case <-ctx.Done():
@@ -228,10 +225,10 @@ func (b *memoryBus) loop(ctx context.Context, sub *subscriber) {
 			_ = InvokeHandler(ctx, b.logger, sub.handler, ev, b.resolver, InvokeOptions{
 				Topic:       sub.topic,
 				HandlerName: sub.handlerName,
-				Retry:       retry,
-				Once:        sub.opts.AutoAck,
-				Swallow:     sub.opts.ContinueOnError,
-				Timeout:     timeout,
+				Retry:       sub.resolved.Retry,
+				Once:        sub.resolved.AutoAck,
+				Swallow:     sub.resolved.ContinueOnError,
+				Timeout:     sub.resolved.HandlerTimeout,
 			})
 		}
 	}

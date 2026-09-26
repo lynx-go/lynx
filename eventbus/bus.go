@@ -176,12 +176,13 @@ type SubscribeOptions struct {
 	// MaxInFlight 是订阅级在途上限（未确认消息的并发上限；消息内多 handler
 	// 仍并行）。0 = 后端默认（watermill 为 1）；负数 = 不限制。内存 Bus
 	// 每 handler 串行处理，忽略本项。**不是调用者可传的订阅选项**：唯一写入
-	// 路径是 Topic 默认值（WithTopicMaxInFlight）与 Options.Topics[t]，由 Bus
-	// 合并后由适配器消费（消费组 / 成员数是后端配置，不在此结构）。
+	// 路径是 Topic 默认值（WithTopicMaxInFlight）与 Options.Topics[t]，经
+	// Resolver.ResolveSubscription 解析后由适配器消费（消费组 / 成员数是
+	// 后端配置，不在此结构）。
 	MaxInFlight int
 	// HandlerTimeout 是 handler 单次尝试的执行上限（0 = 不限制；负值 =
 	// 显式禁用），同样由 Topic 默认值（WithTopicHandlerTimeout）与
-	// Options.Topics[t] 填充；解析见 Resolver.HandlerTimeoutFor。
+	// Options.Topics[t] 填充；解析见 Resolver.ResolveSubscription。
 	HandlerTimeout time.Duration
 	// Retry 是订阅级重试默认（高→低：本字段 > Options.Topics[t].Retry > Options.Retry）。
 	// Topic[T] 会把 WithTopicRetry 作为本字段的基础值注入，调用方选项可覆盖。

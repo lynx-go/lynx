@@ -45,79 +45,123 @@ func TestResolverMarshalerPriority(t *testing.T) {
 	}
 }
 
-// TestResolverRetryPriority 锁定四级合并（高→低）：
-// 调用级 call > Topics[t].Retry > 全局 > 默认 3 次。
-func TestResolverRetryPriority(t *testing.T) {
-	r := NewResolver(Options{
-		Retry:  &RetryOptions{MaxRetries: 5},
-		Topics: map[string]TopicConfig{"t": {Retry: &RetryOptions{MaxRetries: 2}}},
-	})
+// TestResolveSubscription 锁定唯一解析产物的完整优先级矩阵：
+//   - HandlerName 空 → topic；
+//   - MaxInFlight / AutoAck / ContinueOnError：调用/Topic 携带值优先，
+//     空缺由 Options.Topics[t] 填充（bool 为并集，只可能被打开）；
+//   - Retry / HandlerTimeout：调用值 > Topics[t] > 全局 > 默认；
+//   - HandlerTimeout 负值（调用级或主题级）= 显式禁用（归一 0）；
+//   - MaxInFlight 负值原样保留（不限制）；未知 topic 不改变任何默认。
+func TestResolveSubscription(t *testing.T) {
+	callRetry := &RetryOptions{MaxRetries: 1}
+	cfgRetry := &RetryOptions{MaxRetries: 2}
+	globalRetry := &RetryOptions{MaxRetries: 5}
+	defaultRetry := RetryOptions{MaxRetries: 3}
 
-	call := RetryOptions{MaxRetries: 1}
-	if got := r.RetryFor("t", &call); got.MaxRetries != 1 {
-		t.Errorf("call-level = %d, want 1", got.MaxRetries)
-	}
-	if got := r.RetryFor("t", nil); got.MaxRetries != 2 {
-		t.Errorf("topic config = %d, want 2", got.MaxRetries)
-	}
-	if got := r.RetryFor("other", nil); got.MaxRetries != 5 {
-		t.Errorf("global = %d, want 5", got.MaxRetries)
-	}
-	if got := NewResolver(Options{}).RetryFor("x", nil); got.MaxRetries != 3 {
-		t.Errorf("default = %d, want 3", got.MaxRetries)
-	}
-}
-
-// TestResolverApplyTopicDefaults 锁定 Topic 默认值的填充语义：
-// 显式调用选项优先（只填空缺），未知 topic 不改变选项。
-func TestResolverApplyTopicDefaults(t *testing.T) {
-	r := NewResolver(Options{Topics: map[string]TopicConfig{
-		"t": {MaxInFlight: 4, AutoAck: true, ContinueOnError: true},
-	}})
-
-	o := &SubscribeOptions{MaxInFlight: 2}
-	r.ApplyTopicDefaults("t", o)
-	if o.MaxInFlight != 2 {
-		t.Errorf("MaxInFlight = %d, want explicit to win", o.MaxInFlight)
-	}
-	if !o.AutoAck || !o.ContinueOnError {
-		t.Errorf("defaults not filled: %+v", *o)
-	}
-
-	untouched := &SubscribeOptions{}
-	r.ApplyTopicDefaults("missing", untouched)
-	if *untouched != (SubscribeOptions{}) {
-		t.Errorf("unknown topic changed options: %+v", *untouched)
-	}
-}
-
-// TestResolverHandlerTimeoutFor：超时解析优先级（高→低）：调用/Topic 携带值 >
-// Topics[t].HandlerTimeout > 全局 > 0（不限制）；负值显式禁用。
-func TestResolverHandlerTimeoutFor(t *testing.T) {
-	r := NewResolver(Options{
-		HandlerTimeout: 5 * time.Second,
-		Topics: map[string]TopicConfig{
-			"t":  {HandlerTimeout: 2 * time.Second},
-			"t2": {HandlerTimeout: -1},
+	tests := []struct {
+		name  string
+		opts  Options
+		topic string
+		in    SubscribeOptions
+		want  ResolvedSubscription
+	}{
+		{
+			name:  "defaults with handler name fallback",
+			topic: "t",
+			want:  ResolvedSubscription{HandlerName: "t", Retry: defaultRetry},
 		},
-	})
-	if got := r.HandlerTimeoutFor("t", 3*time.Second); got != 3*time.Second {
-		t.Errorf("call-level = %v, want 3s", got)
+		{
+			name:  "explicit handler name wins",
+			topic: "t",
+			in:    SubscribeOptions{HandlerName: "h"},
+			want:  ResolvedSubscription{HandlerName: "h", Retry: defaultRetry},
+		},
+		{
+			name: "topic config fills all five",
+			opts: Options{Topics: map[string]TopicConfig{
+				"t": {MaxInFlight: 4, HandlerTimeout: 2 * time.Second, AutoAck: true, ContinueOnError: true, Retry: cfgRetry},
+			}},
+			topic: "t",
+			want: ResolvedSubscription{
+				HandlerName: "t", MaxInFlight: 4, HandlerTimeout: 2 * time.Second,
+				AutoAck: true, ContinueOnError: true, Retry: *cfgRetry,
+			},
+		},
+		{
+			name: "call-level wins over topic config",
+			opts: Options{Topics: map[string]TopicConfig{
+				"t": {MaxInFlight: 4, HandlerTimeout: 2 * time.Second, Retry: cfgRetry},
+			}},
+			topic: "t",
+			in:    SubscribeOptions{MaxInFlight: 2, HandlerTimeout: 3 * time.Second, Retry: callRetry},
+			want: ResolvedSubscription{
+				HandlerName: "t", MaxInFlight: 2, HandlerTimeout: 3 * time.Second, Retry: *callRetry,
+			},
+		},
+		{
+			name:  "auto_ack and continue_on_error are union",
+			opts:  Options{Topics: map[string]TopicConfig{"t": {AutoAck: true, ContinueOnError: true}}},
+			topic: "t",
+			in:    SubscribeOptions{AutoAck: false, ContinueOnError: false},
+			want:  ResolvedSubscription{HandlerName: "t", AutoAck: true, ContinueOnError: true, Retry: defaultRetry},
+		},
+		{
+			name:  "global retry and timeout fallback",
+			opts:  Options{Retry: globalRetry, HandlerTimeout: 5 * time.Second},
+			topic: "other",
+			want:  ResolvedSubscription{HandlerName: "other", HandlerTimeout: 5 * time.Second, Retry: *globalRetry},
+		},
+		{
+			name: "topic config beats global",
+			opts: Options{
+				Retry:          globalRetry,
+				HandlerTimeout: 5 * time.Second,
+				Topics:         map[string]TopicConfig{"t": {Retry: cfgRetry, HandlerTimeout: 2 * time.Second}},
+			},
+			topic: "t",
+			want:  ResolvedSubscription{HandlerName: "t", HandlerTimeout: 2 * time.Second, Retry: *cfgRetry},
+		},
+		{
+			name: "call-level negative handler timeout disables",
+			opts: Options{
+				HandlerTimeout: 5 * time.Second,
+				Topics:         map[string]TopicConfig{"t": {HandlerTimeout: 2 * time.Second}},
+			},
+			topic: "t",
+			in:    SubscribeOptions{HandlerTimeout: -1},
+			want:  ResolvedSubscription{HandlerName: "t", Retry: defaultRetry},
+		},
+		{
+			name: "topic-level negative handler timeout disables global",
+			opts: Options{
+				HandlerTimeout: 5 * time.Second,
+				Topics:         map[string]TopicConfig{"t": {HandlerTimeout: -1}},
+			},
+			topic: "t",
+			want:  ResolvedSubscription{HandlerName: "t", Retry: defaultRetry},
+		},
+		{
+			name:  "negative max in flight preserved",
+			opts:  Options{Topics: map[string]TopicConfig{"t": {MaxInFlight: 4}}},
+			topic: "t",
+			in:    SubscribeOptions{MaxInFlight: -1},
+			want:  ResolvedSubscription{HandlerName: "t", MaxInFlight: -1, Retry: defaultRetry},
+		},
+		{
+			name:  "unknown topic keeps defaults",
+			opts:  Options{Topics: map[string]TopicConfig{"t": {MaxInFlight: 4, AutoAck: true, Retry: cfgRetry}}},
+			topic: "missing",
+			want:  ResolvedSubscription{HandlerName: "missing", Retry: defaultRetry},
+		},
 	}
-	if got := r.HandlerTimeoutFor("t", 0); got != 2*time.Second {
-		t.Errorf("topic = %v, want 2s", got)
-	}
-	if got := r.HandlerTimeoutFor("other", 0); got != 5*time.Second {
-		t.Errorf("global = %v, want 5s", got)
-	}
-	if got := r.HandlerTimeoutFor("t2", 0); got != 0 {
-		t.Errorf("topic negative = %v, want 0 (disabled)", got)
-	}
-	if got := r.HandlerTimeoutFor("t", -1); got != 0 {
-		t.Errorf("call negative = %v, want 0 (disabled)", got)
-	}
-	if got := NewResolver(Options{}).HandlerTimeoutFor("x", 0); got != 0 {
-		t.Errorf("default = %v, want 0 (unlimited)", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewResolver(tt.opts)
+			if got := r.ResolveSubscription(tt.topic, tt.in); got != tt.want {
+				t.Errorf("ResolveSubscription(%q, %+v) = %+v, want %+v", tt.topic, tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

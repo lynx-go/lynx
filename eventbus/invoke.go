@@ -9,7 +9,7 @@ import (
 )
 
 // InvokeOptions 是共享投递执行器的输入：
-//   - Retry：解析后的重试策略（Resolver.RetryFor 的结果）；
+//   - Retry：解析后的重试策略（Resolver.ResolveSubscription 的结果）；
 //   - Once：AutoAck 语义——只调用一次、不重试（失败仅记日志、恒返回 nil，
 //     持久化后端上不参与整条消息的确认裁决）；
 //   - Swallow：ContinueOnError 语义——失败记录后吞掉（返回 nil）；

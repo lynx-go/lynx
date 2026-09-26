@@ -141,8 +141,9 @@ type Bus interface {
 type Topic[T any] struct { /* name + 默认订阅/发布选项 */ }
 
 func (t Topic[T]) Publish(ctx context.Context, payload T, opts ...PublishOption) error
-func (t Topic[T]) Subscribe(ctx context.Context, handlerName string, h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error
-// 原始载荷（[]byte / *RawEvent）经 Publish 的类型分支透传；不单列 PublishRaw
+func (t Topic[T]) Subscribe(ctx context.Context, h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error
+// handler 名经 eventbus.WithHandlerName 指定；原始载荷（[]byte / *RawEvent）
+// 经 Publish 的类型分支透传；不单列 PublishRaw
 ```
 
 **Bus 解析顺序（已拍板）**：
@@ -158,11 +159,11 @@ app.ctx = eventbus.ContextWithBus(app.ctx, bus)
 
 // 业务日常
 OrderCreated.Publish(ctx, order)
-OrderCreated.Subscribe(app.Context(), "audit", handler)
+OrderCreated.Subscribe(app.Context(), handler, eventbus.WithHandlerName("audit"))
 
 // 逃生口：同一方法 + Option，不单列接口
 OrderCreated.Publish(ctx, order, eventbus.WithBus(other))
-OrderCreated.Subscribe(ctx, "audit", handler, eventbus.WithBus(other))
+OrderCreated.Subscribe(ctx, handler, eventbus.WithHandlerName("audit"), eventbus.WithBus(other))
 ```
 
 注意命名空间：
@@ -174,7 +175,7 @@ OrderCreated.Subscribe(ctx, "audit", handler, eventbus.WithBus(other))
 
 包级 `PublishTyped` / `SubscribeTyped` / `PublishRawTyped`：**已删除**（无兼容别名，见 CHANGELOG），`Topic.Publish` / `Subscribe` 为唯一类型化入口；原始载荷经 `Publish` 的 `[]byte` / `*RawEvent` 分支透传（`Topic.PublishRaw` 已作为等价面删除）。
 
-`NewTopic` 选项（`WithTopicMarshaler` / Group / Instances / AutoAck / ContinueOnError / Retry）须在 Subscribe 路径 **实际生效**（见 §5.2；Retry 四级合并已接通：Topic 携带值经 `WithSubscribeRetry` 转发为基础调用项）。
+`NewTopic` 选项（`WithTopicMarshaler` / `WithTopicMaxInFlight` / `WithTopicHandlerTimeout` / `WithTopicAutoAck` / `WithTopicContinueOnError` / `WithTopicRetry`）须在 Subscribe 路径 **实际生效**。订阅侧的有效配置由 `eventbus.Resolver.ResolveSubscription(topic, opts)` 一次解析为 `ResolvedSubscription`（handler 名、订阅级 `MaxInFlight` 与每 handler 的 Retry / HandlerTimeout / AutoAck / ContinueOnError 的唯一合并点，见 §5.2 与 §10.4）；Topic 默认值经基础项注入，调用方选项最后生效。
 
 ```go
 type Event[T any] struct {
@@ -267,6 +268,7 @@ _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
 要求：
 
 - 编解码解析的唯一归属是 `eventbus.ResolveMarshaler`（发布/订阅共用）；解码在订阅时一次解析、闭包直接捕获（CORE-03），不逐消息解析。
+- 投递配置（Retry / HandlerTimeout / MaxInFlight / AutoAck / ContinueOnError）的唯一归属是 `eventbus.Resolver.ResolveSubscription`，与解码器同理在**订阅时一次解析**为 `ResolvedSubscription`，投递路径不再逐次解析；自定义 Bus 实现消费该值（原 `RetryFor` / `HandlerTimeoutFor` / `ApplyTopicDefaults` 已删除，迁移见 CHANGELOG）。
 - `MarshalerFor` 的查找序为 `TopicMarshalers[t]` → `Topics[t].Marshaler` → 全局（同级两面中 `TopicMarshalers` 优先）。
 - 禁止「`Topic.Publish` 用 Topic Marshaler、同名字符串 `Publish` 用全局 JSON」的静默错接；Debug 下应对齐告警（可选：同 topic 首次不一致时 Error 日志）。
 - `T == []byte`：Payload 透传，不经 Marshaler（与现状一致）。
@@ -464,7 +466,7 @@ Run
 1. **Start**：`go router.Run(ctx)`；允许 0 handler 启动；对外 `CheckHealth` 对齐 `IsRunning`（注意文档：历史原因下 Closed 后 `IsRunning` 仍可能为 true，关停用 `IsClosed` 或自有标志）。
 2. **Subscribe**：`AddConsumerHandler` + **`RunHandlers(ctx)`**；失败返回给调用方。
 3. **Publish**：经 `resolve` → Transport；wire 用 §5 单一映射。
-4. **Retry / AutoAck / ContinueOnError**：行为与现 Broker 文档对齐；`Topic[T].Retry` 与 `Options.Topics[].Retry` 合并已实现（显式 `WithSubscribeRetry` > Topic（经基础项转发） > Options.Topics > 全局默认）。
+4. **Retry / HandlerTimeout / AutoAck / ContinueOnError**：行为与现 Broker 文档对齐；有效值经 `Resolver.ResolveSubscription` 单点合并（Retry / HandlerTimeout 四级：显式调用/Topic 携带值 > `Options.Topics` > 全局 > 默认；AutoAck / ContinueOnError 为并集），订阅时解析一次，投递执行只消费 `ResolvedSubscription`。
 5. **中间件**：Recoverer、CorrelationID 可保留；**不要** SignalsHandler。
 6. **动态订阅与关停**：handler 名全局唯一；Stop 时 Close router 并关闭 Transports（生命周期约定写进文档：Transport 由谁 Close）。
 
@@ -574,6 +576,7 @@ kafka:
 | Watermill 动态订阅 | `AddConsumerHandler` + `RunHandlers`；`subscriberAdapter.Close` 取消订阅 ctx |
 | 生命周期 | 同一 `app.Bus()`；`lynx.*` → 内置 MemoryTransport；非内存 Route/Init 失败 |
 | Typed API | `Topic.Publish/Subscribe`；`WithBus` → Context → `Default`；`newLynx` 注入 |
+| 订阅解析 | `Resolver.ResolveSubscription` 单点解析为 `ResolvedSubscription`（有效 handler 名 + 订阅级 MaxInFlight + 投递语义）；memory/watermill 只消费结果 |
 | Wire | `EncodeWireMetadata` / `DecodeWireMetadata`（`x-message-key` / `x-event-time` / `x-logical-topic`） |
 | Kafka | `contrib/watermill-kafka`；record key = MessageKey；`Delivery.Ack` → offset |
 | 删除 | `contrib/pubsub`、`_examples/pubsub`、`contrib/watermill/kafka.go` 瘦实现 |

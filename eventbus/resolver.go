@@ -33,42 +33,77 @@ func (r *Resolver) MarshalerFor(topic string) Marshaler {
 	return JSONMarshaler{}
 }
 
-// RetryFor 解析订阅的重试默认（高→低）：调用级 call（SubscribeOptions.Retry，
-// Topic 携带值经 WithSubscribeRetry 注入）> Topics[t].Retry > 全局 > 默认 3 次。
-func (r *Resolver) RetryFor(topic string, call *RetryOptions) RetryOptions {
-	if call != nil {
-		return *call
-	}
-	if cfg, ok := r.opts.Topics[topic]; ok && cfg.Retry != nil {
-		return *cfg.Retry
-	}
-	if r.opts.Retry != nil {
-		return *r.opts.Retry
-	}
-	return RetryOptions{MaxRetries: 3}
+// ResolvedSubscription 是一次订阅的全部有效配置（Resolver 的唯一解析产物）：
+// Topic 默认值、调用级选项与 Options.Topics / 全局默认合并为不可变值，Bus
+// 实现只消费结果，投递路径不再重复解析（对齐 CORE-03 解码器订阅时解析）。
+type ResolvedSubscription struct {
+	// HandlerName 是有效 handler 名：SubscribeOptions.HandlerName 为空时回退为 topic。
+	HandlerName string
+	// MaxInFlight 是订阅级在途上限（0 = 后端默认；负数 = 不限制），见 SubscribeOptions。
+	MaxInFlight int
+	// Retry 是解析后的重试策略（高→低：调用/Topic 携带值 > Topics[t].Retry > 全局 > 默认 3 次）。
+	Retry RetryOptions
+	// HandlerTimeout 是 handler 单次尝试上限（0 = 不限制）。负值（调用级或
+	// 主题级）= 显式禁用，解析时归一为 0。
+	HandlerTimeout time.Duration
+	// AutoAck / ContinueOnError 是调用级与 Topics[t] 的并集（只可能被打开）。
+	AutoAck         bool
+	ContinueOnError bool
 }
 
-// HandlerTimeoutFor 解析 handler 单次尝试超时（高→低）：调用/Topic 携带值
-// call（SubscribeOptions.HandlerTimeout，经 WithTopicHandlerTimeout 注入）>
-// Topics[t].HandlerTimeout > 全局 HandlerTimeout > 0（不限制）。负值 =
-// 显式禁用（即使全局设置了）。
-func (r *Resolver) HandlerTimeoutFor(topic string, call time.Duration) time.Duration {
-	if call != 0 {
-		if call < 0 {
-			return 0
+// ResolveSubscription 把一次订阅的输入解析为唯一有效值（规则见各字段注释）：
+//   - HandlerName 空 → topic；
+//   - MaxInFlight / AutoAck / ContinueOnError：显式调用/Topic 携带值优先，
+//     空缺由 Options.Topics[t] 填充；
+//   - Retry / HandlerTimeout：调用值 > Topics[t] > 全局 > 默认（超时默认
+//     不限制）；HandlerTimeout 负值 = 显式禁用。
+func (r *Resolver) ResolveSubscription(topic string, o SubscribeOptions) ResolvedSubscription {
+	res := ResolvedSubscription{
+		HandlerName:     o.HandlerName,
+		MaxInFlight:     o.MaxInFlight,
+		AutoAck:         o.AutoAck,
+		ContinueOnError: o.ContinueOnError,
+	}
+	if res.HandlerName == "" {
+		res.HandlerName = topic
+	}
+	cfg, hasCfg := r.opts.Topics[topic]
+	if res.MaxInFlight == 0 {
+		res.MaxInFlight = cfg.MaxInFlight
+	}
+	if !res.AutoAck && hasCfg {
+		res.AutoAck = cfg.AutoAck
+	}
+	if !res.ContinueOnError && hasCfg {
+		res.ContinueOnError = cfg.ContinueOnError
+	}
+
+	// Retry：调用/Topic 携带值 > Topics[t].Retry > 全局 > 默认 3 次。
+	switch {
+	case o.Retry != nil:
+		res.Retry = *o.Retry
+	case hasCfg && cfg.Retry != nil:
+		res.Retry = *cfg.Retry
+	case r.opts.Retry != nil:
+		res.Retry = *r.opts.Retry
+	default:
+		res.Retry = RetryOptions{MaxRetries: 3}
+	}
+
+	// HandlerTimeout：调用值 > Topics[t] > 全局；负值 = 显式禁用（归一 0）。
+	switch {
+	case o.HandlerTimeout != 0:
+		if o.HandlerTimeout > 0 {
+			res.HandlerTimeout = o.HandlerTimeout
 		}
-		return call
-	}
-	if cfg, ok := r.opts.Topics[topic]; ok && cfg.HandlerTimeout != 0 {
-		if cfg.HandlerTimeout < 0 {
-			return 0
+	case hasCfg && cfg.HandlerTimeout != 0:
+		if cfg.HandlerTimeout > 0 {
+			res.HandlerTimeout = cfg.HandlerTimeout
 		}
-		return cfg.HandlerTimeout
+	case r.opts.HandlerTimeout > 0:
+		res.HandlerTimeout = r.opts.HandlerTimeout
 	}
-	if r.opts.HandlerTimeout > 0 {
-		return r.opts.HandlerTimeout
-	}
-	return 0
+	return res
 }
 
 // LogMessageFor 返回 topic 的收发日志选项（Topics[t].LogMessage > 全局）。
@@ -89,23 +124,4 @@ func (r *Resolver) PropagateKeys() []string {
 		return r.opts.PropagateAttrs
 	}
 	return []string{logging.FieldRequestID, logging.FieldUserID}
-}
-
-// ApplyTopicDefaults 将 Options.Topics[t] 的订阅默认合并进订阅选项：
-// 显式调用选项优先（只填空缺），覆盖 MaxInFlight / AutoAck /
-// ContinueOnError 三项；Retry 经 RetryFor 在投递执行时解析。
-func (r *Resolver) ApplyTopicDefaults(topic string, o *SubscribeOptions) {
-	cfg, ok := r.opts.Topics[topic]
-	if !ok {
-		return
-	}
-	if o.MaxInFlight == 0 {
-		o.MaxInFlight = cfg.MaxInFlight
-	}
-	if !o.AutoAck && cfg.AutoAck {
-		o.AutoAck = true
-	}
-	if !o.ContinueOnError && cfg.ContinueOnError {
-		o.ContinueOnError = true
-	}
 }

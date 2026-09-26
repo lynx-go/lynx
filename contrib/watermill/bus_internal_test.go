@@ -118,25 +118,42 @@ func TestMaxRedeliveriesFor(t *testing.T) {
 	}
 }
 
-// TestRetryForMergeOrder 验证订阅重试四级合并（设计文档 §10.4）：
-// 调用/Topic 级 SubscribeOptions.Retry > Options.Topics[t].Retry > Options.Retry > 默认 3。
-func TestRetryForMergeOrder(t *testing.T) {
-	b := New(eventbus.Options{
-		Retry:  &eventbus.RetryOptions{MaxRetries: 5},
-		Topics: map[string]eventbus.TopicConfig{"t": {Retry: &eventbus.RetryOptions{MaxRetries: 2}}},
-	})
-	call := eventbus.RetryOptions{MaxRetries: 1}
-	if got := b.resolver.RetryFor("t", &call); got.MaxRetries != 1 {
-		t.Fatalf("call-level: got %d, want 1", got.MaxRetries)
+// TestAttachHandlerMaxInFlightFirstWins 钉住订阅级 MaxInFlight 的首值语义
+// （事件级配置）：同名事件第二个 handler 解析出不同值时首值生效并记 Warn；
+// 值相等不告警（避免修复前的误报）。
+func TestAttachHandlerMaxInFlightFirstWins(t *testing.T) {
+	c := &captureLogs{level: slog.LevelWarn}
+	b := New(eventbus.Options{DefaultTransport: NewMemoryTransport()})
+	b.logger = slog.New(c)
+	if err := b.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
 	}
-	if got := b.resolver.RetryFor("t", nil); got.MaxRetries != 2 {
-		t.Fatalf("topic config: got %d, want 2", got.MaxRetries)
+
+	noop := func(context.Context, *eventbus.RawEvent) error { return nil }
+	for _, h := range []eventbus.ResolvedSubscription{
+		{HandlerName: "h1", MaxInFlight: 2},
+		{HandlerName: "h2", MaxInFlight: 3}, // 不一致：首值 2 生效
+		{HandlerName: "h3", MaxInFlight: 2}, // 与首值相等：不告警
+	} {
+		if err := b.attachHandler("order.first", h.HandlerName, noop, h); err != nil {
+			t.Fatalf("attachHandler(%s): %v", h.HandlerName, err)
+		}
 	}
-	if got := b.resolver.RetryFor("other", nil); got.MaxRetries != 5 {
-		t.Fatalf("global: got %d, want 5", got.MaxRetries)
+
+	sub := b.subs["order.first"]
+	if sub == nil {
+		t.Fatal("subscription not registered")
 	}
-	if got := New(eventbus.Options{}).resolver.RetryFor("x", nil); got.MaxRetries != 3 {
-		t.Fatalf("default: got %d, want 3", got.MaxRetries)
+	if sub.maxInFlight != 2 {
+		t.Fatalf("effective max_in_flight = %d, want first handler value 2", sub.maxInFlight)
+	}
+	if len(sub.handlers) != 3 {
+		t.Fatalf("handlers = %d, want 3", len(sub.handlers))
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.logs) != 1 || !strings.Contains(c.logs[0], "max_in_flight mismatch ignored") {
+		t.Fatalf("warn logs = %v, want exactly 1 mismatch warn", c.logs)
 	}
 }
 

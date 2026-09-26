@@ -50,7 +50,7 @@ type Options struct {
 	PropagateAttrs []string
 	// HandlerTimeout 是 handler 单次尝试的全局执行上限（0 = 不限制，默认；
 	// 负值等价 0）。主题级 Topics[t].HandlerTimeout 非 0 时覆盖它；解析见
-	// Resolver.HandlerTimeoutFor。
+	// Resolver.ResolveSubscription。
 	HandlerTimeout time.Duration
 	// Topics 按主题的精细选项，Subscribe 时合并为默认值。
 	Topics map[string]TopicConfig

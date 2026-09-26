@@ -61,7 +61,7 @@ type pendingSubscription struct {
 	topic       string
 	handlerName string
 	handler     eventbus.HandlerFunc
-	opts        eventbus.SubscribeOptions
+	resolved    eventbus.ResolvedSubscription
 }
 
 // New 创建 watermill Bus；ext 注入 watermill 特有扩展配置（可空，见 Options）。
@@ -210,7 +210,7 @@ func (b *Bus) Start(ctx context.Context) error {
 		// 复审-7：pending 路径与动态路径同样复用 panic 安全包装——router
 		// 内残留幽灵 handler 等场景的 panic 必须翻译为错误返回，不得击穿
 		// Start 所在 goroutine（防御性补齐，与 Subscribe 对称）。
-		if err := b.attachHandler(p.topic, p.handlerName, p.handler, p.opts); err != nil {
+		if err := b.attachHandler(p.topic, p.handlerName, p.handler, p.resolved); err != nil {
 			// WK-11：失败必须回滚 started，否则 Bus 停留在"started=true
 			// 但 router 未运行"的中间态，后续动态 Subscribe 的 RunHandlers
 			// 会持续报错（router 未就绪）。
@@ -283,12 +283,10 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
 	o := &eventbus.SubscribeOptions{}
 	eventbus.ApplySubscribeOptions(o, opts...)
-	// 合并 Topic 默认值（显式优先），由共享 Resolver 统一完成。
-	b.resolver.ApplyTopicDefaults(topic, o)
-	handlerName := o.HandlerName
-	if handlerName == "" {
-		handlerName = topic
-	}
+	// 有效订阅一次解析（Topic 默认值 + 调用级 + Options.Topics/全局），
+	// 投递路径直接消费结果。
+	resolved := b.resolver.ResolveSubscription(topic, *o)
+	handlerName := resolved.HandlerName
 	if h == nil {
 		return errors.New("handler is nil")
 	}
@@ -311,7 +309,7 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 	started := b.started
 	if !started {
 		b.handlerNames[handlerName] = struct{}{}
-		b.pending = append(b.pending, pendingSubscription{topic: topic, handlerName: handlerName, handler: h, opts: *o})
+		b.pending = append(b.pending, pendingSubscription{topic: topic, handlerName: handlerName, handler: h, resolved: resolved})
 		b.mu.Unlock()
 		return nil
 	}
@@ -319,7 +317,7 @@ func (b *Bus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFun
 	runCtx := b.runCtx
 	b.mu.Unlock()
 
-	if err := b.attachHandler(topic, handlerName, h, *o); err != nil {
+	if err := b.attachHandler(topic, handlerName, h, resolved); err != nil {
 		if !errors.Is(err, errHandlerNameTaken) {
 			// handler 未进入订阅（resolve 失败、panic 翻译等），回滚名字
 			// 是安全的；errHandlerNameTaken 例外：router 内已有同名幽灵

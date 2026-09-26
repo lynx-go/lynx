@@ -18,25 +18,25 @@ type subscriptionKey = string
 
 // topicSubscription 是一条 transport 订阅及其 handler 集合。
 type topicSubscription struct {
-	t     eventbus.Transport
-	key   string                    // transport 侧键
-	topic string                    // 逻辑 topic
-	opts  eventbus.SubscribeOptions // 订阅级（MaxInFlight）
+	t           eventbus.Transport
+	key         string // transport 侧键
+	topic       string // 逻辑 topic
+	maxInFlight int    // 订阅级在途上限（首个 handler 的解析值决定）
 
 	mu       sync.Mutex
 	handlers []*subscriptionHandler
 }
 
 // subscriptionHandler 是挂载在订阅上的单个 handler：投递语义 per-handler
-// （Retry / AutoAck / ContinueOnError），确认裁决按订阅聚合。
+// （Retry / HandlerTimeout / AutoAck / ContinueOnError），确认裁决按订阅聚合。
 type subscriptionHandler struct {
-	name string
-	fn   eventbus.HandlerFunc
-	opts eventbus.SubscribeOptions
+	name     string
+	fn       eventbus.HandlerFunc
+	resolved eventbus.ResolvedSubscription
 }
 
-func newTopicSubscription(t eventbus.Transport, key, topic string, opts eventbus.SubscribeOptions) *topicSubscription {
-	return &topicSubscription{t: t, key: key, topic: topic, opts: opts}
+func newTopicSubscription(t eventbus.Transport, key, topic string, maxInFlight int) *topicSubscription {
+	return &topicSubscription{t: t, key: key, topic: topic, maxInFlight: maxInFlight}
 }
 
 func (s *topicSubscription) add(h *subscriptionHandler) {
@@ -60,7 +60,7 @@ func (s *topicSubscription) routerName() string {
 // attachHandler 把 handler 挂到其事件订阅上：订阅不存在则创建（首个
 // handler 先入集合、注册成功后才入表）并注册订阅级 dispatcher，随后挂载
 // handler。
-func (b *Bus) attachHandler(topic, handlerName string, h eventbus.HandlerFunc, opts eventbus.SubscribeOptions) error {
+func (b *Bus) attachHandler(topic, handlerName string, h eventbus.HandlerFunc, resolved eventbus.ResolvedSubscription) error {
 	t, key, err := b.resolve(topic)
 	if err != nil {
 		return err
@@ -70,10 +70,10 @@ func (b *Bus) attachHandler(topic, handlerName string, h eventbus.HandlerFunc, o
 	b.mu.Lock()
 	sub, exists := b.subs[sk]
 	if !exists {
-		sub = newTopicSubscription(t, key, topic, opts)
+		sub = newTopicSubscription(t, key, topic, resolved.MaxInFlight)
 		// 首个 handler 必须先入集合：router 启动后不得以空 handler 集合
 		// 消费（否则消息会被无 handler 地 Ack 丢失）。
-		sub.add(&subscriptionHandler{name: handlerName, fn: h, opts: opts})
+		sub.add(&subscriptionHandler{name: handlerName, fn: h, resolved: resolved})
 		// 注册成功才入表：注册失败（panic 已在 addSubscription 内翻译为
 		// 错误）不留半成品，并发订阅也不会挂到未注册的孤儿订阅上。
 		if err := b.addSubscription(sub); err != nil {
@@ -86,11 +86,13 @@ func (b *Bus) attachHandler(topic, handlerName string, h eventbus.HandlerFunc, o
 	}
 	b.mu.Unlock()
 
-	if opts.MaxInFlight != sub.opts.MaxInFlight {
+	// 订阅级 MaxInFlight 是事件级配置：首个 handler 的解析值生效；同名
+	// 事件的两个 Topic 携带了不同值（配置错误）时后续值被忽略并 Warn。
+	if resolved.MaxInFlight != sub.maxInFlight {
 		b.logger.Warn("watermill: subscription max_in_flight mismatch ignored",
-			"topic", topic, "max_in_flight", opts.MaxInFlight, "effective", sub.opts.MaxInFlight)
+			"topic", topic, "max_in_flight", resolved.MaxInFlight, "effective", sub.maxInFlight)
 	}
-	sub.add(&subscriptionHandler{name: handlerName, fn: h, opts: opts})
+	sub.add(&subscriptionHandler{name: handlerName, fn: h, resolved: resolved})
 	return nil
 }
 
@@ -114,7 +116,7 @@ func (b *Bus) addSubscription(sub *topicSubscription) (err error) {
 		}
 	}()
 	// 订阅级在途上限：0 = 默认 1（串行）；负数 = 不限制（逃生口）。
-	maxInFlight := sub.opts.MaxInFlight
+	maxInFlight := sub.maxInFlight
 	if maxInFlight == 0 {
 		maxInFlight = DefaultMaxInFlight
 	}
@@ -220,14 +222,12 @@ func (b *Bus) dispatch(sub *topicSubscription, msg *message.Message) error {
 // eventbus.InvokeHandler 承担，确认时序由订阅级 dispatcher 聚合。每个
 // handler 拿到独立的 RawEvent 副本，避免 raw handler 互相污染。
 func (b *Bus) invokeHandler(ctx context.Context, topic string, h *subscriptionHandler, raw *eventbus.RawEvent) error {
-	retry := b.resolver.RetryFor(topic, h.opts.Retry)
-	timeout := b.resolver.HandlerTimeoutFor(topic, h.opts.HandlerTimeout)
 	return eventbus.InvokeHandler(ctx, b.logger, h.fn, eventbus.CloneRawEvent(raw), b.resolver, eventbus.InvokeOptions{
 		Topic:       topic,
 		HandlerName: h.name,
-		Retry:       retry,
-		Once:        h.opts.AutoAck,
-		Swallow:     h.opts.ContinueOnError,
-		Timeout:     timeout,
+		Retry:       h.resolved.Retry,
+		Once:        h.resolved.AutoAck,
+		Swallow:     h.resolved.ContinueOnError,
+		Timeout:     h.resolved.HandlerTimeout,
 	})
 }
