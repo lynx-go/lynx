@@ -85,22 +85,20 @@ func (app *lynx) runLifecycle(exitCh <-chan os.Signal) error {
 	app.publishAppEvent(eventbus.TopicAppStopping)
 	postStartCancel()
 
-	// 阶段序列（顺序即契约，见文件头）。
+	// 阶段序列（顺序即契约，见文件头）；停止语义与错误记账经 teardown
+	// 执行器与快路径共用。
+	t := teardown{app}
 	drainErr := app.runDrainPhase()
-	app.cancelCtx()
+	t.cancelCtx()
 	shutdownErr := app.runOnPreStopHooks()
 	app.stopActors(actors)
 	for received < len(actors) {
 		<-done
 		received++
 	}
-	app.publishAppEvent(eventbus.TopicAppStopped)
-	app.stopBusBounded()
-	var shutdownErrs error
-	if app.shutdownErrors.HasErrors() {
-		shutdownErrs = &app.shutdownErrors
-	}
-	return errors.Join(runErr, drainErr, shutdownErr, shutdownErrs)
+	t.announceStopped()
+	t.stopBus()
+	return errors.Join(runErr, drainErr, shutdownErr, t.errors())
 }
 
 // stopActors 逆序有界停止全部服务（LIFO：后注册的先停，与 OrderedServices
@@ -111,16 +109,9 @@ func (app *lynx) stopActors(actors []actor) {
 	}
 }
 
-// failStart 收尾启动期早退路径：发布 AppStopped 后有界停止提前 Start 的
-// 总线。Run 在入口已置位 running，Close 不再兜底总线；post-stop 钩子由
-// Run 的 defer 覆盖。
-func (app *lynx) failStart() {
-	app.publishAppEvent(eventbus.TopicAppStopped)
-	app.stopBusBounded()
-}
-
 // stopBusBounded 有界停止应用总线：在 AppStopped 事件之后、Run 返回之前，
 // 保证收尾事件仍可投递。错误经 stopServiceBounded 记入 shutdownErrors。
+// 完整序列与快路径经 teardown.stopBus 共用（见 shutdown.go）。
 func (app *lynx) stopBusBounded() {
 	if app.bus == nil {
 		return

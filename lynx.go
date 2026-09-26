@@ -144,6 +144,10 @@ type lynx struct {
 	healthCheckers []Checker
 	// services 按注册顺序记录已 Init 成功的服务，用于失败路径的逆序清理。
 	services []Service
+	// servicesStopped 标记批次停止已执行（受 app.mu 保护）：Init 失败
+	// （addServices）、Run 早退与 Close 兜底可能先后触发停止，服务 Stop
+	// 不得被重复调用（Lifecycle 契约只保证容忍 Stop 先于 Start，不保证幂等）。
+	servicesStopped bool
 	// actors 是按注册顺序登记的服务执行单元（execute/stop），由 lifecycle
 	// 在 Run 时快照并调度；关停时逆序停止（LIFO）。
 	actors []actor
@@ -343,22 +347,22 @@ func (app *lynx) Close() {
 	app.closed = true
 	running := app.running
 	app.mu.Unlock()
-	app.cancelCtx()
 	if running {
-		// Run 已启动：关停阶段序列由 runLifecycle 持有执行权，此处不
-		// 抢先（post-stop 钩子取走即清空，Run 收尾不会重复执行）。
+		// Run 已启动：关停阶段序列由 runLifecycle 持有执行权，此处只取消
+		// 应用 Context 触发 app-context 关停分支，不抢先（post-stop 钩子
+		// 取走即清空，Run 收尾不会重复执行）。
+		app.cancelCtx()
 		return
 	}
-	// Run 未启动（setup 失败/短路径）：有界停止提前 Start 的总线避免
-	// 泄漏，并兜底执行 post-stop 钩子——它们没有其他执行机会。顺序与
-	// Run 收尾一致：总线先停，钩子最后。
-	if app.busCancel != nil {
-		busCtx, cancel := context.WithTimeout(context.Background(), app.o.StopTimeout)
-		_ = app.bus.Stop(busCtx)
-		cancel()
-		app.busCancel()
-		app.busCancel = nil
-	}
+	// Run 未启动（setup 失败/短路径）：走关停快路径释放已 Init 的服务与
+	// 提前 Start 的总线，并兜底执行 post-stop 钩子——它们没有其他执行
+	// 机会。顺序与 Run 早退一致：停服务（Stop 收到仍存活的 ctx）→ 停总线
+	// → 取消应用 Context → 收尾钩子。Close 无返回值，停止错误进入
+	// shutdownErrors 并由 stopServiceBounded 记 Error 日志。
+	t := teardown{app}
+	t.stopServices(app.ctx)
+	t.stopBus()
+	t.cancelCtx()
 	app.runPostStopHooks()
 }
 
@@ -627,6 +631,7 @@ func (app *lynx) addServices(services ...Service) error {
 			cancel()
 			app.publishEvent(eventbus.TopicServiceFailed, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now(), Error: err.Error()})
 			// 逆序有界停止本批及此前已 Init 成功的服务，释放其打开的资源。
+			// 批次幂等：Run 早退/Close 的快路径不会重复停止。
 			app.stopServices(app.ctx)
 			return err
 		}
@@ -670,10 +675,10 @@ func (app *lynx) Run() error {
 	app.running = true
 	app.mu.Unlock()
 	if initErr != nil {
-		// 启动期 poison-pill：不进入运行阶段。停止提前 Start 的总线避免
-		// 泄漏（Run 已置位 running，Close 不再兜底总线）。
-		app.failStart()
-		return initErr
+		// 启动期 poison-pill：不进入运行阶段，走关停快路径释放已 Init 的
+		// 服务与提前 Start 的总线（Run 已置位 running，Close 不再兜底），
+		// 返回触发错误与关停错误的聚合。
+		return teardown{app}.fast(initErr)
 	}
 	if alreadyRunning {
 		return errors.New("lynx: Run must not be called more than once")
@@ -687,9 +692,7 @@ func (app *lynx) Run() error {
 	// poison-pill 语义：已 Init 的服务逆序停止），好过关停期静默跳过
 	// 注销钩子的延迟暴露。
 	if app.o.DrainTimeout <= 0 && app.hasDrainHooks() {
-		app.stopServices(app.ctx)
-		app.failStart()
-		return ErrDrainHooksRequireDrainTimeout
+		return teardown{app}.fast(ErrDrainHooksRequireDrainTimeout)
 	}
 
 	// 配置热更新（WithConfigWatch）：注册失败镜像 initErr 的 poison-pill
@@ -697,9 +700,7 @@ func (app *lynx) Run() error {
 	// 的配置错误在启动期暴露。
 	if app.o.ConfigWatch {
 		if err := app.startConfigWatch(); err != nil {
-			app.stopServices(app.ctx)
-			app.failStart()
-			return err
+			return teardown{app}.fast(err)
 		}
 	}
 
@@ -712,12 +713,10 @@ func (app *lynx) Run() error {
 
 	// 顺序执行 OnPreStart hooks，全部成功后服务才开始启动。
 	if err := app.runOnPreStartHooks(); err != nil {
-		// 未进入 actor 调度：已 Init 的服务需手动逆序清理，释放资源。
+		// 未进入 actor 调度：走关停快路径逆序清理已 Init 的服务并停总线。
 		// 关停阶段（drain/OnPreStop）只在服务进入运行阶段后执行（契约
-		// 见 lifecycle.go 文件头）。
-		app.stopServices(app.ctx)
-		app.failStart()
-		return err
+		// 见 lifecycle.go 文件头与 docs/03-core-concepts.md）。
+		return teardown{app}.fast(err)
 	}
 	app.publishAppEvent(eventbus.TopicAppStarted)
 
@@ -856,40 +855,27 @@ func newLynx(o *Options) (App, error) {
 	app.busCancel = busCancel
 	app.publishEvent(eventbus.TopicServiceStarting, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now()})
 	// busStartErr 捕获 Start 的根因：明确失败即刻返回，不退化成长达
-	// BusReadyTimeout 的就绪超时；Start 正常返回（非阻塞实现）则继续等就绪。
+	// BusReadyTimeout 的就绪超时；Start 正常返回（非阻塞实现）不入通道，
+	// 就绪等待继续（与 probe.wait 的 startErr 交错语义一致：非 nil 错误
+	// 立即返回，nil 值才表示「等待期间正常收尾」）。
 	busStartErr := make(chan error, 1)
 	go func() {
-		err := app.bus.Start(busCtx)
-		busStartErr <- err
-		if err != nil {
+		if err := app.bus.Start(busCtx); err != nil {
+			busStartErr <- fmt.Errorf("lynx: bus start failed: %w", err)
 			app.publishEvent(eventbus.TopicServiceFailed, eventbus.ServiceEvent{Service: app.bus.Name(), Time: time.Now(), Error: err.Error()})
 		}
 	}()
 	// 就绪等待受 BusReadyTimeout 总预算约束（默认 10s，可经
 	// WithBusReadyTimeout 配置）：此前硬编码 1 秒会让 Watermill+Kafka 等
-	// 慢启动后端在正常部署下构造失败。轮询机制与 OrderedServices 共用
-	// ready.go 的 awaitHealthy（无 startErr 交错、纯轮询）；预算耗尽仍不
-	// 健康则快失败，优于带病运行。等待与 Start 根因竞速：Start 明确失败
-	// 时取消等待并返回根因。
+	// 慢启动后端在正常部署下构造失败。轮询与 startErr 交错统一经
+	// ready.go 的 probe.wait（与 OrderedServices 同一路径）；预算耗尽仍
+	// 不健康则快失败，优于带病运行；Start 明确失败时返回根因。
 	waitCtx, waitCancel := context.WithCancel(context.Background())
 	defer waitCancel()
-	readyCh := make(chan error, 1)
-	go func() {
-		readyCh <- awaitHealthy(waitCtx, app.bus, o.BusReadyTimeout, readinessPollInterval, nil,
-			func(last error) error {
-				return fmt.Errorf("lynx: bus failed to become ready within %s: %w", o.BusReadyTimeout, last)
-			})
-	}()
-	var busReadyErr error
-	select {
-	case busReadyErr = <-readyCh:
-	case startErr := <-busStartErr:
-		if startErr != nil {
-			busCancel()
-			return nil, fmt.Errorf("lynx: bus start failed: %w", startErr)
-		}
-		busReadyErr = <-readyCh
-	}
+	busReadyErr := checkerProbe(app.bus).wait(waitCtx, o.BusReadyTimeout, busStartErr,
+		func(last error) error {
+			return fmt.Errorf("lynx: bus failed to become ready within %s: %w", o.BusReadyTimeout, last)
+		})
 	if busReadyErr != nil {
 		busCancel()
 		return nil, busReadyErr

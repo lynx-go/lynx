@@ -96,7 +96,7 @@ Run()
 - `Error()`：返回所有错误消息以 `"; "` 连接的字符串。
 - `Errors()`：返回收集到的错误切片副本。
 
-该类型内部使用互斥锁保护，可并发使用。框架自身只在关闭流程中用到它：聚合结果只记录日志，不会向上传递——进程此时已经在退出路径上。
+该类型内部使用互斥锁保护，可并发使用。框架自身只在关闭流程中用到它：聚合结果随 `Run()` 上抛（`errors.Join`，见 3.7 节「关闭流程」与「启动期早退的关停契约」），调用方（如 K8s）可以感知关停失败。
 
 `_examples/boot/main.go` 中有 `OnPostStop` 的实际用例：Wire 构建的依赖图返回了 `cleanup` 函数，示例直接 `app.OnPostStop(cleanup)` 注册（签名原生对齐，零适配），在一切停止后释放底层资源。
 
@@ -295,6 +295,19 @@ opts := lynx.NewOptions(
 排水只影响 **readiness**（HTTP `/healthz/readiness` 与 gRPC health 探测）：HTTP 的 `/healthz/liveness` 恒返回 200、不消费检查器聚合，排水期间存活探针不受影响（见 5.1 节）。
 
 `Run()` 返回时会把关停相关错误聚合上抛（`errors.Join`）：run group 的首个 actor 错误、OnDrain/OnPreStop 钩子错误（含超时）、服务 Stop 错误（含超时）——调用方（如 K8s）可以感知关停失败。OnPostStop 收尾钩子无错误返回（`CleanupFunc`），超时只记日志。
+
+### 启动期早退的关停契约
+
+服务尚未进入运行阶段时的退出——Init 失败（注册期 poison-pill）、排水钩子未配预算、配置热更新注册失败、OnPreStart 钩子失败——以及 `Run()` 从未启动时的 `Close()`（如 `Runner` setup 回调失败后的兜底释放），走**关停快路径**：
+
+1. 逆序有界停止已 Init 的服务（单个最长 `StopTimeout`；`Stop` 收到仍存活的应用 Context，不会被提前取消）；
+2. 发布 `AppStopped`（`Run` 触发的早退路径；`Run` 从未启动的 `Close` 不发布应用生命周期事件）；
+3. 有界停止消息总线；
+4. 取消应用 Context。
+
+快路径**不执行**排水与 `OnPreStop`——服务未进入运行阶段，摘流与冲刷无意义；`OnPostStop` 收尾钩子仍然执行（`Run` 的 defer / `Close` 兜底，恰好一次）。服务从未 `Start` 过时不发布 `lynx.service.stopping/stopped` 事件，避免制造未发生的状态转换。
+
+`Run()` 在这些路径上返回触发错误与关停错误的聚合（`errors.Join`）：`errors.Is/As` 仍可命中触发错误，服务 `Stop` 的错误（含超时）不再只记日志。`Close()` 无返回值，其总线/服务停止错误记 Error 日志并进入同一错误聚合。
 
 ## 3.8 综合示例
 

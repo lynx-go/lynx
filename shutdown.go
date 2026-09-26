@@ -85,15 +85,63 @@ func (app *lynx) stopServiceBounded(ctx context.Context, service Service) {
 	}
 }
 
-// stopServices 逆序停止已注册服务，用于 Init/OnPreStart 失败路径的资源清理。
-// 正常关停路径由 lifecycle 的 stopActors 逆序停止（LIFO），与本函数一致。
+// stopServices 逆序停止全部已 Init 的服务（LIFO），用于快路径的资源清理；
+// 正常关停路径由 lifecycle 的 stopActors 逆序停止，顺序一致。
+// 批次幂等：Init 失败（addServices）、Run 早退与 Close 兜底可能先后触发，
+// 服务 Stop 不得被重复调用（Lifecycle 契约不保证 Stop 幂等）。
 func (app *lynx) stopServices(ctx context.Context) {
 	app.mu.Lock()
+	if app.servicesStopped {
+		app.mu.Unlock()
+		return
+	}
+	app.servicesStopped = true
 	svcs := append([]Service(nil), app.services...)
 	app.mu.Unlock()
 	for i := len(svcs) - 1; i >= 0; i-- {
 		app.stopServiceBounded(ctx, svcs[i])
 	}
+}
+
+// teardown 是关停执行器的唯一归属：停止已 Init 的服务（逆序、有界）、
+// 发布 AppStopped、有界停止总线、取消应用 Context，并统一聚合关停错误。
+// 两条命名序列共用本类型的方法——完整关停序列在 lifecycle.runLifecycle
+// （排水 → 取消 → OnPreStop → 停 actor → AppStopped → 停总线 → 等 actor
+// 退出 → 聚合）；快路径是 teardown.fast（启动期早退与 Run 未启动的 Close）。
+// 停止语义与错误记账只有这一处实现。
+type teardown struct{ app *lynx }
+
+// stopServices 逆序有界停止全部已 Init 的服务，错误进入聚合。
+func (t teardown) stopServices(ctx context.Context) { t.app.stopServices(ctx) }
+
+// announceStopped 发布 AppStopped 生命周期事件。
+func (t teardown) announceStopped() { t.app.publishAppEvent(eventbus.TopicAppStopped) }
+
+// stopBus 有界停止应用总线，错误进入聚合。
+func (t teardown) stopBus() { t.app.stopBusBounded() }
+
+// cancelCtx 取消应用 Context。
+func (t teardown) cancelCtx() { t.app.cancelCtx() }
+
+// errors 返回聚合的关停错误（无错误时 nil）。
+func (t teardown) errors() error {
+	if t.app.shutdownErrors.HasErrors() {
+		return &t.app.shutdownErrors
+	}
+	return nil
+}
+
+// fast 执行关停快路径：逆序有界停止已 Init 的服务（Stop 收到仍存活的
+// 应用 ctx）→ 发布 AppStopped → 有界停总线 → 取消应用 Context；返回触发
+// 错误与关停错误的聚合（errors.Join）。不执行排水与 OnPreStop：服务未
+// 进入运行阶段（契约见 lifecycle.go 文件头、docs/03-core-concepts.md 与
+// CONTEXT.md「关停快路径」）。
+func (t teardown) fast(trigger error) error {
+	t.stopServices(t.app.ctx)
+	t.announceStopped()
+	t.stopBus()
+	t.cancelCtx()
+	return errors.Join(trigger, t.errors())
 }
 
 // hasDrainHooks 报告是否注册了 OnDrain 钩子。无钩子时关停路径整段跳过
