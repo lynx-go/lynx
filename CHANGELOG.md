@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v1.16.0 (2026-09-27)
+
+本次发布 tag：根 `v1.16.0` 与全部 9 个 contrib 模块版本对齐——
+`contrib/{zap,watermill,watermill-kafka,telemetry,schedule,registry,consul,cluster,cluster-redis}/v1.16.0`。
+自本批起主包与 contrib 统一版本号（此前惯例仅对变更模块打 tag）。
 
 ### 修复：日志级别接线统一为规范键 logging.level（flag 覆盖语义修正）
 

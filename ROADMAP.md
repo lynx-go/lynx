@@ -94,7 +94,7 @@ v1.0 发布前全量审查（功能缺失/设计缺陷/实现缺陷）的修复�
       全部修复并以变异验证测试锁住
 - [x] 测试盲区补齐：healthz 端点、HTTP TLS、超时×body、zap 内容断言、
       schedule 时区、consul index 回绕与挂死 agent、watcher 错误退避
-- [ ] 后续工作：Kafka testcontainers 集成测试（WK-19，移入 G4）
+- [x] 后续工作：Kafka testcontainers 集成测试（WK-19，移入 G4）
       ——同列的 Resolver 订阅 API 与 command 健康等待上界可配化
       已随 v1.13.0 完成
 

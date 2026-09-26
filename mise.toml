@@ -64,7 +64,7 @@ arg "<version>" env="VERSION" help="版本号，如 v1.10.0"
 arg "<comment>" env="COMMENT" help="annotated tag 说明"
 '''
 run = '''
-for prefix in "" contrib/zap contrib/watermill contrib/watermill-kafka contrib/telemetry contrib/schedule contrib/registry contrib/consul contrib/cluster contrib/cluster-redis; do
+for prefix in "" contrib/watermill contrib/watermill-kafka contrib/cluster contrib/zap contrib/telemetry contrib/registry contrib/schedule contrib/consul contrib/cluster-redis; do
   tag="${prefix:+$prefix/}$usage_version"
   git tag -a "$tag" -m "$usage_comment"
   git push origin "$tag"

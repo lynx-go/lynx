@@ -10,8 +10,8 @@ require (
 	github.com/IBM/sarama v1.43.3
 	github.com/ThreeDotsLabs/watermill v1.5.2
 	github.com/ThreeDotsLabs/watermill-kafka/v3 v3.1.0
-	github.com/lynx-go/lynx v1.15.0
-	github.com/lynx-go/lynx/contrib/watermill v1.7.0
+	github.com/lynx-go/lynx v1.16.0
+	github.com/lynx-go/lynx/contrib/watermill v1.16.0
 	github.com/spf13/viper v1.21.0
 	github.com/testcontainers/testcontainers-go v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/kafka v0.41.0

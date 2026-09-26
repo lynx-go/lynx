@@ -8,8 +8,8 @@ replace (
 )
 
 require (
-	github.com/lynx-go/lynx v1.15.0
-	github.com/lynx-go/lynx/contrib/cluster v1.1.0
+	github.com/lynx-go/lynx v1.16.0
+	github.com/lynx-go/lynx/contrib/cluster v1.16.0
 	github.com/robfig/cron/v3 v3.0.1
 )
 

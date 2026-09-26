@@ -5,7 +5,7 @@ go 1.26.5
 replace github.com/lynx-go/lynx => ../../
 
 require (
-	github.com/lynx-go/lynx v1.0.0
+	github.com/lynx-go/lynx v1.16.0
 	github.com/samber/lo v1.53.0
 	github.com/samber/slog-zap/v2 v2.7.0
 	go.uber.org/zap v1.28.0

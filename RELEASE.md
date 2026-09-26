@@ -71,8 +71,9 @@ lynx（根） ──────────┬──> contrib/zap
 > 依赖关系以各 `contrib/*/go.mod` 的 require 为准；后续若新增 contrib 间
 > 依赖，须在发布前更新本清单。
 >
-> `mise run release-all` 的循环顺序（schedule / consul 排在 cluster 之前）
-> 尚未与上表对齐；用它发版前先对齐顺序，或按上表逐个 `mise run release-tag`。
+> `mise run release-all` 的循环顺序已与上表对齐（根 → watermill →
+> watermill-kafka → cluster → zap / telemetry / registry → schedule →
+> consul → cluster-redis）。新增 contrib 间依赖时须同步更新该顺序。
 
 ## 发版前检查清单
 
