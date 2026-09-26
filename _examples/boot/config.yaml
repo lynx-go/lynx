@@ -1,1 +1,3 @@
 addr: ":9080"
+# 日志级别（规范键）：debug / info / warn / error；-l/--loglevel flag 未传时生效
+# logging.level: debug

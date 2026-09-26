@@ -183,7 +183,7 @@ Default flags (see `DefaultBindFlagsFunc` in lynx.go):
 - `--config-dir` - Config directory
 - `--log-level` - Log level
 
-App metadata keys: `service.name`/`service.id`/`service.version` (the legacy top-level `name`/`id`/`version` fallback was removed in v1.0). Log level keys: `logging.level` → `log-level` → `log_level` (`lynx.LogLevelFromConfig`).
+App metadata keys: `service.name`/`service.id`/`service.version` (the legacy top-level `name`/`id`/`version` fallback was removed in v1.0). Log level: `logging.level` is the canonical key (`log-level`/`log_level` are config-file-only compat fallbacks, deprecated — see `lynx.LogLevelFromConfig`); the built-in `--log-level` flag is explicitly translated into the canonical key via `Set` in `initConfigure` (an explicitly passed flag overrides config); custom level flags must be translated in `WithBindConfigFunc` the same way.
 
 ### Boot/Bootstrap Pattern
 

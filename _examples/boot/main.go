@@ -29,12 +29,21 @@ func main() {
 		lynx.WithLoggerProvider(zap.NewLogger),
 		lynx.WithBindFlagsFunc(func(f *pflag.FlagSet) {
 			f.String("addr", ":8080", "http listen address")
-			f.StringP("loglevel", "l", "debug", "log level")
+			// 默认值留空：非空默认会经下方翻译以 Set 覆盖配置文件的
+			// logging.level（内置 --log-level 的同一约束）。
+			f.StringP("loglevel", "l", "", "log level override, e.g. debug")
 			f.StringP("config", "c", "", "config file path")
 		}),
 		lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
 			if cf, _ := f.GetString("config"); cf != "" {
 				c.SetFile(cf)
+			}
+			// 自定义 flag 不在框架翻译范围内（框架只翻译内置 --log-level）：
+			// 在此翻译进规范键 logging.level，模式与 lynx 的内置翻译一致
+			//（lynx.initConfigure）。没有这一步，-l/--loglevel 就是死线——
+			// viper 里躺着一个没人读取的 loglevel 键。
+			if lv, _ := f.GetString("loglevel"); lv != "" {
+				c.Set("logging.level", lv)
 			}
 			return nil
 		}),

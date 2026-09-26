@@ -86,7 +86,7 @@ go run main.go
 ```
 
 应用元数据键：`service.name` / `service.id` / `service.version`。  
-日志级别回退：`logging.level` → `log-level` → `log_level`。
+日志级别：`logging.level` 为规范键（`log-level`/`log_level` 为仅配置文件的兼容回退，已废弃）；`--log-level` 显式传参时覆盖配置，自定义级别 flag 须在 `WithBindConfigFunc` 里翻译进规范键（见 `_examples/boot`）。
 
 通过 `app.Config()` 读取（`Get` / 类型化 getter / `Unmarshal`）。绑定阶段使用 `ConfigSource`（`Set` / `SetFile` / `BindEnv` 等）；默认实现适配 `*viper.Viper`。
 

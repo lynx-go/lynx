@@ -386,8 +386,9 @@ func WithBusProvider(fn func(cfg Config) (eventbus.Bus, []Service, error)) Optio
 // 产出的 logger 即 app.logger 并同步 slog.SetDefault（WithIsolated
 // 时不触碰全局）；返回 nil logger 或错误均使构造失败（快失败）。
 // 配置 provider 后视为用户定制：框架跳过 logging.level 的默认
-// TextHandler 重建（级别归 provider 装配逻辑），SetLogLevel 不再代理
-// 级别调整（debug /loglevel 端点返回 501）。
+// TextHandler 重建（级别归 provider 装配逻辑，键链契约见
+// lynx.LogLevelFromConfig——自定义 flag/key 须翻译进规范键），SetLogLevel
+// 不再代理级别调整（debug /loglevel 端点返回 501）。
 func WithLoggerProvider(fn func(ctx AppContext) (*slog.Logger, error)) Option {
 	return func(o *Options) {
 		o.LoggerProvider = fn

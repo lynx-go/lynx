@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### 修复：日志级别接线统一为规范键 logging.level（flag 覆盖语义修正）
+
+- **行为修正**：`--log-level` 显式传参此前会被配置文件的 `logging.level`
+  静默压过（flag 值经 BindPFlags 落在 `log-level` 键，不参与规范键解析）；
+  现在 `initConfigure` 把显式传参翻译成 `Set("logging.level", …)`（viper
+  最高优先级）——flag 覆盖配置，未传时配置生效，语义回归 CLI 常规。
+- 级别键链契约更新：`logging.level` 为唯一规范键，`log-level`/`log_level`
+  降级为仅配置文件的兼容回退（已废弃，无 flag 指向）。此前"隐式 flag 名 ≈
+  viper 键名 ≈ 链上键名"的巧合缝合被显式翻译取代——自定义命令行 flag 的
+  唯一接入方式是在 `WithBindConfigFunc` 里翻译进规范键（框架与用户同模式，
+  `_examples/boot` 已示范）；漏掉翻译时 flag 是 viper 里的死键（静默，
+  不报错也不生效）。
+- 内置 flag 空默认值的约定保留，理由改写：非空默认会经翻译层以 Set 覆盖
+  配置文件（非空守卫是唯一防线）；BindPFlags 对 `log-level` 键的默认值
+  污染仍是兼容回退键需要警惕的点。
+- 修复 `_examples/boot` 的 `--loglevel` 死线：flag 名不在级别键链内，
+  viper 键 `loglevel` 无人读取，级别恒为框架缺省（README 却承诺默认
+  debug）；现改为空默认 + BindConfigFunc 翻译，README/config.yaml 对账。
+- 契约文档显式化：`LogLevelFromConfig`/`DefaultBindFlagsFunc`/
+  `WithLoggerProvider` 注释、README、CLAUDE.md、docs/02/03 同步；新增
+  三个端到端测试（flag 覆盖配置 / 未传 flag 配置生效 / 兼容键回退）。
+
 ### 破坏性变更：logger 迁移为构造期依赖（WithLoggerProvider），移除 App.SetLogger
 
 - 新增 `lynx.WithLoggerProvider(func(AppContext) (*slog.Logger, error))`：

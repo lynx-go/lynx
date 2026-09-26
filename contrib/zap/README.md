@@ -16,7 +16,7 @@ import "github.com/lynx-go/lynx/contrib/zap"
 
 行为细节：
 
-- 日志级别经 `lynx.LogLevelFromConfig` 解析：`logging.level` → `log-level` → `log_level`，均未设置时默认 `info`（logger.go:35-38）。
+- 日志级别经 `lynx.LogLevelFromConfig` 解析：`logging.level`（规范键）→ `log-level` → `log_level`（仅配置文件的兼容回退，已废弃），均未设置时默认 `info`（logger.go:35-38）。内置 `--log-level` 显式传参覆盖配置；自定义级别 flag 须在 `WithBindConfigFunc` 里翻译进规范键（见 `_examples/boot`）。
 - 级别字符串统一按 slog 域（`lynx.ParseLogLevel`）校验：接受 `warning` 别名与大小写不敏感形式，不接受 `fatal`、`info+2`。
 - 自动注入 `service.id` / `service.name` / `service.version` 字段（logger.go:47-52）。
 - 显式禁用 zap 生产默认采样（logger.go:72-76）：高吞吐下错误日志不会被"每 100 条只记 1 条"静默丢弃。

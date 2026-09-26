@@ -445,9 +445,15 @@ func (app *lynx) applyLogLevel() {
 	}
 }
 
-// LogLevelFromConfig 从配置中解析日志级别字符串，优先级：
-// logging.level（结构化配置）→ log-level → log_level（扁平键兼容回退）。
-// 未设置任何键时返回空字符串。
+// LogLevelFromConfig 从配置中解析日志级别字符串。
+// 契约：logging.level 是唯一规范键；log-level 与 log_level 是仅配置文件
+// 的兼容回退（已废弃，不再有 flag 指向）。内置 --log-level 经 initConfigure
+// 显式翻译成 Set("logging.level", …)——Set 为最高优先级，显式传参覆盖全部
+// 配置键，未传时链按序回退。自定义命令行 flag / 配置 key 的唯一接入方式：
+// 在 BindConfigFunc 里翻译进规范键（模式同内置翻译，见 _examples/boot）。
+// 三个消费方共享本函数：applyLogLevel（框架默认路径）、contrib/zap 的
+// WithLoggerProvider 路径、lynxtest 的 TB logger——均未设置时返回空串，
+// 由消费方自定缺省（info）。
 func LogLevelFromConfig(c Config) string {
 	for _, key := range []string{"logging.level", "log-level", "log_level"} {
 		if lvl := c.GetString(key); lvl != "" {
@@ -477,11 +483,13 @@ func DefaultBindFlagsFunc(f *pflag.FlagSet) {
 	f.StringP("config", "c", "", "config file path")
 	f.String("config-type", "yaml", "config file type, default yaml")
 	f.String("config-dir", "", "config file path")
-	// 默认值为空而非 "info"：BindPFlags 会把未显式传入的 flag 默认值绑进
-	// viper，若默认 "info"，LogLevelFromConfig 的优先级链（logging.level →
-	// log-level → log_level）会永久短路在 log-level，配置文件里的
-	// logging.level/log_level 永远不生效（回归：config.yaml 设 log_level
-	// 无效）。空默认时未传 flag 即回退配置文件键，缺省仍为 info。
+	// 默认值必须为空，两条理由：
+	//   1. initConfigure 的翻译有非空守卫：若默认 "info"，每次启动都会
+	//      Set("logging.level","info")，配置文件里的任何级别键永远失效；
+	//   2. BindPFlags 会把 flag 默认值绑进 viper 的 log-level 键，非空时
+	//      LogLevelFromConfig 的链会短路在 log-level，遮蔽更低优先级的
+	//      log_level（回归：config.yaml 设 log_level 无效）。
+	// 空默认时未传 flag 即回退配置文件键，缺省仍为 info。
 	f.String("log-level", "", "log level, default info")
 }
 
@@ -521,6 +529,19 @@ func (app *lynx) initConfigure() error {
 	if app.o.BindConfigFunc != nil {
 		if err := app.o.BindConfigFunc(app.f, NewViperConfig(app.c)); err != nil {
 			return err
+		}
+	}
+
+	// 内置 --log-level 显式翻译进规范键 logging.level（级别键链契约见
+	// LogLevelFromConfig）：非空守卫保证 flag 默认值（必须为空，见
+	// DefaultBindFlagsFunc）不进入级别通道；Set 是 viper 最高优先级，
+	// 显式传参覆盖配置文件，未传时配置生效。翻译放在这里而非
+	// BindConfigFunc：只要内置 flag 存在即生效，用户重写 BindConfigFunc
+	// 不会静默失去 --log-level；自定义 flag 的翻译由用户在自己的
+	// BindConfigFunc 内完成（同模式，见 _examples/boot）。
+	if app.f.Lookup("log-level") != nil {
+		if lv, _ := app.f.GetString("log-level"); lv != "" {
+			app.c.Set("logging.level", lv)
 		}
 	}
 

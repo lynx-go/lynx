@@ -168,7 +168,7 @@ Lynx 的配置体系基于 Viper（读取与合并）加 pflag（命令行参数
 | `--config`, `-c` | 空 | 配置文件完整路径 |
 | `--config-type` | `yaml` | 配置文件类型 |
 | `--config-dir` | 空 | 配置文件搜索目录 |
-| `--log-level` | 空（缺省 `info`） | 日志级别；未显式传入时回退配置键 `logging.level` → `log-level` → `log_level` |
+| `--log-level` | 空（缺省 `info`） | 日志级别；框架显式翻译进规范键 `logging.level`，**显式传参覆盖配置文件**，未传时回退配置键 `logging.level` → `log-level` → `log_level`（后两个为兼容回退，已废弃） |
 
 未知命令行参数（如 `go test` 二进制的 `-test.*`）会被忽略，不阻断启动。
 

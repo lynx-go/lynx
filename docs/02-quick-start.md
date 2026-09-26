@@ -77,7 +77,8 @@ Lynx 基于 Viper 提供配置管理。通过 `WithBindFlagsFunc` 定义命令�
 
 ```yaml
 addr: ":8080"
-log_level: "debug"
+logging:
+  level: "debug"
 ```
 
 代码中声明参数并绑定配置文件（以下代码取自 `_examples/http/main.go`）：
@@ -87,7 +88,9 @@ opts := lynx.NewOptions(
 	lynx.WithBindFlagsFunc(func(f *pflag.FlagSet) {
 		f.StringP("config", "c", "./config.yaml", "config file path")
 		f.String("addr", "", "http listen address")
-		f.StringP("log_level", "l", "debug", "log level")
+		// 自定义日志级别 flag：默认值留空，避免非空默认经下方翻译以
+		// Set 覆盖配置文件（内置 --log-level 的同一约束）。
+		f.StringP("loglevel", "l", "", "log level override, e.g. debug")
 	}),
 	lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
 		if cf, _ := f.GetString("config"); cf != "" {
@@ -99,14 +102,23 @@ opts := lynx.NewOptions(
 		if err := c.BindEnv("addr", "LYNX_ADDR"); err != nil {
 			return err
 		}
+		// 自定义 flag 想影响框架读取的级别，必须翻译进规范键
+		// logging.level（框架只自动翻译内置 --log-level，模式相同）；
+		// 漏掉翻译时 flag 只是 viper 里的死键，不报错也不生效。
+		if lv, _ := f.GetString("loglevel"); lv != "" {
+			c.Set("logging.level", lv)
+		}
 		return nil
 	}),
 )
 ```
 
-> 注意：上例通过 `WithBindFlagsFunc` 完全自定义了命令行参数（如 `log_level`/`-l`）。
+> 注意：上例通过 `WithBindFlagsFunc` 完全自定义了命令行参数（如 `loglevel`/`-l`）。
 > 若不覆盖，框架默认启用内置 flags（`-c/--config`、`--config-type`、`--config-dir`、
-> `--log-level`，见 `DefaultBindFlagsFunc`），两者键名不同，混用时以实际注册的为准。
+> `--log-level`，见 `DefaultBindFlagsFunc`）。日志级别的键链契约：
+> `logging.level` 是唯一规范键，`log-level`/`log_level` 为仅配置文件的兼容回退
+> （已废弃）；内置 `--log-level` 由框架显式翻译进规范键，显式传参时覆盖配置；
+> 自定义 flag 由你在 `BindConfigFunc` 里做同样的翻译。
 
 在 `setup` 回调中读取配置：
 

@@ -10,8 +10,10 @@ go run . -c config.yaml --addr=:8080
 go run . --addr=:8080
 ```
 
-flag：`-c/--config`（配置文件路径）、`--addr`（HTTP 监听地址，默认 `:8080`）、`-l/--loglevel`（日志级别，默认 `debug`）。
+flag：`-c/--config`（配置文件路径）、`--addr`（HTTP 监听地址，默认 `:8080`）、`-l/--loglevel`（日志级别覆盖，如 `-l debug`；未传时取配置 `logging.level`，框架缺省 info）。
 `config.yaml` 与 `AppConfig` 对应（键 `addr`，对应 `mapstructure:"addr"`）；`--addr` flag 会覆盖配置文件中的值。
+
+自定义 flag（如 `-l/--loglevel`）要影响框架读取的配置键，必须在 `WithBindConfigFunc` 里显式翻译进规范键（`c.Set("logging.level", lv)`）——框架只自动翻译内置 `--log-level`，模式见 `lynx` 包 `initConfigure` 与本示例 `main.go`；漏掉翻译时 flag 值只是躺在 viper 里的死键，不报错也不生效。
 
 ## 关键代码点
 
