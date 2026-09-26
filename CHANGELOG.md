@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### 测试与修复：投递语义 parity 矩阵扩展（两实现对照）
+
+- `contrib/watermill/parity_test.go` 从 4 个场景扩到覆盖：扇出（同事件多
+  handler 各恰一次）、handler 单次超时（重试预算内一致 + 终态分歧显式
+  断言）、毒消息止损有界性、Stop 幂等与停止后拒绝、内存缓冲满丢弃
+  （仅内存侧断言）；一致项断言两侧相同，有意分歧用显式用例钉住
+- **修复**：watermill `Bus.Publish` 停止后统一返回框架级错误
+  （"cannot publish to a stopped bus"，与 Subscribe 对称）。此前无检查：
+  默认 MemoryTransport 静默接受（消息丢弃）、Kafka transport 报 transport
+  级错误——同一 API 停止后行为取决于后端
+- `design-eventbus.md` §5.6 补「两实现语义对照表」（一致/分歧 + 对应
+  parity 用例名）
+
 ### 新增：Kafka Transport 客户端构造接缝（WithClientFactory）
 
 - 导出 `ClientFactory` 接口与 `SubscriberParams`；新增 `WithClientFactory`

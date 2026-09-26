@@ -309,6 +309,20 @@ _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
 - **已知边界**：不同逻辑 topic 路由到同一 Transport 且物理 topics 重叠、组相同时
   会互相瓜分（部署时应为物理重叠的 topic 显式配置互不相同的组）。
 
+**两实现语义对照表**（`contrib/watermill/parity_test.go` 同一矩阵跑两个公开 Bus，
+测试名即用例名）：
+
+| 语义 | memory Bus | watermill Bus（+MemoryTransport） | parity 用例 |
+| --- | --- | --- | --- |
+| 同事件多 handler 扇出，各恰一次 | 一致 | 一致 | `TestFanOutParity` |
+| 重试预算内重试（预算 + 1 次调用） | 一致 | 一致 | `TestDeliverySemanticsParity/retry-then-success` |
+| AutoAck / ContinueOnError 抑制重试 | 一致 | 一致 | `.../autoack-*`、`.../continue-on-error-*` |
+| handler 单次超时按失败处理（重试预算内） | 一致 | 一致 | `TestHandlerTimeoutParity` |
+| 重试耗尽后的终态 | **丢弃**（at-most-once） | **Nack 重投**（at-least-once） | `.../retry-exhausted-*`、`TestHandlerTimeoutParity` |
+| 毒消息止损（终态失败轮数上界） | 不适用（无重投） | 有界重投后跳过 handler（默认 10 轮） | `TestHandlerTimeoutParity`（计数有界） |
+| 缓冲满 | **丢弃并记 Error**（`TestMemoryBufferFullDrops`） | 不适用（Nack 重投/背压） | 仅内存侧断言 |
+| Stop 幂等；停止后 Publish/Subscribe 拒绝 | 一致 | 一致 | `TestStopSemanticsParity` |
+
 ### 5.7 Trace 上下文传播（v1.17 落地）
 
 跨进程 Bus 的 trace 续链走消息头（W3C Trace Context）：
