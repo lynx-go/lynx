@@ -28,65 +28,68 @@ const readinessPollInterval = 10 * time.Millisecond
 // 兜底上界。Command 的 WithProbeTimeout 以此为默认值。
 const defaultProbeTimeout = 3 * time.Second
 
-// readySource 是单个服务的就绪信号来源（三级优先解析的唯一归属）：
-// 实现 Ready 时以 Ready 为准（即使同时实现 Checker）；否则实现 Checker
-// 时用健康检查；两者皆无表示"已 invoke 即就绪"。
-type readySource struct {
+// probe 是单个服务就绪来源的解析产物与探测执行器（三级解析与两种消费
+// 模式的唯一归属）：Ready 优先（即使同时实现 Checker）→ Checker 轮询 →
+// 两者皆无表示「已 invoke 即就绪」。startErr 交错、ctx 取消优先与预算
+// 边界都在此统一，消费方（OrderedServices / 总线等待 / Command）只选
+// wait（预算循环）或 once（单次探测）。
+type probe struct {
 	ready   <-chan struct{}
 	checker Checker
 }
 
-func resolveReadySource(s Service) readySource {
+// resolveProbe 解析单个服务的就绪来源（三级优先，见 probe 注释）。
+func resolveProbe(s Service) probe {
 	if r, ok := s.(Ready); ok {
-		return readySource{ready: r.Ready()}
+		return probe{ready: r.Ready()}
 	}
 	if c, ok := s.(Checker); ok {
-		return readySource{checker: c}
+		return probe{checker: c}
 	}
-	return readySource{}
+	return probe{}
 }
 
-// probeServiceReady 构造单个服务的单次有界探测（Command 的消费模式）：
-// 三级解析后返回探测函数；两者皆无时返回 nil（调用方视为已就绪）。
-// checkerBaseCtx 是 Checker 层调用的基 ctx——调用方决定取消语义：
-// Command 传 context.Background() 保住"首查健康即成功"（探测结果优先于
-// 调用侧取消），预算循环模式则由 awaitServiceReady 传调用方 ctx。
-func probeServiceReady(s Service, timeout time.Duration, checkerBaseCtx context.Context) func(context.Context) error {
-	src := resolveReadySource(s)
+// checkerProbe 构造 Checker-only 探测（总线等非 Service 的 Checker）。
+func checkerProbe(c Checker) probe { return probe{checker: c} }
+
+// empty 报告无就绪信号（两者皆无）：消费方视为已就绪、无需探测。
+func (p probe) empty() bool { return p.ready == nil && p.checker == nil }
+
+// once 执行单次有界探测（Command 每轮的消费模式）：Ready 有界等待
+// （预算内未关闭返回 errReadyNotClosed，由调用方按「本轮未就绪」处理）；
+// Checker 单次有界健康检查；无信号返回 nil。ctx 取消优先于探测结果。
+func (p probe) once(ctx context.Context, perCall time.Duration) error {
 	switch {
-	case src.ready != nil:
-		ready := src.ready
-		return func(ctx context.Context) error {
-			return waitReadyBounded(ctx, ready, timeout, nil)
-		}
-	case src.checker != nil:
-		checker := src.checker
-		return func(context.Context) error {
-			return checkHealthBounded(checkerBaseCtx, checker, timeout)
-		}
+	case p.ready != nil:
+		return waitReadyBounded(ctx, p.ready, perCall, nil)
+	case p.checker != nil:
+		return checkHealthBounded(ctx, p.checker, perCall)
 	default:
 		return nil
 	}
 }
 
-// awaitServiceReady 在预算内等待单个服务就绪（OrderedServices / 总线
-// 就绪的消费模式）：Ready 通道有界等待；否则 Checker 有界轮询；两者皆无
-// 则 peek Start 结果后放行。
+// wait 在预算内等待就绪（OrderedServices / 总线就绪的消费模式）：Ready
+// 有界等待；Checker 有界轮询；无信号 peek Start 结果后放行。
 //
 // startErr 是该服务 Start 结果的缓冲通道（可为 nil）：非 nil 时全程交错
-// 监听，可读即取出、放回（peek 语义，供后续收尾等待仍能收到）并返回。
-// 预算耗尽时返回 errTimeout(最后一次探测错误)。
-func awaitServiceReady(ctx context.Context, s Service, budget time.Duration, startErr chan error, errTimeout func(last error) error) error {
-	src := resolveReadySource(s)
+// 监听，可读即取出、放回（peek 语义，供后续收尾等待仍能收到）并返回；
+// 读到的 nil（服务在等待期间正常收尾）视为就绪，与 ctx 取消同时发生时
+// 取消为权威裁决。预算耗尽时返回 errTimeout(最后一次探测错误)；errTimeout
+// 为 nil 时透传原错误。
+func (p probe) wait(ctx context.Context, budget time.Duration, startErr chan error, errTimeout func(last error) error) error {
+	if errTimeout == nil {
+		errTimeout = func(err error) error { return err }
+	}
 	switch {
-	case src.ready != nil:
-		err := waitReadyBounded(ctx, src.ready, budget, startErr)
+	case p.ready != nil:
+		err := waitReadyBounded(ctx, p.ready, budget, startErr)
 		if errors.Is(err, errReadyNotClosed) {
 			return errTimeout(err)
 		}
 		return err
-	case src.checker != nil:
-		return awaitHealthy(ctx, src.checker, budget, readinessPollInterval, startErr, errTimeout)
+	case p.checker != nil:
+		return awaitHealthy(ctx, p.checker, budget, readinessPollInterval, startErr, errTimeout)
 	default:
 		return peekStartErr(startErr)
 	}

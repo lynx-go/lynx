@@ -252,9 +252,9 @@ func TestCommandStartContextCancelled(t *testing.T) {
 	}
 }
 
-func TestCommandStartHealthyWithCancelledContext(t *testing.T) {
-	// A healthy checker succeeds on the first attempt, so the cancelled
-	// context is never consulted by the retry loop and the command runs.
+func TestCommandStartHealthyWithCancelledContextAborts(t *testing.T) {
+	// 取消优先于探测结果：即使 checker 健康，已取消的 ctx 也必须让命令
+	// 立即中止，不再「探测成功即继续执行」。
 	checker := &sequenceChecker{}
 	app := newAppWithCheckers(t, checker)
 
@@ -270,11 +270,62 @@ func TestCommandStartHealthyWithCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := cmd.Start(ctx); err != nil {
-		t.Errorf("Start() error = %v, want nil for healthy checker", err)
+	err := cmd.Start(ctx)
+	if err == nil {
+		t.Fatal("Start() error = nil, want abort on cancelled context")
 	}
-	if got := ran.Load(); got != 1 {
-		t.Errorf("command ran %d times, want 1", got)
+	if !strings.Contains(err.Error(), "aborted waiting for dependencies") {
+		t.Errorf("Start() error = %v, want aborted message", err)
+	}
+	if got := ran.Load(); got != 0 {
+		t.Errorf("command ran %d times, want 0 (cancel wins over probe result)", got)
+	}
+}
+
+func TestNewCommandWaitBudget(t *testing.T) {
+	cmd := NewCommand(nil, WithWaitBudget(2*time.Second))
+	if got := cmd.(*command).options.WaitBudget; got != 2*time.Second {
+		t.Errorf("WaitBudget = %v, want 2s", got)
+	}
+	// 默认与非法值：0 = 不限（仅轮次预算）。
+	if got := NewCommand(nil).(*command).options.WaitBudget; got != 0 {
+		t.Errorf("default WaitBudget = %v, want 0 (unlimited)", got)
+	}
+	if got := NewCommand(nil, WithWaitBudget(-time.Second)).(*command).options.WaitBudget; got != 0 {
+		t.Errorf("negative WaitBudget = %v, want 0 (unlimited)", got)
+	}
+}
+
+// TestCommandStartWaitBudgetExhausted：WithWaitBudget 是墙钟硬上界，与
+// 轮次预算取先到者——不健康的依赖在预算耗尽时即失败，不再跑满 MaxTries。
+func TestCommandStartWaitBudgetExhausted(t *testing.T) {
+	checker := &sequenceChecker{failures: 1000}
+	app := newAppWithCheckers(t, checker)
+
+	var ran atomic.Int32
+	cmd := NewCommand(func(ctx context.Context) error {
+		ran.Add(1)
+		return nil
+	}, WithMaxTries(1000), WithBackoff(time.Millisecond, 5*time.Millisecond),
+		WithWaitBudget(150*time.Millisecond))
+	if err := cmd.Init(app); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	start := time.Now()
+	err := cmd.Start(context.Background())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Start() error = nil, want wait budget exhaustion")
+	}
+	if !strings.Contains(err.Error(), "within 150ms") {
+		t.Errorf("Start() error = %v, want wait budget in message", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Start() took %v, want bounded by WaitBudget", elapsed)
+	}
+	if got := ran.Load(); got != 0 {
+		t.Errorf("command ran %d times, want 0", got)
 	}
 }
 

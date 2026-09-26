@@ -413,8 +413,7 @@ func TestOrderedServicesCheckHealthAggregates(t *testing.T) {
 func TestOrderedServicesCheckerTimeout(t *testing.T) {
 	log := &orderLog{}
 	a := &healthProbe{name: "a", log: log, healthDelay: time.Hour}
-	g := OrderedServices("g", a).(*orderedServices)
-	g.readyTimeout = 30 * time.Millisecond
+	g := NewOrderedServices("g", []Service{a}, WithOrderedReadyTimeout(30*time.Millisecond))
 	if err := g.Init(testAppCtx(t)); err != nil {
 		t.Fatal(err)
 	}
@@ -456,8 +455,7 @@ func TestOrderedServicesReadyNeverClosesTimeout(t *testing.T) {
 	log := &orderLog{}
 	a := newReadyProbe("a", log, 0)
 	a.neverReady = true
-	g := OrderedServices("g", a).(*orderedServices)
-	g.readyTimeout = 30 * time.Millisecond
+	g := NewOrderedServices("g", []Service{a}, WithOrderedReadyTimeout(30*time.Millisecond))
 	if err := g.Init(testAppCtx(t)); err != nil {
 		t.Fatal(err)
 	}
@@ -484,8 +482,7 @@ func TestOrderedServicesReadyNeverClosesTimeout(t *testing.T) {
 func TestOrderedServicesHungCheckerTimeout(t *testing.T) {
 	a := &hungProbe{name: "a", unblock: make(chan struct{})}
 	defer close(a.unblock)
-	g := OrderedServices("g", a).(*orderedServices)
-	g.readyTimeout = 30 * time.Millisecond
+	g := NewOrderedServices("g", []Service{a}, WithOrderedReadyTimeout(30*time.Millisecond))
 	if err := g.Init(testAppCtx(t)); err != nil {
 		t.Fatal(err)
 	}
@@ -512,8 +509,7 @@ func TestOrderedServicesHungCheckerTimeout(t *testing.T) {
 func TestOrderedServicesHungCheckerAbortsOnCtxCancel(t *testing.T) {
 	a := &hungProbe{name: "a", unblock: make(chan struct{})}
 	defer close(a.unblock)
-	g := OrderedServices("g", a).(*orderedServices)
-	g.readyTimeout = time.Hour // 大预算：证明取消优先于预算
+	g := NewOrderedServices("g", []Service{a}, WithOrderedReadyTimeout(time.Hour)) // 大预算：证明取消优先于预算
 	if err := g.Init(testAppCtx(t)); err != nil {
 		t.Fatal(err)
 	}
@@ -605,6 +601,74 @@ func TestOrderedServicesNested(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start did not return")
 	}
+}
+
+// noSignalFailService 无 Ready / Checker（第三层「invoke 即就绪」），
+// Start 快速返回错误。
+type noSignalFailService struct {
+	name  string
+	err   error
+	start atomic.Bool
+}
+
+func (s *noSignalFailService) Name() string              { return s.name }
+func (s *noSignalFailService) Init(ctx AppContext) error { return nil }
+func (s *noSignalFailService) Start(ctx context.Context) error {
+	s.start.Store(true)
+	return s.err
+}
+func (s *noSignalFailService) Stop(ctx context.Context) error { return nil }
+
+// TestOrderedServicesThirdTierFastFailReturns 钉住第三层（无就绪信号）
+// 的快速失败语义：子服务 Start 返回错误时组 Start 必有界返回该错误
+// （由 merged 收集路径兜底）。已知边界：错误可能在组已启动下一个子服务
+// 之后才被观察到——「无信号 = invoke 即就绪」不保证阻止下一个子服务启动
+// （可能短暂启动后随组失败回收），见 ordered.go 文档。
+func TestOrderedServicesThirdTierFastFailReturns(t *testing.T) {
+	boom := errors.New("boom")
+	bad := &noSignalFailService{name: "bad", err: boom}
+	sib := &noSignalFailService{name: "sib"}
+	g := OrderedServices("g", bad, sib)
+	if err := g.Init(testAppCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := time.Now()
+	err := g.Start(ctx)
+	if !errors.Is(err, boom) {
+		t.Fatalf("Start() = %v, want %v", err, boom)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Start() took %v, want bounded return", elapsed)
+	}
+	if !bad.start.Load() {
+		t.Error("failing child Start was not invoked")
+	}
+	_ = g.Stop(context.Background())
+}
+
+// TestOrderedServicesHealthDoesNotImplyReady 钉住健康与就绪的区分：
+// Ready-only 子服务不参与组 CheckHealth（健康 ≠ 就绪，CONTEXT.md 语义），
+// 组 Ready 在其就绪前不关闭。
+func TestOrderedServicesHealthDoesNotImplyReady(t *testing.T) {
+	log := &orderLog{}
+	a := newReadyProbe("a", log, 0)
+	a.neverReady = true
+	g := OrderedServices("g", a)
+	if err := g.Init(testAppCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.(Checker).CheckHealth(); err != nil {
+		t.Fatalf("CheckHealth() = %v, want nil (Ready-only child is not a health source)", err)
+	}
+	select {
+	case <-g.(Ready).Ready():
+		t.Fatal("group Ready must not close before the Ready-only child is ready")
+	default:
+	}
+	_ = g.Stop(context.Background())
 }
 
 func equalStrs(a, b []string) bool {

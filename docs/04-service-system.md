@@ -95,7 +95,9 @@ HealthCheckers() []Checker
 它有两个消费方：
 
 - HTTP 服务器的就绪端点：传入 `http.WithHealthCheckers(app.HealthCheckers)`（方法值天然匹配 `lynx.HealthCheckersFunc` 签名）后，`/healthz/readiness` 会并发调用所有收集到的检查器（单个限时，默认 3 秒，见 5.1 节），全部通过才返回 200（见 2.5 节）。
-- `app.Command` 注册的命令：执行前等待依赖就绪，三级优先解析与 `OrderedServices` 启动排序共用 `ready.go` 的同一模块（`probeServiceReady`）——实现 `Ready` 的服务等 channel 关闭（单次有界等待，依赖失败经 lifecycle 中断即时退出）；否则实现 `Checker` 的单次有界健康检查（单次限时 3 秒，`WithProbeTimeout`；挂死的 checker 不会挂死等待循环）；两者皆无视为随启动即就绪。`MaxTries`/`WithBackoff` 仍是总预算。保证 CLI 命令不会抢在依赖服务就绪之前运行。
+- `app.Command` 注册的命令：执行前等待依赖就绪，三级优先解析与 `OrderedServices` 启动排序共用 `ready.go` 的同一 `probe` 模块（`resolveProbe` + `probe.once`）——实现 `Ready` 的服务等 channel 关闭（单次有界等待，依赖失败经 lifecycle 中断即时退出）；否则实现 `Checker` 的单次有界健康检查（单次限时 3 秒，`WithProbeTimeout`；挂死的 checker 不会挂死等待循环）；两者皆无视为随启动即就绪。**ctx 取消优先于探测结果**：取消后命令立即中止（`aborted`），不会「探测成功即继续」。预算分两层：`MaxTries`/`WithBackoff` 是轮次预算（探测间隔与次数控制）；可选 `WithWaitBudget` 是墙钟总预算（默认 0 = 不限），两者取先到者。保证 CLI 命令不会抢在依赖服务就绪之前运行。
+
+`OrderedServices` 的每子服务就绪预算默认 10 秒；需要调整用 `NewOrderedServices(name, services, WithOrderedReadyTimeout(d))`（嵌套组逐层按各自子服务计时）。无 `Ready`/`Checker` 的子服务按「invoke 即就绪」处理：其 `Start` 快速失败由组统一回收，但不保证阻止下一个子服务启动（可能短暂启动后随组失败回收）。
 
 框架内置服务中，`server/grpc` 的 Server、`contrib/watermill-kafka` 的 Transport、`contrib/schedule` 的 Scheduler 都实现了 `CheckHealth`（核心 `eventbus` 默认内存 Bus 不进入 readiness 聚合）。典型的实现语义是：未 `Start` 前返回 error，`Start` 成功后返回 nil，`Stop` 后再次返回 error（以 `contrib/schedule` 为例）：
 

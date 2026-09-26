@@ -11,19 +11,43 @@ import (
 
 const defaultOrderedReadyTimeout = 10 * time.Second
 
+// OrderedOption 配置 OrderedServices 组行为。
+type OrderedOption func(*orderedServices)
+
+// WithOrderedReadyTimeout 覆盖每子服务的就绪等待预算（默认
+// defaultOrderedReadyTimeout = 10s；嵌套组逐层按各自子服务分别计时）。
+// 非正值使用默认值。
+func WithOrderedReadyTimeout(d time.Duration) OrderedOption {
+	return func(g *orderedServices) { g.readyTimeout = d }
+}
+
+// NewOrderedServices 是 OrderedServices 的选项化构造入口：启停语义与
+// OrderedServices 完全一致，额外接受组级选项（如 WithOrderedReadyTimeout）。
+func NewOrderedServices(name string, services []Service, opts ...OrderedOption) Service {
+	svcs := make([]Service, len(services))
+	copy(svcs, services)
+	g := &orderedServices{
+		name:  name,
+		svcs:  svcs,
+		ready: make(chan struct{}),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(g)
+		}
+	}
+	return g
+}
+
 // OrderedServices 将多个服务包装成一个 Service。
 // Init / Start 按传入顺序执行；Stop 逆序。允许嵌套。
 // 子服务不要再单独 Register，否则会重复 Init/Start。
 // 每个子服务的 Init / Start / Stop 都会记录 Info 日志（service=子服务名、
 // group=组名），组内启动停滞时据此定位到具体子服务。
+// 每子服务就绪预算默认 10s；需要调整用 NewOrderedServices +
+// WithOrderedReadyTimeout。
 func OrderedServices(name string, services ...Service) Service {
-	svcs := make([]Service, len(services))
-	copy(svcs, services)
-	return &orderedServices{
-		name:  name,
-		svcs:  svcs,
-		ready: make(chan struct{}),
-	}
+	return NewOrderedServices(name, services)
 }
 
 type orderedServices struct {
@@ -145,7 +169,7 @@ func (g *orderedServices) Start(ctx context.Context) error {
 }
 
 func (g *orderedServices) waitReady(ctx context.Context, s Service, startErr chan error) error {
-	return awaitServiceReady(ctx, s, g.timeout(), startErr, func(last error) error {
+	return resolveProbe(s).wait(ctx, g.timeout(), startErr, func(last error) error {
 		return fmt.Errorf("lynx: OrderedServices %q: waiting for %q health timed out after %s: %w",
 			g.name, s.Name(), g.timeout(), last)
 	})

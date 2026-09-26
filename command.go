@@ -22,6 +22,11 @@ type CommandOptions struct {
 	// call or one Ready-channel wait). A probe that exceeds it counts
 	// as "not ready this round" and joins the backoff retry loop.
 	ProbeTimeout time.Duration
+	// WaitBudget is the wall-clock budget for the whole dependency wait.
+	// 0 (default) means unlimited: only the attempts/backoff round budget
+	// applies. Non-zero caps the total wait; whichever budget is reached
+	// first wins (Wait budget semantics).
+	WaitBudget time.Duration
 }
 
 // CommandOption is a function that configures CommandOptions.
@@ -52,6 +57,14 @@ func WithProbeTimeout(d time.Duration) CommandOption {
 	return func(o *CommandOptions) { o.ProbeTimeout = d }
 }
 
+// WithWaitBudget sets the wall-clock budget for the whole dependency wait
+// (Wait budget semantics): non-positive values mean unlimited (default),
+// where only the attempts/backoff round budget applies. When set, the total
+// wait is capped and whichever budget is reached first wins.
+func WithWaitBudget(d time.Duration) CommandOption {
+	return func(o *CommandOptions) { o.WaitBudget = d }
+}
+
 // NewCommand creates a new command service with the given function and options.
 func NewCommand(fn CommandFunc, opts ...CommandOption) Service {
 	options := &CommandOptions{
@@ -77,6 +90,9 @@ func NewCommand(fn CommandFunc, opts ...CommandOption) Service {
 	if options.ProbeTimeout <= 0 {
 		options.ProbeTimeout = defaultProbeTimeout
 	}
+	if options.WaitBudget < 0 {
+		options.WaitBudget = 0
+	}
 	return &command{fn: fn, options: options}
 }
 
@@ -94,22 +110,26 @@ type depProbe struct {
 	probe func(ctx context.Context) error
 }
 
-// dependencyProbes 按三级优先解析依赖探测项（三级解析的唯一归属在
-// ready.go 的 probeServiceReady）：实现 Ready 的服务等待 channel 关闭
-// （边沿信号：单调、失败不关闭，失败裁决归 Start 返回值）；否则实现
-// Checker 的单次有界健康检查；两者皆无视为 invoke 即就绪，不等待。
-// 命令本身两者皆不实现，天然落在第三级，无需自排除。appctx 为外部
-// AppContext 实现时回退健康检查聚合（既有行为）。
+// dependencyProbes 按三级优先解析依赖探测项（解析的唯一归属在 ready.go
+// 的 resolveProbe）：实现 Ready 的服务等待 channel 关闭（边沿信号：单调、
+// 失败不关闭，失败裁决归 Start 返回值）；否则实现 Checker 的单次有界健康
+// 检查；两者皆无视为 invoke 即就绪，不等待。命令本身两者皆不实现，天然
+// 落在第三级，无需自排除。appctx 为外部 AppContext 实现时回退健康检查
+// 聚合（既有行为）。探测一律走 probe.once：ctx 取消优先于探测结果。
 func (cmd *command) dependencyProbes() []depProbe {
 	var probes []depProbe
 	if l, ok := cmd.appctx.(*lynx); ok {
 		for _, s := range l.serviceSnapshot() {
-			// Checker 层显式传 context.Background()：探测结果优先于调用侧
-			// 取消（"首查健康即成功"），取消裁决由 backoff.Retry 在重试间
-			// 完成（既有语义，ready.go 的 checkHealthBounded 文档）。
-			if probe := probeServiceReady(s, cmd.options.ProbeTimeout, context.Background()); probe != nil {
-				probes = append(probes, depProbe{name: s.Name(), probe: probe})
+			p := resolveProbe(s)
+			if p.empty() {
+				continue // 无信号：invoke 即就绪
 			}
+			probes = append(probes, depProbe{
+				name: s.Name(),
+				probe: func(ctx context.Context) error {
+					return p.once(ctx, cmd.options.ProbeTimeout)
+				},
+			})
 		}
 		return probes
 	}
@@ -117,8 +137,8 @@ func (cmd *command) dependencyProbes() []depProbe {
 		c := checker
 		probes = append(probes, depProbe{
 			name: "checker",
-			probe: func(context.Context) error {
-				return checkHealthBounded(context.Background(), c, cmd.options.ProbeTimeout)
+			probe: func(ctx context.Context) error {
+				return checkerProbe(c).once(ctx, cmd.options.ProbeTimeout)
 			},
 		})
 	}
@@ -157,13 +177,21 @@ func (cmd *command) waitForDependencies(ctx context.Context) error {
 	if len(probes) == 0 {
 		return nil
 	}
+	// 可选墙钟总预算（WithWaitBudget）：与 MaxTries/Backoff 的轮次预算
+	// 取先到者；0 = 不限（默认，仅轮次预算）。
+	waitCtx := ctx
+	if cmd.options.WaitBudget > 0 {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, cmd.options.WaitBudget)
+		defer cancel()
+	}
 	expBackoff := backoff.NewExponentialBackOff()
 	expBackoff.InitialInterval = cmd.options.InitialBackoff
 	expBackoff.MaxInterval = cmd.options.MaxBackoff
-	if _, err := backoff.Retry(ctx, func() (any, error) {
+	if _, err := backoff.Retry(waitCtx, func() (any, error) {
 		for _, p := range probes {
-			if err := p.probe(ctx); err != nil {
-				cmd.logger.WarnContext(ctx, "waiting for dependent service ready",
+			if err := p.probe(waitCtx); err != nil {
+				cmd.logger.WarnContext(waitCtx, "waiting for dependent service ready",
 					"service", p.name, "error", err)
 				return nil, err
 			}
@@ -172,6 +200,9 @@ func (cmd *command) waitForDependencies(ctx context.Context) error {
 	}, backoff.WithMaxTries(cmd.options.MaxTries), backoff.WithBackOff(expBackoff)); err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("aborted waiting for dependencies: %w", ctx.Err())
+		}
+		if waitCtx.Err() != nil {
+			return fmt.Errorf("timed out waiting for dependencies to become ready within %s: %w", cmd.options.WaitBudget, err)
 		}
 		return fmt.Errorf("timed out waiting for dependencies to become ready: %w", err)
 	}
