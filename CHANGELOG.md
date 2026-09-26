@@ -161,6 +161,17 @@ v0.41.0（仅测试路径；该版本不抬高仓库现有 otelhttp 版本）。
 未确认消息——同分区内确认 / 提交天然严格有序；`max_in_flight` 的并发只体现
 在跨分区 / 跨物理 topic（以及内存 Bus）。
 
+### 新增：`Event[T]` 实现 `slog.LogValuer`——事件日志结构化可读
+
+订阅方直接 `logger.InfoContext(ctx, "recv order created", "handler", name,
+"event", e)` 即输出结构化字段：TextHandler 为 `event.id=... event.topic=...`
+独立键值对（此前回落 `fmt.Sprintf("%+v")`：整段 Go 语法、字段不可单独检索），
+JSONHandler / zap 桥接为 `"event":{...}` 嵌套对象，可按 `event.id` /
+`event.topic` 过滤聚合；不再需要调用方 `json.Marshal` 转字符串或 spew 调试
+打印。字段名与 JSON 标签一致、nil 指针安全；`LogValue` 在 handler 真正写
+记录时解析（级别未启用零开销），payload 不可序列化时就地降级、不丢整条
+记录。`_examples/bus-kafka` 的 `logOrder` 同步回归一行调用。
+
 ## v1.15.0 (2026-09-24)
 
 本次发布 tag：根 `v1.15.0`、`contrib/watermill/v1.8.0`、

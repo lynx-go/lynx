@@ -84,14 +84,16 @@ type Event[T any] struct {
 //	logger.InfoContext(ctx, "recv order created", "handler", name, "event", e)
 //
 // 即可：TextHandler 输出 event.id=... event.topic=... 的独立键值对，
-// JSONHandler 输出 "event":{...} 嵌套对象。相比直接打印结构体（TextHandler
-// 回落 fmt.Sprintf("%+v")：整段 Go 语法、字段不可单独检索、map 顺序不定）
-// 或 json.Marshal 转字符串（被转义、JSONHandler 下二次编码），结构化字段可
-// 被日志系统按 event.id / event.topic 过滤聚合。
+// JSONHandler（含 contrib/zap 桥接）输出 "event":{...} 嵌套对象。相比直接
+// 打印结构体（TextHandler 回落 fmt.Sprintf("%+v")：整段 Go 语法、字段不可
+// 单独检索、map 顺序不定）或 json.Marshal 转字符串（被转义、JSONHandler 下
+// 二次编码），结构化字段可被日志系统按 event.id / event.topic 过滤聚合。
 //
-// LogValue 在 handler 真正写记录时才解析，级别未启用零开销；nil 指针安全
-// （返回 "<nil>"，不 panic）。headers 可能与 ctx 传播属性重复、payload 可能
-// 大或敏感，调用方按需只记录子集。
+// 接收者为指针：订阅 handler 持有的 *Event[T] 即生效，值类型 Event[T] 不
+// 参与本渲染。LogValue 在 handler 真正写记录时才解析，级别未启用零开销；
+// nil 指针安全（返回 "<nil>"，不 panic）；payload 不可序列化时由 handler
+// 就地降级（如 JSON 输出 "!ERROR:..." 占位），不丢整条记录。headers 可能与
+// ctx 传播属性重复、payload 可能大或敏感，调用方按需只记录子集。
 func (e *Event[T]) LogValue() slog.Value {
 	if e == nil {
 		return slog.StringValue("<nil>")

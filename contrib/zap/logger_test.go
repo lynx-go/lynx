@@ -166,6 +166,34 @@ func TestSLoggerLevelMappingAndFiltering(t *testing.T) {
 	}
 }
 
+// TestSLoggerResolvesLogValuer 钉死桥接对 slog.LogValuer 的解析：slog-zap
+// 自身不调用 Resolve，值依赖 slog-common 的 ReplaceAttrs 在转换前解析。
+// eventbus.Event 等 LogValuer 的结构化日志建立在这个上游内部行为上——升级
+// 后若静默丢失，事件日志会退化为整段结构体（zap 反射编码），本测试让该
+// 回归显性化。
+func TestSLoggerResolvesLogValuer(t *testing.T) {
+	var buf bytes.Buffer
+	slogger, err := NewSLogger(newBufferZapLogger(&buf), "debug")
+	if err != nil {
+		t.Fatalf("NewSLogger: %v", err)
+	}
+
+	slogger.Info("logvaluer probe", "probe", logValuerProbe{})
+
+	// 未解析时 zap 走反射编码，字段输出为空对象 {"probe":{}}；
+	// 解析成功才出现探针值。
+	if out := buf.String(); !strings.Contains(out, `"probe":"resolved-by-bridge"`) {
+		t.Errorf("LogValuer not resolved by the zap bridge (upstream slog-zap/slog-common changed?): %s", out)
+	}
+}
+
+// logValuerProbe 是判别探针：LogValue 的返回值与反射编码结果（{}）不同，
+// 只有桥接真正调用 Resolve 才会出现，避免"结构体带 json 标签本来就渲染成
+// 嵌套 JSON"造成的假阳性。
+type logValuerProbe struct{}
+
+func (logValuerProbe) LogValue() slog.Value { return slog.StringValue("resolved-by-bridge") }
+
 // TestSLoggerClampsNonStandardLevels 回归 AUX-04：slog-zap 以 map 查表
 // 映射级别，非标准级别（如 slog.LevelError+4）查不到时取零值 InfoLevel，
 // 被降级为 Info 写入、在 zap 级别提高后被静默丢弃；包装层必须把 >Error
