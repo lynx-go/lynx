@@ -253,9 +253,9 @@ func NewServer(opts ...Option) *Server {
 	}
 
 	s := &Server{
-		logger: options.Logger,
-		o:      options,
-		ready:  make(chan struct{}),
+		logger:    options.Logger,
+		o:         options,
+		lifecycle: serverkit.NewLifecycle("grpc"),
 	}
 	// Recovery 在最外层：链内任意一环（含用户拦截器）panic 都能被恢复，
 	// 恢复时记录 panic 值 + 调用栈并返回通用错误（SC-04/SC-06）。
@@ -331,18 +331,13 @@ type Server struct {
 	// 不会泄漏无人取消的轮询 goroutine。Init 会复位本标志（SC-15，
 	// 重启语义留口；当前不支持同一实例不重 Init 的 restart）。
 	stopped bool
-	// stopRequested 标记 Stop 已被调用（原子，SC-02）：Start 在 Serve
-	// 返回错误时据此把关停引起的 "use of closed network connection"
-	// 类错误归一化为 nil，避免框架把正常关停发布为
-	// lynx.service.failed 虚假事件。
-	stopRequested atomic.Bool
-	// started 守卫 Start 重入（SC-14）：二次 Start 会覆盖 listener
-	// 造成泄漏，直接报错；Init 复位。
-	started   atomic.Bool
+	// lifecycle 是共享生命周期状态机（internal/serverkit）：Start 重入
+	// 守卫（SC-14）、stopRequested（SC-02：Serve 返回错误时据此把关停
+	// 引起的 closed-connection 类错误归一化为 nil）、就绪信号与
+	// lynx.server.* 事件发布。
+	lifecycle *serverkit.Lifecycle
 	running   atomic.Bool
 	bus       eventbus.Bus
-	ready     chan struct{}
-	readyOnce sync.Once
 }
 
 // CheckHealth 实现健康检查，服务未处于运行状态时返回错误。
@@ -367,8 +362,8 @@ func (s *Server) Init(ctx lynx.AppContext) error {
 	if ctx != nil {
 		s.bus = ctx.Bus()
 	}
-	s.started.Store(false)
-	s.stopRequested.Store(false)
+	s.lifecycle.Bind(s.logger, s.bus)
+	s.lifecycle.ResetForInit()
 	s.mu.Lock()
 	s.stopped = false
 	s.mu.Unlock()
@@ -395,11 +390,7 @@ func (s *Server) AdvertiseAddr() string {
 
 // Ready 在 Listen 成功之后、Serve 之前关闭。Listen 失败不关闭。
 func (s *Server) Ready() <-chan struct{} {
-	return s.ready
-}
-
-func (s *Server) closeReady() {
-	s.readyOnce.Do(func() { close(s.ready) })
+	return s.lifecycle.Ready()
 }
 
 // Start 启动 gRPC 服务并开始监听，阻塞至服务退出。
@@ -409,8 +400,8 @@ func (s *Server) closeReady() {
 // 二次调用 Start 返回错误（SC-14）。
 func (s *Server) Start(ctx context.Context) error {
 	// 重入守卫：二次 Start 会覆盖 listener 并泄漏旧 listener。
-	if !s.started.CompareAndSwap(false, true) {
-		return errors.New("grpc server: Start called more than once")
+	if err := s.lifecycle.BeginStart(); err != nil {
+		return err
 	}
 
 	lis := s.o.Listener
@@ -419,7 +410,7 @@ func (s *Server) Start(ctx context.Context) error {
 		lis, err = net.Listen("tcp", s.o.Addr)
 		if err != nil {
 			// Listen 失败不算已启动：复位守卫，允许换地址重试。
-			s.started.Store(false)
+			s.lifecycle.AbortStart()
 			return err
 		}
 	}
@@ -430,8 +421,8 @@ func (s *Server) Start(ctx context.Context) error {
 	s.mu.Lock()
 	s.listener = lis
 	s.mu.Unlock()
-	serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerListening, "grpc", lis.Addr().String(), s.o.AdvertiseAddr)
-	s.closeReady()
+	s.lifecycle.Listening(lis.Addr().String(), s.o.AdvertiseAddr)
+	s.lifecycle.MarkReady()
 
 	// Set the server to healthy, for both the named and the standard empty
 	// service name used by most gRPC health probes.
@@ -451,7 +442,7 @@ func (s *Server) Start(ctx context.Context) error {
 	//（SC-02）。仅在 Stop 已请求时归一化，真实监听错误仍然上报。
 	// ErrServerStopped 覆盖 Stop-wins 交错：GracefulStop 先于 Serve 执行
 	// 时（如启动期中断），Serve 入口直接返回该哨兵错误（D4）。
-	if serveErr != nil && s.stopRequested.Load() &&
+	if serveErr != nil && s.lifecycle.StopRequested() &&
 		(isClosedConnError(serveErr) || errors.Is(serveErr, grpc.ErrServerStopped)) {
 		return nil
 	}
@@ -522,8 +513,8 @@ func (s *Server) updateHealthStatus() {
 // 并存时取较小者；Timeout=0 表示无配置上界。
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "stopping gRPC server")
-	serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopping, "grpc", s.Addr(), s.o.AdvertiseAddr)
-	defer serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopped, "grpc", "", "")
+	s.lifecycle.Stopping(s.Addr(), s.o.AdvertiseAddr)
+	defer s.lifecycle.Stopped()
 	if s.health != nil {
 		s.health.SetServingStatus("grpc", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 		s.health.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
@@ -531,7 +522,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.running.Store(false)
 	// 关 listener 之前置位（SC-02）：Start 侧据此把 Serve 返回的
 	// closed-connection 错误归一化为 nil（正常关停不是失败）。
-	s.stopRequested.Store(true)
+	s.lifecycle.BeginStop()
 	s.mu.Lock()
 	s.stopped = true
 	if s.healthCancel != nil {

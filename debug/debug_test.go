@@ -478,6 +478,68 @@ func TestStopClearsAddr(t *testing.T) {
 	}
 }
 
+// TestStartGuardRejectsSecondStart 回归 SC-14 在 debug 侧的缺口：二次
+// Start 必须报错（此前会覆盖 httpServer/listener 泄漏旧 listener）。
+func TestStartGuardRejectsSecondStart(t *testing.T) {
+	s, cancel, done := startService(t)
+	defer cancel()
+	waitServing(t, s)
+
+	err := s.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("second Start() = %v, want reentry guard error", err)
+	}
+
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after Stop")
+	}
+}
+
+// TestReinitAfterStopBeforeStartAllowsStart：Stop 先于 Start 时 Start 不
+// 启动（Stop-before-Start 契约）；重新 Init 复位守卫与停止标志后可正常
+// 启动（此前 debug 的 stopping 一次性、Init 不复位）。
+func TestReinitAfterStopBeforeStartAllowsStart(t *testing.T) {
+	s := NewService(WithAddr("127.0.0.1:0"))
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop-before-start: %v", err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start after Stop-before-Start = %v, want nil", err)
+	}
+	select {
+	case <-s.Ready():
+		t.Fatal("Ready must not close when Stop arrived before Start")
+	default:
+	}
+
+	// 重新 Init 复位守卫与停止标志：可以再 Start。
+	if err := s.Init(nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Start(ctx) }()
+	waitServing(t, s)
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start after re-Init: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return")
+	}
+}
+
 // TestStartCtxCancelReleasesPort 回归 AUX-05：独立使用（Init(nil)/直接
 // Start、未经 Stop）时，ctx 取消退出路径必须关闭 httpServer 释放端口，
 // 否则 listener 持续占用到进程退出。

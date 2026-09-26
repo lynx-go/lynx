@@ -93,9 +93,9 @@ func NewService(opts ...Option) *Service {
 		options.Logger = slog.Default()
 	}
 	return &Service{
-		logger: options.Logger,
-		o:      options,
-		ready:  make(chan struct{}),
+		logger:    options.Logger,
+		o:         options,
+		lifecycle: serverkit.NewLifecycle("debug"),
 	}
 }
 
@@ -108,7 +108,13 @@ type Service struct {
 	listener   net.Listener
 	logger     *slog.Logger
 	o          Options
-	started    atomic.Bool
+	// lifecycle 是共享生命周期状态机（internal/serverkit）：Start 重入
+	// 守卫（SC-14）、停止请求标志（Start 在监听前与监听后各检查一次，
+	// 避免 Stop 先于 Start 时留下无人关停的 http.Server）、就绪信号与
+	// lynx.server.* 事件发布。
+	lifecycle *serverkit.Lifecycle
+	// running 标记服务已进入运行态（CheckHealth 读取）。
+	running atomic.Bool
 	// meta 是 Init 时捕获的应用元数据（name/id/version，来自
 	// lynx.Meta），/version 端点输出；ctx 为 nil 时为零值。
 	meta lynx.Metadata
@@ -119,14 +125,6 @@ type Service struct {
 		SetLogLevel(slog.Level) bool
 		LogLevel() slog.Level
 	}
-	// stopping 标记 Stop 已被调用：Start 在监听前与监听后各检查一次，
-	// 避免 Stop 先于 Start 时留下无人关停的 http.Server。
-	stopping atomic.Bool
-	// bus 是 Init 时捕获的应用总线（可为 nil，脱离框架单用时）：生命周期
-	// 事件经它发布（与 HTTP/gRPC 侧同一组主题，Service="debug"）。
-	bus       eventbus.Bus
-	ready     chan struct{}
-	readyOnce sync.Once
 }
 
 // Name 返回服务名称 "debug"。
@@ -139,18 +137,20 @@ func (s *Service) Name() string {
 // 同时捕获应用元数据（/version）与日志级别控制能力（/loglevel，
 // AppContext 未实现时该端点返回 501）。
 func (s *Service) Init(ctx lynx.AppContext) error {
-	if ctx == nil {
-		return nil
+	var bus eventbus.Bus
+	if ctx != nil {
+		if !s.o.loggerSet {
+			s.logger = ctx.Logger("service", "debug")
+		}
+		bus = ctx.Bus()
+		s.meta = lynx.Meta(ctx.Context())
+		s.logLevelCtrl, _ = ctx.(interface {
+			SetLogLevel(slog.Level) bool
+			LogLevel() slog.Level
+		})
 	}
-	if !s.o.loggerSet {
-		s.logger = ctx.Logger("service", "debug")
-	}
-	s.bus = ctx.Bus()
-	s.meta = lynx.Meta(ctx.Context())
-	s.logLevelCtrl, _ = ctx.(interface {
-		SetLogLevel(slog.Level) bool
-		LogLevel() slog.Level
-	})
+	s.lifecycle.Bind(s.logger, bus)
+	s.lifecycle.ResetForInit()
 	return nil
 }
 
@@ -172,31 +172,36 @@ func (s *Service) Addr() string {
 // CheckHealth 可能仍报健康——进程已在关停路径上，不构成误报，行为保持
 // 不变（AUX-09 注释化）。
 func (s *Service) CheckHealth() error {
-	if !s.started.Load() {
+	if !s.running.Load() {
 		return errors.New("debug server not running")
 	}
 	return nil
 }
 
-// Ready 在 Listen 成功并置位 started 之后关闭。Listen 失败或不启动不关闭。
+// Ready 在 Listen 成功并进入运行态之后关闭。Listen 失败或不启动不关闭。
 func (s *Service) Ready() <-chan struct{} {
-	return s.ready
+	return s.lifecycle.Ready()
 }
 
-func (s *Service) closeReady() {
-	s.readyOnce.Do(func() { close(s.ready) })
-}
+// AdvertiseAddr 返回空字符串：debug 服务没有对外宣告地址（实现
+// lynx.Server 以统一测试辅助与消费方接口，见 service.go 的 Server 说明）。
+func (s *Service) AdvertiseAddr() string { return "" }
 
 // Start 启动 pprof HTTP 服务并阻塞至传入 ctx 取消。
 // 竞态安全：Stop 先于本方法调用时（服务启动失败引发的提前中断）不启动
 // 并立即返回；Stop 恰在本方法监听前后交错时同样收敛（见内注释）。
 func (s *Service) Start(ctx context.Context) error {
-	if s.stopping.Load() {
+	if err := s.lifecycle.BeginStart(); err != nil {
+		return err
+	}
+	if s.lifecycle.StopRequested() {
 		// Stop 先到：不启动，直接返回（Stop-before-Start 契约）。
+		s.lifecycle.AbortStart()
 		return nil
 	}
 	ln, err := net.Listen("tcp", s.o.Addr)
 	if err != nil {
+		s.lifecycle.AbortStart()
 		return err
 	}
 	srv := &http.Server{Handler: s.newMux()}
@@ -204,7 +209,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.httpServer = srv
 	s.listener = ln
 	s.mu.Unlock()
-	if s.stopping.Load() {
+	if s.lifecycle.StopRequested() {
 		// Stop 恰在此前执行且未拿到 httpServer（其 Shutdown 拿到 nil
 		// 直接返回）：此处补发真正关闭，不进入阻塞等待——否则 ctx 永无
 		// 人取消，Start 挂死（Stop/Start 交错窗口）。
@@ -213,14 +218,16 @@ func (s *Service) Start(ctx context.Context) error {
 		s.listener = nil
 		s.mu.Unlock()
 		_ = ln.Close()
+		s.lifecycle.AbortStart()
 		return errors.New("debug server stopped before start")
 	}
 	// "started" 日志置于 stopping 复查之后：交错窗口内（Stop 已先到）
 	// 不再打出误导性的启动日志（AUX-08）。
 	s.logger.InfoContext(ctx, "debug server started", "addr", ln.Addr().String())
-	s.started.Store(true)
-	serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerListening, "debug", ln.Addr().String(), "")
-	s.closeReady()
+	s.running.Store(true)
+	defer s.running.Store(false)
+	s.lifecycle.Listening(ln.Addr().String(), "")
+	s.lifecycle.MarkReady()
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.logger.ErrorContext(ctx, "debug server serve error", "error", err)
@@ -229,7 +236,6 @@ func (s *Service) Start(ctx context.Context) error {
 	// 对齐 lifecycle actor 语义：等待传入的 ctx 取消（框架在 Stop
 	// 返回后取消服务 ctx）。
 	<-ctx.Done()
-	s.started.Store(false)
 	// 独立使用（脱离框架、未经 Stop 直接取消 ctx）时的唯一退出路径：
 	// 与 Stop 的清理对称地关闭 httpServer 释放端口，否则 listener 一直
 	// 占用到进程退出。持 mu 与 Stop 互斥：双方中只有一方能拿到 httpServer
@@ -251,8 +257,8 @@ func (s *Service) Start(ctx context.Context) error {
 // （采样中的 pprof 请求可能持续数秒），并以错误返回。
 func (s *Service) Stop(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "stopping debug server", "addr", s.Addr())
-	s.stopping.Store(true)
-	serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopping, "debug", s.Addr(), "")
+	s.lifecycle.Stopping(s.Addr(), "")
+	s.lifecycle.BeginStop()
 	s.mu.Lock()
 	hs := s.httpServer
 	s.httpServer = nil
@@ -262,18 +268,11 @@ func (s *Service) Stop(ctx context.Context) error {
 	s.listener = nil
 	s.mu.Unlock()
 	if hs == nil {
-		serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopped, "debug", "", "")
+		s.lifecycle.Stopped()
 		return nil
 	}
-	defer serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopped, "debug", "", "")
-	graceful := func(ctx context.Context) error {
-		err := hs.Shutdown(ctx)
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
-	}
-	return serverkit.Shutdown(ctx, s.o.ShutdownTimeout, s.logger, "debug server", graceful, hs.Close)
+	defer s.lifecycle.Stopped()
+	return serverkit.ShutdownHTTP(ctx, s.o.ShutdownTimeout, s.logger, "debug server", hs)
 }
 
 // newMux 构建自建 mux：显式挂载 pprof handlers，不依赖 net/http/pprof
@@ -385,3 +384,5 @@ var _ lynx.Service = (*Service)(nil)
 var _ lynx.Checker = (*Service)(nil)
 
 var _ lynx.Ready = (*Service)(nil)
+
+var _ lynx.Server = (*Service)(nil)

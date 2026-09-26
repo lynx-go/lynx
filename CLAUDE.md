@@ -74,7 +74,7 @@ This is a Go workspace using `go.work`. The main modules are:
 Server implementations (within main module):
 - `./server/http` - HTTP server using stdlib `net/http` with otelhttp instrumentation
 - `./server/grpc` - gRPC server with interceptors
-- Shared server rules live in `internal/serverkit`: health-check execution, bounded graceful shutdown (caller deadline ∩ configured cap), request-id/user_id propagation (shared wire keys `x-request-id`/`x-user-id`), and lifecycle events (`lynx.server.listening/stopping/stopped`, `ServerEvent.Service` distinguishes http/grpc/debug)
+- Shared server rules live in `internal/serverkit`: health-check execution, bounded graceful shutdown (caller deadline ∩ configured cap; `ShutdownHTTP` for `*http.Server`), request-id/user_id propagation (shared wire keys `x-request-id`/`x-user-id`), and the server lifecycle state machine (`Lifecycle`: start re-entry guard, stop-request flag, ready signal, `lynx.server.listening/stopping/stopped` event publishing with `ServerEvent.Service` fixed at construction — http/grpc/debug)
 
 Client implementations (within main module):
 - `./client/http` - HTTP client: otel instrumentation, request_id/user_id propagation, timeout + retry (backoff/v5), optional circuit breaker (`WithCircuitBreaker`, gobreaker/v2 wrapped behind lynx-owned options)

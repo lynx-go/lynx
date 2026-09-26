@@ -902,10 +902,12 @@ func TestStartGuardResetsOnListenFailure(t *testing.T) {
 // 守卫永久拒绝。
 func TestInitResetsLifecycleFlags(t *testing.T) {
 	s := NewServer(WithAddr(freeAddr(t)))
-	// 模拟完整生命周期后（Start 置位 started、Stop 置位 stopRequested/
+	// 模拟完整生命周期后（Start 置位守卫、Stop 置位 stopRequested/
 	// stopped）再 Init。
-	s.started.Store(true)
-	s.stopRequested.Store(true)
+	if err := s.lifecycle.BeginStart(); err != nil {
+		t.Fatalf("BeginStart: %v", err)
+	}
+	s.lifecycle.BeginStop()
 	s.mu.Lock()
 	s.stopped = true
 	s.mu.Unlock()
@@ -913,10 +915,11 @@ func TestInitResetsLifecycleFlags(t *testing.T) {
 	if err := s.Init(nil); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if s.started.Load() {
-		t.Error("started 未被 Init 复位 (SC-15)")
+	// 守卫已复位：重新 Init 后 BeginStart 必须成功（SC-15）。
+	if err := s.lifecycle.BeginStart(); err != nil {
+		t.Errorf("Start guard not reset by Init (SC-15): %v", err)
 	}
-	if s.stopRequested.Load() {
+	if s.lifecycle.StopRequested() {
 		t.Error("stopRequested 未被 Init 复位 (SC-15)")
 	}
 	s.mu.Lock()

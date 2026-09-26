@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/lynx-go/lynx"
@@ -292,10 +291,10 @@ func NewServer(handler http.Handler, opts ...Option) *Server {
 	}
 
 	return &Server{
-		logger:  options.Logger,
-		o:       options,
-		handler: handler,
-		ready:   make(chan struct{}),
+		logger:    options.Logger,
+		o:         options,
+		handler:   handler,
+		lifecycle: serverkit.NewLifecycle("http"),
 	}
 }
 
@@ -307,21 +306,15 @@ type Server struct {
 	mu         sync.RWMutex
 	httpServer *http.Server
 	listener   net.Listener
-	// started 守卫 Start 重入（SC-14）：二次 Start 会覆盖 httpServer/
-	// listener 造成旧 listener 泄漏，必须直接报错。Init 会复位本标志
-	//（SC-15，重启语义留口；当前生命周期内不支持 restart）。
-	started atomic.Bool
-	// stopRequested 标记 Stop 已请求（SC-02 的 HTTP 侧对称面）：Stop 在
-	// 读取 httpServer 之前置位；Start 在进入 Serve 之前检查——已中断后
-	// 不再 Serve，避免"Stop 见 httpServer 为 nil 先返回、Start 随后
-	// Listen 并永久 Serve"的启动期交错（与 gRPC 侧同名标志语义一致）。
-	stopRequested atomic.Bool
-	logger        *slog.Logger
-	o             Options
-	handler       http.Handler
-	bus           eventbus.Bus
-	ready         chan struct{}
-	readyOnce     sync.Once
+	// lifecycle 是共享生命周期状态机（internal/serverkit）：Start 重入
+	// 守卫（SC-14）、stopRequested（SC-02 的 HTTP 侧对称面：Stop 在读取
+	// httpServer 之前置位，Start 在进入 Serve 之前检查）、就绪信号与
+	// lynx.server.* 事件发布。
+	lifecycle *serverkit.Lifecycle
+	logger    *slog.Logger
+	o         Options
+	handler   http.Handler
+	bus       eventbus.Bus
 }
 
 // Name 返回服务名称 "http"。
@@ -336,7 +329,8 @@ func (s *Server) Init(ctx lynx.AppContext) error {
 	if ctx != nil {
 		s.bus = ctx.Bus()
 	}
-	s.started.Store(false)
+	s.lifecycle.Bind(s.logger, s.bus)
+	s.lifecycle.ResetForInit()
 	return nil
 }
 
@@ -360,11 +354,7 @@ func (s *Server) AdvertiseAddr() string {
 
 // Ready 在 Listen 成功之后、Serve 之前关闭。Listen 失败不关闭。
 func (s *Server) Ready() <-chan struct{} {
-	return s.ready
-}
-
-func (s *Server) closeReady() {
-	s.readyOnce.Do(func() { close(s.ready) })
+	return s.lifecycle.Ready()
 }
 
 // Start 启动 HTTP 服务并开始监听，阻塞至服务退出。
@@ -376,15 +366,15 @@ func (s *Server) closeReady() {
 // 虚假事件。二次调用 Start 返回错误（SC-14）。
 func (s *Server) Start(ctx context.Context) error {
 	// 重入守卫：二次 Start 会覆盖 httpServer/listener 并泄漏旧 listener。
-	if !s.started.CompareAndSwap(false, true) {
-		return errors.New("http server: Start called more than once")
+	if err := s.lifecycle.BeginStart(); err != nil {
+		return err
 	}
 
 	handler, err := s.buildHandler(ctx)
 	if err != nil {
 		// 端点配置非法（nil handler / 路径非法 / 模式冲突）：不算已启动，
 		// 允许修正后重试（与 Listen 失败同一处理）。
-		s.started.Store(false)
+		s.lifecycle.AbortStart()
 		return err
 	}
 	srv := &http.Server{
@@ -408,7 +398,7 @@ func (s *Server) Start(ctx context.Context) error {
 		ln, err = net.Listen("tcp", s.o.Addr)
 		if err != nil {
 			// Listen 失败不算已启动：复位守卫，允许换地址重试。
-			s.started.Store(false)
+			s.lifecycle.AbortStart()
 			return err
 		}
 	}
@@ -422,15 +412,15 @@ func (s *Server) Start(ctx context.Context) error {
 	// 存储之后执行，其 Shutdown 会经 srv.inShutdown 让 Serve 立即返回
 	// ErrServerClosed（下方归一化兜底）；此处覆盖 Stop 见 httpServer 为
 	// nil 先返回的交错——关闭监听器（含 WithListener 注入的实例）后返回。
-	if s.stopRequested.Load() {
+	if s.lifecycle.StopRequested() {
 		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			s.logger.WarnContext(ctx, "error closing listener after interrupted start", "error", err)
 		}
 		return nil
 	}
 	s.logger.InfoContext(ctx, "starting HTTP server, listening on "+ln.Addr().String())
-	serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerListening, "http", ln.Addr().String(), s.o.AdvertiseAddr)
-	s.closeReady()
+	s.lifecycle.Listening(ln.Addr().String(), s.o.AdvertiseAddr)
+	s.lifecycle.MarkReady()
 	var serveErr error
 	if s.o.TLSConfig != nil {
 		srv.TLSConfig = s.o.TLSConfig
@@ -561,27 +551,20 @@ func handleReadiness(checkers lynx.HealthCheckersFunc, timeout time.Duration) ht
 // handler），并以错误返回。
 func (s *Server) Stop(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "stopping HTTP server")
-	serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopping, "http", s.Addr(), s.o.AdvertiseAddr)
+	s.lifecycle.Stopping(s.Addr(), s.o.AdvertiseAddr)
 	// 读取 httpServer 之前置位（SC-02 的 HTTP 侧对称面）：Start 侧据此在
 	// 进入 Serve 前中止，避免 Stop 见 httpServer 为 nil 先返回、Start
 	// 随后 Listen 并永久 Serve 的启动期交错。
-	s.stopRequested.Store(true)
+	s.lifecycle.BeginStop()
 	s.mu.RLock()
 	hs := s.httpServer
 	s.mu.RUnlock()
 	if hs == nil {
-		serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopped, "http", "", "")
+		s.lifecycle.Stopped()
 		return nil
 	}
-	defer serverkit.PublishServerEvent(s.logger, s.bus, eventbus.TopicServerStopped, "http", "", "")
-	graceful := func(ctx context.Context) error {
-		err := hs.Shutdown(ctx)
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
-	}
-	return serverkit.Shutdown(ctx, s.o.ShutdownTimeout, s.logger, "http server", graceful, hs.Close)
+	defer s.lifecycle.Stopped()
+	return serverkit.ShutdownHTTP(ctx, s.o.ShutdownTimeout, s.logger, "http server", hs)
 }
 
 var _ lynx.Service = (*Server)(nil)

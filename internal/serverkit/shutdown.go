@@ -5,8 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 )
+
+// ShutdownHTTP 执行 *http.Server 的有界优雅关停（HTTP 与 debug 适配器
+// 共用）：graceful 归一化 http.ErrServerClosed（正常关停不是失败），超时
+// 强制 Close。有界规则见 Shutdown。
+func ShutdownHTTP(ctx context.Context, timeout time.Duration, logger *slog.Logger, name string, srv *http.Server) error {
+	graceful := func(ctx context.Context) error {
+		err := srv.Shutdown(ctx)
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+	return Shutdown(ctx, timeout, logger, name, graceful, srv.Close)
+}
 
 // Shutdown 执行有界优雅关停（三个 server 适配器的唯一规则）：
 //   - timeout > 0：配置上限与调用方 deadline 取较小者（context 自动继承
