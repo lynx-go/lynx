@@ -20,6 +20,10 @@ _Avoid_: 就绪回调、onReady、健康信号
 回答「服务此刻是否健康」的探测点，可被反复调用；与就绪信号不同，健康状态可以来回变化。
 _Avoid_: 探针、health handler
 
+**关停快路径（Fast teardown）**:
+服务尚未进入运行阶段时的关停子集：逆序有界停止已 Init 的服务 → 有界停总线 → 取消应用 Context（Run 触发的早退先发布 AppStopped）；不执行排水与 OnPreStop——服务未进入运行阶段，摘流与冲刷无意义。适用于启动期早退（Init / 配置准备 / OnPreStart 失败）与 Run 从未启动的 Close；与完整关停序列相对。
+_Avoid_: 强制关闭、abort
+
 ## 就绪（readiness）
 
 **就绪（Readiness）**:
@@ -60,7 +64,7 @@ _Avoid_: 并发数（会与后端消费者成员数混淆）
 _Avoid_: 广播（那是 Transport 侧的投递模式，不在 Bus 层建模）
 
 **解析器（Resolver）**:
-Bus 配置解析的唯一归属：marshaler / retry / 收发日志 / 传播键的查找与 Topic 级合并都在此；适配器只消费结果。
+Bus 配置解析的唯一归属：marshaler / retry / 收发日志 / 传播键的查找与 Topic 级合并都在此；订阅侧的有效配置一次解析为 ResolvedSubscription（handler 名 + 订阅级 MaxInFlight + 每 handler 投递语义），适配器只消费结果。
 _Avoid_: 配置管理器
 
 **投递执行（Invoke）**:

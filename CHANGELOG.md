@@ -2,6 +2,117 @@
 
 ## Unreleased
 
+### 变更：server 生命周期收敛为 serverkit.Lifecycle（HTTP/gRPC/debug）
+
+三个适配器各自复制的生命周期状态机收敛为 `internal/serverkit.Lifecycle`
+（唯一归属）：Start 重入守卫、stopRequested、ready 信号与 `lynx.server.*`
+事件发布（`ServerEvent.Service` 构造时固定，不再手拼字符串）；适配器保留
+listener/server 创建、`Serve`/`GracefulStop`、地址策略、健康轮询与启动期
+交错处理。行为变更：
+
+- debug 补齐 SC-14 重入守卫：二次 Start 从「覆盖 httpServer/listener
+  泄漏旧 listener」变为报错；`Init` 复位守卫与停止标志（此前 `stopping`
+  一次性，重新 Init 也无法再 Start）。
+- debug 实现 `AdvertiseAddr() string`（空串），满足 `lynx.Server`，
+  `lynxtest.WaitReady` 等统一消费。
+- HTTP/debug 共用的 `Shutdown + http.ErrServerClosed 归一化` 收进
+  `serverkit.ShutdownHTTP`。
+- HTTP/gRPC 行为不变（守卫、事件、关停语义逐项保留）；serverkit 仍为
+  internal，无公开 API 破坏。
+
+测试：Lifecycle 单测（守卫/复位/ready once/事件与 Service 名/nil bus）、
+debug 二次 Start 与重新 Init 可 Start 钉子、HTTP/gRPC 生命周期事件序列
+测试。
+
+### 变更：readiness 收敛为单一 probe（ready.go）
+
+`ready.go` 新增内部 `probe` 值（`resolveProbe` + `wait` / `once`）作为就绪
+解析与探测的唯一归属：三级解析（Ready → Checker → 无信号即就绪）、startErr
+交错（peek 放回）、ctx 取消优先与预算边界都在此统一；四个消费方
+（OrderedServices、newLynx 总线就绪等待、Command、组健康）不再各自拼接
+探测协议。行为变更：
+
+- Command 的取消语义收紧：**ctx 取消优先于探测结果**——取消后立即中止
+  （`aborted`），不再出现「已取消但探测成功继续执行」（此前 Checker 层用
+  Background 基 ctx 规避取消）。
+- Command 新增可选墙钟总预算 `WithWaitBudget(d)`（默认 0 = 不限，行为
+  不变）：与 `MaxTries`/`WithBackoff` 的轮次预算取先到者；`docs/04` 同步
+  修正「`MaxTries`/`WithBackoff` 仍是总预算」的旧表述。
+- 新增 `NewOrderedServices(name, services []Service, opts ...OrderedOption)`
+  与 `WithOrderedReadyTimeout(d)`：每子服务就绪预算可配（默认 10s 不变）；
+  `OrderedServices(name, services...)` 保留为默认委托，源码兼容。
+- 总线就绪等待改走 `probe.wait`（传入 Start 失败通道），删除调用点手写的
+  select/goroutine；行为不变。
+- 无就绪信号子服务的「快速失败不阻止下一个子服务启动」语义文档化并补钉
+  （可能短暂启动后随组失败回收）。
+
+测试：probe 表驱动单测（三级 × wait/once × 取消/startErr/预算/挂死）、
+OrderedServices 第三层与健康/就绪区分钉子、Command 预算与取消钉子。
+
+### 变更：Watcher 会话语义收敛为 WatcherSession（contrib/registry）
+
+`registry.WatcherSession`（组合 `WatcherBase`）成为后端 watcher 的会话核心：
+后置 `MatchFilter`、全字段顺序无关的规范相等、首快照基线与拉模式退避节奏
+（轮询 / 长轮询）统一在此；memory / DNS / Consul 只提供查询闭包与节奏策略。
+行为变更（可观察）：
+
+- 快照规范化为唯一形态（实例按 ID、Endpoints/Tags 排序）；与已投递快照
+  规范相等的变化不再推送——memory 无变化写入、Consul 内容无变化的 index
+  跳变不再唤醒消费者。
+- DNS 始终解析全部已配置协议：协议过滤下返回全量 Endpoints（不再修剪），
+  与 memory/consul 形状一致；NXDOMAIN 空快照语义与负缓存钳制 [5s,30s] 不变。
+- `Resolver.Subscribe` 推送深拷贝规范副本（与 `Get` 的「快照副本」契约
+  一致，此前明确不深拷贝）；与已投递快照相等的变化不重复推送；stale 丢弃
+  仍不通知（last-known 语义，恢复后下一次 store 自动推送）。
+- Consul index 回绕恢复语义不变；回绕重查到的旧快照被相等抑制，不再产生
+  一次重复推送。
+
+适配器侧退避（DNS 负缓存、Consul 1s–30s 倍增）由会话核心的 `PullPolicy`
+承载；Resolver 外层重连保留为契约级「不可恢复错误」安全网。文档同步：
+design-service-registry.md / design-resolver-subscribe.md / 07-registry.md。
+
+### 破坏性变更：订阅配置收敛为 ResolvedSubscription（单一解析产物）
+
+`eventbus.Resolver` 新增 `ResolveSubscription(topic, opts) ResolvedSubscription`：
+把有效 handler 名（空 → topic）、订阅级 `MaxInFlight` 与每 handler 的
+`Retry` / `HandlerTimeout` / `AutoAck` / `ContinueOnError` 的合并收敛到唯一
+入口，**订阅时一次解析**；memory Bus 与 watermill Bus 的投递路径不再逐次
+解析（对齐 CORE-03 解码器订阅时解析的先例）。删除 `Resolver.ApplyTopicDefaults`
+/ `RetryFor` / `HandlerTimeoutFor`（无兼容别名）。迁移对照：
+
+| 旧 | 新 |
+|---|---|
+| `ApplyTopicDefaults(topic, o)` | `res := ResolveSubscription(topic, *o)`（不再原地修改 `SubscribeOptions`） |
+| `RetryFor(topic, call)` | `ResolveSubscription(topic, SubscribeOptions{Retry: call}).Retry` |
+| `HandlerTimeoutFor(topic, call)` | `ResolveSubscription(topic, SubscribeOptions{HandlerTimeout: call}).HandlerTimeout` |
+
+语义不变：优先级链（调用/Topic 携带值 > `Options.Topics` > 全局 > 默认）、
+`HandlerTimeout` 负值显式禁用、`MaxInFlight` 负值不限制均原样保留；同名事件
+的两个 handler 解析出不同 `MaxInFlight` 时仍为首值生效 + Warn（比较发生在
+解析值上，相等不再误报）。设计文档已同步（§4.2 / §5.2 / §10.4 / 附录 A）。
+
+### 变更：启动期早退与 Close 的关停契约收敛（关停快路径）
+
+启动期早退（Init 失败、排水钩子未配预算、配置热更新注册失败、OnPreStart
+失败）与 `Run()` 从未启动时的 `Close()` 现在共用同一关停执行器（`teardown`，
+`shutdown.go`）——停止语义与错误记账只有一处实现，补齐此前只有完整关停
+序列才兑现的文档承诺：
+
+- `Run()` 在早退路径返回**触发错误与关停错误的聚合**（`errors.Join`）：
+  服务 `Stop` 的错误（含超时）不再只记日志；`errors.Is/As` 仍可命中触发错误。
+- 早退与 `Close` 逆序有界停止已 Init 的服务（`Close` 此前只停总线）；
+  批次幂等——`addServices` Init 失败已停止的服务不会被重复 `Stop`。
+- `Close` 的总线停止改走有界路径：错误进入聚合并记 Error 日志（此前 `_ =`
+  静默丢弃），总线生命周期事件与其它路径对称。
+- 应用 Context 在早退/`Close` 返回前取消；快路径不执行排水与 `OnPreStop`
+  （服务未进入运行阶段），`OnPostStop` 仍恰好执行一次；从未 `Start` 过的
+  服务不发 `lynx.service.stopping/stopped` 事件。
+
+行为变更：`Runner` setup 回调失败经 `RunE → Close` 释放时，已注册服务的
+`Stop` 会被调用（此前不会）；早退路径的错误串会多出服务停止错误片段。
+契约见 [docs/03-core-concepts.md](docs/03-core-concepts.md)「启动期早退的
+关停契约」与 [CONTEXT.md](CONTEXT.md)「关停快路径」。
+
 ### 破坏性变更：消费模型——订阅单元从 handler 收敛为事件
 
 同一事件的多个 handler 不再各自建立 transport 订阅：它们共享该事件的一条
