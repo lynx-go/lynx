@@ -13,7 +13,6 @@ package consul
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -60,9 +59,6 @@ const (
 	// 优先于配置文件（空 token 才回落配置）。
 	tokenEnv = "CONSUL_HTTP_TOKEN"
 )
-
-// errClosed 在 Close 之后的读写操作上返回。
-var errClosed = errors.New("consul: client closed")
 
 // Option 配置 Client。
 type Option func(*Client)
@@ -319,13 +315,14 @@ func (c *Client) Deregister(ctx context.Context, _, instanceID string) error {
 }
 
 // Heartbeat 刷新 TTL（check 类型为 ttl 时 UpdateTTL）；http/grpc 被动
-// 探针时为 no-op。
+// 探针时为 no-op。Close 后一律返回 registry.ErrClosed（no-op 分支同样拒绝，
+// 与 post-close 统一契约一致）。
 func (c *Client) Heartbeat(ctx context.Context, _, instanceID string) error {
-	if c.checkType != CheckTypeTTL {
-		return nil
-	}
 	if err := c.checkOpen(); err != nil {
 		return err
+	}
+	if c.checkType != CheckTypeTTL {
+		return nil
 	}
 	return c.agent.UpdateTTLOpts("service:"+instanceID, "heartbeat ok", api.HealthPassing, writeCtx(ctx))
 }
@@ -390,7 +387,7 @@ func (c *Client) Watch(ctx context.Context, name string, filter registry.Filter)
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		return nil, errClosed
+		return nil, registry.ErrClosed
 	}
 	c.watchers[w] = struct{}{}
 	c.mu.Unlock()
@@ -509,7 +506,7 @@ func (c *Client) checkOpen() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return errClosed
+		return registry.ErrClosed
 	}
 	return nil
 }

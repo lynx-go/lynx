@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"time"
 
 	"github.com/lynx-go/lynx/contrib/cluster"
@@ -83,19 +82,16 @@ func (l *redisLease) Release(ctx context.Context) error {
 	return l.rdb.Eval(ctx, delScript, []string{l.key}, l.token).Err()
 }
 
-// errLost 标记键已被他人持有或过期删除（续约脚本返回 0，renew 返回它
-// 触发引擎退出）。
-var errLost = errors.New("clusterredis: lease lost")
-
-// renew 经 Lua 脚本条件续约：token 匹配才延长，否则视为丢失。
-// 刻意用 Background：续约不受调用侧取消影响，仅由丢失退出。
+// renew 经 Lua 脚本条件续约：token 匹配才延长，否则视为丢失（返回
+// cluster.ErrLeaseLost 触发引擎退出）。刻意用 Background：续约不受
+// 调用侧取消影响，仅由丢失退出。
 func (l *redisLease) renew() error {
 	n, err := l.rdb.Eval(context.Background(), renewScript, []string{l.key}, l.token, l.ttl.Milliseconds()).Int()
 	if err != nil {
 		return err
 	}
 	if n == 0 {
-		return errLost
+		return cluster.ErrLeaseLost
 	}
 	return nil
 }

@@ -27,6 +27,10 @@ var (
 	ErrNilCoordinator = errors.New("cluster: nil coordinator")
 	// ErrNilService 表示 Singleton 的 inner 为 nil。
 	ErrNilService = errors.New("cluster: nil service")
+	// ErrLeaseLost 表示续约判定租约已丢失（被他人持有 / 后端会话失效）：
+	// Lease.Context 随之取消。网络类续约失败同样触发取消，但不映射本
+	// 哨兵（原样返回，调用方可区分「确定丢失」与「暂时失联」）。
+	ErrLeaseLost = errors.New("cluster: lease lost")
 )
 
 // Coordinator 是进程间协调端口：Claim 一次性占位、Acquire 长租约。

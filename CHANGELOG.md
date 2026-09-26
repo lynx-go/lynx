@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### 破坏性变更：registry / cluster 契约收敛（所有权、post-close、租约）
+
+- `Registrar.Stop` 默认不再关闭传入的后端（谁构造谁负责）：共享给 Resolver
+  的后端不再被连带关掉；确需由 Registrar 释放时显式
+  `WithCloseBackendOnStop()`。
+- 导出 `registry.ErrClosed`：Close 后 Register/Deregister/Heartbeat/Watch/
+  GetService 一律返回它；memory 的 GetService/Heartbeat 从「继续服务/恒
+  nil」改为拒绝；Consul 的 Heartbeat no-op 分支同样拒绝；Close 幂等。
+  memory 的 GetService/Watch 另补空名校验（`ErrBadName`，与 DNS/Consul 一致）。
+- 导出 `cluster.ErrLeaseLost`：memory/redis 续约丢失返回它；Consul 对缺失
+  Session（404）映射为它，网络错误原样返回。cluster memory 的 Release
+  去掉「ctx 已取消即跳过」预检：先取消续约并尽力释放（本地释放恒成功）。
+- DNS 新增 `WithDNSResolver`（`DNSResolver` 窄接口）：自定义解析器与测试
+  替身注入；`withDNSLookup` 保留为内部别名。
+- 新增 conformance 套件：`contrib/registry/registrytest`（Registry/
+  Discovery/Watcher）与 `contrib/cluster/clustertest`（Coordinator），接入
+  memory/DNS/consul 与 cluster memory/cluster-redis/consul coordinator；
+  套件放接口旁（design-testkit 约定 lynxtest 零 contrib import）。
+
+迁移：依赖 Registrar.Stop 释放后端的调用方加 `WithCloseBackendOnStop()`；
+依赖 memory Close 后继续读的调用方改为在 Close 前取快照。
+
 ### 变更：请求标识解析与传播统一（internal/propagation；gRPC 补齐生成/回写）
 
 - 新增中性 `internal/propagation`：wire 键、值校验、日志属性与出站传播的

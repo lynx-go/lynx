@@ -251,6 +251,12 @@ runner := lynx.NewRunner(func(app lynx.App) error {
 }, lynx.WithDrainTimeout(15*time.Second))
 ```
 
+> **所有权与 Close 契约**：`Registrar` 默认**不**关闭传入的后端（谁构造谁
+> 负责）——示例中 `wr` 同时供 Resolver 使用，`Registrar.Stop` 不会连带关掉
+> 它；确需由 Registrar 释放时用 `registry.WithCloseBackendOnStop()`。
+> `Registry.Close` 幂等；Close 之后 Register/Deregister/Heartbeat/Watch/
+> GetService 一律返回 `registry.ErrClosed`。
+
 Consul 侧要点：
 
 - 注册走 `Agent.ServiceRegister`，主端口取第一个匹配 check 协议的

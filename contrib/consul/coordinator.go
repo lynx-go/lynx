@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/hashicorp/consul/api"
@@ -134,9 +135,18 @@ func (l *sessionLease) Release(ctx context.Context) error {
 	return err
 }
 
-// renew 续期 Session；Session 失效（过期/销毁）时 Renew 返回错误。
+// renew 续期 Session；Session 失效（过期/销毁）返回 cluster.ErrLeaseLost
+// （Consul 对缺失 Session 返回 404）；网络类错误原样返回——两者都会触发
+// RunRenewLoop 取消租约，但调用方可区分「确定丢失」与「暂时失联」。
 func (l *sessionLease) renew() error {
 	_, _, err := l.c.api.Session().Renew(l.session, nil)
+	if err == nil {
+		return nil
+	}
+	var statusErr *api.StatusError
+	if errors.As(err, &statusErr) && statusErr.Code == http.StatusNotFound {
+		return fmt.Errorf("%w: %v", cluster.ErrLeaseLost, err)
+	}
 	return err
 }
 

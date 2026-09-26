@@ -34,11 +34,15 @@ var defaultDNSPorts = map[string]int{
 	ProtocolGRPC:  9090,
 }
 
-// lookupResolver 是 net.Resolver 的方法子集，便于测试注入 fake。
-type lookupResolver interface {
+// DNSResolver 是 DNS 查询实现的窄接口（net.DefaultResolver 天然满足）：
+// 自定义解析器（带缓存/走内网 DNS 等）与测试替身经 WithDNSResolver 注入。
+type DNSResolver interface {
 	LookupSRV(ctx context.Context, service, proto, name string) (cname string, addrs []*net.SRV, err error)
 	LookupHost(ctx context.Context, host string) ([]string, error)
 }
+
+// lookupResolver 保留为内部别名（既有测试引用）。
+type lookupResolver = DNSResolver
 
 // DNSOption 配置 DNS Discovery。
 type DNSOption func(*dnsDiscovery)
@@ -81,13 +85,19 @@ func WithDNSPollInterval(interval time.Duration) DNSOption {
 	}
 }
 
-// withDNSLookup 注入 DNS 查询实现（默认 net.DefaultResolver），仅测试使用。
-func withDNSLookup(l lookupResolver) DNSOption {
+// WithDNSResolver 注入 DNS 查询实现（缺省 net.DefaultResolver）：自定义
+// 解析器（带缓存/走内网 DNS 等）与 conformance/单元测试替身使用。
+func WithDNSResolver(l DNSResolver) DNSOption {
 	return func(d *dnsDiscovery) {
 		if l != nil {
 			d.lookup = l
 		}
 	}
+}
+
+// withDNSLookup 是 WithDNSResolver 的内部别名（既有测试引用）。
+func withDNSLookup(l lookupResolver) DNSOption {
+	return WithDNSResolver(l)
 }
 
 // dnsDiscovery 是 DNS 后端：只实现 Discovery（不写目录）。

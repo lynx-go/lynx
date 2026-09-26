@@ -9,9 +9,15 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 )
+
+// ErrClosed 是后端 Close 之后全部读写操作的统一错误（errors.Is 可判）：
+// Register / Deregister / Heartbeat / Watch / GetService 一律返回它。
+// 实现方必须在 Close 后拒绝新操作；Close 本身幂等。
+var ErrClosed = errors.New("registry: backend closed")
 
 // Protocol 是 Endpoint 的应用层协议。未知值按 opaque 处理，不拒绝。
 const (

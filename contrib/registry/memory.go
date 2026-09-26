@@ -2,14 +2,8 @@ package registry
 
 import (
 	"context"
-	"errors"
 	"maps"
 	"sync"
-)
-
-var (
-	// errClosed 在 Memory.Close 之后的写操作或 Watch 上返回。
-	errClosed = errors.New("registry: memory backend closed")
 )
 
 // Memory 是进程内 Registry + Discovery，用于测试与单进程场景。
@@ -40,7 +34,7 @@ func (m *Memory) Register(_ context.Context, inst Instance) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errClosed
+		return ErrClosed
 	}
 	set, ok := m.services[inst.Name]
 	if !ok {
@@ -57,7 +51,7 @@ func (m *Memory) Deregister(_ context.Context, serviceName, instanceID string) e
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return errClosed
+		return ErrClosed
 	}
 	set, ok := m.services[serviceName]
 	if !ok {
@@ -74,8 +68,15 @@ func (m *Memory) Deregister(_ context.Context, serviceName, instanceID string) e
 	return nil
 }
 
-// Heartbeat 是 no-op：memory 后端没有 TTL。
-func (m *Memory) Heartbeat(_ context.Context, _, _ string) error { return nil }
+// Heartbeat 是 no-op：memory 后端没有 TTL；Close 后返回 ErrClosed。
+func (m *Memory) Heartbeat(_ context.Context, _, _ string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return ErrClosed
+	}
+	return nil
+}
 
 // Close 停止全部 Watcher 并拒绝后续写入；幂等。
 func (m *Memory) Close() error {
@@ -98,20 +99,30 @@ func (m *Memory) Close() error {
 	return nil
 }
 
-// GetService 返回应用 Filter 后的深拷贝快照；无实例时返回空切片与 nil。
+// GetService 返回应用 Filter 后的深拷贝快照；无实例时返回空切片与 nil；
+// 空服务名返回 ErrBadName（与 DNS/Consul 一致）；Close 后返回 ErrClosed。
 func (m *Memory) GetService(_ context.Context, name string, filter Filter) ([]Instance, error) {
+	if name == "" {
+		return nil, ErrBadName
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.closed {
+		return nil, ErrClosed
+	}
 	return m.snapshotLocked(name, filter), nil
 }
 
 // Watch 返回一个 Watcher：首次 Next 立即推送当前快照（含空列表），
 // 之后集合每次变化推送一次新快照。
 func (m *Memory) Watch(ctx context.Context, name string, filter Filter) (Watcher, error) {
+	if name == "" {
+		return nil, ErrBadName
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return nil, errClosed
+		return nil, ErrClosed
 	}
 	w := &memoryWatcher{m: m, name: name}
 	w.session = NewWatcherSession(ctx, name, filter, func() {

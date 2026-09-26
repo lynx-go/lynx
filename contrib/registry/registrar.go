@@ -48,6 +48,9 @@ type registrarOptions struct {
 	weight            int
 	serviceName       string // 覆盖 lynx.Meta.Name
 	instanceID        string // 覆盖 lynx.Meta.ID
+	// closeBackend 让 Stop 关闭 Registry 后端（默认 false：后端由调用方
+	// 构造，可能同时供 Resolver 等消费方共享——谁构造谁负责）。
+	closeBackend bool
 }
 
 func defaultRegistrarOptions() registrarOptions {
@@ -121,6 +124,14 @@ func WithServiceName(name string) RegistrarOption {
 // WithInstanceID 覆盖实例 ID（默认取 lynx.Meta.ID）。
 func WithInstanceID(id string) RegistrarOption {
 	return func(o *registrarOptions) { o.instanceID = id }
+}
+
+// WithCloseBackendOnStop 让 Registrar.Stop 关闭其 Registry 后端。默认不关：
+// 后端由调用方构造（NewRegistrar / NewFromConfig 都接收现成实例），可能
+// 同时供 Resolver 等消费方共享——关闭共享后端会连带停掉其他消费方，
+// 所有权规则是「谁构造谁负责」。
+func WithCloseBackendOnStop() RegistrarOption {
+	return func(o *registrarOptions) { o.closeBackend = true }
 }
 
 // Registrar 是服务注册的生命周期服务：Init 解析身份与宣告地址，Start
@@ -451,7 +462,8 @@ func (r *Registrar) startWatchDrain() {
 	}()
 }
 
-// Stop 停掉心跳/重试/排水观察，幂等注销并关闭 Registry。
+// Stop 停掉心跳/重试/排水观察，幂等注销；仅当 WithCloseBackendOnStop 显式
+// 开启时才关闭 Registry 后端（默认不关，见该选项的所有权说明）。
 // 容忍 Stop-before-Start（Lifecycle 契约）；多次调用只执行一次。
 func (r *Registrar) Stop(ctx context.Context) error {
 	var err error
@@ -460,8 +472,10 @@ func (r *Registrar) Stop(ctx context.Context) error {
 		close(r.stopCh)
 		err = r.deregister(ctx)
 		// 已注销：此后 CheckHealth 返回 ErrNotRegistered，readiness 保持不健康。
-		if cerr := r.reg.Close(); err == nil {
-			err = cerr
+		if r.opts.closeBackend {
+			if cerr := r.reg.Close(); err == nil {
+				err = cerr
+			}
 		}
 	})
 	return err

@@ -227,7 +227,7 @@ func TestRegistrarHeartbeatFailures(t *testing.T) {
 
 func TestRegistrarStopBeforeStart(t *testing.T) {
 	backend := &fakeRegistry{}
-	r := NewRegistrar(backend, WithServiceName("svc"))
+	r := NewRegistrar(backend, WithServiceName("svc"), WithCloseBackendOnStop())
 	mustInit(t, r, lynxtest.NewContext(t))
 
 	if err := r.Stop(context.Background()); err != nil {
@@ -245,6 +245,21 @@ func TestRegistrarStopBeforeStart(t *testing.T) {
 	// Stop 之后 Start 立即返回。
 	if err := r.Start(context.Background()); err != nil {
 		t.Fatalf("Start after Stop: %v", err)
+	}
+}
+
+// TestRegistrarStopKeepsBackendByDefault：默认所有权规则「谁构造谁负责」：
+// Stop 不关闭外部传入的后端（后端可能同时供 Resolver 等消费方共享）。
+func TestRegistrarStopKeepsBackendByDefault(t *testing.T) {
+	backend := &fakeRegistry{}
+	r := NewRegistrar(backend, WithServiceName("svc"))
+	mustInit(t, r, lynxtest.NewContext(t))
+
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if backend.closeCalls != 0 {
+		t.Fatalf("Registry.Close calls = %d, want 0 (backend is owned by the caller)", backend.closeCalls)
 	}
 }
 

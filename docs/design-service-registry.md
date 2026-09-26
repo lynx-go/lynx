@@ -270,11 +270,14 @@ package registry
 
 import "context"
 
-// Registry 是写接口。实现必须并发安全。Deregister / Close 必须幂等。
+// Registry 是写接口。实现必须并发安全。Deregister / Close 必须幂等；
+// Close 之后 Register / Deregister / Heartbeat / Watch / GetService 一律
+// 返回 registry.ErrClosed（conformance 套件逐后端钉住）。
 type Registry interface {
     Register(ctx context.Context, inst Instance) error
     Deregister(ctx context.Context, serviceName, instanceID string) error
-    // Heartbeat 刷新 TTL。后端若只用 HTTP/gRPC 被动探针，可返回 nil。
+    // Heartbeat 刷新 TTL。后端若只用 HTTP/gRPC 被动探针，可返回 nil；
+    // Close 后返回 ErrClosed（no-op 分支同样拒绝）。
     Heartbeat(ctx context.Context, serviceName, instanceID string) error
     Close() error
 }
@@ -390,7 +393,9 @@ _ = c.BindEnv("registry.consul.token", "LYNX_REGISTRY_CONSUL_TOKEN")
 1. 停心跳、后台注册重试与观察循环。
 2. 调 `Deregister`（超时 min(ctx deadline, 3s)）。已注销则 no-op。
 3. 将内部状态标为已注销：此后 `CheckHealth` 返回 `ErrNotRegistered`（非 nil），readiness 保持不健康。
-4. `Registry.Close()`。
+4. `Registry.Close()`——**仅当**构造时显式开启 `WithCloseBackendOnStop()`；
+   默认不关（后端由调用方构造，可能同时供 Resolver 等消费方共享，
+   所有权规则是「谁构造谁负责」）。
 5. 必须容忍 Stop-before-Start（`Lifecycle` 契约，见 `service.go` 注释）。
 
 `CheckHealth` 状态机：

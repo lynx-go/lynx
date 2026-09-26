@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -94,29 +93,25 @@ type memLease struct {
 
 func (l *memLease) Context() context.Context { return l.ctx }
 
-func (l *memLease) Release(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+// Release 释放槽位并取消续约：先取消续约、尽力释放，不因调用方 ctx 已
+// 取消而跳过（本地释放无 I/O，恒成功）；幂等。
+func (l *memLease) Release(context.Context) error {
 	l.m.mu.Lock()
-	defer l.m.mu.Unlock()
 	if sl, ok := l.m.slots[l.key]; ok && sl.gen == l.gen {
 		delete(l.m.slots, l.key)
 	}
+	l.m.mu.Unlock()
 	l.cancel()
 	return nil
 }
 
-// errLost 标记租约槽已被取代/清除（renew 返回它触发引擎退出）。
-var errLost = errors.New("cluster: lease lost")
-
-// renew 刷新槽位过期时间；槽丢失（被覆盖或清除）返回 errLost。
+// renew 刷新槽位过期时间；槽丢失（被覆盖或清除）返回 ErrLeaseLost。
 func (l *memLease) renew() error {
 	l.m.mu.Lock()
 	defer l.m.mu.Unlock()
 	sl, ok := l.m.slots[l.key]
 	if !ok || sl.gen != l.gen {
-		return errLost
+		return ErrLeaseLost
 	}
 	sl.exp = l.m.opts.clock().Now().Add(l.ttl)
 	return nil

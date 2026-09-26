@@ -541,7 +541,7 @@ func TestCloseIdempotent(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}
-	if err := c.Register(context.Background(), twoEndpointInstance()); !errors.Is(err, errClosed) {
+	if err := c.Register(context.Background(), twoEndpointInstance()); !errors.Is(err, registry.ErrClosed) {
 		t.Fatalf("Register after Close: %v", err)
 	}
 }
