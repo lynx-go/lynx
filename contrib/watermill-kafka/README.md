@@ -6,7 +6,8 @@ Kafka 的 `eventbus.Transport`：按逻辑 topic 配置集群、物理主题与�
 
 ## 能力要点
 
-- `NewTransport(opts Options) (*Transport, error)`（`transport.go:186`）：`Options.Topics` 为 `map[逻辑topic]TopicOptions`（`transport.go:40`）
+- `NewTransport(opts Options, options ...Option) (*Transport, error)`：`Options.Topics` 为 `map[逻辑topic]TopicOptions`
+- 构造接缝：`WithClientFactory(f ClientFactory)` 替换 Kafka 客户端构造（发布/订阅两侧，订阅参数为 `SubscriberParams`）；默认实现即 watermill-kafka 真实客户端（`wireMarshaler` 内置）——自定义客户端构造与测试替身走同一入口
 - `NewFromConfig(cfg lynx.Config) (*Transport, error)`（`fromconfig.go:13`）：从 `kafka:` 段装配；**段缺失或为空返回 `(nil, nil)` 表示未启用，返回 nil 时不得 Register**
 - `NewBusFromConfig(cfg lynx.Config) (eventbus.Bus, []lynx.Service, error)`（`fromconfig.go:34`）：kafka 版总线装配入口，签名直接匹配 `lynx.WithBusProvider`；始终含 `"memory"` transport（兼作 DefaultTransport），`kafka:` 段启用时把 Transport 作为配套服务返回（见[快速开始](#快速开始)）
 - 同时实现 `eventbus.Transport`、`lynx.Service`、`lynx.Checker`、`lynx.Ready`（`transport.go:925`）：Register 后 Start/Stop、健康聚合、就绪等待由框架托管

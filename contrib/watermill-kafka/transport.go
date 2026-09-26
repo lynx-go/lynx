@@ -10,6 +10,10 @@
 // 总线装配：NewBusFromConfig 一行返回 WithBusProvider 所需的 bus 与配套
 // 服务——始终含 memory transport 兜底，Kafka 段启用时把 Transport 一并
 // 托管（自定义 transport 集合的手工装配见本模块 README）。
+//
+// 客户端构造接缝：NewTransport 接受函数式选项，WithClientFactory 可替换
+// Publisher/Subscriber 的构造（默认即 watermill-kafka 真实客户端，
+// wireMarshaler 内置）——自定义客户端构造与测试替身走同一入口。
 package kafka
 
 import (
@@ -164,9 +168,9 @@ type Transport struct {
 	// 存在被忽略的 topic 级配置）。调用方必须已持有 t.mu。
 	warnedFP map[string]struct{}
 
-	// 客户端工厂 seam：测试注入 fake。
-	newPublisher  func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error)
-	newSubscriber func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error)
+	// factory 是 Kafka 客户端构造接缝（默认 watermill-kafka 真实实现；
+	// 经 WithClientFactory 替换，测试与生产同一入口）。
+	factory ClientFactory
 
 	running atomic.Bool
 	// stopped 标记 Stop 已执行：Stop 后 Publish 返回框架级错误，
@@ -180,22 +184,69 @@ type Transport struct {
 	cancel    context.CancelFunc
 }
 
-// subscriberParams 是 newSubscriber seam 的参数：sarama.Config 之外的
-// watermill 订阅参数也在此传递。
-type subscriberParams struct {
-	brokers             []string
-	group               string
-	sarama              *sarama.Config
-	nackResendSleep     time.Duration
-	reconnectRetrySleep time.Duration
+// Option 配置 Transport 的构造行为（函数式选项；配置面仍是 Options）。
+type Option func(*Transport)
+
+// WithClientFactory 替换 Kafka 客户端构造实现（默认即 watermill-kafka 的
+// Publisher/Subscriber）：自定义客户端构造（注入 sarama 客户端/中间件）
+// 与测试替身使用；nil 忽略。
+func WithClientFactory(f ClientFactory) Option {
+	return func(t *Transport) {
+		if f != nil {
+			t.factory = f
+		}
+	}
+}
+
+// ClientFactory 抽象 Kafka 客户端构造（发布/订阅两侧）。默认实现是
+// watermill-kafka 的真实客户端（wireMarshaler 已内置）；经
+// WithClientFactory 替换。
+type ClientFactory interface {
+	NewPublisher(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error)
+	NewSubscriber(p SubscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error)
+}
+
+// SubscriberParams 是 NewSubscriber 的构造参数：sarama.Config 之外的
+// watermill 订阅参数（消费组 / Nack 重投等待 / 重连等待）也在此传递。
+type SubscriberParams struct {
+	Brokers             []string
+	Group               string
+	Sarama              *sarama.Config
+	NackResendSleep     time.Duration
+	ReconnectRetrySleep time.Duration
+}
+
+// defaultClientFactory 是默认 ClientFactory：watermill-kafka 真实客户端。
+// Marshaler/Unmarshaler 必填（缺省时上游构造直接报错）：wireMarshaler 把
+// x-message-key 写入 Kafka record Key（分区键）并负责两侧信封映射。
+type defaultClientFactory struct{}
+
+func (defaultClientFactory) NewPublisher(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
+	return watermillkafka.NewPublisher(watermillkafka.PublisherConfig{
+		Brokers:               brokers,
+		OverwriteSaramaConfig: cfg,
+		Marshaler:             wireMarshaler{},
+	}, logger)
+}
+
+func (defaultClientFactory) NewSubscriber(p SubscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error) {
+	return watermillkafka.NewSubscriber(watermillkafka.SubscriberConfig{
+		Brokers:               p.Brokers,
+		ConsumerGroup:         p.Group,
+		OverwriteSaramaConfig: p.Sarama,
+		Unmarshaler:           wireMarshaler{},
+		NackResendSleep:       p.NackResendSleep,
+		ReconnectRetrySleep:   p.ReconnectRetrySleep,
+	}, logger)
 }
 
 // metricsConfigKey 是 kafka 段的保留键（consumer lag 指标配置）；
 // mapstructure 的 ",remain" 会把它同时收进 Topics，NewTransport 统一剔除。
 const metricsConfigKey = "metrics"
 
-// NewTransport 创建 Kafka Transport。
-func NewTransport(opts Options) (*Transport, error) {
+// NewTransport 创建 Kafka Transport。options 是构造期选项
+// （如 WithClientFactory）；配置面仍是 opts。
+func NewTransport(opts Options, options ...Option) (*Transport, error) {
 	// 归一化：剔除保留键，避免 "metrics" 被当成逻辑 topic（拷贝 map，不改调用方）。
 	if len(opts.Topics) > 0 {
 		topics := make(map[string]TopicOptions, len(opts.Topics))
@@ -211,28 +262,12 @@ func NewTransport(opts Options) (*Transport, error) {
 		pubSaramaConfigs: map[string]*sarama.Config{},
 		subSaramaConfigs: map[string]*sarama.Config{},
 		warnedFP:         map[string]struct{}{},
-		newPublisher: func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
-			return watermillkafka.NewPublisher(watermillkafka.PublisherConfig{
-				Brokers:               brokers,
-				OverwriteSaramaConfig: cfg,
-				// Marshaler 必填：缺省时 NewPublisher 直接报 "missing marshaler"。
-				// wireMarshaler 把 x-message-key 写入 Kafka record Key（分区键）。
-				Marshaler: wireMarshaler{},
-			}, logger)
-		},
-		newSubscriber: func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error) {
-			subCfg := watermillkafka.SubscriberConfig{
-				Brokers:               p.brokers,
-				ConsumerGroup:         p.group,
-				OverwriteSaramaConfig: p.sarama,
-				// Unmarshaler 必填：v3.1.x 的 setDefaults 不补默认值，
-				// 缺省时 NewSubscriber 直接报 "missing unmarshaler"。
-				Unmarshaler:         wireMarshaler{},
-				NackResendSleep:     p.nackResendSleep,
-				ReconnectRetrySleep: p.reconnectRetrySleep,
-			}
-			return watermillkafka.NewSubscriber(subCfg, logger)
-		},
+		factory:          defaultClientFactory{},
+	}
+	for _, opt := range options {
+		if opt != nil {
+			opt(t)
+		}
 	}
 	t.ctx, t.cancel = context.WithCancel(context.Background())
 	t.ready = make(chan struct{})
@@ -781,7 +816,7 @@ func (t *Transport) publisherFor(brokers []string, topic string, producer *Produ
 	if err != nil {
 		return nil, err
 	}
-	p, err := t.newPublisher(brokers, cfg, t.watermillLogger())
+	p, err := t.factory.NewPublisher(brokers, cfg, t.watermillLogger())
 	if err != nil {
 		return nil, err
 	}
@@ -806,12 +841,12 @@ func (t *Transport) subscriberFor(brokers []string, topic string, group string, 
 	if err != nil {
 		return nil, err
 	}
-	params := subscriberParams{brokers: brokers, group: group, sarama: cfg}
+	params := SubscriberParams{Brokers: brokers, Group: group, Sarama: cfg}
 	if consumer != nil {
-		params.nackResendSleep = consumer.NackResendSleep
-		params.reconnectRetrySleep = consumer.ReconnectRetrySleep
+		params.NackResendSleep = consumer.NackResendSleep
+		params.ReconnectRetrySleep = consumer.ReconnectRetrySleep
 	}
-	s, err := t.newSubscriber(params, t.watermillLogger())
+	s, err := t.factory.NewSubscriber(params, t.watermillLogger())
 	if err != nil {
 		return nil, err
 	}

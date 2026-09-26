@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### 新增：Kafka Transport 客户端构造接缝（WithClientFactory）
+
+- 导出 `ClientFactory` 接口与 `SubscriberParams`；新增 `WithClientFactory`
+  函数式 Option；`NewTransport(opts Options, options ...Option)`（源码兼容，
+  纯增量）
+- 默认实现即 watermill-kafka 真实客户端（`wireMarshaler` 内置）；自定义
+  客户端构造与测试替身经同一入口注入，不再依赖包内未导出字段
+- 测试初始化单点化：两个测试 helper 不再复制 struct literal（此前
+  `newCapturingTransport` 漏 `ready` 字段，一 Start 即 panic）；新增
+  `package kafka_test` 黑盒测试（生命周期 / Publish / Subscribe 扇入 /
+  错误路径）
+
 ### 破坏性变更：registry / cluster 契约收敛（所有权、post-close、租约）
 
 - `Registrar.Stop` 默认不再关闭传入的后端（谁构造谁负责）：共享给 Resolver

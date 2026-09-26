@@ -3,7 +3,6 @@ package kafka
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -79,56 +78,61 @@ func (f *fakePubSub) subscribeCount(topic string) int {
 	return len(f.subChs[topic])
 }
 
-// newTestTransport 构造注入 fake client seam 的 Transport。
-func newTestTransport(opts Options, pub pubSubClient) *Transport {
-	t := &Transport{
-		opts:             opts,
-		logger:           slog.Default(),
-		publishers:       map[string]message.Publisher{},
-		subscribers:      map[string]message.Subscriber{},
-		pubSaramaConfigs: map[string]*sarama.Config{},
-		subSaramaConfigs: map[string]*sarama.Config{},
-		newPublisher: func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
-			return pub, nil
-		},
-		newSubscriber: func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error) {
-			return pub, nil
-		},
-	}
-	t.ctx, t.cancel = context.WithCancel(context.Background())
-	t.ready = make(chan struct{})
-	return t
+// testClientFactory 把既有 fake 注入公开构造接缝（WithClientFactory）。
+type testClientFactory struct {
+	pub message.Publisher
+	sub message.Subscriber
 }
 
-// captureFactory 是记录型 fake seam：把工厂收到的 sarama 配置与订阅参数
+func (f testClientFactory) NewPublisher([]string, *sarama.Config, watermill.LoggerAdapter) (message.Publisher, error) {
+	return f.pub, nil
+}
+
+func (f testClientFactory) NewSubscriber(SubscriberParams, watermill.LoggerAdapter) (message.Subscriber, error) {
+	return f.sub, nil
+}
+
+// newTestTransport 构造注入 fake client seam 的 Transport：走公开构造器
+// （NewTransport + WithClientFactory），初始化单点、不再复制 struct literal。
+func newTestTransport(opts Options, pub pubSubClient) *Transport {
+	tr, err := NewTransport(opts, WithClientFactory(testClientFactory{pub: pub, sub: pub}))
+	if err != nil {
+		panic(err) // NewTransport 当前无失败路径；保持 helper 签名不变
+	}
+	return tr
+}
+
+// captureFactory 是记录型 fake 接缝：把工厂收到的 sarama 配置与订阅参数
 // 存入 atomic.Value，供配置映射断言读取。
 type captureFactory struct {
 	pub        *fakePubSub
 	lastCfg    atomic.Value // *sarama.Config
-	lastParams atomic.Value // subscriberParams
+	lastParams atomic.Value // SubscriberParams
 }
 
-// newCapturingTransport 构造注入记录型 fake seam 的 Transport。
+// captureClientFactory 把记录型 fake 注入公开构造接缝。
+type captureClientFactory struct {
+	cap *captureFactory
+}
+
+func (f captureClientFactory) NewPublisher(_ []string, cfg *sarama.Config, _ watermill.LoggerAdapter) (message.Publisher, error) {
+	f.cap.lastCfg.Store(cfg)
+	return f.cap.pub, nil
+}
+
+func (f captureClientFactory) NewSubscriber(p SubscriberParams, _ watermill.LoggerAdapter) (message.Subscriber, error) {
+	f.cap.lastCfg.Store(p.Sarama)
+	f.cap.lastParams.Store(p)
+	return f.cap.pub, nil
+}
+
+// newCapturingTransport 构造注入记录型 fake seam 的 Transport（公开构造器）。
 func newCapturingTransport(opts Options, cap *captureFactory) *Transport {
-	t := &Transport{
-		opts:             opts,
-		logger:           slog.Default(),
-		publishers:       map[string]message.Publisher{},
-		subscribers:      map[string]message.Subscriber{},
-		pubSaramaConfigs: map[string]*sarama.Config{},
-		subSaramaConfigs: map[string]*sarama.Config{},
-		newPublisher: func(brokers []string, cfg *sarama.Config, logger watermill.LoggerAdapter) (message.Publisher, error) {
-			cap.lastCfg.Store(cfg)
-			return cap.pub, nil
-		},
-		newSubscriber: func(p subscriberParams, logger watermill.LoggerAdapter) (message.Subscriber, error) {
-			cap.lastCfg.Store(p.sarama)
-			cap.lastParams.Store(p)
-			return cap.pub, nil
-		},
+	tr, err := NewTransport(opts, WithClientFactory(captureClientFactory{cap: cap}))
+	if err != nil {
+		panic(err) // NewTransport 当前无失败路径；保持 helper 签名不变
 	}
-	t.ctx, t.cancel = context.WithCancel(context.Background())
-	return t
+	return tr
 }
 
 func TestOptionsFromConfig(t *testing.T) {
@@ -351,16 +355,16 @@ func TestBuildSaramaConfigMappings(t *testing.T) {
 		}
 	}
 
-	// watermill 层参数：NackResendSleep / ReconnectRetrySleep 随 subscriberParams 传递。
-	params := cap.lastParams.Load().(subscriberParams)
-	if params.group != "g1" {
-		t.Fatalf("group: got %q, want g1", params.group)
+	// watermill 层参数：NackResendSleep / ReconnectRetrySleep 随 SubscriberParams 传递。
+	params := cap.lastParams.Load().(SubscriberParams)
+	if params.Group != "g1" {
+		t.Fatalf("group: got %q, want g1", params.Group)
 	}
-	if params.nackResendSleep != 500*time.Millisecond {
-		t.Fatalf("nack resend sleep: got %v, want 500ms", params.nackResendSleep)
+	if params.NackResendSleep != 500*time.Millisecond {
+		t.Fatalf("nack resend sleep: got %v, want 500ms", params.NackResendSleep)
 	}
-	if params.reconnectRetrySleep != 3*time.Second {
-		t.Fatalf("reconnect retry sleep: got %v, want 3s", params.reconnectRetrySleep)
+	if params.ReconnectRetrySleep != 3*time.Second {
+		t.Fatalf("reconnect retry sleep: got %v, want 3s", params.ReconnectRetrySleep)
 	}
 }
 
