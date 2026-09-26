@@ -74,10 +74,7 @@ func Outbound(ctx context.Context, set func(key, value string) bool) bool {
 			userID = a.Value.String()
 		}
 	}
-	added := false
-	if requestID != "" && set(RequestIDHeader, requestID) {
-		added = true
-	}
+	added := requestID != "" && set(RequestIDHeader, requestID)
 	if userID != "" && set(UserIDHeader, userID) {
 		added = true
 	}
