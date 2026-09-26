@@ -95,6 +95,30 @@ func (p probe) wait(ctx context.Context, budget time.Duration, startErr chan err
 	}
 }
 
+// readinessChecker 把声明 Ready 的服务适配为 Checker，参与 app 级
+// readiness 聚合（HealthCheckers / HTTP /healthz/readiness / gRPC health）：
+// Ready 未关闭即未就绪（单调门槛）；关闭后若服务同时实现 Checker，继续以
+// 健康状态参与（可来回变化）——两个维度都保留。两者皆无的服务不参与
+// （invoke 即就绪）。
+type readinessChecker struct{ service Service }
+
+// errServiceNotReady 表示服务尚未跨过 Ready 门槛（聚合判定内部用，不导出）。
+var errServiceNotReady = errors.New("service not ready")
+
+func (c readinessChecker) CheckHealth() error {
+	if r, ok := c.service.(Ready); ok {
+		select {
+		case <-r.Ready():
+		default:
+			return errServiceNotReady
+		}
+	}
+	if hc, ok := c.service.(Checker); ok {
+		return hc.CheckHealth()
+	}
+	return nil
+}
+
 // errReadyNotClosed 标记 Ready 通道在预算内未关闭：循环模式据此交给
 // errTimeout 包装（与 Checker 路径的预算耗尽语义对齐），单次探测模式
 // 直接返回给消费方（Command 按"本轮未就绪"参与退避重试）。

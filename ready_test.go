@@ -198,6 +198,51 @@ func TestProbeWait(t *testing.T) {
 	})
 }
 
+// TestReadinessAggregationReadyGate：app 级 readiness 聚合纳入 Ready 门槛
+// （Ready-only 服务参与；Ready+Checker 先过门槛、后看健康）。
+func TestReadinessAggregationReadyGate(t *testing.T) {
+	app, err := newLynx(NewOptions())
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+
+	// Ready-only：未就绪 → 聚合失败；就绪后 → 健康。
+	readyOnly := newReadyService("ready-only", 0, true, nil)
+	app.Register(readyOnly)
+	checkers := app.HealthCheckers()
+	if len(checkers) != 1 {
+		t.Fatalf("health checkers = %d, want 1 (Ready-only service must participate)", len(checkers))
+	}
+	if err := checkers[0].CheckHealth(); err == nil {
+		t.Fatal("unready Ready-only service must fail readiness aggregation")
+	}
+	readyOnly.closeOnce.Do(func() { close(readyOnly.ready) })
+	if err := checkers[0].CheckHealth(); err != nil {
+		t.Fatalf("ready service CheckHealth = %v, want nil", err)
+	}
+
+	// Ready+Checker：未跨门槛即使 checker 健康也不就绪；跨门槛后以健康为准。
+	health := &HealthChecker{}
+	health.SetHealthy(true)
+	both := newReadyService("both", 0, true, health)
+	app.Register(both)
+	checkers = app.HealthCheckers()
+	if len(checkers) != 2 {
+		t.Fatalf("health checkers = %d, want 2", len(checkers))
+	}
+	if err := checkers[1].CheckHealth(); err == nil {
+		t.Fatal("Ready gate must fail while the channel is open even if the checker is healthy")
+	}
+	both.closeOnce.Do(func() { close(both.ready) })
+	if err := checkers[1].CheckHealth(); err != nil {
+		t.Fatalf("after ready with healthy checker = %v, want nil", err)
+	}
+	health.SetHealthy(false)
+	if err := checkers[1].CheckHealth(); err == nil {
+		t.Fatal("unhealthy checker must fail aggregation after Ready")
+	}
+}
+
 // TestAwaitHealthyNonPositiveBudget 锁定「预算 <= 0 时至少检查一次」的
 // 既有语义在有界化后仍成立：即使预算已耗尽，也先执行有界检查
 // （defaultProbeTimeout 兜底），而不是直接判超时。Windows 粗粒度时钟下

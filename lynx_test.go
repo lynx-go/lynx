@@ -850,8 +850,10 @@ func TestRegisterRacingRunLeavesNoOrphan(t *testing.T) {
 	if slow.started.Load() {
 		t.Error("orphan Service was started")
 	}
-	if slow.stopped.Load() {
-		t.Error("orphan Service was stopped")
+	// 登记被拒但已 Init 成功：必须 Stop——此前断言"不得 Stop"是缺口
+	// （Init 打开的资源无人释放），本次修复后改为必须 Stop。
+	if !slow.stopped.Load() {
+		t.Error("unregistered Service must be stopped (Init succeeded, Stop is the only cleanup)")
 	}
 
 	app.Close()

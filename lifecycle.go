@@ -213,7 +213,13 @@ func (app *lynx) registerService(service Service, a actor) error {
 	app.actors = append(app.actors, a)
 	app.services = append(app.services, service)
 	app.startWG.Add(1)
-	if hc, ok := service.(Checker); ok {
+	// readiness 聚合（三级优先的聚合侧）：声明 Ready 的服务以 Ready 为
+	// 门槛参与（未跨过门槛即未就绪），同时实现 Checker 时跨过门槛后继续以
+	// 健康状态参与；只有 Checker 的服务沿用原样（身份不变）；两者皆无
+	// 不参与（invoke 即就绪）。
+	if _, isReady := service.(Ready); isReady {
+		app.healthCheckers = append(app.healthCheckers, readinessChecker{service})
+	} else if hc, ok := service.(Checker); ok {
 		app.healthCheckers = append(app.healthCheckers, hc)
 	}
 	return nil

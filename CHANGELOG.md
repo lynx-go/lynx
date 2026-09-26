@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 修复：两处边界外缺口（登记竞态清理 + readiness 聚合 Ready 门槛）
+
+- `registerService` 因 Run/Close 竞态失败时，刚 Init 成功的服务此前只取消
+  其 ctx、不调用 `Stop`（Init 打开的资源无人释放）；现在会先有界 Stop 再
+  返回——登记失败不再产生资源孤儿（契约：Init 成功即须逆序 Stop）。
+- app 级 readiness 聚合纳入 Ready 门槛：声明 `Ready` 的服务（含 Ready-only）
+  现在参与 `HealthCheckers()` / HTTP `/healthz/readiness` / gRPC health——
+  Ready 未关闭即未就绪；同时实现 `Checker` 时跨过门槛后继续以健康状态参与
+  （两个维度都保留）；仅 `Checker` 的服务行为与身份不变。
+
 ### 测试与修复：投递语义 parity 矩阵扩展（两实现对照）
 
 - `contrib/watermill/parity_test.go` 从 4 个场景扩到覆盖：扇出（同事件多

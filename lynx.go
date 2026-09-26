@@ -642,6 +642,10 @@ func (app *lynx) addServices(services ...Service) error {
 		// 任何迟到的登记都不可能越过检查；检查失败时服务不进入
 		// actors/services/healthCheckers（无孤儿）。
 		if err := app.registerService(service, app.serviceActor(ctx, cancel, service)); err != nil {
+			// 登记被拒（与 Run/Close 竞态，见 lifecycle.checkRegistration）：
+			// 服务已 Init 成功但不在 actors/services 中，任何退出路径都不会
+			// 再停它——此处是唯一清理机会（契约：Init 成功即须逆序 Stop）。
+			app.stopServiceBounded(app.ctx, service)
 			cancel()
 			return err
 		}

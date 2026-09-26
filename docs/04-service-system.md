@@ -86,7 +86,7 @@ type Checker interface {
 }
 ```
 
-`Checker` 是独立于 `Service` 的扩展接口：框架在注册每个服务时会做 `Checker` 类型断言（`lynx.go` 的 `addServices`），只要服务实现了 `CheckHealth() error`，就会被自动收集进应用的健康检查列表。这个列表通过 `app.HealthCheckers()` 暴露（返回快照切片）：
+`Checker` 是独立于 `Service` 的扩展接口：框架在注册每个服务时会做就绪来源解析（`Ready` → `Checker` → 无信号），并按三级优先收集进应用的健康检查列表——声明 `Ready` 的服务以 Ready 为门槛参与（未跨过门槛即未就绪；同时实现 `Checker` 时跨过门槛后继续以健康状态参与），仅实现 `CheckHealth() error` 的服务沿用原样，两者皆无不参与（invoke 即就绪）。这个列表通过 `app.HealthCheckers()` 暴露（返回快照切片）：
 
 ```go
 HealthCheckers() []Checker

@@ -222,6 +222,48 @@ func TestCloseBeforeRunFastTeardown(t *testing.T) {
 	}
 }
 
+// TestRegisterRaceFailureStopsService 钉住登记竞态失败路径的清理契约：
+// 服务 Init 成功但登记被拒（Run 已启动 / Close 已执行）时，框架仍须调用
+// 其 Stop——否则 Init 打开的资源无人释放。
+func TestRegisterRaceFailureStopsService(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(l *lynx)
+		want  error
+	}{
+		{"run started", func(l *lynx) {
+			l.mu.Lock()
+			l.running = true
+			l.mu.Unlock()
+		}, errRunStarted},
+		{"app closed", func(l *lynx) {
+			l.mu.Lock()
+			l.closed = true
+			l.mu.Unlock()
+		}, ErrAppClosed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &eventRecorder{}
+			svc := &teardownProbe{name: "race", rec: rec}
+			app, err := newLynx(NewOptions())
+			if err != nil {
+				t.Fatalf("newLynx() error = %v", err)
+			}
+			l := app.(*lynx)
+			tc.setup(l)
+
+			err = l.addServices(svc)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("addServices = %v, want %v", err, tc.want)
+			}
+			if got := countEvent(rec.snapshot(), "stop:race"); got != 1 {
+				t.Fatalf("stop calls = %d, want 1 (unregistered service must still be stopped)", got)
+			}
+		})
+	}
+}
+
 // TestCloseAfterInitFailureDoesNotRestop 钉住批次幂等：Init 失败时
 // addServices 已停止先前服务，Close 兜底不得重复调用 Stop。
 func TestCloseAfterInitFailureDoesNotRestop(t *testing.T) {
