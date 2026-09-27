@@ -21,6 +21,19 @@
 - 全仓库调用点与示例同步更新；`_examples/bus` 与 `_examples/bus-kafka`
   发布侧现打印 `message_id`，与订阅端 `event.id` 直接对账。
 
+### 破坏性变更：`HandlerService` 更名 `EventHandlerService`
+
+- **API 重命名**：`lynx.HandlerService[T]` → `lynx.EventHandlerService[T]`，
+  `lynx.NewHandlerService` → `lynx.NewEventHandlerService`。签名、语义与
+  方法集（`Name` / `Init` / `Start` / `Stop`）完全不变，纯命名更正——
+  适配器承载的是 `lynx.EventHandler[T]`（事件订阅 handler），旧名未表达
+  「事件」一词，易与其他 handler 种类混淆；新名与接口一一配对。
+- v1.16.0 随版发布了旧名（当日），故本次更名计为破坏性变更。迁移为
+  机械替换：`HandlerService` → `EventHandlerService`（含构造函数）。
+- 测试（`handler_test.go`）、`_examples/bus-kafka` 与相关文档
+  （`docs/04-service-system.md`、两份示例 README、CLAUDE.md、ROADMAP.md）
+  已同步；历史发布条目与设计决策记录保留旧名不改。
+
 ## v1.16.0 (2026-09-27)
 
 本次发布 tag：根 `v1.16.0` 与全部 9 个 contrib 模块版本对齐——

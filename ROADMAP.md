@@ -295,7 +295,7 @@ Unreleased，设计与理由见 `docs/design-eventbus-consumption.md`）：
       kafka `DefaultGroup`；订阅复用键 = 逻辑 topic
 - [x] 订阅级在途上限 `bus.topics.<t>.max_in_flight`（默认 1 = 串行且保序；
       限流点在适配器，防 router 每消息 goroutine 无界堆积并形成背压）
-- [x] `lynx.NewHandlerService` / `EventHandler[T]`：订阅型 handler 的
+- [x] `lynx.NewEventHandlerService` / `EventHandler[T]`：订阅型 handler 的
       Service 适配器（先 Init 注入依赖再订阅）
 - [x] handler 超时（`bus.handler_timeout` / `bus.topics.<t>.handler_timeout`）：
       单次尝试超时 → 终态失败 → 重试 / 重投 / 毒消息止损，防挂死 handler

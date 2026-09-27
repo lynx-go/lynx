@@ -52,26 +52,26 @@ func (h *testHandler) Handle(_ context.Context, e *eventbus.Event[orderCreated])
 
 func noopHandler(context.Context, *eventbus.Event[orderCreated]) error { return nil }
 
-var _ lynx.Service = (*lynx.HandlerService[orderCreated])(nil)
+var _ lynx.Service = (*lynx.EventHandlerService[orderCreated])(nil)
 
-// TestHandlerServiceNameBeforeInit：Name 不依赖 Init（框架可能在 Init 前
+// TestEventHandlerServiceNameBeforeInit：Name 不依赖 Init（框架可能在 Init 前
 // 调用），nil 服务返回空串而非 panic。
-func TestHandlerServiceNameBeforeInit(t *testing.T) {
-	svc := lynx.NewHandlerService(&testHandler{name: "order-created"})
+func TestEventHandlerServiceNameBeforeInit(t *testing.T) {
+	svc := lynx.NewEventHandlerService(&testHandler{name: "order-created"})
 	if got := svc.Name(); got != "order-created" {
 		t.Fatalf("Name() = %q, want %q", got, "order-created")
 	}
-	if got := (*lynx.HandlerService[orderCreated])(nil).Name(); got != "" {
+	if got := (*lynx.EventHandlerService[orderCreated])(nil).Name(); got != "" {
 		t.Fatalf("nil Name() = %q, want empty", got)
 	}
 }
 
-// TestHandlerServiceDeliversAfterInit：Init 先注入依赖再订阅，事件经
+// TestEventHandlerServiceDeliversAfterInit：Init 先注入依赖再订阅，事件经
 // 解码后到达 Handle。
-func TestHandlerServiceDeliversAfterInit(t *testing.T) {
+func TestEventHandlerServiceDeliversAfterInit(t *testing.T) {
 	actx := lynxtest.NewContext(t)
 	h := &testHandler{name: "order-created", got: make(chan *eventbus.Event[orderCreated], 1)}
-	svc := lynx.NewHandlerService(h)
+	svc := lynx.NewEventHandlerService(h)
 	if err := svc.Init(actx); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -88,13 +88,13 @@ func TestHandlerServiceDeliversAfterInit(t *testing.T) {
 	}
 }
 
-// TestHandlerServiceInitErrorSkipsSubscribe：h.Init 失败即返回、不订阅
+// TestEventHandlerServiceInitErrorSkipsSubscribe：h.Init 失败即返回、不订阅
 // （同名 handler 仍可直接订阅，证明名字未被占用）。
-func TestHandlerServiceInitErrorSkipsSubscribe(t *testing.T) {
+func TestEventHandlerServiceInitErrorSkipsSubscribe(t *testing.T) {
 	actx := lynxtest.NewContext(t)
 	boom := errors.New("boom")
 	h := &testHandler{name: "failed-handler", initErr: boom}
-	if err := lynx.NewHandlerService(h).Init(actx); !errors.Is(err, boom) {
+	if err := lynx.NewEventHandlerService(h).Init(actx); !errors.Is(err, boom) {
 		t.Fatalf("Init() error = %v, want %v", err, boom)
 	}
 	if err := orderCreatedTopic.Subscribe(actx.Context(), noopHandler,
@@ -103,11 +103,11 @@ func TestHandlerServiceInitErrorSkipsSubscribe(t *testing.T) {
 	}
 }
 
-// TestHandlerServiceHandlerNameDefaultAndOverride：默认 handler 名 =
+// TestEventHandlerServiceHandlerNameDefaultAndOverride：默认 handler 名 =
 // HandlerName；显式 WithHandlerName 覆盖默认。
-func TestHandlerServiceHandlerNameDefaultAndOverride(t *testing.T) {
+func TestEventHandlerServiceHandlerNameDefaultAndOverride(t *testing.T) {
 	actx := lynxtest.NewContext(t)
-	if err := lynx.NewHandlerService(&testHandler{name: "default-name"}).Init(actx); err != nil {
+	if err := lynx.NewEventHandlerService(&testHandler{name: "default-name"}).Init(actx); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	if err := orderCreatedTopic.Subscribe(actx.Context(), noopHandler,
@@ -115,7 +115,7 @@ func TestHandlerServiceHandlerNameDefaultAndOverride(t *testing.T) {
 		t.Fatal("default handler name not applied: duplicate subscribe succeeded")
 	}
 
-	if err := lynx.NewHandlerService(&testHandler{name: "svc-name"},
+	if err := lynx.NewEventHandlerService(&testHandler{name: "svc-name"},
 		eventbus.WithHandlerName("override-name")).Init(actx); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -125,21 +125,21 @@ func TestHandlerServiceHandlerNameDefaultAndOverride(t *testing.T) {
 	}
 }
 
-// TestHandlerServiceInitRejectsNilAndEmptyName：防御路径返回明确错误。
-func TestHandlerServiceInitRejectsNilAndEmptyName(t *testing.T) {
+// TestEventHandlerServiceInitRejectsNilAndEmptyName：防御路径返回明确错误。
+func TestEventHandlerServiceInitRejectsNilAndEmptyName(t *testing.T) {
 	actx := lynxtest.NewContext(t)
-	if err := (*lynx.HandlerService[orderCreated])(nil).Init(actx); err == nil {
+	if err := (*lynx.EventHandlerService[orderCreated])(nil).Init(actx); err == nil {
 		t.Fatal("nil service Init() should fail")
 	}
-	if err := lynx.NewHandlerService(&testHandler{}).Init(actx); err == nil {
+	if err := lynx.NewEventHandlerService(&testHandler{}).Init(actx); err == nil {
 		t.Fatal("empty handler name Init() should fail")
 	}
 }
 
-// TestHandlerServiceStartBlocksUntilShutdown：Start 阻塞至 ctx 取消；
+// TestEventHandlerServiceStartBlocksUntilShutdown：Start 阻塞至 ctx 取消；
 // Stop 无操作返回 nil。
-func TestHandlerServiceStartBlocksUntilShutdown(t *testing.T) {
-	svc := lynx.NewHandlerService(&testHandler{name: "blocking"})
+func TestEventHandlerServiceStartBlocksUntilShutdown(t *testing.T) {
+	svc := lynx.NewEventHandlerService(&testHandler{name: "blocking"})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- svc.Start(ctx) }()

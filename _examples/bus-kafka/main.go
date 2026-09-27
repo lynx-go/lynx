@@ -93,8 +93,8 @@ func main() {
 			// handler 服务：同一事件（order.created）的多个 handler 共享
 			// 该事件的一条 Kafka 订阅（消费组取自配置）并进程内并行扇出，
 			// 每个 handler 都收到每条消息。
-			lynx.NewHandlerService(&OrderCreatedHandler{name: "OrderCreatedHandler"}),
-			lynx.NewHandlerService(&OrderCreatedHandler{name: "OrderCreatedHandler2"}),
+			lynx.NewEventHandlerService(&OrderCreatedHandler{name: "OrderCreatedHandler"}),
+			lynx.NewEventHandlerService(&OrderCreatedHandler{name: "OrderCreatedHandler2"}),
 		)
 		return nil
 	},

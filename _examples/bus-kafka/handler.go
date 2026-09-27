@@ -9,7 +9,7 @@ import (
 )
 
 // OrderCreatedHandler 是业务 handler：结构体持有依赖（name 构造期注入），
-// 经 lynx.NewHandlerService 适配为可注册的 Service。两个实例共享同一
+// 经 lynx.NewEventHandlerService 适配为可注册的 Service。两个实例共享同一
 // 类型，靠注入的 name 与注册点的 group 区分消费身份。
 type OrderCreatedHandler struct {
 	name string

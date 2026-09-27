@@ -196,8 +196,8 @@ var _ lynx.ServiceFactory = (*workerFactory)(nil)
 ### 4.4.1 事件 handler 服务（eventbus）
 
 订阅型 handler 的注册样板（声明主题 / handler 名 / 处理函数、`Init` 订阅、
-`Start` 等待关停）由 `lynx.HandlerService[T]` 承接：业务结构体实现
-`lynx.EventHandler[T]`，经 `lynx.NewHandlerService` 适配为 Service 后直接
+`Start` 等待关停）由 `lynx.EventHandlerService[T]` 承接：业务结构体实现
+`lynx.EventHandler[T]`，经 `lynx.NewEventHandlerService` 适配为 Service 后直接
 `app.Register`：
 
 ```go
@@ -219,7 +219,7 @@ func (h *OrderCreatedHandler) Handle(ctx context.Context, e *eventbus.Event[Orde
 	return h.db.Save(ctx, e.Payload)
 }
 
-app.Register(lynx.NewHandlerService(&OrderCreatedHandler{name: "order-created", db: db}))
+app.Register(lynx.NewEventHandlerService(&OrderCreatedHandler{name: "order-created", db: db}))
 ```
 
 契约要点：

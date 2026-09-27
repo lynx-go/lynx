@@ -59,7 +59,7 @@ config.yaml）；在别处运行会找不到 `kafka:` 段，Transport 不加入�
 - `auditService`：Init 期 `Topic.Subscribe`，消费组参数来自
   `kafka.order.created.consumer`（group_id/instances）。
 - `OrderCreatedHandler` / `OrderCreatedHandler2`：handler 服务
-  （`lynx.NewHandlerService`）——结构体声明 `Topic`/`HandlerName`/`Handle`，
+  （`lynx.NewEventHandlerService`）——结构体声明 `Topic`/`HandlerName`/`Handle`，
   `Init` 是依赖注入点（适配器保证先注入后订阅）。同一事件的多个 handler
   共享一条 transport 订阅并进程内并行扇出（消费组来自后端配置
   `kafka.order.created.consumer.group_id`）：示例里 audit 与两个 handler

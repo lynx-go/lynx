@@ -8,7 +8,7 @@ import (
 )
 
 // EventHandler 是业务侧对「一个类型化订阅」的完整声明：主题、handler 名、
-// 依赖注入点与处理函数。业务结构体直接实现本接口，经 NewHandlerService
+// 依赖注入点与处理函数。业务结构体直接实现本接口，经 NewEventHandlerService
 // 适配为 Service 后 app.Register——不需要嵌入骨架，也不需要构造后回填。
 //
 //	type OrderCreatedHandler struct {
@@ -23,7 +23,7 @@ import (
 //		return h.db.Do(ctx, e.Payload)
 //	}
 //
-//	app.Register(lynx.NewHandlerService(&OrderCreatedHandler{name: "order-created", db: db}))
+//	app.Register(lynx.NewEventHandlerService(&OrderCreatedHandler{name: "order-created", db: db}))
 type EventHandler[T any] interface {
 	// Topic 返回订阅的类型化主题。
 	Topic() eventbus.Topic[T]
@@ -32,7 +32,7 @@ type EventHandler[T any] interface {
 	//（启动/停止日志中的标识）。空名在 Init 期报错。
 	HandlerName() string
 
-	// Init 是依赖注入点：HandlerService 保证它在订阅之前调用，可用
+	// Init 是依赖注入点：EventHandlerService 保证它在订阅之前调用，可用
 	// AppContext 获取构造期不可得的依赖（配置、日志等）；无依赖时返回 nil。
 	// 返回错误则不订阅，由 app.Run() 统一上抛。
 	Init(ctx AppContext) error
@@ -42,7 +42,7 @@ type EventHandler[T any] interface {
 	Handle(ctx context.Context, event *eventbus.Event[T]) error
 }
 
-// HandlerService 把 EventHandler 适配为 Service：
+// EventHandlerService 把 EventHandler 适配为 Service：
 //
 //   - Name：即 HandlerName，构造后立即可用（框架可能在 Init 前调用）；
 //   - Init：先调用 h.Init 注入依赖，再订阅 Topic（依赖未就绪不会先消费）；
@@ -51,12 +51,12 @@ type EventHandler[T any] interface {
 //
 // 对比嵌入式骨架：适配器持有已构造好的 handler，所有方法静态可用，
 // 不存在「基类回调派生类方法」的两阶段初始化与 nil 接口窗口。
-type HandlerService[T any] struct {
+type EventHandlerService[T any] struct {
 	h    EventHandler[T]
 	opts []eventbus.SubscribeOption
 }
 
-// NewHandlerService 创建 handler 服务。opts 透传给 Topic.Subscribe，
+// NewEventHandlerService 创建 handler 服务。opts 透传给 Topic.Subscribe，
 // 只影响该 handler 自身的投递语义（WithSubscribeRetry / WithAutoAck /
 // WithContinueOnError）；默认以 HandlerName 作为 Bus 内 handler 名，
 // 显式 eventbus.WithHandlerName 可覆盖。
@@ -65,13 +65,13 @@ type HandlerService[T any] struct {
 // 并行扇出：消费组 / 消费者成员数是后端配置（kafka consumer.group_id /
 // instances），订阅级在途上限是事件配置（WithTopicMaxInFlight /
 // Options.Topics.max_in_flight）。
-func NewHandlerService[T any](h EventHandler[T], opts ...eventbus.SubscribeOption) *HandlerService[T] {
-	return &HandlerService[T]{h: h, opts: opts}
+func NewEventHandlerService[T any](h EventHandler[T], opts ...eventbus.SubscribeOption) *EventHandlerService[T] {
+	return &EventHandlerService[T]{h: h, opts: opts}
 }
 
 // Name 返回服务名（即 handler 名）。不依赖 Init，注册前调用安全；
 // 未配置（nil 服务 / nil handler）时返回空串而非 panic。
-func (s *HandlerService[T]) Name() string {
+func (s *EventHandlerService[T]) Name() string {
 	if s == nil || s.h == nil {
 		return ""
 	}
@@ -79,7 +79,7 @@ func (s *HandlerService[T]) Name() string {
 }
 
 // Init 注入依赖后订阅主题。顺序保证：h.Init 返回 nil 才会订阅。
-func (s *HandlerService[T]) Init(ctx AppContext) error {
+func (s *EventHandlerService[T]) Init(ctx AppContext) error {
 	if s == nil || s.h == nil {
 		return errors.New("lynx: handler service is nil")
 	}
@@ -97,9 +97,9 @@ func (s *HandlerService[T]) Init(ctx AppContext) error {
 }
 
 // Start 订阅已在 Init 完成，无自有循环：阻塞至关停。
-func (s *HandlerService[T]) Start(ctx context.Context) error { return WaitForShutdown(ctx) }
+func (s *EventHandlerService[T]) Start(ctx context.Context) error { return WaitForShutdown(ctx) }
 
 // Stop 无资源可释放。
-func (s *HandlerService[T]) Stop(context.Context) error { return nil }
+func (s *EventHandlerService[T]) Stop(context.Context) error { return nil }
 
-var _ Service = (*HandlerService[struct{}])(nil)
+var _ Service = (*EventHandlerService[struct{}])(nil)
