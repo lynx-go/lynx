@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v1.17.0 (2026-09-27)
+
+本次发布 tag：根 `v1.17.0` 与全部 9 个 contrib 模块版本对齐——
+`contrib/{zap,watermill,watermill-kafka,telemetry,schedule,registry,consul,cluster,cluster-redis}/v1.17.0`。
 
 ### 破坏性变更：Publish 返回消息 ID（`(string, error)`），新增 WithMessageID
 
