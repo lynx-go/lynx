@@ -101,10 +101,15 @@ func main() {
 
 		// 演示：OnPreStart 中发布事件，所有订阅者（同进程）即时收到
 		app.OnPreStart(func(ctx context.Context) error {
-			// 方式1：类型化发布（Topic.Publish）
-			_ = OrderCreatedTopic.Publish(ctx, OrderCreated{OrderID: "123", UserID: "u1"})
+			// 方式1：类型化发布（Topic.Publish）；返回值即消息 ID，与订阅端
+			// 日志里的 event.id 是同一个，两端日志可凭此对账
+			if id, err := OrderCreatedTopic.Publish(ctx, OrderCreated{OrderID: "123", UserID: "u1"}); err != nil {
+				slog.Warn("publish order.created failed", "error", err)
+			} else {
+				slog.Info("published order.created", "message_id", id)
+			}
 			// 方式2：原始/字符串 topic 发布
-			_ = app.Bus().Publish(ctx, OrderCreatedTopic.Name(), map[string]string{"order_id": "456"})
+			_, _ = app.Bus().Publish(ctx, OrderCreatedTopic.Name(), map[string]string{"order_id": "456"})
 			return nil
 		})
 		return nil

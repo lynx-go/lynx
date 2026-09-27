@@ -1525,8 +1525,8 @@ func (b *readyGateBus) CheckHealth() error {
 	}
 	return nil
 }
-func (b *readyGateBus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) error {
-	return nil
+func (b *readyGateBus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) (string, error) {
+	return "", nil
 }
 func (b *readyGateBus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
 	return nil
@@ -1583,8 +1583,8 @@ func (b *hungCheckBus) CheckHealth() error {
 	<-b.unblock
 	return errors.New("unblocked")
 }
-func (b *hungCheckBus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) error {
-	return nil
+func (b *hungCheckBus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) (string, error) {
+	return "", nil
 }
 func (b *hungCheckBus) Subscribe(ctx context.Context, topic string, h eventbus.HandlerFunc, opts ...eventbus.SubscribeOption) error {
 	return nil

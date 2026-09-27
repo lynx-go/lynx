@@ -106,8 +106,9 @@ err := UserCreated.Subscribe(ctx,
 		return nil
 	}, eventbus.WithHandlerName("notify"))
 
-// 发布（自动 JSON 序列化）
-err = UserCreated.Publish(ctx, User{Name: "alice"},
+// 发布（自动 JSON 序列化）；返回值即消息 ID——与订阅端 Event.ID 相同，
+// 生产/消费两端日志可凭此对账；也可用 eventbus.WithMessageID(id) 显式指定
+id, err = UserCreated.Publish(ctx, User{Name: "alice"},
 	eventbus.WithMessageKey("alice"))
 ```
 

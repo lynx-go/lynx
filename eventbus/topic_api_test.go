@@ -24,7 +24,7 @@ func TestMarshalerPriorityOptionOverTopic(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// Option marshaler (JSON) must win over Topic prefix marshaler
-	if err := topic.Publish(context.Background(), map[string]string{"a": "b"},
+	if _, err := topic.Publish(context.Background(), map[string]string{"a": "b"},
 		WithBus(bus), WithPublishMarshaler(JSONMarshaler{})); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestMarshalerPriorityTopicMarshalersOverTopicsConfig(t *testing.T) {
 	})
 	time.Sleep(20 * time.Millisecond)
 
-	if err := bus.Publish(context.Background(), "prio.cfg", map[string]string{"a": "b"}); err != nil {
+	if _, err := bus.Publish(context.Background(), "prio.cfg", map[string]string{"a": "b"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -99,7 +99,7 @@ func TestMarshalerTopicsConfigFallback(t *testing.T) {
 	})
 	time.Sleep(20 * time.Millisecond)
 
-	if err := bus.Publish(context.Background(), "prio.fallback", map[string]string{"a": "b"}); err != nil {
+	if _, err := bus.Publish(context.Background(), "prio.fallback", map[string]string{"a": "b"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -128,7 +128,7 @@ func TestPublishRawEventUsesParamTopic(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	raw := &RawEvent{ID: "keep", Topic: "spoof.topic", Key: "k", Payload: []byte("x"), Time: time.Unix(1, 0)}
-	if err := bus.Publish(context.Background(), "logical.param", raw); err != nil {
+	if _, err := bus.Publish(context.Background(), "logical.param", raw); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -168,7 +168,7 @@ func TestTopicPublishForwardsRawEnvelope(t *testing.T) {
 		Payload: []byte("body"),
 		Time:    ts,
 	}
-	if err := topic.Publish(context.Background(), raw, WithBus(bus)); err != nil {
+	if _, err := topic.Publish(context.Background(), raw, WithBus(bus)); err != nil {
 		t.Fatalf("Publish(*RawEvent): %v", err)
 	}
 	select {
@@ -213,7 +213,7 @@ func TestTopicPublishRawPayloadsBypassMarshaler(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// []byte 载荷：跳过序列化直发。
-	if err := topicBytes.Publish(context.Background(), []byte("bytes-body"), WithBus(bus)); err != nil {
+	if _, err := topicBytes.Publish(context.Background(), []byte("bytes-body"), WithBus(bus)); err != nil {
 		t.Fatalf("Publish([]byte): %v", err)
 	}
 	select {
@@ -227,7 +227,7 @@ func TestTopicPublishRawPayloadsBypassMarshaler(t *testing.T) {
 
 	// *RawEvent 载荷：整份信封透传，Payload 原样。
 	raw := &RawEvent{ID: "r1", Payload: []byte("raw-body"), Time: time.Now()}
-	if err := topicRaw.Publish(context.Background(), raw, WithBus(bus)); err != nil {
+	if _, err := topicRaw.Publish(context.Background(), raw, WithBus(bus)); err != nil {
 		t.Fatalf("Publish(*RawEvent): %v", err)
 	}
 	select {

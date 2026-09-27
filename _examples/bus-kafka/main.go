@@ -53,9 +53,14 @@ func (s *orderService) Start(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			id := fmt.Sprintf("%d", n)
-			if err := OrderCreatedTopic.Publish(ctx, OrderCreated{OrderID: id, UserID: "u1"},
-				eventbus.WithMessageKey(id)); err != nil {
+			// 返回值即消息 ID：与消费端日志的 event.id 是同一个，跨进程两端
+			// 日志可凭此对账
+			msgID, err := OrderCreatedTopic.Publish(ctx, OrderCreated{OrderID: id, UserID: "u1"},
+				eventbus.WithMessageKey(id))
+			if err != nil {
 				slog.ErrorContext(ctx, "publish failed", "error", err)
+			} else {
+				slog.InfoContext(ctx, "published order.created", "order_id", id, "message_id", msgID)
 			}
 		}
 	}

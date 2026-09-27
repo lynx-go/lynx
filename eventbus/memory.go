@@ -126,21 +126,21 @@ func (b *memoryBus) MarshalerFor(topic string) Marshaler {
 	return b.resolver.MarshalerFor(topic)
 }
 
-// Publish 发布业务对象或原始字节。
-func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) error {
+// Publish 发布业务对象或原始字节，返回消息 ID（见 Bus.Publish）。
+func (b *memoryBus) Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) (string, error) {
 	if b.closed.Load() {
-		return errors.New("bus is closed")
+		return "", errors.New("bus is closed")
 	}
 	o := &PublishOptions{Metadata: map[string]string{}}
 	applyPublishOptions(o, opts...)
 	ev, err := BuildRawEvent(ctx, b, topic, payload, o, b.resolver.PropagateKeys())
 	if err != nil {
-		return err
+		return "", err
 	}
 	if lm := b.resolver.LogMessageFor(topic); lm.Publish {
-		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", ev.Key)
+		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", ev.Key, "id", ev.ID)
 	}
-	return b.dispatch(ctx, ev)
+	return ev.ID, b.dispatch(ctx, ev)
 }
 
 func (b *memoryBus) dispatch(ctx context.Context, ev *RawEvent) error {

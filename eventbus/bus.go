@@ -28,7 +28,9 @@ type Bus interface {
 	// Publish 发布业务对象到逻辑 topic，按 Topic 的 Marshaler 序列化。
 	// topic 为逻辑名，物理映射由 Bus 实现决定（内存直接投递，持久化 Bus 按配置路由）。
 	// payload 为 []byte 时跳过序列化直发（原 Bus.PublishRaw 的能力）。
-	Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) error
+	// 返回消息 ID：WithMessageID 显式指定或 *RawEvent 透传携带 ID 时返回
+	// 调用方的值，否则为实现生成的 UUID；发布失败返回空串。
+	Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) (string, error)
 
 	// Subscribe 订阅逻辑 topic；handler 名由 WithHandlerName 指定，为空时使用 topic，且在 Bus 内全局唯一。
 	// 同一 topic 的多个 handler 均收到每条消息（进程内并行扇出）；同一事件
@@ -110,6 +112,9 @@ func (e *Event[T]) LogValue() slog.Value {
 
 // PublishOptions 是发布行为的配置项。
 type PublishOptions struct {
+	// MessageID 是调用方显式指定的消息 ID（WithMessageID 注入）；空串 =
+	// 未指定，由实现生成 UUID。优先级高于 *RawEvent 透传携带的 ID。
+	MessageID  string
 	MessageKey string
 	Metadata   map[string]string
 	Marshaler  Marshaler
@@ -129,6 +134,15 @@ func (f publishOptionFunc) applyPublish(o *PublishOptions) { f(o) }
 // ApplyPublishOptions 应用发布选项（供 contrib Bus 实现使用）。
 func ApplyPublishOptions(o *PublishOptions, opts ...PublishOption) {
 	applyPublishOptions(o, opts...)
+}
+
+// WithMessageID 显式指定本次发布的消息 ID：返回值与消费端 Event.ID 用的
+// 就是它（发布侧日志与订阅日志可凭此对账）。空串 = 未指定（实现生成 UUID）；
+// 覆盖 *RawEvent 透传携带的 ID（与 WithMessageKey 对 Key 的覆盖一致）。
+// 幂等键场景可直接用业务单号：ID 重复的语义（如 Kafka 侧去重）由后端决定，
+// Bus 不做去重。
+func WithMessageID(id string) PublishOption {
+	return publishOptionFunc(func(o *PublishOptions) { o.MessageID = id })
 }
 
 // WithMessageKey 设置消息 key（写入 wire 的 x-message-key，亦进入 Event.Key）。

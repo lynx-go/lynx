@@ -45,7 +45,7 @@ func TestSubscribeSharesOneSubscriptionPerEvent(t *testing.T) {
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	if err := bus.Publish(ctx, "order.created", map[string]string{"id": "1"}); err != nil {
+	if _, err := bus.Publish(ctx, "order.created", map[string]string{"id": "1"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	for name, ch := range map[string]chan struct{}{"h1": got1, "h2": got2} {
@@ -96,7 +96,7 @@ func TestSubscribeMemoryTransportBroadcastAllowed(t *testing.T) {
 		t.Fatalf("subscribe b2 (memory transport must allow broadcast): %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if err := bus.Publish(ctx, "order.created", map[string]string{"id": "1"}); err != nil {
+	if _, err := bus.Publish(ctx, "order.created", map[string]string{"id": "1"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	for name, ch := range map[string]chan string{"b1": got1, "b2": got2} {
@@ -196,7 +196,7 @@ func TestMaxRedeliveriesDropsPoisonMessage(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if err := bus.Publish(ctx, "order.poison", map[string]string{"id": "1"}); err != nil {
+	if _, err := bus.Publish(ctx, "order.poison", map[string]string{"id": "1"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 

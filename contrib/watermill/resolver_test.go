@@ -75,7 +75,7 @@ func TestWatermillTopicConfigRetryApplies(t *testing.T) {
 	}, eventbus.WithHandlerName("cfg-retry")); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	if err := bus.Publish(context.Background(), "cfg.topic", map[string]string{"k": "v"}); err != nil {
+	if _, err := bus.Publish(context.Background(), "cfg.topic", map[string]string{"k": "v"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {

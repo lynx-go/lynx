@@ -39,7 +39,7 @@ func TestTopicRetryTakesEffectOnSubscribe(t *testing.T) {
 	}, WithBus(bus)); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	if err := topic.Publish(context.Background(), map[string]string{"k": "v"}, WithBus(bus)); err != nil {
+	if _, err := topic.Publish(context.Background(), map[string]string{"k": "v"}, WithBus(bus)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	time.Sleep(200 * time.Millisecond)
@@ -65,7 +65,7 @@ func TestSubscribeRetryOptionOverridesTopic(t *testing.T) {
 	}, WithBus(bus), WithSubscribeRetry(RetryOptions{MaxRetries: 2})); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	if err := topic.Publish(context.Background(), map[string]string{"k": "v"}, WithBus(bus)); err != nil {
+	if _, err := topic.Publish(context.Background(), map[string]string{"k": "v"}, WithBus(bus)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -98,7 +98,7 @@ func TestTopicsConfigRetryFallback(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	if err := bus.Publish(context.Background(), "retry.cfg", map[string]string{"k": "v"}); err != nil {
+	if _, err := bus.Publish(context.Background(), "retry.cfg", map[string]string{"k": "v"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	time.Sleep(200 * time.Millisecond)

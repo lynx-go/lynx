@@ -74,7 +74,7 @@ func TestTopicPublishSubscribeViaContext(t *testing.T) {
 	}
 	time.Sleep(20 * time.Millisecond)
 
-	if err := topic.Publish(appCtx, map[string]string{"id": "1"}); err != nil {
+	if _, err := topic.Publish(appCtx, map[string]string{"id": "1"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -106,7 +106,7 @@ func TestTopicPublishViaDefault(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if err := topic.Publish(context.Background(), map[string]string{"id": "2"}); err != nil {
+	if _, err := topic.Publish(context.Background(), map[string]string{"id": "2"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -149,14 +149,14 @@ func TestTopicWithBusOption(t *testing.T) {
 
 	// Publish to wrong bus (via context) must not deliver
 	ctxWrong := ContextWithBus(context.Background(), bus)
-	_ = topic.Publish(ctxWrong, map[string]string{"id": "wrong"})
+	_, _ = topic.Publish(ctxWrong, map[string]string{"id": "wrong"})
 	select {
 	case <-got:
 		t.Fatal("delivered to wrong bus")
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	if err := topic.Publish(context.Background(), map[string]string{"id": "ok"}, WithBus(other)); err != nil {
+	if _, err := topic.Publish(context.Background(), map[string]string{"id": "ok"}, WithBus(other)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {

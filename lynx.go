@@ -650,7 +650,7 @@ func (app *lynx) publishEvent(topic string, payload any) {
 	if app.ctx != nil {
 		ctx = context.WithoutCancel(app.ctx)
 	}
-	if err := app.bus.Publish(ctx, topic, payload); err != nil {
+	if _, err := app.bus.Publish(ctx, topic, payload); err != nil {
 		app.logger.DebugContext(ctx, "publish lifecycle event failed", "topic", topic, "error", err)
 	}
 }

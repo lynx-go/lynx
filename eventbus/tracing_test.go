@@ -195,7 +195,7 @@ func TestBusPropagatesTraceEndToEnd(t *testing.T) {
 
 	pubCtx, span := otel.Tracer(tracerName).Start(context.Background(), "publisher")
 	defer span.End()
-	if err := topic.Publish(pubCtx, map[string]string{"a": "b"}, WithBus(bus)); err != nil {
+	if _, err := topic.Publish(pubCtx, map[string]string{"a": "b"}, WithBus(bus)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {

@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### 破坏性变更：Publish 返回消息 ID（`(string, error)`），新增 WithMessageID
+
+- **API 签名**：`eventbus.Bus.Publish` / `memoryBus.Publish` /
+  `Topic[T].Publish`（含 `publishTyped`）改为返回 `(string, error)`——
+  返回值即本次发布的消息 ID，发布失败返回空串。这是消息 ID 的唯一官方
+  读取点：此前 ID 在 `BuildRawEvent` 生成后业务代码不可见，生产端日志
+  无法与消费端 `event.id` 对账。
+- **新增 `eventbus.WithMessageID(id)`**：调用方显式指定消息 ID（返回值与
+  消费端 `Event.ID` 用的就是它）。空串 = 未指定（实现生成 UUID）；优先级
+  高于 `*RawEvent` 透传携带的 ID（与 `WithMessageKey` 对 Key 的覆盖一致）。
+  幂等键场景可直接用业务单号；ID 重复的语义（如 broker 侧去重）由后端
+  决定，Bus 不做去重。
+- ID 仍全程原样过 wire（§5.1），生成点 `BuildRawEvent` 不变；
+  `log_message.publish` 的 debug 日志现携带 `id` 字段。
+- `Transport` 层 `Publish(ctx, topic, *RawEvent) error` 签名不变：信封
+  已携带 ID，无需二次读取。
+- 全仓库调用点与示例同步更新；`_examples/bus` 与 `_examples/bus-kafka`
+  发布侧现打印 `message_id`，与订阅端 `event.id` 直接对账。
+
 ## v1.16.0 (2026-09-27)
 
 本次发布 tag：根 `v1.16.0` 与全部 9 个 contrib 模块版本对齐——

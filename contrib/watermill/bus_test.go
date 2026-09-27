@@ -31,7 +31,7 @@ func TestWatermillSubscribeAfterStart(t *testing.T) {
 		t.Fatalf("Subscribe after Start: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if err := topic.Publish(context.Background(), map[string]string{"id": "1"}, eventbus.WithBus(bus)); err != nil {
+	if _, err := topic.Publish(context.Background(), map[string]string{"id": "1"}, eventbus.WithBus(bus)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -84,7 +84,7 @@ func TestLifecycleForcedToMemory(t *testing.T) {
 		t.Fatalf("Subscribe lynx.*: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if err := eventbus.AppStartedTopic.Publish(context.Background(), eventbus.AppEvent{Name: "t", Time: time.Now()}, eventbus.WithBus(bus)); err != nil {
+	if _, err := eventbus.AppStartedTopic.Publish(context.Background(), eventbus.AppEvent{Name: "t", Time: time.Now()}, eventbus.WithBus(bus)); err != nil {
 		t.Fatalf("Publish lynx.*: %v", err)
 	}
 	select {
@@ -149,7 +149,7 @@ func TestWatermillBusForwardsDeliveryAck(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if err := bus.Publish(context.Background(), "order.created", map[string]string{"id": "1"}); err != nil {
+	if _, err := bus.Publish(context.Background(), "order.created", map[string]string{"id": "1"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -184,7 +184,7 @@ func TestWatermillBusForwardsDeliveryNack(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if err := bus.Publish(context.Background(), "order.fail", map[string]string{"id": "1"}); err != nil {
+	if _, err := bus.Publish(context.Background(), "order.fail", map[string]string{"id": "1"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {

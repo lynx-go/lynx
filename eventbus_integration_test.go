@@ -39,7 +39,7 @@ func TestAppBusAvailableInInit(t *testing.T) {
 	// Wait for bus and service to start
 	time.Sleep(100 * time.Millisecond)
 
-	if err := app.Bus().Publish(context.Background(), "test.event", []byte("hello")); err != nil {
+	if _, err := app.Bus().Publish(context.Background(), "test.event", []byte("hello")); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -74,7 +74,7 @@ func TestBusPublishTypedTopicViaApp(t *testing.T) {
 	go func() { done <- app.Run() }()
 	time.Sleep(100 * time.Millisecond)
 	// Topic 方法经 Default（newLynx SetDefault）解析 Bus
-	_ = topic.Publish(context.Background(), Order{ID: "123"})
+	_, _ = topic.Publish(context.Background(), Order{ID: "123"})
 	select {
 	case got := <-received:
 		if got != "123" {

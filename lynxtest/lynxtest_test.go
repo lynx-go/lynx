@@ -330,7 +330,7 @@ func TestNewContext_ServiceUnitTest(t *testing.T) {
 		}); err != nil {
 		t.Fatalf("Subscribe() error = %v", err)
 	}
-	if err := actx.Bus().Publish(context.Background(), "demo.topic", "ping"); err != nil {
+	if _, err := actx.Bus().Publish(context.Background(), "demo.topic", "ping"); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
 	select {

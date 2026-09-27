@@ -113,6 +113,11 @@ func BuildRawEvent(ctx context.Context, b Bus, topic string, payload any, o *Pub
 	if eventTime.IsZero() {
 		eventTime = time.Now()
 	}
+	// 调用级显式 ID 覆盖一切默认（含 *RawEvent 透传携带的 ID），与
+	// WithMessageKey 对 Key 的覆盖一致；空串 = 未指定，保留上文结果。
+	if o.MessageID != "" {
+		id = o.MessageID
+	}
 	return &RawEvent{
 		ID:      id,
 		Topic:   topic,

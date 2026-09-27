@@ -30,7 +30,7 @@ func TestWithRetryOptionAffectsSubscription(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if err := bus.Publish(context.Background(), "pin.retry", map[string]string{"k": "v"}); err != nil {
+	if _, err := bus.Publish(context.Background(), "pin.retry", map[string]string{"k": "v"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -63,7 +63,7 @@ func TestWithMetadataOptionsReachHeaders(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	md := map[string]string{"a": "1"}
-	if err := bus.Publish(context.Background(), "pin.meta", map[string]string{"k": "v"},
+	if _, err := bus.Publish(context.Background(), "pin.meta", map[string]string{"k": "v"},
 		WithMetadata(md), WithMetadataField("b", "2")); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}

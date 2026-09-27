@@ -43,7 +43,7 @@ func TestMemoryBusPublishSubscribe(t *testing.T) {
 	// Give loop time to start
 	time.Sleep(50 * time.Millisecond)
 
-	if err := b.Publish(context.Background(), "order.created", map[string]string{"id": "1"}); err != nil {
+	if _, err := b.Publish(context.Background(), "order.created", map[string]string{"id": "1"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestMemoryBusPublishSubscribe(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if err := topic.Publish(context.Background(), map[string]string{"id": "2"}, WithBus(b)); err != nil {
+	if _, err := topic.Publish(context.Background(), map[string]string{"id": "2"}, WithBus(b)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -90,7 +90,7 @@ func TestMemoryBusPublishSubscribe(t *testing.T) {
 		t.Fatalf("dynamic Subscribe: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	_ = b.Publish(context.Background(), "order.created", []byte("hello"))
+	_, _ = b.Publish(context.Background(), "order.created", []byte("hello"))
 	time.Sleep(100 * time.Millisecond)
 	if count.Load() == 0 {
 		t.Error("dynamic subscriber did not receive")
@@ -139,7 +139,7 @@ func TestSubscribeHandlerNameDefaultsToTopic(t *testing.T) {
 	}
 
 	time.Sleep(20 * time.Millisecond)
-	_ = b.Publish(context.Background(), "order.created", map[string]string{"id": "1"})
+	_, _ = b.Publish(context.Background(), "order.created", map[string]string{"id": "1"})
 	select {
 	case topic := <-got:
 		if topic != "order.created" {
@@ -169,7 +169,7 @@ func TestMemoryBusWithAppContext(t *testing.T) {
 		return nil
 	})
 	time.Sleep(20 * time.Millisecond)
-	_ = b.Publish(context.Background(), "test", "payload")
+	_, _ = b.Publish(context.Background(), "test", "payload")
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -210,7 +210,7 @@ func TestMemoryBusConcurrentPublishStopNoPanic(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				for {
-					if err := b.Publish(context.Background(), "race.topic", "p"); err != nil {
+					if _, err := b.Publish(context.Background(), "race.topic", "p"); err != nil {
 						return
 					}
 				}
@@ -249,7 +249,7 @@ func TestMemoryBusDropLogCarriesEventID(t *testing.T) {
 	// 第一条被阻塞的 handler 持有，第二条填满缓冲（BufferSize=1），
 	// 第三条起必然触发丢弃路径。
 	for i := 0; i < 5; i++ {
-		if err := bus.Publish(context.Background(), "drop.topic", []byte("p")); err != nil {
+		if _, err := bus.Publish(context.Background(), "drop.topic", []byte("p")); err != nil {
 			t.Fatalf("Publish: %v", err)
 		}
 	}

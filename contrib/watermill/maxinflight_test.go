@@ -90,7 +90,7 @@ func TestSubscribeMaxInFlightLimitsInFlight(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	for i := 0; i < 5; i++ {
-		if err := bus.Publish(ctx, "order.limit", map[string]string{"id": "x"}); err != nil {
+		if _, err := bus.Publish(ctx, "order.limit", map[string]string{"id": "x"}); err != nil {
 			t.Fatalf("Publish %d: %v", i, err)
 		}
 	}
@@ -143,7 +143,7 @@ func TestSubscribeMaxInFlightDefaultIsOne(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	for i := 0; i < 3; i++ {
-		if err := bus.Publish(ctx, "order.serial", map[string]string{"id": "x"}); err != nil {
+		if _, err := bus.Publish(ctx, "order.serial", map[string]string{"id": "x"}); err != nil {
 			t.Fatalf("Publish %d: %v", i, err)
 		}
 	}
@@ -249,7 +249,7 @@ func TestTopicMaxInFlightUnlimited(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	for i := 0; i < 3; i++ {
-		if err := topic.Publish(ctx, map[string]string{"id": "x"}, eventbus.WithBus(bus)); err != nil {
+		if _, err := topic.Publish(ctx, map[string]string{"id": "x"}, eventbus.WithBus(bus)); err != nil {
 			t.Fatalf("Publish %d: %v", i, err)
 		}
 	}
@@ -296,7 +296,7 @@ func TestSubscribeHandlerTimeoutReleasesSlot(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	for i := 0; i < 2; i++ {
-		if err := bus.Publish(ctx, "order.timeout", map[string]string{"id": "x"}); err != nil {
+		if _, err := bus.Publish(ctx, "order.timeout", map[string]string{"id": "x"}); err != nil {
 			t.Fatalf("Publish %d: %v", i, err)
 		}
 	}
@@ -336,7 +336,7 @@ func TestSubscribeMaxInFlightReleasedOnNack(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	for i := 0; i < 3; i++ {
-		if err := bus.Publish(ctx, "order.nack", map[string]string{"id": "x"}); err != nil {
+		if _, err := bus.Publish(ctx, "order.nack", map[string]string{"id": "x"}); err != nil {
 			t.Fatalf("Publish %d: %v", i, err)
 		}
 	}

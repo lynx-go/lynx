@@ -102,7 +102,7 @@ func TestDeliverySemanticsParity(t *testing.T) {
 					t.Fatalf("Subscribe: %v", err)
 				}
 
-				if err := bus.Publish(context.Background(), topic, map[string]string{"k": "v"}); err != nil {
+				if _, err := bus.Publish(context.Background(), topic, map[string]string{"k": "v"}); err != nil {
 					t.Fatalf("Publish: %v", err)
 				}
 
@@ -192,7 +192,7 @@ func TestFanOutParity(t *testing.T) {
 			}
 			subscribe("h1", &first)
 			subscribe("h2", &second)
-			if err := bus.Publish(context.Background(), topic, map[string]string{"k": "v"}); err != nil {
+			if _, err := bus.Publish(context.Background(), topic, map[string]string{"k": "v"}); err != nil {
 				t.Fatalf("Publish: %v", err)
 			}
 			waitCond(t, 3*time.Second, func() bool {
@@ -241,7 +241,7 @@ func TestHandlerTimeoutParity(t *testing.T) {
 				eventbus.WithSubscribeRetry(retry)); err != nil {
 				t.Fatalf("Subscribe: %v", err)
 			}
-			if err := tp.Publish(context.Background(), map[string]string{"k": "v"}, eventbus.WithBus(bus)); err != nil {
+			if _, err := tp.Publish(context.Background(), map[string]string{"k": "v"}, eventbus.WithBus(bus)); err != nil {
 				t.Fatalf("Publish: %v", err)
 			}
 
@@ -292,7 +292,7 @@ func TestStopSemanticsParity(t *testing.T) {
 			if err := bus.Stop(context.Background()); err != nil {
 				t.Fatalf("second Stop: %v", err)
 			}
-			if err := bus.Publish(context.Background(), "parity.stopped", map[string]string{}); err == nil {
+			if _, err := bus.Publish(context.Background(), "parity.stopped", map[string]string{}); err == nil {
 				t.Error("Publish after Stop = nil, want error")
 			}
 			if err := bus.Subscribe(context.Background(), "parity.stopped",
@@ -325,13 +325,13 @@ func TestMemoryBufferFullDrops(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
-	if err := bus.Publish(context.Background(), topic, map[string]string{"n": "1"}); err != nil {
+	if _, err := bus.Publish(context.Background(), topic, map[string]string{"n": "1"}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	<-entered // 首条已进入 handler（占住处理位）
 	// 第二条进缓冲（容量 1），第三条缓冲满被丢弃。
 	for i := 2; i <= 3; i++ {
-		if err := bus.Publish(context.Background(), topic, map[string]string{"n": "x"}); err != nil {
+		if _, err := bus.Publish(context.Background(), topic, map[string]string{"n": "x"}); err != nil {
 			t.Fatalf("Publish: %v", err)
 		}
 	}

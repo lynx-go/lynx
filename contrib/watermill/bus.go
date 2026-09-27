@@ -256,8 +256,8 @@ func (b *Bus) Stop(ctx context.Context) error {
 	return first
 }
 
-// Publish 发布。
-func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) error {
+// Publish 发布，返回消息 ID（见 eventbus.Bus.Publish）。
+func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) (string, error) {
 	// 停止后拒绝发布（与 Subscribe 对称）：此前无检查时，默认 MemoryTransport
 	// 会静默接受（消息丢弃），Kafka transport 则报 transport 级错误——同一
 	// API 在停止后的行为取决于后端。统一为框架级错误。
@@ -265,24 +265,24 @@ func (b *Bus) Publish(ctx context.Context, topic string, payload any, opts ...ev
 	stopped := b.stopped
 	b.mu.Unlock()
 	if stopped {
-		return errors.New("cannot publish to a stopped bus")
+		return "", errors.New("cannot publish to a stopped bus")
 	}
 	o := &eventbus.PublishOptions{}
 	eventbus.ApplyPublishOptions(o, opts...)
 	raw, err := eventbus.BuildRawEvent(ctx, b, topic, payload, o, b.resolver.PropagateKeys())
 	if err != nil {
-		return err
+		return "", err
 	}
 	t, key, err := b.resolve(topic)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if lm := b.resolver.LogMessageFor(topic); lm.Publish {
 		// Debug 级日志：log_message 配置实际开启的是 debug 级输出，
 		// 需 --log-level=debug 才可见（WK-18 语义澄清）。
-		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", raw.Key)
+		b.logger.DebugContext(ctx, "publishing event", "topic", topic, "key", raw.Key, "id", raw.ID)
 	}
-	return t.Publish(ctx, key, eventbus.CloneRawEvent(raw))
+	return raw.ID, t.Publish(ctx, key, eventbus.CloneRawEvent(raw))
 }
 
 // Subscribe 订阅逻辑 topic。同一事件的多个 handler 共享一条 transport

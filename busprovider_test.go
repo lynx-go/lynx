@@ -20,11 +20,11 @@ type publishRecordingBus struct {
 	published []string
 }
 
-func (b *publishRecordingBus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) error {
+func (b *publishRecordingBus) Publish(ctx context.Context, topic string, payload any, opts ...eventbus.PublishOption) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.published = append(b.published, topic)
-	return nil
+	return "", nil
 }
 
 func (b *publishRecordingBus) topics() []string {
@@ -228,7 +228,8 @@ func TestWithBusProviderLifecycleInRun(t *testing.T) {
 			if got := eventbus.BusFromContext(ctx); got != eventbus.Bus(bus) {
 				return errors.New("ctx should carry the provider-built bus")
 			}
-			return bus.Publish(ctx, "cli.done", nil)
+			_, err := bus.Publish(ctx, "cli.done", nil)
+			return err
 		})
 	},
 		WithIsolated(),

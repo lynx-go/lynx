@@ -49,7 +49,7 @@ func TestTopicPublishUsesTopicMarshaler(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	payload := map[string]string{"hello": "world"}
-	if err := topic.Publish(context.Background(), payload, WithBus(bus)); err != nil {
+	if _, err := topic.Publish(context.Background(), payload, WithBus(bus)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestTopicPublishUsesTopicMarshaler(t *testing.T) {
 			t.Fatalf("Subscribe: %v", err)
 		}
 		time.Sleep(20 * time.Millisecond)
-		if err := topic2.Publish(context.Background(), payload, WithBus(bus)); err != nil {
+		if _, err := topic2.Publish(context.Background(), payload, WithBus(bus)); err != nil {
 			t.Fatalf("Publish2: %v", err)
 		}
 		select {
@@ -126,7 +126,7 @@ func TestSubscribeMarshalerResolvedAtSubscribe(t *testing.T) {
 	}, WithBus(bus), WithHandlerName("h-res-default")); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	if err := defaulted.Publish(context.Background(), map[string]string{"k": "topic-wins"}, WithBus(bus)); err != nil {
+	if _, err := defaulted.Publish(context.Background(), map[string]string{"k": "topic-wins"}, WithBus(bus)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {
@@ -157,7 +157,7 @@ func TestSubscribeMarshalerResolvedAtSubscribe(t *testing.T) {
 	}, WithBus(bus2), WithHandlerName("h-res-bus-level")); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	if err := busLevel.Publish(context.Background(), map[string]string{"k": "bus-wins"}, WithBus(bus2)); err != nil {
+	if _, err := busLevel.Publish(context.Background(), map[string]string{"k": "bus-wins"}, WithBus(bus2)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	select {

@@ -126,7 +126,7 @@ func (l *Lifecycle) publish(topic, addr, advertiseAddr string) {
 		return
 	}
 	ctx := context.Background()
-	err := bus.Publish(ctx, topic, eventbus.ServerEvent{
+	_, err := bus.Publish(ctx, topic, eventbus.ServerEvent{
 		Service:       l.service,
 		Addr:          addr,
 		AdvertiseAddr: advertiseAddr,

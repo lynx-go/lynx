@@ -109,7 +109,7 @@ Lynx 将 **EventBus** 提升为一等子系统：进程内组件协同与跨进�
 
 ```go
 type Bus interface {
-    Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) error
+    Publish(ctx context.Context, topic string, payload any, opts ...PublishOption) (string, error)
     Subscribe(ctx context.Context, topic, handlerName string, h HandlerFunc, opts ...SubscribeOption) error
     MarshalerFor(topic string) Marshaler
 
@@ -127,6 +127,10 @@ type Bus interface {
   原始信封转发经 `*RawEvent` payload 分支（保留 ID/Key/Headers/Time，逻辑名以
   函数参数为准）。独立的 `Bus.PublishRaw`（v1.12）与 `Topic.PublishRaw`
   （等价面收敛）均已删除——`Publish` 的类型分支是唯一入口。
+- `Publish` 返回消息 ID（终态 ID 的唯一读取点）：默认实现生成 UUID；
+  `WithMessageID(id)` 显式指定（幂等键场景可直接用业务单号，优先级高于
+  `*RawEvent` 透传 ID）；该 ID 原样过 wire，消费端即 `Event.ID`——生产/消费
+  两端日志可凭同一 ID 对账。发布失败返回空串。
 
 说明：
 
@@ -140,7 +144,7 @@ type Bus interface {
 ```go
 type Topic[T any] struct { /* name + 默认订阅/发布选项 */ }
 
-func (t Topic[T]) Publish(ctx context.Context, payload T, opts ...PublishOption) error
+func (t Topic[T]) Publish(ctx context.Context, payload T, opts ...PublishOption) (string, error)
 func (t Topic[T]) Subscribe(ctx context.Context, h func(context.Context, *Event[T]) error, opts ...SubscribeOption) error
 // handler 名经 eventbus.WithHandlerName 指定；原始载荷（[]byte / *RawEvent）
 // 经 Publish 的类型分支透传；不单列 PublishRaw
@@ -219,8 +223,9 @@ func (s *Audit) Init(ctx lynx.AppContext) error {
         func(ctx context.Context, e *eventbus.Event[Order]) error { /* ... */ return nil })
 }
 
-// 发布（ctx 带 Bus 或回退 Default；属性仍从 ctx 传播）
-_ = OrderCreated.Publish(ctx, Order{ID: "1"})
+// 发布（ctx 带 Bus 或回退 Default；属性仍从 ctx 传播）。
+// 返回值即消息 ID：原样过 wire，订阅端拿到的 Event.ID 就是它——两端日志对账
+id, err := OrderCreated.Publish(ctx, Order{ID: "1"})
 
 // 生命周期
 _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
@@ -240,7 +245,7 @@ _ = eventbus.AppStartedTopic.Subscribe(ctx.Context(), "coord",
 | 字段 | Wire | 消费还原 |
 | --- | --- | --- |
 | Payload | 消息体 | 原样 |
-| ID | UUID / 消息 ID | 原样 |
+| ID | UUID / 消息 ID（生成或 `WithMessageID` 显式指定，发布侧经 `Publish` 返回值可见） | 原样（即 `Event.ID`） |
 | Key | metadata `x-message-key`；**且**若后端支持分区键则同时写入 record key（见下） | `Event.Key`；不残留在 Headers |
 | Headers | metadata（去掉协议键） | 原样 |
 | Topic | 可选 metadata `x-logical-topic`；物理名由 Transport 决定 | handler 侧逻辑名以订阅注册为准，可与 metadata 校验 |

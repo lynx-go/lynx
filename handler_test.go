@@ -75,7 +75,7 @@ func TestHandlerServiceDeliversAfterInit(t *testing.T) {
 	if err := svc.Init(actx); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := orderCreatedTopic.Publish(actx.Context(), orderCreated{ID: "o-1"}); err != nil {
+	if _, err := orderCreatedTopic.Publish(actx.Context(), orderCreated{ID: "o-1"}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
 	select {
