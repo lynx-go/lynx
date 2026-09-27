@@ -116,7 +116,7 @@ func TestIntegrationFanOut(t *testing.T) {
 	orderTopic := eventbus.NewTopic[map[string]string](topic)
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("it-%d", i)
-		if err := orderTopic.Publish(busCtx, map[string]string{"id": id},
+		if _, err := orderTopic.Publish(busCtx, map[string]string{"id": id},
 			eventbus.WithBus(bus), eventbus.WithMessageKey(id)); err != nil {
 			t.Fatalf("publish %s: %v", id, err)
 		}
@@ -231,7 +231,7 @@ func TestIntegrationPerPartitionOrder(t *testing.T) {
 	orderTopic := eventbus.NewTopic[map[string]string](topic)
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("it-%d", i)
-		if err := orderTopic.Publish(busCtx, map[string]string{"id": id},
+		if _, err := orderTopic.Publish(busCtx, map[string]string{"id": id},
 			eventbus.WithBus(bus), eventbus.WithMessageKey(id)); err != nil {
 			t.Fatalf("publish %s: %v", id, err)
 		}
@@ -240,11 +240,14 @@ func TestIntegrationPerPartitionOrder(t *testing.T) {
 	// 阻塞消息之前的若干条已完成；之后的不得被投递（分区内在途恒为 1）。
 	waitUntil(t, 30*time.Second, func() bool { return completed.Load() >= 1 },
 		"no message was processed")
-	// 稳定窗口：处理数不再增长，且已提交 offset 恰好追平已处理数
-	// （每 Ack 显式提交；提交不得越过未确认的阻塞消息）。
+	// 稳定窗口：锚定到确定的静止态——阻塞消息（第 6 条）之前的恰好 5 条
+	// 已完成且 offset 提交追平（每 Ack 显式提交；提交不得越过未确认的
+	// 阻塞消息）。不能只比较 committed == completed：it-4 已被取用尚未
+	// 记数的瞬间同样满足，会在其后 1 秒内涨到 5 造成误报。
+	const beforeBlock = 5
 	waitUntil(t, 10*time.Second, func() bool {
-		c := completed.Load()
-		return c < n && committedOffset(t, brokers, group, physical) == int64(c)
+		return completed.Load() == beforeBlock &&
+			committedOffset(t, brokers, group, physical) == beforeBlock
 	}, "processed count != committed offset while one message is blocked")
 	stable := completed.Load()
 	time.Sleep(time.Second)
