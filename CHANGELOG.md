@@ -34,6 +34,26 @@
   （`docs/04-service-system.md`、两份示例 README、CLAUDE.md、ROADMAP.md）
   已同步；历史发布条目与设计决策记录保留旧名不改。
 
+### 修复：watermill-kafka 依赖漏洞告警（docker/docker、moby/go-archive）
+
+Dependabot 5 条告警全部来自 `contrib/watermill-kafka` 的**测试依赖图**
+（testcontainers → docker 客户端），生产运行时路径（sarama/watermill）
+版本未动：
+
+- **testcontainers-go v0.41.0 → v0.44.0**：v0.42 起 testcontainers 迁移到
+  moby 拆分模块（`moby/moby/api` + `moby/moby/client`），`docker/docker`
+  从模块图中彻底移除——4 条告警随之关闭（docker cp 竞态 ×3
+  CVE-2026-42306 / CVE-2026-41568 / CVE-2026-41567、插件权限校验越界
+  CVE-2026-33997）。
+- **moby/go-archive v0.2.0 → v0.3.3**：≥ 0.3.0 修复 tar 解包路径穿越
+  （CVE-2026-17106）。
+- 集成套件（`-tags integration`，真容器）全绿两轮；govulncheck 0 可达。
+- 顺带修复：`integration_test.go` 适配 Publish 双返回值（build tag 隔离
+  文件，8c62d81 的全仓适配遗漏处）；`PerPartitionOrder` 稳定窗口改为
+  锚定静止态（阻塞消息前恰好 5 条完成且 offset 追平）——原条件
+  `committed == completed` 在前一条已取用未记数的瞬间同样成立，Windows
+  调度下误报分区内并发。
+
 ## v1.16.0 (2026-09-27)
 
 本次发布 tag：根 `v1.16.0` 与全部 9 个 contrib 模块版本对齐——
