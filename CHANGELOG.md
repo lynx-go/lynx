@@ -51,8 +51,19 @@ Dependabot 5 条告警全部来自 `contrib/watermill-kafka` 的**测试依赖�
 - 顺带修复：`integration_test.go` 适配 Publish 双返回值（build tag 隔离
   文件，8c62d81 的全仓适配遗漏处）；`PerPartitionOrder` 稳定窗口改为
   锚定静止态（阻塞消息前恰好 5 条完成且 offset 追平）——原条件
-  `committed == completed` 在前一条已取用未记数的瞬间同样成立，Windows
+  `committed == completed` 在前一条已取用未记数的瞬间同样满足，Windows
   调度下误报分区内并发。
+
+### 修复：x/crypto 升级 v0.56.0（ssh 死锁 DoS ×2）
+
+- `contrib/watermill-kafka` 是全仓唯一 require `golang.org/x/crypto` 的
+  模块（sarama/scram 引入；其余模块仅经 x/net、grpc 的 go.mod 间接进图，
+  govulncheck 不报），间接依赖 pin v0.55.0 → v0.56.0，修复
+  GO-2026-6354 / GO-2026-6355（ssh 通道死锁 DoS）。
+- GO-2026-5932（x/crypto/openpgp 弃用公告）无修复版本，为模块级信息项
+  常驻——不可达、非 Dependabot 告警，仅提示勿在新代码使用 openpgp。
+- govulncheck 全部 10 模块（`GOWORK=off` 单模块语义，与 CI 一致）终验：
+  0 影响、0 导入级。
 
 ## v1.16.0 (2026-09-27)
 
