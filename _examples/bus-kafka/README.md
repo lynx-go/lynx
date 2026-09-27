@@ -9,8 +9,21 @@
 ## 前置：本地 kafka
 
 ```bash
-docker run -d --name kafka -p 127.0.0.1:9092:9092 apache/kafka:latest
+docker compose up -d
 ```
+
+[docker-compose.yaml](docker-compose.yaml) 起一个单节点 Redpanda（dev
+模式，Kafka API 监听 `127.0.0.1:9092`，与下面 `config.yaml` 的 brokers
+对应）和 Redpanda Console（<http://127.0.0.1:8080>，观察 `orders_v1`
+的消息与消费组 lag）。`orders_v1` 已开启自动创建；想手动建：
+
+```bash
+docker compose exec redpanda rpk topic create orders_v1
+```
+
+任何 Kafka 协议兼容的 broker 都行（如
+`docker run -d --name kafka -p 127.0.0.1:9092:9092 apache/kafka:latest`），
+只要 brokers 地址与 `config.yaml` 一致。
 
 ## 运行
 

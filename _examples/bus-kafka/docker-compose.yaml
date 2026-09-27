@@ -1,0 +1,56 @@
+# bus-kafka 示例的本地 Kafka：Redpanda（单节点 dev 模式）+ Redpanda Console。
+#
+#   docker compose up -d
+#
+# 宿主机端口全部绑定 127.0.0.1，不对外网开放：
+#   9092   Kafka API —— 示例程序用（config.yaml 的 brokers: ["127.0.0.1:9092"]）
+#   9644   Admin API —— rpk 调试用
+#   8080   Console   —— http://127.0.0.1:8080
+#
+# Kafka listener 拆成内外两个，地址各自闭环：bootstrap 到哪个 listener，
+# 返回的元数据就指回哪个地址，客户端不会拿到连不通的地址。
+#   internal（容器网络 redpanda:19092）给 Console 等容器内客户端；
+#   external（宿主机 127.0.0.1:9092）给本示例程序。
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest # 生产请固定版本
+    command:
+      - redpanda
+      - start
+      - --mode dev-container
+      - --smp 1
+      - --memory 1G
+      - --kafka-addr internal://0.0.0.0:19092,external://0.0.0.0:9092
+      - --advertise-kafka-addr internal://redpanda:19092,external://127.0.0.1:9092
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      # dev 兜底：示例发布时 topic 未建也不报错；双实例竞争消费立即生效
+      - --set redpanda.auto_create_topics_enabled=true
+      - --set redpanda.group_initial_rebalance_delay=0
+    ports:
+      - "127.0.0.1:9092:9092" # Kafka API
+      - "127.0.0.1:9644:9644" # Admin API
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+
+  console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    depends_on:
+      - redpanda
+    entrypoint: /bin/sh
+    # 配置文件经环境变量注入（官方镜像的标准做法）；Kafka 走容器内网地址
+    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml && /app/console'
+    environment:
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda:19092"]
+        redpanda:
+          adminApi:
+            enabled: true
+            urls: ["http://redpanda:9644"]
+    ports:
+      - "127.0.0.1:8080:8080" # Web UI
+
+volumes:
+  redpanda-data:
