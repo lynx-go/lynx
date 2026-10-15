@@ -48,7 +48,8 @@ func LoadFileConfig(cfg lynx.Config) (FileConfig, bool, error) {
 }
 
 // NewBackendFromConfig 按 registry.backend 构造零依赖后端（memory/dns；
-// consul 由应用侧 consul.NewFromConfig 构造）。
+// consul 由应用侧 consul.NewFromConfig 构造，redis 由应用侧
+// registryredis.NewFromConfig 构造）。
 //
 //   - registry 段缺失 / enabled:false / backend:"" → (nil, nil, nil)；
 //   - backend=memory → memory 同时作为 Registry 与 Discovery；
@@ -56,6 +57,8 @@ func LoadFileConfig(cfg lynx.Config) (FileConfig, bool, error) {
 //     registry.discovery.poll_interval；不要 Apply Registrar；
 //   - backend=consul → 明确错误：请使用 consul.NewFromConfig（避免
 //     contrib/registry → contrib/consul → contrib/registry 依赖环）；
+//   - backend=redis → 明确错误：请使用 registryredis.NewFromConfig
+//     （contrib/registry-redis，同理避免依赖环）；
 //   - 未知 backend → error。
 func NewBackendFromConfig(cfg lynx.Config) (Registry, Discovery, error) {
 	fc, ok, err := loadFileConfig(cfg)
@@ -70,6 +73,8 @@ func NewBackendFromConfig(cfg lynx.Config) (Registry, Discovery, error) {
 		return nil, newDNSFromConfig(fc), nil
 	case "consul":
 		return nil, nil, fmt.Errorf("registry: backend consul 请使用 consul.NewFromConfig 构造")
+	case "redis":
+		return nil, nil, fmt.Errorf("registry: backend redis 请使用 registryredis.NewFromConfig 构造")
 	default:
 		return nil, nil, fmt.Errorf("registry: unknown backend %q", fc.Backend)
 	}
@@ -91,7 +96,7 @@ func newDNSFromConfig(fc FileConfig) Discovery {
 //   - registry 段缺失 / enabled:false / backend:"" → (nil, nil)，调用方
 //     不得 Register（Apply 已对 nil 做 no-op）；
 //   - backend:dns → (nil, nil)（DNS 只读，不要 Registrar）；
-//   - 需要写目录的 backend（memory/consul）且 r == nil → error；
+//   - 需要写目录的 backend（memory/consul/redis）且 r == nil → error；
 //   - 段存在但字段类型非法 → error，由 Run() 暴露。
 //
 // 没有 registry.command 开关：长期服务 setup 调用 Apply；app.Command /
@@ -108,6 +113,7 @@ func newDNSFromConfig(fc FileConfig) Discovery {
 //	_ = c.BindEnv("registry.backend", "LYNX_REGISTRY_BACKEND")
 //	_ = c.BindEnv("registry.consul.address", "LYNX_REGISTRY_CONSUL_ADDRESS")
 //	_ = c.BindEnv("registry.consul.token", "LYNX_REGISTRY_CONSUL_TOKEN")
+//	_ = c.BindEnv("registry.redis.address", "LYNX_REGISTRY_REDIS_ADDRESS")
 //	// Consul 官方 CONSUL_HTTP_TOKEN 由 contrib/consul 在 New 时 os.Getenv
 //	// 直读，优先于配置文件（空 token 才回落配置）。
 func NewFromConfig(cfg lynx.Config, r Registry, advertisers ...Advertiser) (*Registrar, error) {
@@ -118,7 +124,7 @@ func NewFromConfig(cfg lynx.Config, r Registry, advertisers ...Advertiser) (*Reg
 	switch fc.Backend {
 	case "dns":
 		return nil, nil
-	case "memory", "consul":
+	case "memory", "consul", "redis":
 		// 需要写目录，继续向下
 	default:
 		return nil, fmt.Errorf("registry: unknown backend %q", fc.Backend)

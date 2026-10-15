@@ -24,6 +24,7 @@ jobs:
           - { module: contrib/schedule, flag: schedule }
           - { module: contrib/zap, flag: zap }
           - { module: contrib/registry, flag: registry }
+          - { module: contrib/registry-redis, flag: registry-redis }
           - { module: contrib/consul, flag: consul }
           - { module: contrib/cluster, flag: cluster }
           - { module: contrib/cluster-redis, flag: cluster-redis }
@@ -82,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [., _examples, contrib/watermill, contrib/watermill-kafka, contrib/telemetry, contrib/schedule, contrib/zap, contrib/registry, contrib/consul, contrib/cluster, contrib/cluster-redis]
+        module: [., _examples, contrib/watermill, contrib/watermill-kafka, contrib/telemetry, contrib/schedule, contrib/zap, contrib/registry, contrib/registry-redis, contrib/consul, contrib/cluster, contrib/cluster-redis]
     steps:
       - uses: actions/checkout@v4
 
@@ -127,7 +128,7 @@ jobs:
 
       - name: govulncheck
         run: |
-          for module in . _examples contrib/watermill contrib/watermill-kafka contrib/telemetry contrib/schedule contrib/zap contrib/registry contrib/consul contrib/cluster contrib/cluster-redis; do
+          for module in . _examples contrib/watermill contrib/watermill-kafka contrib/telemetry contrib/schedule contrib/zap contrib/registry contrib/registry-redis contrib/consul contrib/cluster contrib/cluster-redis; do
             echo "::group::govulncheck $module"
             ( cd "$module" && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./... )
             echo "::endgroup::"

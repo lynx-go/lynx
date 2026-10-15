@@ -1,6 +1,6 @@
 # Lynx 发布流程
 
-本仓库是多模块 Go workspace：根模块 `github.com/lynx-go/lynx` 与 9 个 contrib 子模块共存于同一仓库。发布时**必须为每个模块单独打 tag**，否则 Go 模块代理无法解析子模块版本。
+本仓库是多模块 Go workspace：根模块 `github.com/lynx-go/lynx` 与 10 个 contrib 子模块共存于同一仓库。发布时**必须为每个模块单独打 tag**，否则 Go 模块代理无法解析子模块版本。
 
 ## 多模块 tag 约定
 
@@ -13,6 +13,7 @@
 | `github.com/lynx-go/lynx/contrib/telemetry` | `contrib/telemetry/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/schedule` | `contrib/schedule/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/registry` | `contrib/registry/v1.0.0` |
+| `github.com/lynx-go/lynx/contrib/registry-redis` | `contrib/registry-redis/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/consul` | `contrib/consul/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/cluster` | `contrib/cluster/v1.0.0` |
 | `github.com/lynx-go/lynx/contrib/cluster-redis` | `contrib/cluster-redis/v1.0.0` |
@@ -21,7 +22,7 @@
 
 ## 发版流程
 
-一次打出全部 10 个 tag 并推送：
+一次打出全部 11 个 tag 并推送：
 
 ```bash
 mise run release-all -- vX.Y.Z "release vX.Y.Z"
@@ -29,7 +30,7 @@ mise run release-all -- vX.Y.Z "release vX.Y.Z"
 
 命令行为（`mise run -n release-all -- vX.Y.Z "release vX.Y.Z"` 可预演）：
 
-1. 按固定顺序逐个执行 `git tag -a` + `git push origin`，共 10 次（根 + 9 个 contrib）；
+1. 按固定顺序逐个执行 `git tag -a` + `git push origin`，共 11 次（根 + 10 个 contrib）；
 2. `version` / `comment` 为必填参数（也可用 `VERSION` / `COMMENT` 环境变量），无默认值，无需改文件；
 3. 各 tag 均带注释（annotated tag）。
 
@@ -53,7 +54,8 @@ lynx（根） ──────────┬──> contrib/zap
                       │                     ├─> contrib/consul
                       │                     └─> contrib/cluster-redis
                       ├──> contrib/watermill ──> contrib/watermill-kafka
-                      └──> contrib/registry ──> contrib/consul
+                      └──> contrib/registry ─┬─> contrib/consul
+                                             └─> contrib/registry-redis
 ```
 
 推荐的显式发布顺序（贡献者单模块发版时务必遵守）：
@@ -66,21 +68,21 @@ lynx（根） ──────────┬──> contrib/zap
    cluster-redis 依赖它，必须先于这三者发布）；
 5. **contrib/telemetry / contrib/zap / contrib/registry**：无交叉依赖，可并行
    （`contrib/{telemetry,zap,registry}/v1.0.0`）；
-6. **contrib/schedule / contrib/consul / contrib/cluster-redis**：依赖 cluster（consul 另依赖 registry），须在 cluster（及 consul 所需的 registry）之后。
+6. **contrib/schedule / contrib/consul / contrib/cluster-redis / contrib/registry-redis**：schedule/consul/cluster-redis 依赖 cluster（consul 另依赖 registry），registry-redis 依赖 registry，须在 cluster（及 consul、registry-redis 所需的 registry）之后。
 
 > 依赖关系以各 `contrib/*/go.mod` 的 require 为准；后续若新增 contrib 间
 > 依赖，须在发布前更新本清单。
 >
 > `mise run release-all` 的循环顺序已与上表对齐（根 → watermill →
 > watermill-kafka → cluster → zap / telemetry / registry → schedule →
-> consul → cluster-redis）。新增 contrib 间依赖时须同步更新该顺序。
+> consul → cluster-redis → registry-redis）。新增 contrib 间依赖时须同步更新该顺序。
 
 ## 发版前检查清单
 
-- [ ] **CI 全绿**：`.github/workflows/ci.yml` 中 11 个模块（根、`_examples`、9 个 contrib）的 vet、`go test -race` 与 golangci-lint 矩阵全部通过
-- [ ] **本地回归**：11 个模块逐个执行 `go build ./... && go vet ./... && go test -race ./... && golangci-lint run`
+- [ ] **CI 全绿**：`.github/workflows/ci.yml` 中 12 个模块（根、`_examples`、10 个 contrib）的 vet、`go test -race` 与 golangci-lint 矩阵全部通过
+- [ ] **本地回归**：12 个模块逐个执行 `go build ./... && go vet ./... && go test -race ./... && golangci-lint run`
 - [ ] **ROADMAP 同步**：本次发版覆盖的路线图条目已勾选
-- [ ] **模块间版本引用**：各 `contrib/*/go.mod` 的 `require github.com/lynx-go/lynx` 指向已发布的根模块版本；跨 contrib 依赖（consul→registry/cluster、schedule→cluster、watermill-kafka→watermill）指向对应模块的已发布版本。`replace ../` 仅 workspace 内生效、发布后对消费方无影响（消费方忽略依赖模块的 replace），无需删除；发版前确认各 require 版本已随批 bump
+- [ ] **模块间版本引用**：各 `contrib/*/go.mod` 的 `require github.com/lynx-go/lynx` 指向已发布的根模块版本；跨 contrib 依赖（consul→registry/cluster、registry-redis→registry、schedule→cluster、watermill-kafka→watermill）指向对应模块的已发布版本。`replace ../` 仅 workspace 内生效、发布后对消费方无影响（消费方忽略依赖模块的 replace），无需删除；发版前确认各 require 版本已随批 bump
 
 ## 发版后
 
