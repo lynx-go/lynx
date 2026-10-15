@@ -58,7 +58,7 @@ type fileConfig struct {
 //
 // 由应用 setup 调用（registry.NewBackendFromConfig 对 backend=redis 会返回
 // 指向本函数的错误），随后 registry.NewFromConfig(cfg, c) 构造 Registrar、
-// registry.NewResolver(c) 构造发现端。不要 Apply 到 CLI 一次性命令。
+// registry.NewResolver(c) 构造发现端。不要把 Registrar 注册进 CLI 一次性命令。
 func NewFromConfig(cfg lynx.Config) (*Client, error) {
 	if cfg.Get("registry") == nil {
 		return nil, nil

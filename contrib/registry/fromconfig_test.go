@@ -1,13 +1,10 @@
 package registry
 
 import (
-	"context"
-	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/lynx-go/lynx"
-	"github.com/lynx-go/lynx/eventbus"
 	"github.com/spf13/viper"
 )
 
@@ -210,48 +207,6 @@ func TestNewFromConfig(t *testing.T) {
 	})
 }
 
-// fakeApp 记录 Register / OnDrain 调用。
-type fakeApp struct {
-	registered []lynx.Service
-	drainHooks []lynx.HookFunc
-}
-
-func (f *fakeApp) Context() context.Context                              { return context.Background() }
-func (f *fakeApp) Config() lynx.Config                                   { return nil }
-func (f *fakeApp) Bus() eventbus.Bus                                     { return eventbus.NewMemoryBus(eventbus.Options{}) }
-func (f *fakeApp) Logger(...any) *slog.Logger                            { return slog.Default() }
-func (f *fakeApp) HealthCheckers() []lynx.Checker                        { return nil }
-func (f *fakeApp) Close()                                                {}
-func (f *fakeApp) Command(lynx.CommandFunc, ...lynx.CommandOption) error { return nil }
-func (f *fakeApp) OnPreStart(...lynx.HookFunc)                           {}
-func (f *fakeApp) OnDrain(fns ...lynx.HookFunc)                          { f.drainHooks = append(f.drainHooks, fns...) }
-func (f *fakeApp) OnPreStop(...lynx.HookFunc)                            {}
-func (f *fakeApp) OnPostStart(...lynx.HookFunc)                          {}
-func (f *fakeApp) OnPostStop(...lynx.CleanupFunc)                        {}
-func (f *fakeApp) Register(services ...lynx.Service) {
-	f.registered = append(f.registered, services...)
-}
-func (f *fakeApp) RegisterFactory(...lynx.ServiceFactory) {}
-func (f *fakeApp) Run() error                             { return nil }
-func (f *fakeApp) SetLogger(*slog.Logger)                 {}
-
-func TestApply(t *testing.T) {
-	t.Run("nil registrar is no-op", func(t *testing.T) {
-		app := &fakeApp{}
-		Apply(app, nil)
-		if len(app.registered) != 0 || len(app.drainHooks) != 0 {
-			t.Fatalf("Apply(nil) must be no-op, got %+v", app)
-		}
-	})
-	t.Run("registers service and drain hook", func(t *testing.T) {
-		app := &fakeApp{}
-		r := NewRegistrar(NewMemory(), WithServiceName("svc"))
-		Apply(app, r)
-		if len(app.registered) != 1 || app.registered[0] != r {
-			t.Fatalf("Register not called with registrar: %+v", app.registered)
-		}
-		if len(app.drainHooks) != 1 {
-			t.Fatalf("OnDrain not hooked: %+v", app.drainHooks)
-		}
-	})
-}
+// fakeApp 已随 registry.Apply 删除：DrainHook 由根框架在 Register 登记
+// 时自动挂载（lynx.Drainer），入口收敛为 app.Register（见 drain_test.go
+// 的根包测试与 TestRegistrarDrainHook 的本包测试）。

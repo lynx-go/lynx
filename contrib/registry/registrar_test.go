@@ -78,10 +78,14 @@ func mustInit(t *testing.T, r *Registrar, actx lynx.AppContext) {
 	}
 }
 
+// testEndpoint 为与 endpoint 无关的测试补一条静态 endpoint：Init 对
+// 「无 Advertiser 且无静态 endpoints」快失败（ErrNoEndpoints）。
+var testEndpoint = WithStaticEndpoints(Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"})
+
 func TestRegistrarInitNameValidation(t *testing.T) {
 	valid := []string{"user-service", "a", "A0", strings.Repeat("a", 63), "a-b-c"}
 	for _, name := range valid {
-		r := NewRegistrar(NewMemory(), WithServiceName(name))
+		r := NewRegistrar(NewMemory(), WithServiceName(name), testEndpoint)
 		if err := r.Init(lynxtest.NewContext(t)); err != nil {
 			t.Fatalf("name %q should be valid: %v", name, err)
 		}
@@ -136,9 +140,13 @@ func TestRegistrarInitAdvertiseHost(t *testing.T) {
 		mustInit(t, r, lynxtest.NewContext(t))
 	})
 
-	t.Run("no endpoints skips host", func(t *testing.T) {
+	t.Run("no endpoints fails Init", func(t *testing.T) {
+		// 零 endpoint 是接线错误（最常见：忘了传 Advertiser），Init 即
+		// 失败——否则会静默注册一条不可拨号的废记录。
 		r := NewRegistrar(NewMemory(), WithServiceName("svc"))
-		mustInit(t, r, lynxtest.NewContext(t))
+		if err := r.Init(lynxtest.NewContext(t)); !errors.Is(err, ErrNoEndpoints) {
+			t.Fatalf("no endpoints: want ErrNoEndpoints, got %v", err)
+		}
 	})
 
 	t.Run("malformed address fails", func(t *testing.T) {
@@ -153,7 +161,7 @@ func TestRegistrarInitAdvertiseHost(t *testing.T) {
 
 func TestRegistrarFailFast(t *testing.T) {
 	backend := &fakeRegistry{registerFails: 100}
-	r := NewRegistrar(backend, WithServiceName("svc"))
+	r := NewRegistrar(backend, WithServiceName("svc"), testEndpoint)
 	mustInit(t, r, lynxtest.NewContext(t))
 
 	done := make(chan error, 1)
@@ -170,7 +178,7 @@ func TestRegistrarFailFast(t *testing.T) {
 
 func TestRegistrarFailSafeRetriesInBackground(t *testing.T) {
 	backend := &fakeRegistry{registerFails: 1} // 首次失败，重试成功
-	r := NewRegistrar(backend, WithServiceName("svc"), WithFailFast(false))
+	r := NewRegistrar(backend, WithServiceName("svc"), WithFailFast(false), testEndpoint)
 	mustInit(t, r, lynxtest.NewContext(t))
 
 	done := make(chan error, 1)
@@ -207,7 +215,7 @@ func TestRegistrarFailSafeRetriesInBackground(t *testing.T) {
 
 func TestRegistrarHeartbeatFailures(t *testing.T) {
 	backend := &fakeRegistry{heartbeatErr: errFakeBackend}
-	r := NewRegistrar(backend, WithServiceName("svc"), WithHeartbeatInterval(20*time.Millisecond))
+	r := NewRegistrar(backend, WithServiceName("svc"), WithHeartbeatInterval(20*time.Millisecond), testEndpoint)
 	mustInit(t, r, lynxtest.NewContext(t))
 
 	done := make(chan error, 1)
@@ -227,7 +235,7 @@ func TestRegistrarHeartbeatFailures(t *testing.T) {
 
 func TestRegistrarStopBeforeStart(t *testing.T) {
 	backend := &fakeRegistry{}
-	r := NewRegistrar(backend, WithServiceName("svc"), WithCloseBackendOnStop())
+	r := NewRegistrar(backend, WithServiceName("svc"), WithCloseBackendOnStop(), testEndpoint)
 	mustInit(t, r, lynxtest.NewContext(t))
 
 	if err := r.Stop(context.Background()); err != nil {
@@ -252,7 +260,7 @@ func TestRegistrarStopBeforeStart(t *testing.T) {
 // Stop 不关闭外部传入的后端（后端可能同时供 Resolver 等消费方共享）。
 func TestRegistrarStopKeepsBackendByDefault(t *testing.T) {
 	backend := &fakeRegistry{}
-	r := NewRegistrar(backend, WithServiceName("svc"))
+	r := NewRegistrar(backend, WithServiceName("svc"), testEndpoint)
 	mustInit(t, r, lynxtest.NewContext(t))
 
 	if err := r.Stop(context.Background()); err != nil {
@@ -263,7 +271,7 @@ func TestRegistrarStopKeepsBackendByDefault(t *testing.T) {
 	}
 }
 
-func TestRegistrarDeregisterHook(t *testing.T) {
+func TestRegistrarDrainHook(t *testing.T) {
 	mem := NewMemory()
 	r := NewRegistrar(mem, WithServiceName("svc"), WithInstanceID("i1"),
 		WithStaticEndpoints(Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}))
@@ -277,7 +285,10 @@ func TestRegistrarDeregisterHook(t *testing.T) {
 	}()
 	waitFor(t, time.Second, func() bool { return r.CheckHealth() == nil })
 
-	hook := r.DeregisterHook()
+	hook := r.DrainHook()
+	if hook == nil {
+		t.Fatal("DrainHook() = nil, want hook (drainDeregister default true)")
+	}
 	if err := hook(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -297,45 +308,31 @@ func TestRegistrarDeregisterHook(t *testing.T) {
 	}
 }
 
-// drainFlag 是可手动置位的排水 checker，模拟框架 drainChecker。
-type drainFlag struct{ on atomic.Bool }
-
-func (d *drainFlag) CheckHealth() error {
-	if d.on.Load() {
-		return lynx.ErrDraining
+// TestRegistrarDrainHookDisabled：WithDrainDeregister(false) 退出排水参与
+// ——DrainHook 返回 nil（框架不挂载、不要求排水窗口），实例依赖后端
+// TTL 过期。
+func TestRegistrarDrainHookDisabled(t *testing.T) {
+	r := NewRegistrar(NewMemory(), WithServiceName("svc"),
+		WithDrainDeregister(false),
+		WithStaticEndpoints(Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}))
+	mustInit(t, r, lynxtest.NewContext(t))
+	if hook := r.DrainHook(); hook != nil {
+		t.Fatalf("DrainHook() = %v, want nil (WithDrainDeregister(false))", hook)
 	}
-	return nil
 }
 
-func TestRegistrarWatchDrain(t *testing.T) {
-	mem := NewMemory()
-	drain := &drainFlag{}
-	actx := lynxtest.NewContext(t, lynxtest.ContextWithCheckers(drain))
-
-	r := NewRegistrar(mem, WithServiceName("svc"), WithInstanceID("i1"))
-	mustInit(t, r, actx)
-
-	done := make(chan error, 1)
-	go func() { done <- r.Start(context.Background()) }()
-	defer func() {
-		_ = r.Stop(context.Background())
-		<-done
-	}()
-	waitFor(t, time.Second, func() bool { return r.CheckHealth() == nil })
-
-	// 排水置位 → watchDrain 安全网自动注销（用户忘了 Apply 的场景）。
-	drain.on.Store(true)
-	waitFor(t, 2*time.Second, func() bool {
-		got, _ := mem.GetService(context.Background(), "svc", Filter{})
-		return len(got) == 0
-	})
-	if err := r.CheckHealth(); !errors.Is(err, ErrNotRegistered) {
-		t.Fatalf("after drain deregister: want ErrNotRegistered, got %v", err)
+// TestRegistrarInitNoEndpoints：既无 Advertiser 也无静态 endpoints 时
+// Init 快失败（否则会静默注册一条不可拨号的废记录）。
+func TestRegistrarInitNoEndpoints(t *testing.T) {
+	r := NewRegistrar(NewMemory(), WithServiceName("svc"))
+	err := r.Init(lynxtest.NewContext(t))
+	if !errors.Is(err, ErrNoEndpoints) {
+		t.Fatalf("Init() error = %v, want ErrNoEndpoints", err)
 	}
 }
 
 func TestRegistrarAffectReadinessFalse(t *testing.T) {
-	r := NewRegistrar(&fakeRegistry{}, WithServiceName("svc"), WithAffectReadiness(false))
+	r := NewRegistrar(&fakeRegistry{}, WithServiceName("svc"), WithAffectReadiness(false), testEndpoint)
 	mustInit(t, r, lynxtest.NewContext(t))
 	// 未注册也恒 nil：不参与 readiness 聚合的实际效果。
 	if err := r.CheckHealth(); err != nil {

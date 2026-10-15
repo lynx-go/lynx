@@ -201,7 +201,10 @@ func registrationError(method string, err error) error {
 // registerService 在持锁登记事务内登记一个已 Init 成功的服务与其 actor：
 // 与 Run 的 running 置位互斥，迟到的注册在此被裁决（errRunStarted /
 // ErrAppClosed），不产生「已 Init、永不 Start/Stop」的孤儿。
-func (app *lynx) registerService(service Service, a actor) error {
+// drainHooks 是登记事务外解析好的排水钩子（addServices 对 Drainer 服务
+// 调用 DrainHook 的非 nil 结果）：与 actor 登记原子挂入，同时记录来源
+// 服务名供 Run 的排水快失败错误具名定位。
+func (app *lynx) registerService(service Service, a actor, drainHooks ...HookFunc) error {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	if app.running {
@@ -213,6 +216,10 @@ func (app *lynx) registerService(service Service, a actor) error {
 	app.actors = append(app.actors, a)
 	app.services = append(app.services, service)
 	app.startWG.Add(1)
+	if len(drainHooks) > 0 {
+		app.onDrains = append(app.onDrains, drainHooks...)
+		app.drainHookOwners = append(app.drainHookOwners, service.Name())
+	}
 	// readiness 聚合（三级优先的聚合侧）：声明 Ready 的服务以 Ready 为
 	// 门槛参与（未跨过门槛即未就绪），同时实现 Checker 时跨过门槛后继续以
 	// 健康状态参与；只有 Checker 的服务沿用原样（身份不变）；两者皆无

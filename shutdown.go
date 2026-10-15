@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -150,6 +151,20 @@ func (app *lynx) hasDrainHooks() bool {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	return len(app.onDrains) > 0
+}
+
+// drainHooksConfigError 为「有排水钩子但未启用排水窗口」的启动期快失败
+// 错误标注来源：手动 OnDrain 钩子无法定位，Drainer 服务自动挂载的钩子
+// 逐个具名（drainHookOwners），把修复动作指向具体服务——启用
+// WithDrainTimeout，或该服务明确退出排水参与（DrainHook 返回 nil）。
+func (app *lynx) drainHooksConfigError() error {
+	app.mu.Lock()
+	owners := append([]string(nil), app.drainHookOwners...)
+	app.mu.Unlock()
+	if len(owners) == 0 {
+		return ErrDrainHooksRequireDrainTimeout
+	}
+	return fmt.Errorf("%w (auto-attached from services: %s)", ErrDrainHooksRequireDrainTimeout, strings.Join(owners, ", "))
 }
 
 // runDrainPhase 执行排水窗口：置位 drainChecker（readiness 聚合立即失败，

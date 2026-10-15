@@ -93,8 +93,11 @@ runner := lynx.NewRunner(func(app lynx.App) error {
     if err != nil {
         return err
     }
-    // Apply = app.Register(reg) + 挂 OnDrain 注销钩子；reg 为 nil 时 no-op
-    registry.Apply(app, reg)
+    // Register 即完整接入：DrainHook（排水边沿注销）由框架在登记时
+    // 自动挂载（lynx.Drainer）。reg 为 nil（registry 段未启用）时跳过。
+    if reg != nil {
+        app.Register(reg)
+    }
     app.Register(hs)
 
     // 客户端：Resolver + discovery:// Transport
@@ -112,8 +115,9 @@ runner := lynx.NewRunner(func(app lynx.App) error {
 
 - `registry` 段缺失、`enabled: false` 或 `backend: ""` 时，
   `NewBackendFromConfig` / `NewFromConfig` 返回 nil——**未启用即零
-  开销**，`Apply(app, nil)` 是 no-op，同一套代码可在启用/未启用两种
-  环境运行。
+  开销**，调用侧 `if reg != nil { app.Register(reg) }` 即可在启用/未
+  启用两种环境复用同一套代码（框架对 `Register(nil)` 是启动错误，
+  配置开关在调用侧显式表达）。
 - Registrar 的注册发生在 `Start`（所有服务并发启动之后），并通过
   Advertiser 等待真实监听地址，因此**不要**在 `OnPreStart` 里手动注册。
 
@@ -261,8 +265,9 @@ runner := lynx.NewRunner(func(app lynx.App) error {
         registry.GRPC(gs),
     ); err != nil {
         return err
-    } else {
-        registry.Apply(app, reg) // wr==nil 时 NewFromConfig 返回 nil；Apply no-op
+    } else if reg != nil {
+        // wr==nil（未启用）时 NewFromConfig 返回 nil，跳过注册
+        app.Register(reg) // DrainHook 由框架登记时自动挂载
     }
     _ = disc // 供 Resolver 使用（见 7.9）
 
@@ -341,10 +346,10 @@ env:
 
 排水（Drain）是核心 v1.1 的既有能力（`WithDrainTimeout`，见
 [第 3 章](./03-core-concepts.md) 3.7 节）；注册发现只是给它加了一个
-标准消费者：`registry.Apply` 会把 `Registrar.DeregisterHook()` 挂到
-`app.OnDrain`——**排水置位那一刻**就从目录删除实例（delete 语义，
-不存在「draining 中间态」），Watch 立即推空，客户端在 RTT 级时间内
-停止拨入，而不是等 `DrainTimeout` 窗口结束。
+标准消费者：Registrar 实现 `lynx.Drainer`（`DrainHook()`），`Register`
+登记时框架自动把注销钩子挂入排水阶段——**排水置位那一刻**就从目录
+删除实例（delete 语义，不存在「draining 中间态」），Watch 立即推空，
+客户端在 RTT 级时间内停止拨入，而不是等 `DrainTimeout` 窗口结束。
 
 时序：
 
@@ -364,17 +369,14 @@ env:
 | `DrainTimeout=0`（整段禁用） | `ShutdownTimeout + Σ StopTimeout` |
 | `DrainTimeout > 0` | `DrainTimeout + ShutdownTimeout + Σ StopTimeout`（钩子与睡眠并发，不叠加） |
 
-注意 `DrainTimeout=0` 时注册了 OnDrain 钩子（如 `registry.Apply`）会在
-`Run()` 启动期返回 `ErrDrainHooksRequireDrainTimeout`——窗口即钩子预算，
-禁用窗口则钩子没有执行预算，快失败好过关停期静默跳过注销。使用
-`registry.Apply` 的应用必须显式 `WithDrainTimeout`（注销 RPC 自身另有
-3s 的 `rpcTimeout` 内部上界，窗口 ≥3s 即可覆盖）。
-
-安全网：即使用户忘了 `Apply`、只 `app.Register(reg)`，只要
-`DrainTimeout > 0`（drainChecker 在健康检查聚合里），Registrar 内部的
-`watchDrain` 会 50ms 轮询 `errors.Is(err, lynx.ErrDraining)` 并注销。
-`DrainTimeout=0` 时 drainChecker 不进聚合，该安全网不生效，只能靠
-`OnDrain`（Apply）或 `Stop`。
+注意 `DrainTimeout=0` 时注册了排水钩子会在 `Run()` 启动期返回
+`ErrDrainHooksRequireDrainTimeout`（Drainer 服务自动挂载的钩子在错误里
+具名来源服务）——窗口即钩子预算，禁用窗口则钩子没有执行预算，快失败
+好过关停期静默跳过注销。Register 了 Registrar 的应用必须显式
+`WithDrainTimeout`（注销 RPC 自身另有 3s 的 `rpcTimeout` 内部上界，
+窗口 ≥3s 即可覆盖）；追求零关停延迟、依赖后端 TTL 过期的部署用
+`WithDrainDeregister(false)` 退出排水（`DrainHook` 返回 nil，不要求
+窗口，实例靠 `heartbeat_ttl` / `deregister_after` 消失）。
 
 ## 7.8 健康模型：三条通道
 
@@ -400,7 +402,7 @@ Registrar 的健康语义与探针是三条独立通道，不要混为一谈：
 「排水开始 → 目录也 critical」只对 HTTP check 成立。gRPC-only 进程若
 配 `health_check.type: grpc` 且 Deregister 缓慢/失败，发现客户端会在
 几乎整个排水窗口内继续打到本实例——因此 gRPC-only 必须
-`type: ttl` + `registry.Apply`（挂 OnDrain 注销）。
+`type: ttl` + 排水注销（`DrainHook` 自动挂载）。
 
 ## 7.9 客户端发现（discovery://）
 
@@ -479,7 +481,7 @@ gRPC resolver 按 5s 周期把 Resolver 缓存翻译成连接地址；解析出�
 ## 7.10 DNS 后端与 Headless Service
 
 `backend: dns` 时 `NewBackendFromConfig` 返回 `(nil, dnsDiscovery, nil)`
-——DNS **只读**，没有 Registrar，不要 `Apply`。查询名为
+——DNS **只读**，没有 Registrar，不要 `Register` Registrar。查询名为
 `{name}.{namespace}.{domain}`；端口先查 SRV（`_http._tcp.…` 等，
 **始终解析全部已配置协议**——协议过滤只决定实例是否保留，返回的
 Endpoints 为全量），无 SRV 再查 A/AAAA，端口取自 `registry.dns.ports`
@@ -521,17 +523,16 @@ DNS 后端无 version/tag/weight 概念；`IncludeUnhealthy` 对 DNS 无意义
 | 注册早于 Listen | 中 | 目录 check 失败 → critical | check 打 readiness；Advertiser 等待 `advertise_timeout` |
 | Watch 中断 | 中 | 退避重连（1s–30s）；stale 最长 60s | 空快照立即失效；超时后不再用 stale |
 | 发现打到已死实例 | 中 | 本次调用失败 | 默认 HTTP 不重试；`WithRetry` 时每次重试重新选实例；gRPC 等 resolver 更新 |
-| **gRPC-only + Consul grpc check** | 高 | 排水后最多 10s 仍 SERVING | **改用 TTL check + `OnDrain` Deregister** |
+| **gRPC-only + Consul grpc check** | 高 | 排水后最多 10s 仍 SERVING | **改用 TTL check + 排水注销（DrainHook 自动挂载）** |
 | 注册中心与探针 LB 双路径 | 低 | HTTP 503 立即；目录在 Deregister/TTL | 目标行为（但不要与 kube-proxy LB 混用） |
 
 ## 7.12 Wire 集成
 
-`boot.Bootstrap` 提供可选 setter `WithDrainHooks`（不改 `New` 签名）：
-
-```go
-boot.New(startHooks, stopHooks, services, factories).
-    WithDrainHooks(boot.OnDrainHooks{reg.DeregisterHook()})
-```
+Registrar 实现 `lynx.Drainer`，排水注销由框架在 `Register` 登记时自动
+挂载——Wire 路径只需把 Registrar 放进 `boot.Bootstrap` 的 Services（见
+下方 `ProvideServices`），不再需要任何 DrainHooks provider。
+`boot.Bootstrap` 的 `DrainHooks` 字段留给**非服务**的应用级排水胶水
+（直接传给 `boot.New` 的第 2 参）。
 
 provider 示例（`_examples/boot` 风格）：
 
@@ -560,15 +561,19 @@ func ProvideServices(hs *http.Server, r *registry.Registrar) []lynx.Service {
 }
 ```
 
-`OnDrain` 钩子由 `registry.Apply` 或 `NewOnDrains` provider 挂载，
-**不能**在服务 `Init` 里挂（`Init` 只读 `AppContext`，见
-[第 3 章](./03-core-concepts.md) 3.6 节）。
+`OnDrain` 排水注销由根框架在 `Register` 登记时经 `lynx.Drainer` 自动
+挂载，应用侧与 provider 均无需（也不能）手动挂——`Init` 只读
+`AppContext`（见 [第 3 章](./03-core-concepts.md) 3.6 节），接口发现
+是服务声明排水动作的唯一通道。
 
 ## 7.13 CLI 约定
 
-长期服务的 setup 调用 `registry.Apply`；`app.Command` / 一次性 CLI 的
-setup **不要**调用 `Apply`（约定，无配置开关）：`affect_readiness=true`
-时 command 会空等注册中心就绪，且 CLI 会向目录写下一条短命记录。
+长期服务的 setup 用 `app.Register(reg)` 接入 Registrar；`app.Command` /
+一次性 CLI 的 setup **不要** Register Registrar（约定，无配置开关）：
+`affect_readiness=true` 时 command 会空等注册中心就绪，且 CLI 会向目录
+写下一条短命记录。CLI 几乎不会设置 `WithDrainTimeout`，误注册时
+`Run()` 会在启动期以 `ErrDrainHooksRequireDrainTimeout`（具名 Registrar
+服务）快失败——约定因此有一道机械护栏兜底。
 
 ## 下一步
 

@@ -49,6 +49,8 @@ type App interface {
 	// 钩子总预算——窗口结束（无论钩子是否完成）即继续后续关停。
 	// 必须启用排水（WithDrainTimeout，> 0）：DrainTimeout=0 时整段
 	// 禁用，此时注册钩子由 Run() 返回 ErrDrainHooksRequireDrainTimeout。
+	// 除手动注册外，实现 Drainer 接口的服务在 Register 登记时由框架
+	// 自动挂载排水钩子（见 service.go），应用侧无需重复挂钩。
 	OnDrain(fns ...HookFunc)
 	// OnPreStop 注册应用停止阶段执行的钩子函数：先于服务 Stop 执行
 	// （此时服务仍在服务在途请求，适合"停止接收前的最后冲刷"，不适合
@@ -158,11 +160,15 @@ type lynx struct {
 
 	onPreStarts []HookFunc
 	// onDrains 是排水钩子：SetDraining 之后与 DrainTimeout 睡眠并发执行，
-	// 共享排水窗口预算（见 runOnDrainHooks）。
-	onDrains     []HookFunc
-	onPreStops   []HookFunc
-	onPostStarts []HookFunc
-	onPostStops  []CleanupFunc
+	// 共享排水窗口预算（见 runOnDrainHooks）。来源有二：app.OnDrain 手动
+	// 注册，与 Drainer 服务在登记事务内的自动挂载。
+	onDrains []HookFunc
+	// drainHookOwners 与 onDrains 中自动挂载部分一一对应（服务名），
+	// 供「有排水钩子但未启用排水窗口」的启动期快失败错误具名定位。
+	drainHookOwners []string
+	onPreStops      []HookFunc
+	onPostStarts    []HookFunc
+	onPostStops     []CleanupFunc
 	// startWG 计数已注册的服务：每个服务 actor 的执行体进入时 Done。
 	// post-start actor 等它归零后才执行 OnPostStart hooks——触发界是
 	// "所有服务 actor 已进入执行体"（registerService 的登记事务与
@@ -681,11 +687,19 @@ func (app *lynx) addServices(services ...Service) error {
 		}
 		app.logger.InfoContext(ctx, "initialized service", "service", service.Name())
 		app.publishEvent(eventbus.TopicServiceRegistered, eventbus.ServiceEvent{Service: service.Name(), Time: time.Now()})
+		// Drainer 钩子在登记事务外解析：DrainHook 在锁外调用（纯取值
+		// 契约见接口注释），非 nil 结果随登记事务原子挂入排水阶段。
+		var drainHooks []HookFunc
+		if dr, ok := service.(Drainer); ok {
+			if h := dr.DrainHook(); h != nil {
+				drainHooks = append(drainHooks, h)
+			}
+		}
 		// 登记事务（lifecycle.registerService）：running/closed 检查与
 		// actor 登记同持 app.mu。这是与 Run/Close 并发时的权威裁决点——
 		// 任何迟到的登记都不可能越过检查；检查失败时服务不进入
 		// actors/services/healthCheckers（无孤儿）。
-		if err := app.registerService(service, app.serviceActor(ctx, cancel, service)); err != nil {
+		if err := app.registerService(service, app.serviceActor(ctx, cancel, service), drainHooks...); err != nil {
 			// 登记被拒（与 Run/Close 竞态，见 lifecycle.checkRegistration）：
 			// 服务已 Init 成功但不在 actors/services 中，任何退出路径都不会
 			// 再停它——此处是唯一清理机会（契约：Init 成功即须逆序 Stop）。
@@ -738,9 +752,9 @@ func (app *lynx) Run() error {
 	//（DrainHookTimeout 已并入 DrainTimeout），窗口未启用（0）时钩子
 	// 没有执行预算——注册即配置错误。启动期返回（镜像 initErr 的
 	// poison-pill 语义：已 Init 的服务逆序停止），好过关停期静默跳过
-	// 注销钩子的延迟暴露。
+	// 注销钩子的延迟暴露。Drainer 服务自动挂载的钩子会具名定位。
 	if app.o.DrainTimeout <= 0 && app.hasDrainHooks() {
-		return teardown{app}.fast(ErrDrainHooksRequireDrainTimeout)
+		return teardown{app}.fast(app.drainHooksConfigError())
 	}
 
 	// 配置热更新（WithConfigWatch）：注册失败镜像 initErr 的 poison-pill

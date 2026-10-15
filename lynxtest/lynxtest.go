@@ -142,7 +142,7 @@ func (a *App) WaitReady(t testing.TB, timeout time.Duration, servers ...lynx.Ser
 //
 // 已知取舍：基线 DrainTimeout=100ms 使测试态 HealthCheckers() 聚合恒含
 // drainChecker（生产默认 DrainTimeout=0 时没有）；该窗口同时保证
-// registry.Apply 一类 OnDrain 钩子有执行预算。
+// Drainer 服务（如 Registrar）自动挂载的 OnDrain 钩子有执行预算。
 //
 // 返回的 *App 可用于 Bus()/Config()/WaitReady 等断言；服务器地址经
 // setup 捕获的 server 引用取（配合 HTTPClient/GRPCConn）。
@@ -161,8 +161,9 @@ func Run(t testing.TB, setup lynx.SetupFunc, opts ...Option) *App {
 		lynx.WithShutdownTimeout(baseTimeout),
 		lynx.WithBusReadyTimeout(baseTimeout),
 		lynx.WithCleanupTimeout(baseTimeout),
-		// 带 OnDrain 钩子的应用（如 registry.Apply）要求非零排水窗口，
-		// 否则 Run 启动期直接失败；100ms 对无钩子应用也只是 100ms 关停等待。
+		// 带排水钩子的应用（手动 OnDrain 或 Drainer 服务自动挂载）要求
+		// 非零排水窗口，否则 Run 启动期直接失败；100ms 对无钩子应用也
+		// 只是 100ms 关停等待。
 		lynx.WithDrainTimeout(baseDrain),
 	}
 

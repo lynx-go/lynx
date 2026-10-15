@@ -47,8 +47,9 @@ Ctrl-C 停止：排水钩子先注销实例再关监听；直接 `kill -9` 则�
   `backend` 非 redis 时返回 `(nil, nil)`，回落
   `registry.NewBackendFromConfig`（memory/dns）。
 - `main.go` `registry.NewFromConfig(cfg, wr, registry.HTTP(hs, ...))` +
-  `registry.Apply`：Registrar 侧与 memory/consul 后端完全同构——后端
-  差异被 `registry.Registry` 接口隔离，业务代码零改动。
+  `app.Register(reg)`：Registrar 侧与 memory/consul 后端完全同构——后端
+  差异被 `registry.Registry` 接口隔离，业务代码零改动；排水注销钩子由
+  框架登记时自动挂载（`lynx.Drainer`）。
 - TTL 语义：`Register` 写实例键 `SET EX heartbeat_ttl`，Registrar 心跳
   循环每 `heartbeat_interval` 调 `Heartbeat`（Lua `PEXPIRE` 续命）；
   键过期后 `Heartbeat` 返回 `ErrNotRegistered`（readiness 随之失败）。

@@ -87,6 +87,20 @@ type Server interface {
 	Ready() <-chan struct{}
 }
 
+// Drainer 是可选接口：服务在关停排水边沿要执行的动作（如 Registrar 在
+// LB 摘流阶段从服务目录注销）。Register 登记时框架调用 DrainHook 取钩子
+// 并挂入排水阶段——与 app.OnDrain 同列、按服务注册顺序执行、共享
+// DrainTimeout 窗口预算。服务因此不需要 App 句柄：注册即接入，不存在
+// 忘记挂钩子的第二条路径。
+//
+// 返回 nil 表示该服务不参与排水（如依赖后端 TTL 过期的服务以选项关闭），
+// 框架跳过挂载，也不计入「启用排水须设置 WithDrainTimeout」的启动期
+// 快失败。DrainHook 在登记路径被调用一次（Init 成功之后、app.mu 之外），
+// 必须是纯取值：不得阻塞、加锁或访问网络；返回的钩子在关停时才执行。
+type Drainer interface {
+	DrainHook() HookFunc
+}
+
 // ServiceFactory 按 FactoryOptions 描述的方式构建服务实例。
 type ServiceFactory interface {
 	New() Service

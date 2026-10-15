@@ -83,7 +83,7 @@ Run()
 
 - `OnPreStart`：在 `Run()` 启动阶段、服务启动前按注册顺序串行执行，收到的 `ctx` 是应用 Context。任何一个钩子返回 error，`Run()` 立即返回该错误，服务不会启动。
 - `OnPostStart`：**运行通知**钩子。所有服务 actor 进入执行体（`Start` 调用紧随其后，可能与钩子的最初几条指令并发）、run group 进入运行态后按注册顺序串行执行，与应用并发运行。阻塞型服务（HTTP/gRPC server）的 `Start` 直到关停才返回，不存在"所有 `Start` 已返回"的时刻——钩子触发不代表端口已监听或就绪（就绪语义用健康检查表达）。钩子错误视为启动失败：触发整个应用的关停并随 `Run()` 上抛；关停打断未执行完的钩子时记日志跳过，不注入新错误。
-- `OnDrain`：排水窗口内与 `DrainTimeout` 睡眠并发执行（如从服务目录注销），窗口即钩子总预算——窗口结束（无论钩子是否完成）即继续关停。必须启用排水（`WithDrainTimeout` > 0）；`DrainTimeout=0` 时注册钩子会在 `Run()` 启动期返回 `ErrDrainHooksRequireDrainTimeout`（见 3.7 节）。
+- `OnDrain`：排水窗口内与 `DrainTimeout` 睡眠并发执行（如从服务目录注销），窗口即钩子总预算——窗口结束（无论钩子是否完成）即继续关停。必须启用排水（`WithDrainTimeout` > 0）；`DrainTimeout=0` 时注册钩子会在 `Run()` 启动期返回 `ErrDrainHooksRequireDrainTimeout`（见 3.7 节）。钩子有两个来源：应用侧 `app.OnDrain` 手动注册，与服务实现 `lynx.Drainer` 接口（`DrainHook()`）后由框架在 `Register` 登记时**自动挂载**（如 `contrib/registry` 的 Registrar）——服务不需要 App 句柄，注册即接入，不存在漏挂钩子的手动入口；`DrainHook` 返回 nil 的服务不参与排水，也不触发上述快失败。
 - `OnPreStop`：在关闭阶段、服务 `Stop` 之前按注册顺序串行执行，收到带有 `ShutdownTimeout` 超时的 `ctx`（见 3.7 节）；单个钩子阻塞超过时限会被判定超时并继续执行后续钩子，不会挂起整个关闭流程。此时服务仍在服务在途请求，适合"停止接收前的最后冲刷"。
 - `OnPostStop`：**进程收尾清理**钩子。所有服务 `Stop`、总线关停之后、`Run()` 返回前**逆序**执行（LIFO，与 defer/Wire cleanup 语义一致），总预算 `CleanupTimeout`（默认 10 秒，`WithCleanupTimeout` 调整）；超时记日志并跳过剩余钩子，不阻塞进程退出。签名是无错误返回的 `CleanupFunc`——终局阶段错误没有消费者，实现方自行记日志。`Run()` 的所有退出路径（含服务 Init 失败、OnPreStart 失败）都会执行它；`Run()` 从未调用时由 `Close()` 兜底，且整个生命周期恰好执行一次。
 
@@ -246,7 +246,7 @@ type AppContext interface {
 
 `App` 是 `AppContext` 的超集（`App` 内嵌 `AppContext`，额外提供 `Register`/`OnPreStart`/`OnPostStart`/`OnDrain`/`OnPreStop`/`OnPostStop`/`Command`/`Run`）。服务在 `Init` 中只依赖 `AppContext` 的五个方法：读取配置、取日志、访问应用元信息（经 Context）、获取健康检查快照、或请求关闭应用（如一次性命令执行完毕）。测试时只需实现这五个方法，无需为 `App` 的其余方法写空实现。
 
-框架的职责边界：服务不能通过 `AppContext` 注册其他服务或修改生命周期钩子——`Init` 阶段（注册时同步执行）只允许"读取环境、准备资源"。
+框架的职责边界：服务不能通过 `AppContext` 注册其他服务或修改生命周期钩子——`Init` 阶段（注册时同步执行）只允许"读取环境、准备资源"。要在关停排水边沿执行动作（如从服务目录注销），服务实现 `lynx.Drainer` 接口（`DrainHook()`），框架在 `Register` 登记时自动挂载，无需 App 句柄。
 
 ## 3.7 优雅关闭
 

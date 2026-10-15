@@ -55,12 +55,14 @@ if err != nil {
     return err
 }
 
-// Registrar：注册本进程 + OnDrain 注销钩子。
+// Registrar：注册本进程；排水注销钩子由 Register 登记时自动挂载。
 reg, err := registry.NewFromConfig(app.Config(), c, registry.HTTP(hs, registry.ProtocolHTTP))
 if err != nil {
     return err
 }
-registry.Apply(app, reg)
+if reg != nil {
+    app.Register(reg)
+}
 
 // Resolver：客户端侧缓存 + watch 发现。
 rslv := registry.NewResolver(c)

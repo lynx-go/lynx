@@ -42,8 +42,8 @@ runner := lynx.NewRunner(func(app lynx.App) error {
 		registry.GRPC(gs),
 	); err != nil {
 		return err
-	} else {
-		registry.Apply(app, reg) // wr==nil 时 NewFromConfig 返回 nil；Apply no-op
+	} else if reg != nil {
+		app.Register(reg) // DrainHook 由框架登记时自动挂载
 	}
 	app.Register(hs, gs)
 	return nil
@@ -84,8 +84,8 @@ lease, ok, err := coord.Acquire(ctx, "leader", consul.MinSessionTTL)
 
 ## 与 lynx 核心的集成
 
-- Client 经 `registry.NewFromConfig` 交给 `Registrar` 托管：注册 / 心跳 / 排水注销（`OnDrain` 钩子）全部由 `registry.Apply` 挂载，应用不直接调 `Register`
-- check 选型：有 HTTP 端口用 `type: http`（打 `/healthz/readiness`，排水摘流立即生效）；**gRPC-only 进程必须 `type: ttl` + `registry.Apply`**——grpc check 的摘流最多滞后一个 HealthCheckPeriod（默认 10s 轮询）
+- Client 经 `registry.NewFromConfig` 交给 `Registrar` 托管：注册 / 心跳 / 排水注销全部由 `app.Register` 登记时经 `lynx.Drainer` 自动挂载，应用侧没有第二个入口
+- check 选型：有 HTTP 端口用 `type: http`（打 `/healthz/readiness`，排水摘流立即生效）；**gRPC-only 进程必须 `type: ttl` + 排水注销（DrainHook 自动挂载）**——grpc check 的摘流最多滞后一个 HealthCheckPeriod（默认 10s 轮询）
 - SIGKILL 兜底：ttl 30s 过期 + `deregister_after` 60s 摘除
 - `Coordinator` 不参与生命周期，直接在业务代码 / `cluster.Singleton` 中使用
 

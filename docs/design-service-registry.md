@@ -9,6 +9,21 @@
 | 适用版本 | v1.1+（v1.0 API 冻结后的增量能力） |
 | 相关路线图 | `ROADMAP.md` Phase E3「定位选择」 |
 
+> **勘误（2026-10-15）**：本文中 `registry.Apply(app, reg)` 手动入口及
+> `DeregisterHook()` / `watchDrain` 安全网的描述已成为历史记录。现行
+> 实现：根框架新增 `lynx.Drainer` 可选接口（`DrainHook()`），`Register`
+> 登记服务时自动把非 nil 钩子挂入排水阶段；Registrar 实现该接口，
+> `app.Register(reg)` 即完整接入（CLI 约定不变：命令进程不要 Register
+> Registrar；未启用时 `reg == nil` 由调用侧判空跳过）。`Apply`、
+> `DeregisterHook` 与 `watchDrain` 轮询安全网已删除——漏挂排水钩子
+> 从此结构性不可能；零 endpoint（无 Advertiser 且无静态 endpoints）
+> 的注册改为 `Init` 快失败（`ErrNoEndpoints`）；Registrar 新增
+> `WithDrainDeregister(false)` 退出排水（依赖后端 TTL 过期）。决策
+> 依据：容器发现制（与 `Checker`/`Ready` 同构）优于双入口手动挂载，
+> D13 的「无法探测 Command」在 Run 时快失败下获得机械护栏。详见
+> `docs/03-core-concepts.md` 3.6/3.7 与 `docs/07-registry.md` 7.7。
+> 下列正文保留原始决策记录，未回改。
+
 ---
 
 ## Overview

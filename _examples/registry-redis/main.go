@@ -60,9 +60,14 @@ func main() {
 		if err != nil {
 			return err
 		}
-		// Apply = app.Register(reg) + 挂 OnDrain 注销钩子；reg 为 nil 时 no-op。
-		// 注意：CLI（app.Command）的 setup 不要调用 Apply。
-		registry.Apply(app, reg)
+		// Register 即完整接入：DrainHook（排水边沿注销）由框架在登记时
+		// 自动挂载（lynx.Drainer），没有第二个会漏调的入口。reg 为 nil
+		//（registry 段未启用）时跳过——框架对 Register(nil) 是启动错误，
+		// 配置开关在调用侧显式表达。
+		// 注意：CLI（app.Command）的 setup 不要 Register Registrar。
+		if reg != nil {
+			app.Register(reg)
+		}
 		app.Register(hs)
 
 		// 客户端侧：Resolver（缓存 + watch）+ discovery:// Transport。

@@ -40,6 +40,7 @@ type registrarOptions struct {
 	endpoints         []Endpoint // 静态配置 endpoints
 	failFast          bool
 	affectReadiness   bool
+	drainDeregister   bool // 排水边沿注销（DrainHook）；false = 依赖后端 TTL
 	heartbeatInterval time.Duration
 	advertiseTimeout  time.Duration
 	advertiseHost     string
@@ -57,6 +58,7 @@ func defaultRegistrarOptions() registrarOptions {
 	return registrarOptions{
 		failFast:          true,
 		affectReadiness:   true,
+		drainDeregister:   true,
 		heartbeatInterval: defaultHeartbeatInterval,
 		advertiseTimeout:  defaultAdvertiseTimeout,
 		weight:            defaultWeight,
@@ -83,6 +85,15 @@ func WithFailFast(v bool) RegistrarOption {
 // （默认 true）。false 时 CheckHealth 恒返回 nil。
 func WithAffectReadiness(v bool) RegistrarOption {
 	return func(o *registrarOptions) { o.affectReadiness = v }
+}
+
+// WithDrainDeregister 设置是否在关停排水边沿注销（默认 true：readiness
+// 摘流后、服务 Stop 前从目录删除实例，见 DrainHook）。false 时不参与
+// 排水——DrainHook 返回 nil，不要求 WithDrainTimeout，实例依赖后端
+// TTL 过期（heartbeat_ttl / deregister_after）自然消失，适合崩溃优先、
+// 追求零关停延迟的部署。
+func WithDrainDeregister(v bool) RegistrarOption {
+	return func(o *registrarOptions) { o.drainDeregister = v }
 }
 
 // WithHeartbeatInterval 设置心跳间隔（默认 10s）。
@@ -144,8 +155,7 @@ type Registrar struct {
 	reg  Registry
 	opts registrarOptions
 
-	logger         *slog.Logger
-	healthCheckers lynx.HealthCheckersFunc
+	logger *slog.Logger
 
 	mu            sync.Mutex
 	name          string
@@ -165,6 +175,7 @@ type Registrar struct {
 var (
 	_ lynx.Service = (*Registrar)(nil)
 	_ lynx.Checker = (*Registrar)(nil)
+	_ lynx.Drainer = (*Registrar)(nil)
 )
 
 // NewRegistrar 用给定 Registry 构造 Registrar。
@@ -209,9 +220,16 @@ func (r *Registrar) Init(ctx lynx.AppContext) error {
 		return err
 	}
 	r.static = static
+	// 零 endpoint 防线：无 Advertiser 也无静态 endpoints 时注册的是一条
+	// 不可拨号的废记录（最常见的漏接是忘了把 server 传给 Advertiser，
+	// 如 registry.HTTP(hs)），Init 即失败。有 Advertiser 的动态地址由
+	// Start 的 waitForEndpoints 等待。
+	if len(r.opts.advertisers) == 0 && len(r.static) == 0 {
+		return fmt.Errorf("%w: pass Advertisers (e.g. registry.HTTP(server)) or set registry.endpoints",
+			ErrNoEndpoints)
+	}
 
 	r.logger = ctx.Logger("service", "registry")
-	r.healthCheckers = ctx.HealthCheckers
 	return nil
 }
 
@@ -272,8 +290,6 @@ func (r *Registrar) Start(ctx context.Context) error {
 	} else {
 		r.startHeartbeat()
 	}
-
-	r.startWatchDrain()
 
 	// 阻塞到停止：框架在 Stop 之后才 cancel 该 ctx，故同时等内部 stopCh。
 	select {
@@ -434,32 +450,23 @@ func (r *Registrar) heartbeatLoop() {
 	}
 }
 
-// startWatchDrain 启动排水观察（安全网）：用户忘了 Apply 挂 OnDrain、只
-// Register(reg) 且 DrainTimeout > 0（drainChecker 进入 HealthCheckers）
-// 时，50ms 轮询到 errors.Is(err, lynx.ErrDraining) 即注销。没有
-// drainChecker 时该循环永远空转，不产生任何副作用。
-func (r *Registrar) startWatchDrain() {
-	if r.healthCheckers == nil || len(r.healthCheckers()) == 0 {
-		return
+// DrainHook 实现 lynx.Drainer：返回排水边沿的注销钩子，Register 登记
+// 时由框架自动挂入排水阶段（readiness 摘流后、服务 Stop 前执行）——
+// 应用侧只需 app.Register(reg)，不存在忘记挂钩子的手动入口。
+// WithDrainDeregister(false) 返回 nil：不参与排水，不要求排水窗口，
+// 实例依赖后端 TTL 过期消失。
+// 纯取值（lynx.Drainer 契约）：登记路径调用，不得阻塞。
+func (r *Registrar) DrainHook() lynx.HookFunc {
+	if !r.opts.drainDeregister {
+		return nil
 	}
-	go func() {
-		tick := time.NewTicker(50 * time.Millisecond)
-		defer tick.Stop()
-		for {
-			select {
-			case <-tick.C:
-			case <-r.stopCh:
-				return
-			}
-			for _, checker := range r.healthCheckers() {
-				if errors.Is(checker.CheckHealth(), lynx.ErrDraining) {
-					r.logger.Info("registry: drain detected, deregistering (watchDrain safety net)")
-					_ = r.deregister(context.Background())
-					return
-				}
-			}
-		}
-	}()
+	return r.deregisterHook
+}
+
+// deregisterHook 是 DrainHook 返回的注销钩子本体：排水开始时（而非
+// Stop 时）从目录摘除实例。
+func (r *Registrar) deregisterHook(ctx context.Context) error {
+	return r.deregister(ctx)
 }
 
 // Stop 停掉心跳/重试/排水观察，幂等注销；仅当 WithCloseBackendOnStop 显式
@@ -502,14 +509,6 @@ func deregisterContext(ctx context.Context) (context.Context, context.CancelFunc
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, rpcTimeout)
-}
-
-// DeregisterHook 返回供 app.OnDrain 挂载的注销钩子：排水开始时（而非
-// Stop 时）从目录摘除实例。
-func (r *Registrar) DeregisterHook() lynx.HookFunc {
-	return func(ctx context.Context) error {
-		return r.deregister(ctx)
-	}
 }
 
 // CheckHealth 实现 lynx.Checker 状态机：未成功注册（含后台重试中）或已

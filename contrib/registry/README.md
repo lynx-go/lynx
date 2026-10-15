@@ -7,7 +7,7 @@
 ## 能力要点
 
 - 数据模型：一进程一条 `Instance`（可挂多条 `Endpoint`，`registry.go:99`）；`Filter` 零值即安全默认（只保留 `StatusPassing`），`MatchFilter` 是全部后端与 Resolver 共用的过滤实现（`registry.go:121`）；接口 `Registry`（写，`registry.go:146`）、`Discovery`（读，`registry.go:155`）、`Watcher`（推送）、`Advertiser`（宣告地址，`registry.go:169`）
-- `*Registrar`：实现 `lynx.Service` + `lynx.Checker`（`registrar.go:155`）。`Start` 注册并维持心跳（默认 10s）后阻塞；`Stop` 幂等注销；`DeregisterHook()` 供 `OnDrain` 排水即摘除（`registrar.go:495`）。心跳连续失败 ≥3 次只影响 readiness，不影响 liveness
+- `*Registrar`：实现 `lynx.Service` + `lynx.Checker` + `lynx.Drainer`（`registrar.go:155`）。`Start` 注册并维持心跳（默认 10s）后阻塞；`Stop` 幂等注销；`DrainHook()` 排水即摘除（`Register` 登记时框架自动挂载）。心跳连续失败 ≥3 次只影响 readiness，不影响 liveness
 - `*Resolver`：进程内缓存 + 每服务名一个后台 watch goroutine（断开按 1s–30s 退避重连、Watch 不可用回退轮询）；分区期间继续供应最后一次快照，超过 stale 上限（默认 60s）丢弃并返回 `ErrNoInstance`（`resolver.go:74`）；`Subscribe(name)` 消费侧订阅缓存变化（与 `Discovery.Watcher` 同构：首个 Next 立即返回当前快照、信号合并只保最新、Stop 后 `ErrWatcherStopped`），订阅者对后端形态无感（设计见 [docs/design-resolver-subscribe.md](../../docs/design-resolver-subscribe.md)）
 - Picker：`RoundRobinPicker()`（Resolver 默认）与 `RandomPicker()`（`picker.go`），v1 均忽略 `Instance.Weight`；后端：`NewMemory()` 进程内 Registry + Discovery（`memory.go:34`）、`NewDNSDiscovery(...)` 只读 DNS（SRV 优先，A/AAAA 回落，`dns.go:115`，适配 K8s Headless Service）
 - 客户端接入：`NewHTTPTransport(rslv).Wrap(base)` 把 `discovery://<service>/<path>` 请求改写为实例地址（`http_transport.go:29`）；`NewGRPCBuilder(rslv)` 提供 scheme 为 `discovery` 的 gRPC resolver Builder（`grpc_resolver.go:59`），由 `Subscribe` 订阅驱动——实例变化毫秒级反映到 `UpdateState`，订阅终止退回 30s 兜底轮询。两者都必须吃 `*Resolver`，共享同一套缓存
@@ -36,15 +36,17 @@ runner := lynx.NewRunner(func(app lynx.App) error {
 	if err != nil {
 		return err
 	}
-	// Registrar：HTTP 服务器包装为 Advertiser；Apply = Register + OnDrain
-	// 注销钩子（nil 时 no-op）
+	// Registrar：HTTP 服务器包装为 Advertiser；Register 即完整接入
+	//（DrainHook 由框架登记时自动挂载；nil 时跳过）
 	reg, err := registry.NewFromConfig(app.Config(), wr,
 		registry.HTTP(hs, registry.ProtocolHTTP),
 	)
 	if err != nil {
 		return err
 	}
-	registry.Apply(app, reg)
+	if reg != nil {
+		app.Register(reg)
+	}
 	app.Register(hs)
 
 	// 客户端：Resolver + discovery:// Transport
@@ -88,9 +90,9 @@ conn, err := clientgrpc.Dial("discovery:///user-service",
 
 ## 与 lynx 核心的集成
 
-- `Registrar` 本身是 `lynx.Service`：`registry.Apply(app, reg)`（`fromconfig.go:164`）= `app.Register(reg)` + `app.OnDrain(reg.DeregisterHook())`，排水置位那一刻即从目录删除实例；使用 `Apply` 必须显式 `WithDrainTimeout`（>0），否则 `Run()` 启动期报 `lynx.ErrDrainHooksRequireDrainTimeout`
-- 安全网：只 `app.Register(reg)` 忘了 `Apply` 时，`DrainTimeout > 0` 下 Registrar 内部 `watchDrain`（`registrar.go:430`）轮询 `lynx.ErrDraining` 并注销
-- 注册发生在 `Start`（等真实监听地址），不要在 `OnPreStart` 手动注册；CLI（`app.Command`）的 setup 约定不要调用 `Apply`
+- `Registrar` 本身是 `lynx.Service` 且实现 `lynx.Drainer`：`app.Register(reg)` 登记时框架自动把 `DrainHook()`（排水边沿注销）挂入排水阶段——排水置位那一刻即从目录删除实例，没有会漏调的手动入口；必须显式 `WithDrainTimeout`（>0），否则 `Run()` 启动期报 `lynx.ErrDrainHooksRequireDrainTimeout`（错误具名 Registrar 服务）。追求零关停延迟、依赖后端 TTL 过期的部署用 `WithDrainDeregister(false)`（`DrainHook` 返回 nil，不要求窗口）
+- 注册发生在 `Start`（等真实监听地址），不要在 `OnPreStart` 手动注册；CLI（`app.Command`）的 setup 约定不要 Register Registrar
+- 既无 Advertiser 也无静态 endpoints 时 `Init` 快失败（`ErrNoEndpoints`）——否则会静默注册一条不可拨号的废记录
 - 宣告地址禁止裸 `:8080`：优先静态 endpoints → `advertise.host` → `LYNX_ADVERTISE_HOST` → Advertiser 的 `AdvertiseAddr()`/`Addr()`，全缺失时 `Init` 失败
 
 ## 相关文档与示例
