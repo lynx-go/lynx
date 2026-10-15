@@ -1,7 +1,8 @@
 # 7. 服务注册与发现
 
 `contrib/registry` 提供可选的服务注册（写目录）与发现（读目录）能力，
-`contrib/consul` 提供生产级 Consul 后端。两者都是**可选 contrib**：
+`contrib/consul` / `contrib/registry-redis` 提供生产级 Consul / Redis 后端。
+三者都是**可选 contrib**：
 不引入它们时框架行为与此前完全一致，零成本、零依赖。设计与失败模式的
 完整论证见 [设计文档](./design-service-registry.md)，本章是使用教程。
 
@@ -13,7 +14,7 @@
 - [7.6 宣告地址](#76-宣告地址)
 - [7.7 排水与注销时序](#77-排水与注销时序)
 - [7.8 健康模型：三条通道](#78-健康模型三条通道)
-- [7.9 客户端发现（registry://）](#79-客户端发现registry)
+- [7.9 客户端发现（discovery://）](#79-客户端发现discovery)
 - [7.10 DNS 后端与 Headless Service](#710-dns-后端与-headless-service)
 - [7.11 失败模式摘要](#711-失败模式摘要)
 - [7.12 Wire 集成](#712-wire-集成)
@@ -31,7 +32,8 @@
 - **K8s（Headless Service）或多端口直连场景**：可用本模块的 DNS 后端
   （见 7.10），Picker 才有意义。
 - **裸机 / 虚拟机 / 跨集群**：用 `contrib/consul` 后端，配合
-  `OnDrain` 排水注销获得秒级摘流。
+  `OnDrain` 排水注销获得秒级摘流；已有 Redis、不想引入新组件时用
+  `contrib/registry-redis`（见 7.5）。
 
 「K8s ClusterIP + DrainTimeout」与「裸机 Consul + 注册发现」是两条并列
 的推荐路径，不要混用两层 LB（注册中心 Picker 与 kube-proxy 同时选实例
@@ -43,7 +45,7 @@
 
 | 角色 | 类型 | 职责 |
 | --- | --- | --- |
-| 后端 | `Registry`（写）/ `Discovery`（读）接口 | 与目录交互：memory、DNS、Consul |
+| 后端 | `Registry`（写）/ `Discovery`（读）接口 | 与目录交互：memory、DNS、Consul、Redis |
 | Registrar | `*registry.Registrar`（`lynx.Service` + `lynx.Checker`） | 进程级生命周期：Start 注册 + 心跳，Stop/排水注销 |
 | Resolver | `*registry.Resolver` | 客户端侧缓存 + Watch + Picker 选实例 |
 
@@ -95,12 +97,12 @@ runner := lynx.NewRunner(func(app lynx.App) error {
     registry.Apply(app, reg)
     app.Register(hs)
 
-    // 客户端：Resolver + registry:// Transport
+    // 客户端：Resolver + discovery:// Transport
     rslv := registry.NewResolver(disc)
     cli := clienthttp.New(clienthttp.WithClientOptions(func(c *gohttp.Client) {
         c.Transport = registry.NewHTTPTransport(rslv).Wrap(c.Transport)
     }))
-    // 之后即可用服务名寻址：cli.Get(ctx, "registry://my-app/hello")
+    // 之后即可用服务名寻址：cli.Get(ctx, "discovery://my-app/hello")
     _ = cli
     return nil
 })
@@ -125,17 +127,19 @@ registry:
   enabled: true
   backend: consul        # memory | dns 由 registry.NewBackendFromConfig 构造
                          # consul 由应用调用 consul.NewFromConfig（见 7.5）
+                         # redis 由应用调用 registryredis.NewFromConfig（见 7.5）
   fail_fast: true        # 首次注册失败时 Start 是否返回错误（默认 true）
   affect_readiness: true # Registrar 健康状态是否参与 readiness 聚合（默认 true）
   heartbeat_interval: 10s
-  heartbeat_ttl: 30s     # TTL 后端（consul）由 consul.NewFromConfig 直接读同一段；
+  heartbeat_ttl: 30s     # TTL 后端（consul/redis）由各自 NewFromConfig 直接读同一段；
                          # Registrar 不传递该值，但构造时交叉校验 interval < ttl
                          #（失配即报错：TTL 会在两次心跳之间过期，实例持续闪断）
                          # 注意：交叉校验只在两者都显式设置时生效。只调大
                          # heartbeat_interval（超过 30s）而不设 heartbeat_ttl 时，
                          # consul 后端沿用默认 TTL=30s，构造期不报错但运行期实例
                          # 真实闪断——interval 超过 30s 时必须显式设置 heartbeat_ttl
-  deregister_after: 60s  # 同上（Consul DeregisterCriticalServiceAfter）
+  deregister_after: 60s  # 同上（Consul DeregisterCriticalServiceAfter）；
+                         # redis 后端无此语义（TTL 过期即注销），字段被忽略
   advertise_timeout: 5s  # 等待 Advertiser 出现非空 Endpoints 的上限
   tags: ["api", "internal"]
   meta:
@@ -164,6 +168,21 @@ registry:
     datacenter: ""
     namespace: ""
     allow_stale: false   # Watch/Get 默认 consistent
+    tls:
+      enabled: false
+      ca_file: ""
+      cert_file: ""
+      key_file: ""
+      insecure_skip_verify: false
+  redis:                 # 由 registryredis.NewFromConfig 读取（见 7.5）
+    address: 127.0.0.1:6379
+    username: ""
+    password: ""
+    db: 0
+    key_prefix: lynx/registry/   # 多应用共库时区分命名空间
+    pool_size: 0         # 0 = go-redis 默认（每 CPU × 10）
+    dial_timeout: 0s     # 0 = go-redis 默认（5s）
+    read_timeout: 0s     # 0 = go-redis 默认（3s）
     tls:
       enabled: false
       ca_file: ""
@@ -205,7 +224,8 @@ lynx.WithBindConfigFunc(func(f *pflag.FlagSet, c lynx.ConfigSource) error {
 
 `contrib/consul` 的 `Client` 同时实现 `Registry` 与 `Discovery`。
 **由应用侧构造**，不是 `registry.NewBackendFromConfig`（后者只建
-memory/dns，遇到 `backend: consul` 会明确报错，避免 contrib 依赖环）：
+memory/dns，遇到 `backend: consul` / `backend: redis` 会明确报错，
+避免 contrib 依赖环）：
 
 ```go
 runner := lynx.NewRunner(func(app lynx.App) error {
@@ -265,6 +285,29 @@ Consul 侧要点：
 - Check 类型见 7.8 的选择表；Watch 是 blocking query，默认
   `allow_stale: false`（consistent 读）。
 - Token 不进日志；配置为空时直读官方环境变量 `CONSUL_HTTP_TOKEN`。
+
+### Redis 后端（contrib/registry-redis）
+
+`registryredis` 的 `*Client` 同样同时实现 `Registry` 与 `Discovery`，
+同样**由应用侧构造**（上例 switch 加一个 `case "redis"` 分支调用
+`registryredis.NewFromConfig(app.Config())` 即可，其余接线不变；跨进程
+完整示例见 [`_examples/registry-redis`](../_examples/registry-redis/)）。适合
+已有 Redis、不想引入 Consul 的团队；存储模型与取舍见
+[contrib/registry-redis README](../contrib/registry-redis/README.md)，
+要点：
+
+- **TTL 即租约**：实例键 `SET EX heartbeat_ttl`，`Heartbeat` 用 Lua
+  `PEXPIRE` 续命；进程崩溃后键过期即下线，无需人工清理。键过期后
+  `Heartbeat` 返回 `registry.ErrNotRegistered`（与 Consul TTL check
+  失败同语义）。
+- **Watch 是 Pub/Sub + 兜底轮询**：Register/Deregister 发布事件，
+  Watcher 收到即重拉全量快照；另按固定间隔（默认 15s）兜底重拉，覆盖
+  键静默过期不发事件、订阅断线丢消息两个盲区。
+- **无健康探针语义**：`Status` 由注册方写入，服务端不做主动检查；
+  `deregister_after` 无对应物，被忽略。
+- 连接由 `NewFromConfig` 自建并归 `Close` 托管；复用既有连接（Sentinel /
+  Cluster / 连接池共享）时用 `New(rdb, ...)` 注入，`Close` 不动调用方
+  的连接。
 
 ## 7.6 宣告地址
 
@@ -359,7 +402,14 @@ Registrar 的健康语义与探针是三条独立通道，不要混为一谈：
 几乎整个排水窗口内继续打到本实例——因此 gRPC-only 必须
 `type: ttl` + `registry.Apply`（挂 OnDrain 注销）。
 
-## 7.9 客户端发现（registry://）
+## 7.9 客户端发现（discovery://）
+
+> **scheme 更名**：客户端发现 URI 的 scheme 由 `registry://` 更名为
+> `discovery://`（HTTP 与 gRPC 同步），语义与语法不变——`registry` 留给
+> 注册中心配置域（`registry:` 段），客户端寻址用 `discovery` 更名实相符。
+> 这是破坏性变更：存量调用点把 URI / gRPC target 前缀 `registry://`
+> 机械替换为 `discovery://` 即完成迁移。历史发布条目与
+> [设计文档](./design-service-registry.md)（D14 决策记录）保留旧名不改。
 
 Resolver 带进程内缓存：每个服务名一条缓存 + 一个后台 watch goroutine
 （Watch 失败回退轮询）。Watch 断开期间继续提供最后一次成功快照
@@ -371,7 +421,7 @@ Resolver 带进程内缓存：每个服务名一条缓存 + 一个后台 watch g
 
 ### HTTP
 
-URI 语法 `registry://<service-name>/<path>`，保留查询键 `protocol`
+URI 语法 `discovery://<service-name>/<path>`，保留查询键 `protocol`
 （只允许 `http`/`https`，默认 http，无 http Endpoint 时回落 https）：
 
 ```go
@@ -381,7 +431,7 @@ cli := clienthttp.New(clienthttp.WithClientOptions(func(c *gohttp.Client) {
     // span 看到的是改写后的真实目标
     c.Transport = registry.NewHTTPTransport(rslv).Wrap(c.Transport)
 }))
-resp, err := cli.Get(ctx, "registry://order-service/v1/orders/1")
+resp, err := cli.Get(ctx, "discovery://order-service/v1/orders/1")
 ```
 
 Transport 每次 `RoundTrip` 都 clone 请求并重新解析：不改调用方的
@@ -390,12 +440,12 @@ Transport 每次 `RoundTrip` 都 clone 请求并重新解析：不改调用方�
 
 ### gRPC
 
-target 语法 `registry:///<service-name>`（Host 必须为空，服务名在
+target 语法 `discovery:///<service-name>`（Host 必须为空，服务名在
 path），经 `grpc.WithResolvers` 逐连接接入（不改 `client/grpc` 源码）：
 
 ```go
 b := registry.NewGRPCBuilder(rslv)
-conn, err := clientgrpc.Dial("registry:///user-service",
+conn, err := clientgrpc.Dial("discovery:///user-service",
     clientgrpc.WithDialOptions(
         grpc.WithResolvers(b),
         grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),

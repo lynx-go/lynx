@@ -1,0 +1,22 @@
+addr: "127.0.0.1:8080"
+
+service:
+  name: registry-redis-demo
+
+registry:
+  enabled: true
+  backend: redis
+  # Registrar 心跳间隔与实例键 TTL：interval 必须 < ttl（构造期交叉校验）。
+  # 进程崩溃后实例键最长 ttl 自动过期下线，无需人工清理。
+  heartbeat_interval: 10s
+  heartbeat_ttl: 30s
+  advertise_timeout: 5s
+  redis:
+    # 连接由 registryredis.NewFromConfig 自建，Client.Close 时一并关闭。
+    # 也可用 LYNX_REGISTRY_REDIS_ADDRESS 环境变量覆盖（见 main.go BindEnv）。
+    address: 127.0.0.1:6379
+    # username: ""
+    # password: ""
+    # db: 0
+    # 多套应用共享同一 Redis 时配置不同前缀，目录互相隔离。
+    key_prefix: lynx/registry/

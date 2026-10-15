@@ -5,3 +5,13 @@ service:
 
 registry:
   backend: memory
+
+  # 多进程部署时换 redis 后端（应用侧 registryredis.NewFromConfig 构造，
+  # 见 docs/07-registry.md 7.5 与 contrib/registry-redis/README.md）：
+  #
+  # backend: redis
+  # heartbeat_interval: 10s    # 须 < heartbeat_ttl
+  # heartbeat_ttl: 30s         # 实例键 TTL，过期即下线
+  # redis:
+  #   address: 127.0.0.1:6379
+  #   key_prefix: lynx/registry/   # 多应用共库时区分命名空间

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### 破坏性变更：客户端发现 URI scheme `registry://` 更名 `discovery://`
+
+- **行为变更**：`contrib/registry` 的客户端发现寻址 scheme 统一由
+  `registry` 改为 `discovery`，HTTP 与 gRPC 两侧同步——HTTP Transport
+  （`registry.NewHTTPTransport`）只改写 `discovery://<service>/<path>`
+  请求；gRPC Builder（`registry.NewGRPCBuilder`）的 `Scheme()` 返回
+  `"discovery"`，只接受 `discovery:///<service-name>` target。URI 语法
+  与语义（保留键 `protocol`、端口校验、Host 规则、round_robin 集成）
+  完全不变。
+- **动机**：`registry` 留给注册中心配置域（`registry:` 段与
+  `registry.NewFromConfig` 家族），客户端「按服务名发现实例」的寻址
+  用 `discovery` 更名实相符，消除 scheme 与配置段同名的歧义。
+- **迁移**：存量调用点把 URI / gRPC target 前缀 `registry://` 机械替换
+  为 `discovery://` 即完成迁移；测试、示例（`_examples/registry`）、
+  `contrib/registry` README 与 `docs/07-registry.md` 已同步。历史发布
+  条目、`docs/review-*.md` 与设计决策记录（`docs/design-service-registry.md`
+  D14）按既定政策保留旧名不改。
+- 新增 `contrib/registry-redis`：Redis 注册发现后端（实例键 TTL 即租约，
+  Pub/Sub 推送 + 兜底轮询 Watch，`registryredis.NewFromConfig` 读
+  `registry.redis.*`；`registry.NewBackendFromConfig` 对 `backend: redis`
+  返回指向它的明确错误）。跨进程完整示例见 `_examples/registry-redis`；
+  详见模块 README 与 `docs/07-registry.md` 7.5。
+
 ## v1.17.0 (2026-09-27)
 
 本次发布 tag：根 `v1.17.0` 与全部 9 个 contrib 模块版本对齐——

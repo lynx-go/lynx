@@ -52,6 +52,7 @@ The project uses a multi-module release strategy. When releasing, you must tag:
 - contrib/telemetry: `contrib/telemetry/{version}`
 - contrib/schedule: `contrib/schedule/{version}`
 - contrib/registry: `contrib/registry/{version}`
+- contrib/registry-redis: `contrib/registry-redis/{version}`
 - contrib/consul: `contrib/consul/{version}`
 - contrib/cluster: `contrib/cluster/{version}`
 - contrib/cluster-redis: `contrib/cluster-redis/{version}`
@@ -68,8 +69,9 @@ This is a Go workspace using `go.work`. The main modules are:
 - `./contrib/schedule` - Cron scheduler；`Exclusive` 任务经 `cluster.TryOnce` 按格子互斥
 - `./contrib/cluster` - 进程间协调：`Coordinator`（Claim/Acquire）、`TryOnce`、`Campaign`、`Singleton`；续约等待与内存协调器 TTL 判定经 `lynx.Clock`（`cluster.WithClock` 注入，测试用 `internal/clock.Fake` 确定性推进，不再 sleep）
 - `./contrib/cluster-redis` - Redis 实现 `cluster.Coordinator`（仅协调，不是业务 Redis 客户端）
-- `./contrib/registry` - Service registry/discovery: types, Registrar, Resolver (with consumer-side `Subscribe(name, filter)`), Pickers, memory/DNS backends, `registry://` HTTP transport & subscription-driven gRPC resolver; backends and the cache subscription share `WatcherBase[T]` (first-snapshot injection, coalescing push, idempotent Stop); cache `updatedAt`/stale checks go through `lynx.Clock` (`WithResolverClock`, tests use `internal/clock.Fake`)
+- `./contrib/registry` - Service registry/discovery: types, Registrar, Resolver (with consumer-side `Subscribe(name, filter)`), Pickers, memory/DNS backends, `discovery://` HTTP transport & subscription-driven gRPC resolver; backends and the cache subscription share `WatcherBase[T]` (first-snapshot injection, coalescing push, idempotent Stop); cache `updatedAt`/stale checks go through `lynx.Clock` (`WithResolverClock`, tests use `internal/clock.Fake`)
 - `./contrib/consul` - Consul registry/discovery backend（`consul.NewFromConfig`），并提供 `Client.Coordinator()` 实现 `cluster.Coordinator`
+- `./contrib/registry-redis` - Redis registry/discovery backend（`registryredis.NewFromConfig`）：实例键 TTL 即租约（过期即下线），Watch 走 Pub/Sub 推送 + 兜底轮询（`registry.heartbeat_ttl` 映射键 TTL；`deregister_after` 无意义被忽略）
 
 Server implementations (within main module):
 - `./server/http` - HTTP server using stdlib `net/http` with otelhttp instrumentation

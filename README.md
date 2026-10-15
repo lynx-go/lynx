@@ -265,13 +265,14 @@ lynx/
 │   ├── watermill-kafka/  # Kafka Transport
 │   ├── registry/         # Registrar / Resolver / memory / DNS
 │   ├── consul/           # Consul 后端（含 cluster.Coordinator）
+│   ├── registry-redis/   # Redis 注册发现后端（TTL 租约 + Pub/Sub）
 │   ├── cluster/          # 进程间协调（Claim / Acquire / Singleton）
 │   ├── cluster-redis/    # Redis cluster.Coordinator
 │   ├── schedule/         # Cron
 │   ├── telemetry/        # OpenTelemetry 生命周期
 │   └── zap/              # Zap 日志
 ├── docs/                 # 文档与设计稿
-└── _examples/            # boot / bus / cli / http / registry / schedule
+└── _examples/            # boot / bus / bus-kafka / cli / http / registry / registry-redis / schedule
 ```
 
 ## 扩展模块
@@ -285,6 +286,7 @@ github.com/lynx-go/lynx/contrib/watermill-kafka
 github.com/lynx-go/lynx/contrib/telemetry
 github.com/lynx-go/lynx/contrib/registry
 github.com/lynx-go/lynx/contrib/consul
+github.com/lynx-go/lynx/contrib/registry-redis
 github.com/lynx-go/lynx/contrib/cluster
 github.com/lynx-go/lynx/contrib/cluster-redis
 github.com/lynx-go/lynx/contrib/schedule
