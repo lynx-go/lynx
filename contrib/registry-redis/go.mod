@@ -8,8 +8,8 @@ replace (
 )
 
 require (
-	github.com/lynx-go/lynx v1.17.0
-	github.com/lynx-go/lynx/contrib/registry v1.17.0
+	github.com/lynx-go/lynx v1.18.0
+	github.com/lynx-go/lynx/contrib/registry v1.18.0
 	github.com/redis/go-redis/v9 v9.22.0
 )
 

@@ -1,6 +1,38 @@
 # Changelog
 
-## Unreleased
+## v1.18.0 (2026-10-15)
+
+本次发布 tag：根 `v1.18.0` 与全部 10 个 contrib 模块版本对齐——
+`contrib/{zap,watermill,watermill-kafka,telemetry,schedule,registry,registry-redis,consul,cluster,cluster-redis}/v1.18.0`；
+其中 `contrib/registry-redis` 为首次发布。
+
+### 破坏性变更：排水钩子改为 Drainer 接口自动挂载，删除 registry.Apply
+
+- **根框架新增 `lynx.Drainer` 可选接口**（`DrainHook() HookFunc`）：
+  `Register` 登记服务时框架在登记事务外解析（纯取值契约）、事务内原子
+  挂入排水阶段——与 `app.OnDrain` 同列、按服务注册顺序执行、共享
+  `DrainTimeout` 窗口预算。实现 `Drainer` 的服务（Registrar 等）注册即
+  接入，不存在漏挂钩子的第二条路径；`DrainHook` 返回 nil 不挂载、也不
+  触发快失败。`Run()` 的排水快失败错误（`ErrDrainHooksRequireDrainTimeout`）
+  现为自动挂载的钩子具名来源服务。
+- **`contrib/registry`**：`Registrar` 实现 `lynx.Drainer`；`registry.Apply`、
+  `Registrar.DeregisterHook` 与 `watchDrain` 50ms 轮询安全网删除（安全网
+  存在的前提「用户忘了 Apply」结构性消失）。新增 `WithDrainDeregister(false)`
+  退出排水参与（`DrainHook` 返回 nil，不要求 `WithDrainTimeout`，实例依赖
+  后端 TTL 过期，适合崩溃优先部署）。既无 Advertiser 也无静态 endpoints
+  时 `Init` 快失败（新增 `ErrNoEndpoints`）——此前会静默注册一条不可
+  拨号的废记录。
+- **动机**：`Apply` 是「同一服务两种接法、一种残缺」的双入口——忘了
+  调用即丢排水注销（watchDrain 补丁的存在即其证词），Wire 路径另有
+  `boot.DrainHooks` 同类出口。容器发现制（与 `Checker`/`Ready`/`Server`
+  同构）消除该心智负担；CLI 误注册 Registrar 亦随快失败获得机械护栏。
+- **迁移**：`registry.Apply(app, reg)` → `if reg != nil { app.Register(reg) }`
+  （未启用时 `NewFromConfig` 返回 nil，框架对 `Register(nil)` 是启动错误）；
+  Wire 路径 Provider 里去掉 `DeregisterHook`，Registrar 直接进 Services。
+  此前「Register 了 Registrar 但既无 Apply 也无 `WithDrainTimeout`」的应用
+  会由静默运行转为启动期快失败——补 `WithDrainTimeout`（推荐）或
+  `WithDrainDeregister(false)`。测试基建 `lynxtest` 基线 `DrainTimeout=100ms`
+  已覆盖钩子预算，无需改动。
 
 ### 破坏性变更：客户端发现 URI scheme `registry://` 更名 `discovery://`
 
