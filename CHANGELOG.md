@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.19.0 (2026-10-15)
+
+本次发布 tag：根 `v1.19.0` 与全部 10 个 contrib 模块版本对齐——
+`contrib/{zap,watermill,watermill-kafka,telemetry,schedule,registry,registry-redis,consul,cluster,cluster-redis}/v1.19.0`。
+实质变更仅在 `contrib/registry`（[PR #3](https://github.com/lynx-go/lynx/pull/3)）；根模块与其余 contrib 无代码变更，随批对齐版本与模块 require。
+
+### 新增：`KeyedPicker` 与 `RendezvousPicker`——按路由 key 一致性 hash 定向选实例
+
+- **`contrib/registry`**：新增 `KeyedPicker` 接口（`Pick(key string, instances []Instance)`），
+  与既有 `Picker` 平行、不改既有签名；空列表返回 `ErrNoInstance`。面向
+  「同一 key 必须稳定落到同一实例」的有状态后端定向路由（如游戏战斗服
+  按场景把 RPC 路由到内存态服务实例）：各节点对同一 (key, instances)
+  独立计算得到同一属主，免协调。
+- **`RendezvousPicker()`**（HRW，最高随机权重）：score =
+  FNV-1a 64（`key + "\x00" + instance.ID`），取最大；score 并列取
+  `instance.ID` 字典序较小者（冻结 tie-break）。忽略 `Instance.Weight`
+  （v1，与内置 Picker 一致）。实例摘除时只有其名下 key 迁移（Rendezvous
+  最小扰动）。空 key 合法（按空串参与 hash）。
+- **映射冻结为跨服务/跨语言契约**：测试期望值由独立 FNV-1a 64 参考实现
+  离线计算（`frozenKeyedVector` / `frozenRemovalVector`），不是由本实现
+  生成；消费方双持同一份向量，任何一侧改动 hash 编码（拼接顺序、分隔符、
+  hash 函数、tie-break）都会变红。
+- **需求方**：messageloop v1.1 RPC 一致性 hash 路由
+  （`docs/design/2026-10-15-rpc-consistent-hash-routing.md` §3）。
+
 ## v1.18.0 (2026-10-15)
 
 本次发布 tag：根 `v1.18.0` 与全部 10 个 contrib 模块版本对齐——
