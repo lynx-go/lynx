@@ -91,7 +91,7 @@ func TestHTTPTransportCloneAndReResolvePerCall(t *testing.T) {
 	// 在缓存快照上轮换），调用方 URL 不被改写。打 4 次：缓存快照可能
 	// 被 watch 首轮推送替换为等值但顺序不同的切片，4 次调用无论切片
 	// 顺序与轮换奇偶如何都必然覆盖两个实例。
-	req, err := http.NewRequest(http.MethodGet, "registry://svc/users/1", nil)
+	req, err := http.NewRequest(http.MethodGet, "discovery://svc/users/1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestHTTPTransportCloneAndReResolvePerCall(t *testing.T) {
 	if len(hosts) != 2 {
 		t.Fatalf("round-robin should hit 2 instances, got %v", hosts)
 	}
-	if req.URL.Scheme != "registry" || req.URL.Host != "svc" {
+	if req.URL.Scheme != "discovery" || req.URL.Host != "svc" {
 		t.Fatalf("caller URL must not be rewritten, got %s", req.URL)
 	}
 	if rec.lastRequest().URL.Path != "/users/1" {
@@ -119,7 +119,7 @@ func TestHTTPTransportProtocolReservedKeyStripped(t *testing.T) {
 	_, rt, rec := newHTTPFixture(t,
 		passing("svc", "i1", Endpoint{Protocol: ProtocolHTTPS, Address: "10.0.0.1:8443"}),
 	)
-	do(t, rt, "registry://svc/users?id=1&protocol=https")
+	do(t, rt, "discovery://svc/users?id=1&protocol=https")
 	got := rec.lastRequest()
 	if got.URL.Scheme != "https" {
 		t.Fatalf("want https scheme, got %q", got.URL.Scheme)
@@ -137,7 +137,7 @@ func TestHTTPTransportBadProtocol(t *testing.T) {
 	_, rt, _ := newHTTPFixture(t,
 		passing("svc", "i1", Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}),
 	)
-	req, err := http.NewRequest(http.MethodGet, "registry://svc/users?protocol=grpc", nil)
+	req, err := http.NewRequest(http.MethodGet, "discovery://svc/users?protocol=grpc", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestHTTPTransportHTTPSFallback(t *testing.T) {
 			Endpoint{Protocol: ProtocolHTTPS, Address: "10.0.0.1:8443"},
 			Endpoint{Protocol: ProtocolHTTPS, Address: "10.0.0.1:9443"}),
 	)
-	do(t, rt, "registry://svc/users")
+	do(t, rt, "discovery://svc/users")
 	got := rec.lastRequest()
 	if got.URL.Scheme != "https" || got.URL.Host != "10.0.0.1:8443" {
 		t.Fatalf("https fallback: got %s", got.URL)
@@ -167,7 +167,7 @@ func TestHTTPTransportPrefersHTTPOverHTTPS(t *testing.T) {
 			Endpoint{Protocol: ProtocolHTTPS, Address: "10.0.0.1:8443"},
 			Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}),
 	)
-	do(t, rt, "registry://svc/users")
+	do(t, rt, "discovery://svc/users")
 	got := rec.lastRequest()
 	if got.URL.Scheme != "http" || got.URL.Host != "10.0.0.1:8080" {
 		t.Fatalf("must prefer http endpoint, got %s", got.URL)
@@ -179,12 +179,12 @@ func TestHTTPTransportHostHeader(t *testing.T) {
 		passing("svc", "i1", Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}),
 	)
 	// 未显式设 Host（http.NewRequest 预填为 URL.Host）：改写为 Endpoint.Address。
-	do(t, rt, "registry://svc/users")
+	do(t, rt, "discovery://svc/users")
 	if got := rec.lastRequest().Host; got != "10.0.0.1:8080" {
 		t.Fatalf("Host header should follow rewritten URL.Host, got %q", got)
 	}
 	// 调用方显式设置成其它值的 Host 保留。
-	req, err := http.NewRequest(http.MethodGet, "registry://svc/users", nil)
+	req, err := http.NewRequest(http.MethodGet, "discovery://svc/users", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestHTTPTransportHostHeader(t *testing.T) {
 
 func TestHTTPTransportNoInstance(t *testing.T) {
 	_, rt, _ := newHTTPFixture(t)
-	req, err := http.NewRequest(http.MethodGet, "registry://ghost/users", nil)
+	req, err := http.NewRequest(http.MethodGet, "discovery://ghost/users", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestHTTPTransportNoInstance(t *testing.T) {
 
 func TestHTTPTransportEmptyServiceName(t *testing.T) {
 	_, rt, _ := newHTTPFixture(t)
-	req, err := http.NewRequest(http.MethodGet, "registry:///users", nil)
+	req, err := http.NewRequest(http.MethodGet, "discovery:///users", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestHTTPTransportWrapNilBase(t *testing.T) {
 	defer func() { _ = rslv.Close() }()
 
 	rt := NewHTTPTransport(rslv).Wrap(nil)
-	req, err := http.NewRequest(http.MethodGet, "registry://svc/teapot", nil)
+	req, err := http.NewRequest(http.MethodGet, "discovery://svc/teapot", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestHTTPTransportWrapNilBase(t *testing.T) {
 	}
 }
 
-// TestHTTPTransportPortInServiceHost 锁定 RC-12：registry://svc:8081 的
+// TestHTTPTransportPortInServiceHost 锁定 RC-12：discovery://svc:8081 的
 // 端口不得被 Hostname() 静默丢弃——端口非空时按目录 Endpoint 端口匹配。
 func TestHTTPTransportPortInServiceHost(t *testing.T) {
 	_, rt, rec := newHTTPFixture(t,
@@ -263,13 +263,13 @@ func TestHTTPTransportPortInServiceHost(t *testing.T) {
 	)
 
 	// 显式端口 → 命中同端口 Endpoint，而不是首条。
-	do(t, rt, "registry://svc:8081/users")
+	do(t, rt, "discovery://svc:8081/users")
 	if got := rec.lastRequest().URL.Host; got != "10.0.0.1:8081" {
 		t.Fatalf("port must be honored, dialed %q, want 10.0.0.1:8081", got)
 	}
 
 	// 目录无该端口：报错，而非静默丢端口后拨到默认 Endpoint。
-	req, err := http.NewRequest(http.MethodGet, "registry://svc:9999/users", nil)
+	req, err := http.NewRequest(http.MethodGet, "discovery://svc:9999/users", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,21 +278,21 @@ func TestHTTPTransportPortInServiceHost(t *testing.T) {
 	}
 
 	// 无端口：维持原行为（默认首条 http Endpoint）。
-	do(t, rt, "registry://svc/users")
+	do(t, rt, "discovery://svc/users")
 	if got := rec.lastRequest().URL.Host; got != "10.0.0.1:8080" {
 		t.Fatalf("no-port default changed: %q", got)
 	}
 }
 
 // TestHTTPTransportEmptyPortTreatedAsNoPort 锁定复审 D：URL.Host 带尾部
-// 冒号但端口为空（registry://svc:/path，SplitHostPort 得 "svc" 与 ""）时
+// 冒号但端口为空（discovery://svc:/path，SplitHostPort 得 "svc" 与 ""）时
 // 必须按无端口处理，服务名取 host 部分——不得把 "svc:" 整串当服务名去
 // 查目录，产生费解的解析错误。
 func TestHTTPTransportEmptyPortTreatedAsNoPort(t *testing.T) {
 	_, rt, rec := newHTTPFixture(t,
 		passing("svc", "i1", Endpoint{Protocol: ProtocolHTTP, Address: "10.0.0.1:8080"}),
 	)
-	do(t, rt, "registry://svc:/users/1")
+	do(t, rt, "discovery://svc:/users/1")
 	got := rec.lastRequest()
 	if got.URL.Host != "10.0.0.1:8080" {
 		t.Fatalf("empty port must behave like no port, dialed %q", got.URL.Host)
@@ -300,9 +300,9 @@ func TestHTTPTransportEmptyPortTreatedAsNoPort(t *testing.T) {
 	if got.URL.Path != "/users/1" {
 		t.Fatalf("path must be preserved, got %q", got.URL.Path)
 	}
-	// 只有端口没有服务名（registry://:8080/）：ErrBadName，而不是拿
+	// 只有端口没有服务名（discovery://:8080/）：ErrBadName，而不是拿
 	// ":8080" 当服务名去查目录。
-	req, err := http.NewRequest(http.MethodGet, "registry://:8080/users", nil)
+	req, err := http.NewRequest(http.MethodGet, "discovery://:8080/users", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestHTTPTransportHTTPSFallbackErrorChain(t *testing.T) {
 	rt := NewHTTPTransport(rslv).Wrap(&recordingTransport{})
 
 	// 首次请求正常走 https 回落并填充缓存。
-	do(t, rt, "registry://svc/users")
+	do(t, rt, "discovery://svc/users")
 	eventually(t, "watcher established", func() bool {
 		return f.watcherCount() > 0
 	})
@@ -330,14 +330,14 @@ func TestHTTPTransportHTTPSFallbackErrorChain(t *testing.T) {
 	// 断开 watch 并等快照超 stale：http 与 https 两侧都拿不到实例。
 	f.breakWatch()
 	eventually(t, "stale snapshot dropped", func() bool {
-		req, err := http.NewRequest(http.MethodGet, "registry://svc/users", nil)
+		req, err := http.NewRequest(http.MethodGet, "discovery://svc/users", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, roundErr := rt.RoundTrip(req)
 		return roundErr != nil
 	})
-	req, err := http.NewRequest(http.MethodGet, "registry://svc/users", nil)
+	req, err := http.NewRequest(http.MethodGet, "discovery://svc/users", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -55,7 +55,7 @@ func main() {
 		registry.Apply(app, reg)
 		app.Register(hs)
 
-		// 客户端侧：Resolver（缓存 + watch）+ registry:// Transport。
+		// 客户端侧：Resolver（缓存 + watch）+ discovery:// Transport。
 		rslv := registry.NewResolver(disc)
 		cli := clienthttp.New(clienthttp.WithClientOptions(func(c *gohttp.Client) {
 			c.Transport = registry.NewHTTPTransport(rslv).Wrap(c.Transport)
@@ -92,7 +92,7 @@ func main() {
 }
 
 // demoClient 等服务就绪后，向同一目录再写入「另一个服务」的记录（指向
-// 本进程端口），然后以 registry:// URI 按服务名调用两个服务。真实部署
+// 本进程端口），然后以 discovery:// URI 按服务名调用两个服务。真实部署
 // 中对端记录由对端进程自己的 Registrar 写入，客户端在另一个进程里。
 func demoClient(logger *slog.Logger, wr registry.Registry, cli *clienthttp.Client, hs *http.Server) {
 	// 固定等待仅用于演示：HTTP 监听 + Registrar 注册都在 Start 阶段并发完成。
@@ -112,13 +112,13 @@ func demoClient(logger *slog.Logger, wr registry.Registry, cli *clienthttp.Clien
 	}
 
 	for _, name := range []string{"registry-demo", "registry-peer"} {
-		resp, err := cli.Get(ctx, "registry://"+name+"/hello")
+		resp, err := cli.Get(ctx, "discovery://"+name+"/hello")
 		if err != nil {
-			logger.Error("registry:// call failed", "service", name, "error", err)
+			logger.Error("discovery:// call failed", "service", name, "error", err)
 			continue
 		}
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		logger.Info("registry:// call ok", "service", name, "status", resp.StatusCode, "body", string(body))
+		logger.Info("discovery:// call ok", "service", name, "status", resp.StatusCode, "body", string(body))
 	}
 }

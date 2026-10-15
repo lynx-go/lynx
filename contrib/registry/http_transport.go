@@ -7,11 +7,17 @@ import (
 	"net/http"
 )
 
-// ErrBadProtocol 表示 registry:// URI 的 protocol 查询参数非法。
+// discoveryScheme 是客户端发现 URI 的 scheme：HTTP 侧
+// discovery://<service-name>/<path>，gRPC 侧 discovery:///<service-name>。
+// 两处（HTTPTransport 与 gRPC Builder）共用同一常量，避免漂移。
+// 此前为 "registry"，更名是破坏性变更（迁移见 CHANGELOG）。
+const discoveryScheme = "discovery"
+
+// ErrBadProtocol 表示 discovery:// URI 的 protocol 查询参数非法。
 // HTTP 侧只允许 http/https；gRPC 侧只允许 grpc（见 Builder）。
 var ErrBadProtocol = errors.New("registry: unsupported protocol")
 
-// HTTPTransport 把 registry:// 请求改写为具体实例地址后交给内层
+// HTTPTransport 把 discovery:// 请求改写为具体实例地址后交给内层
 // Transport。构造必须吃 *Resolver（而非 raw Discovery），保证与 gRPC
 // 路径共享同一套缓存 / stale 上限 / 默认 Filter。
 //
@@ -45,9 +51,9 @@ type registryRoundTripper struct {
 	base http.RoundTripper
 }
 
-// RoundTrip 解析 registry://<service-name>[:<port>]/<path>[?<query>]：
+// RoundTrip 解析 discovery://<service-name>[:<port>]/<path>[?<query>]：
 //
-//  1. 非 registry scheme：原样交给内层 Transport。
+//  1. 非 discovery scheme：原样交给内层 Transport。
 //  2. Clone 请求后改写 clone，绝不修改调用方的 *http.Request/URL——
 //     client/http 的 WithRetry 循环复用同一 request，每次 RoundTrip
 //     必须重新解析，否则重试会钉死在第一次选中的实例上。
@@ -58,13 +64,13 @@ type registryRoundTripper struct {
 //     Path 保持；Host 头与 URL.Host 一致（调用方显式改成其它值的
 //     Host 保留；http.NewRequest 预填的 Host 等于原 URL.Host，会随之改写）。
 func (t *registryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.URL.Scheme != "registry" {
+	if req.URL.Scheme != discoveryScheme {
 		return t.base.RoundTrip(req)
 	}
 	// 用 URL.Host（而非 Hostname()）拆出可选端口：Hostname() 会静默丢弃
-	// registry://svc:8080 的端口，改写后拨到错误端口（RC-12）。端口
+	// discovery://svc:8080 的端口，改写后拨到错误端口（RC-12）。端口
 	// 非空时要求目录 Endpoint 端口与之匹配，不匹配报错而非静默丢。
-	// SplitHostPort 成功但端口为空（"svc:"，registry://svc:/path 的
+	// SplitHostPort 成功但端口为空（"svc:"，discovery://svc:/path 的
 	// URL.Host）视为无端口：name 取 host 部分，不带尾部冒号——否则
 	// "svc:" 会整串被当服务名去查目录，报出费解的解析错误（复审 D）。
 	name := req.URL.Host
@@ -93,7 +99,7 @@ func (t *registryRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	clone.URL.Scheme = ep.Protocol
 	clone.URL.Host = ep.Address
 	// Host 头与 URL.Host 一致。注意 http.NewRequest 会把 Host 预填为
-	// 原 URL.Host，因此仅当 Host 为空或仍等于原 registry URL 的 Host
+	// 原 URL.Host，因此仅当 Host 为空或仍等于原 discovery URL 的 Host
 	// 时才改写；调用方显式改成其它值的 Host 保留。
 	if clone.Host == "" || clone.Host == req.URL.Host {
 		clone.Host = ep.Address
@@ -104,7 +110,7 @@ func (t *registryRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // pickHTTPEndpoint 选中实例并按协议取 Endpoint。未指定 protocol 时默认
 // http；实例没有任何 http Endpoint 但有 https 时回落第一条 https
 // （稳定顺序）；两者都有只用 http，避免明文/TLS 混选。
-// port 非空（registry://svc:8081 形式）时在选中实例的同协议 Endpoint 中
+// port 非空（discovery://svc:8081 形式）时在选中实例的同协议 Endpoint 中
 // 要求端口精确匹配，无匹配返回错误。
 func (t *registryRoundTripper) pickHTTPEndpoint(req *http.Request, name, port, protocol string) (Endpoint, error) {
 	inst, ep, err := t.selectInstance(req, name, protocol)

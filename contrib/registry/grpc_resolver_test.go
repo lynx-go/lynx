@@ -75,8 +75,8 @@ func mustParseTarget(t *testing.T, raw string) resolver.Target {
 func TestGRPCBuilderScheme(t *testing.T) {
 	rslv := NewResolver(NewMemory())
 	defer func() { _ = rslv.Close() }()
-	if got := NewGRPCBuilder(rslv).Scheme(); got != "registry" {
-		t.Fatalf("want scheme registry, got %q", got)
+	if got := NewGRPCBuilder(rslv).Scheme(); got != "discovery" {
+		t.Fatalf("want scheme discovery, got %q", got)
 	}
 }
 
@@ -84,8 +84,8 @@ func TestGRPCBuilderRejectsAuthorityForm(t *testing.T) {
 	rslv := NewResolver(NewMemory())
 	defer func() { _ = rslv.Close() }()
 	b := NewGRPCBuilder(rslv)
-	// registry://svc/grpc 的 authority 形式不支持：Host 非空 → error。
-	if _, err := b.Build(mustParseTarget(t, "registry://svc/grpc"), &fakeClientConn{}, resolver.BuildOptions{}); err == nil {
+	// discovery://svc/grpc 的 authority 形式不支持：Host 非空 → error。
+	if _, err := b.Build(mustParseTarget(t, "discovery://svc/grpc"), &fakeClientConn{}, resolver.BuildOptions{}); err == nil {
 		t.Fatal("want error for authority-form target")
 	}
 }
@@ -97,15 +97,15 @@ func TestGRPCBuilderRejectsBadTarget(t *testing.T) {
 	cc := &fakeClientConn{}
 
 	// 空服务名。
-	if _, err := b.Build(mustParseTarget(t, "registry:///"), cc, resolver.BuildOptions{}); !errors.Is(err, ErrBadName) {
+	if _, err := b.Build(mustParseTarget(t, "discovery:///"), cc, resolver.BuildOptions{}); !errors.Is(err, ErrBadName) {
 		t.Fatalf("empty name: want ErrBadName, got %v", err)
 	}
 	// 服务名含多余路径段。
-	if _, err := b.Build(mustParseTarget(t, "registry:///a/b"), cc, resolver.BuildOptions{}); !errors.Is(err, ErrBadName) {
+	if _, err := b.Build(mustParseTarget(t, "discovery:///a/b"), cc, resolver.BuildOptions{}); !errors.Is(err, ErrBadName) {
 		t.Fatalf("nested path: want ErrBadName, got %v", err)
 	}
 	// protocol 只接受 grpc。
-	if _, err := b.Build(mustParseTarget(t, "registry:///svc?protocol=http"), cc, resolver.BuildOptions{}); !errors.Is(err, ErrBadProtocol) {
+	if _, err := b.Build(mustParseTarget(t, "discovery:///svc?protocol=http"), cc, resolver.BuildOptions{}); !errors.Is(err, ErrBadProtocol) {
 		t.Fatalf("protocol=http: want ErrBadProtocol, got %v", err)
 	}
 }
@@ -125,7 +125,7 @@ func TestGRPCResolverPublishesAddresses(t *testing.T) {
 
 	b := newGRPCBuilderForTest(t, m)
 	cc := &fakeClientConn{}
-	r, err := b.Build(mustParseTarget(t, "registry:///svc"), cc, resolver.BuildOptions{})
+	r, err := b.Build(mustParseTarget(t, "discovery:///svc"), cc, resolver.BuildOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestGRPCResolverFollowsUpdates(t *testing.T) {
 
 	b := newGRPCBuilderForTest(t, m)
 	cc := &fakeClientConn{}
-	r, err := b.Build(mustParseTarget(t, "registry:///svc"), cc, resolver.BuildOptions{})
+	r, err := b.Build(mustParseTarget(t, "discovery:///svc"), cc, resolver.BuildOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestGRPCResolverEmptySnapshotPublished(t *testing.T) {
 	defer func() { _ = m.Close() }()
 	b := newGRPCBuilderForTest(t, m)
 	cc := &fakeClientConn{}
-	r, err := b.Build(mustParseTarget(t, "registry:///svc"), cc, resolver.BuildOptions{})
+	r, err := b.Build(mustParseTarget(t, "discovery:///svc"), cc, resolver.BuildOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestGRPCResolverKeepsLastStateOnStaleDrop(t *testing.T) {
 	b.pollInterval = 10 * time.Millisecond
 
 	cc := &fakeClientConn{}
-	r, err := b.Build(mustParseTarget(t, "registry:///svc"), cc, resolver.BuildOptions{})
+	r, err := b.Build(mustParseTarget(t, "discovery:///svc"), cc, resolver.BuildOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestGRPCResolverCloseIdempotent(t *testing.T) {
 	m := NewMemory()
 	defer func() { _ = m.Close() }()
 	b := newGRPCBuilderForTest(t, m)
-	r, err := b.Build(mustParseTarget(t, "registry:///svc"), &fakeClientConn{}, resolver.BuildOptions{})
+	r, err := b.Build(mustParseTarget(t, "discovery:///svc"), &fakeClientConn{}, resolver.BuildOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestGRPCResolverSkipsUnchangedState(t *testing.T) {
 
 	b := newGRPCBuilderForTest(t, m) // pollInterval = 10ms
 	cc := &fakeClientConn{}
-	r, err := b.Build(mustParseTarget(t, "registry:///svc"), cc, resolver.BuildOptions{})
+	r, err := b.Build(mustParseTarget(t, "discovery:///svc"), cc, resolver.BuildOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestGRPCResolverGetAllBudgetTimeout(t *testing.T) {
 	b.pollInterval = 50 * time.Millisecond
 
 	cc := &fakeClientConn{}
-	r, err := b.Build(mustParseTarget(t, "registry:///svc"), cc, resolver.BuildOptions{})
+	r, err := b.Build(mustParseTarget(t, "discovery:///svc"), cc, resolver.BuildOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

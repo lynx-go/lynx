@@ -24,7 +24,7 @@ const grpcFallbackPollInterval = 30 * time.Second
 // （RC-07）。3s 与 Registrar 侧 rpcTimeout 对齐。
 const grpcResolveTimeout = 3 * time.Second
 
-// grpcBuilder 实现 resolver.Builder，scheme 为 "registry"。
+// grpcBuilder 实现 resolver.Builder，scheme 为 discoveryScheme（"discovery"）。
 type grpcBuilder struct {
 	rslv *Resolver
 	// pollInterval 是轮询 Resolver 缓存的间隔；不暴露为 Option，
@@ -32,18 +32,18 @@ type grpcBuilder struct {
 	pollInterval time.Duration
 }
 
-// NewGRPCBuilder 返回 scheme 为 "registry" 的 gRPC resolver.Builder。
+// NewGRPCBuilder 返回 scheme 为 "discovery" 的 gRPC resolver.Builder。
 // 必须吃 *Resolver（而非 raw Discovery），保证与 HTTP 路径共享同一套
 // 缓存 / stale 上限 / 默认 Filter。
 //
-// 只支持 target `registry:///<service-name>` 与
-// `registry:///<service-name>?protocol=grpc`（Host 必须为空，服务名在
+// 只支持 target `discovery:///<service-name>` 与
+// `discovery:///<service-name>?protocol=grpc`（Host 必须为空，服务名在
 // path；Host 非空时 Build 返回 error）。默认 protocol=grpc。
 //
 // 推荐每条连接经 grpc.WithResolvers 接入（不改 client/grpc 源码）：
 //
 //	b := registry.NewGRPCBuilder(rslv)
-//	conn, err := clientgrpc.Dial("registry:///user-service",
+//	conn, err := clientgrpc.Dial("discovery:///user-service",
 //		clientgrpc.WithDialOptions(
 //			grpc.WithResolvers(b),
 //			grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
@@ -56,16 +56,16 @@ func NewGRPCBuilder(rslv *Resolver) resolver.Builder {
 	return &grpcBuilder{rslv: rslv, pollInterval: grpcFallbackPollInterval}
 }
 
-// Scheme 返回 "registry"。
-func (b *grpcBuilder) Scheme() string { return "registry" }
+// Scheme 返回 "discovery"。
+func (b *grpcBuilder) Scheme() string { return discoveryScheme }
 
 // Build 解析 target 并启动后台 goroutine 跟踪实例变化。
 func (b *grpcBuilder) Build(target resolver.Target, cc resolver.ClientConn, _ resolver.BuildOptions) (resolver.Resolver, error) {
 	u := target.URL
 	if u.Host != "" {
-		// 不支持 registry://user-service/grpc 的 authority 形式，
+		// 不支持 discovery://user-service/grpc 的 authority 形式，
 		// 避免两种写法并存。
-		return nil, fmt.Errorf("registry: grpc target must be registry:///<service-name>, got host %q", u.Host)
+		return nil, fmt.Errorf("registry: grpc target must be discovery:///<service-name>, got host %q", u.Host)
 	}
 	name := strings.TrimPrefix(u.Path, "/")
 	if name == "" || strings.Contains(name, "/") {
