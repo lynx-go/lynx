@@ -17,8 +17,8 @@ replace (
 require (
 	github.com/google/wire v0.7.0
 	github.com/lynx-go/commands v0.2.1
-	github.com/lynx-go/lynx v1.17.0
-	github.com/lynx-go/lynx/contrib/registry v1.17.0
+	github.com/lynx-go/lynx v1.20.0
+	github.com/lynx-go/lynx/contrib/registry v1.20.0
 	github.com/lynx-go/lynx/contrib/registry-redis v1.17.0
 	github.com/lynx-go/lynx/contrib/schedule v1.0.0
 	github.com/lynx-go/lynx/contrib/telemetry v1.0.0
@@ -53,8 +53,8 @@ require (
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/lithammer/shortuuid/v3 v3.0.7 // indirect
-	github.com/lynx-go/lynx/contrib/cluster v1.17.0 // indirect
-	github.com/lynx-go/lynx/contrib/watermill v1.17.0 // indirect
+	github.com/lynx-go/lynx/contrib/cluster v1.20.0 // indirect
+	github.com/lynx-go/lynx/contrib/watermill v1.20.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect

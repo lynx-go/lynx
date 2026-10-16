@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v1.20.0 (2026-10-17)
+
+本次发布 tag：根 `v1.20.0` 与全部 10 个 contrib 模块版本对齐——
+`contrib/{zap,watermill,watermill-kafka,telemetry,schedule,registry,registry-redis,consul,cluster,cluster-redis}/v1.20.0`。
+实质变更仅在根模块（`buildinfo` 子包 + 元数据版本兜底链，含破坏性变更见下）；contrib 无代码变更，随批对齐版本与模块 require。
 
 ### 新增：框架级构建信息机制（buildinfo 子包）——ldflags 单一注入目标 + 根包取值函数 + Display 兜底
 
