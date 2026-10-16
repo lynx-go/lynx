@@ -160,6 +160,9 @@ Optional drain window (`Options.DrainTimeout`, default 0 = disabled): on shutdow
 The application context carries standard values (lynx.go):
 - `Meta(ctx)` returns a `Metadata{Name, ID, Version}` struct from the context
 - Fields map to `service.name` / `service.id` (hostname by default) / `service.version`
+- Version fallback chain: config `service.version` → `WithVersion` → ldflags-injected `lynx.BuildVersion`
+
+**Build Info** (buildinfo.go): root package vars `lynx.BuildVersion`/`BuildCommit`/`BuildDate` are the single ldflags `-X` targets (zero-value defaults; the Go linker silently no-ops on misspelled targets — the injection channel is pinned by `TestBuildInfoLdflagsInjection`). The runtime read path for the version is `lynx.Meta(ctx).Version` (resolved through the fallback chain above); callers needing commit/date construct `lynx.BuildInfo{...}` literals from the vars directly (no accessor function — a func and a type cannot share one name, the type keeps it). `IsZero()` reports "nothing injected"; `Display()` renders the human string (`dev` fallback, `(commit …, built …)` suffix). The debug service `/version` endpoint reads the same vars (placeholder rendering `dev`/`unknown`/`unknown` for empty fields).
 
 ### Configuration System
 

@@ -348,9 +348,22 @@ func (s *Service) handleLogLevel(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleVersion 输出构建信息（ldflags 注入的 BuildVersion/BuildCommit/
-// BuildDate，见 vars.go）叠加 Go/OS/Arch 与应用元数据（Init 捕获）。
+// handleVersion 输出构建信息（ldflags 注入的 lynx.BuildVersion/BuildCommit/
+// BuildDate，唯一注入目标见根包 buildinfo.go）叠加 Go/OS/Arch 与应用元数据
+// （Init 捕获）；构建变量空值渲染 "dev"/"unknown"/"unknown" 占位，保持
+// 未注入应用的端点输出形状稳定。
 func (s *Service) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	b := lynx.BuildInfo{Version: lynx.BuildVersion, Commit: lynx.BuildCommit, Date: lynx.BuildDate}
+	version, commit, date := b.Version, b.Commit, b.Date
+	if version == "" {
+		version = "dev"
+	}
+	if commit == "" {
+		commit = "unknown"
+	}
+	if date == "" {
+		date = "unknown"
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(struct {
 		Version string `json:"version"`
@@ -365,9 +378,9 @@ func (s *Service) handleVersion(w http.ResponseWriter, _ *http.Request) {
 			Version string `json:"version,omitempty"`
 		} `json:"service"`
 	}{
-		Version: BuildVersion,
-		Commit:  BuildCommit,
-		Date:    BuildDate,
+		Version: version,
+		Commit:  commit,
+		Date:    date,
 		Go:      runtime.Version(),
 		OS:      runtime.GOOS,
 		Arch:    runtime.GOARCH,

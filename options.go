@@ -236,7 +236,9 @@ func WithName(name string) Option {
 	}
 }
 
-// WithVersion 设置应用版本号。
+// WithVersion 设置应用版本号。缺省解析链的兜底顺序：配置键
+// service.version → 本选项 → 编译期注入的 BuildVersion（见 buildinfo.go）
+// ——构建脚本注入后应用可不传本选项。
 func WithVersion(v string) Option {
 	return func(o *Options) {
 		o.Version = v

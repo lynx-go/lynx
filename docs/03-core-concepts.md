@@ -216,7 +216,9 @@ type Metadata struct {
 }
 ```
 
-字段未设置或类型不符时为对应的零值字符串。典型用法是在请求处理或日志中读取应用身份（取自 `_examples/http/main.go`）：
+字段未设置或类型不符时为对应的零值字符串。版本字段的兜底链为：配置键 `service.version` → `WithVersion` 选项 → 编译期注入的构建信息——构建脚本注入后，应用不显式传版本也带版本。
+
+构建信息本体由框架根包承载（见 `buildinfo.go`）：`lynx.BuildVersion`/`lynx.BuildCommit`/`lynx.BuildDate` 是 ldflags `-X` 的唯一注入目标（缺省零值）；需要 commit/date 的调用点以字面量构造 `lynx.BuildInfo{...}` 三元组（不设取值函数——函数与类型不可同名），`IsZero()` 判定是否注入过，`Display()` 渲染人读版本串（空版本兜底 `dev`，commit/date 非空时追加 `(commit …, built …)` 修饰），CLI 的 `--version` 输出与运维对账可直接复用；debug 服务的 `/version` 端点输出的就是这套变量。典型用法是在请求处理或日志中读取应用身份（取自 `_examples/http/main.go`）：
 
 ```go
 router.HandleFunc("/", func(rw gohttp.ResponseWriter, r *gohttp.Request) {

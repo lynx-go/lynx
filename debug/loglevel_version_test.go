@@ -29,33 +29,63 @@ func (f *controlledFakeAppContext) SetLogLevel(level slog.Level) bool {
 func (f *controlledFakeAppContext) LogLevel() slog.Level { return f.level }
 
 func TestVersionEndpoint(t *testing.T) {
-	s := NewService()
-	if err := s.Init(&fakeAppContext{logger: discardLogger()}); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	rec := httptest.NewRecorder()
-	s.newMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("/version status = %d, want 200", rec.Code)
-	}
-	var v struct {
-		Version string `json:"version"`
-		Commit  string `json:"commit"`
-		Date    string `json:"date"`
-		Go      string `json:"go"`
-		Service struct {
-			Name string `json:"name"`
-		} `json:"service"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
-		t.Fatalf("unmarshal /version: %v", err)
-	}
-	if v.Version != BuildVersion || v.Commit != BuildCommit || v.Date != BuildDate {
-		t.Errorf("/version build fields = %+v, want package vars", v)
-	}
-	if !strings.HasPrefix(v.Go, "go1.") {
-		t.Errorf("/version go = %q, want go1.x", v.Go)
-	}
+	t.Run("renders placeholders when nothing injected", func(t *testing.T) {
+		s := NewService()
+		if err := s.Init(&fakeAppContext{logger: discardLogger()}); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		rec := httptest.NewRecorder()
+		s.newMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/version status = %d, want 200", rec.Code)
+		}
+		var v struct {
+			Version string `json:"version"`
+			Commit  string `json:"commit"`
+			Date    string `json:"date"`
+			Go      string `json:"go"`
+			Service struct {
+				Name string `json:"name"`
+			} `json:"service"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+			t.Fatalf("unmarshal /version: %v", err)
+		}
+		// 测试进程未注入：空构建变量渲染 "dev"/"unknown"/"unknown" 占位，
+		// 未注入应用的端点输出形状保持稳定。
+		if v.Version != "dev" || v.Commit != "unknown" || v.Date != "unknown" {
+			t.Errorf("/version build fields = %+v, want dev/unknown/unknown placeholders", v)
+		}
+		if !strings.HasPrefix(v.Go, "go1.") {
+			t.Errorf("/version go = %q, want go1.x", v.Go)
+		}
+	})
+
+	// 注入反射：根包构建变量（ldflags 唯一目标）非空时端点原样回显，
+	// 不再叠加占位渲染。白盒改写须存原值恢复。
+	t.Run("echoes injected build vars", func(t *testing.T) {
+		oldV, oldC, oldD := lynx.BuildVersion, lynx.BuildCommit, lynx.BuildDate
+		defer func() { lynx.BuildVersion, lynx.BuildCommit, lynx.BuildDate = oldV, oldC, oldD }()
+		lynx.BuildVersion, lynx.BuildCommit, lynx.BuildDate = "v-test", "abc1234", "2026-10-17T00:00:00Z"
+
+		s := NewService()
+		if err := s.Init(&fakeAppContext{logger: discardLogger()}); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		rec := httptest.NewRecorder()
+		s.newMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
+		var v struct {
+			Version string `json:"version"`
+			Commit  string `json:"commit"`
+			Date    string `json:"date"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+			t.Fatalf("unmarshal /version: %v", err)
+		}
+		if v.Version != "v-test" || v.Commit != "abc1234" || v.Date != "2026-10-17T00:00:00Z" {
+			t.Errorf("/version build fields = %+v, want injected vars echoed", v)
+		}
+	})
 }
 
 func TestLogLevelEndpointWithoutControl(t *testing.T) {

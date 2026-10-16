@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### 新增：框架级构建信息机制（buildinfo）——ldflags 单一注入目标 + BuildInfo 快照 + Display 兜底
+
+- **根包新增 `lynx.BuildVersion`/`lynx.BuildCommit`/`lynx.BuildDate`**：ldflags `-X` 的
+  唯一注入目标（`-X github.com/lynx-go/lynx.BuildVersion=v1.20.0`），缺省零值（未注入即
+  "没有构建信息"，可判定）；配套 `lynx.BuildInfo{Version, Commit, Date}` 三元组（按需
+  以字面量从 vars 构造，不设取值函数——函数与类型不可同名，名字让给类型）、`IsZero()`
+  与 `Display()`（人读版本串：空版本兜底 `dev`，commit/date 非空追加
+  `(commit …, built …)` 修饰）。注入通道由活体探针
+  `TestBuildInfoLdflagsInjection` 钉死——目标串拼写错误在链接期静默 no-op，探针保证
+  文档承诺的目标精确生效。
+- **元数据版本兜底链补末位**：`service.version` 配置 → `WithVersion` → 编译期
+  `BuildVersion`——构建脚本注入后应用不显式 `WithVersion` 也带版本（`Meta(ctx)`、
+  zap `service.version` 日志键、registry 实例 meta、debug `/version` 的 service 段
+  全链联动）。
+- **破坏性变更**：`debug.BuildVersion/BuildCommit/BuildDate` 删除，ldflags 目标迁至
+  根包——`-X github.com/lynx-go/lynx/debug.BuildVersion=…` 改为
+  `-X github.com/lynx-go/lynx.BuildVersion=…`（commit/date 同理；旧目标在 Go 链接器
+  下静默 no-op，构建脚本务必同批迁移）。debug `/version` 端点输出形状不变（空值
+  渲染 `dev`/`unknown`/`unknown` 占位）。
+- 需求方：fleetly 控制面的 buildinfo 机制下沉（CLI/daemon 版本探查与 wire 收敛复用
+  同一机制，不再自持一份）。
+
 ## v1.19.0 (2026-10-15)
 
 本次发布 tag：根 `v1.19.0` 与全部 10 个 contrib 模块版本对齐——

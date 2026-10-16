@@ -393,6 +393,11 @@ func (app *lynx) init() error {
 	if meta.Version == "" {
 		meta.Version = app.o.Version
 	}
+	if meta.Version == "" {
+		// 编译期注入兜底：ldflags 注入后应用不显式 WithVersion 也带版本
+		// （Meta(ctx)、service.version 日志键、registry 实例 meta 全链联动）。
+		meta.Version = BuildVersion
+	}
 	app.ctx = ContextWithMeta(app.ctx, meta)
 
 	if app.o.LoggerProvider != nil {

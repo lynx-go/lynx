@@ -1469,6 +1469,24 @@ func TestAppContextIgnoresLegacyTopLevelKeys(t *testing.T) {
 	}
 }
 
+// TestAppContextVersionFallsBackToBuildInfo 验证元数据版本兜底链的末位：
+// 配置键 service.version 与 WithVersion 都未提供时，init 取编译期注入的
+// BuildVersion（ldflags 注入后应用不显式传版本也带版本）。
+func TestAppContextVersionFallsBackToBuildInfo(t *testing.T) {
+	oldV, oldC, oldD := BuildVersion, BuildCommit, BuildDate
+	defer func() { BuildVersion, BuildCommit, BuildDate = oldV, oldC, oldD }()
+	BuildVersion, BuildCommit, BuildDate = "v-build", "c-build", "d-build"
+
+	app, err := newLynxWithConfig(NewViperConfig(viper.New()))
+	if err != nil {
+		t.Fatalf("newLynx() error = %v", err)
+	}
+	got := Meta(app.Context())
+	if got.Version != "v-build" {
+		t.Errorf("Meta().Version = %q, want build-injected %q", got.Version, "v-build")
+	}
+}
+
 // newLynxWithConfig 用预置配置源构建应用（绕过命令行 flags 解析）。
 func newLynxWithConfig(c ConfigSource) (App, error) {
 	o := NewOptions()
