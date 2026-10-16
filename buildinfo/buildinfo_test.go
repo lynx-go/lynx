@@ -1,4 +1,4 @@
-package lynx
+package buildinfo
 
 import (
 	"fmt"
@@ -52,7 +52,7 @@ const (
 
 // buildinfoLdflagsTarget 是三个注入目标的共享前缀（文档注释的机器可执行
 // 形态——注释拼错探针不会红，这里拼错用户构建期静默 no-op，两者都钉）。
-const buildinfoLdflagsTarget = "github.com/lynx-go/lynx"
+const buildinfoLdflagsTarget = "github.com/lynx-go/lynx/buildinfo"
 
 // TestBuildInfoLdflagsInjection 是注入通道的活体探针：以子 go test 进程
 // 携带 -ldflags -X 重跑本包，断言文档承诺的三个目标精确生效。go test
@@ -65,7 +65,7 @@ func TestBuildInfoLdflagsInjection(t *testing.T) {
 		t.Skipf("go not in PATH: %v", err)
 	}
 	ldflags := fmt.Sprintf(
-		"-X %s.BuildVersion=%s -X %s.BuildCommit=%s -X %s.BuildDate=%s",
+		"-X %s.Version=%s -X %s.Commit=%s -X %s.Date=%s",
 		buildinfoLdflagsTarget, probeVersion,
 		buildinfoLdflagsTarget, probeCommit,
 		buildinfoLdflagsTarget, probeDate,
@@ -83,8 +83,8 @@ func TestBuildInfoLdflagsProbeChild(t *testing.T) {
 	if os.Getenv("LYNX_BUILDINFO_PROBE_CHILD") != "1" {
 		t.Skip("child-only: spawned by TestBuildInfoLdflagsInjection with -ldflags")
 	}
-	if BuildVersion != probeVersion || BuildCommit != probeCommit || BuildDate != probeDate {
+	if Version != probeVersion || Commit != probeCommit || Date != probeDate {
 		t.Fatalf("ldflags injection missed: version=%q commit=%q date=%q, want %q/%q/%q",
-			BuildVersion, BuildCommit, BuildDate, probeVersion, probeCommit, probeDate)
+			Version, Commit, Date, probeVersion, probeCommit, probeDate)
 	}
 }

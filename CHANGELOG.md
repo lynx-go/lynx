@@ -2,25 +2,27 @@
 
 ## Unreleased
 
-### 新增：框架级构建信息机制（buildinfo）——ldflags 单一注入目标 + BuildInfo 快照 + Display 兜底
+### 新增：框架级构建信息机制（buildinfo 子包）——ldflags 单一注入目标 + 根包取值函数 + Display 兜底
 
-- **根包新增 `lynx.BuildVersion`/`lynx.BuildCommit`/`lynx.BuildDate`**：ldflags `-X` 的
-  唯一注入目标（`-X github.com/lynx-go/lynx.BuildVersion=v1.20.0`），缺省零值（未注入即
-  "没有构建信息"，可判定）；配套 `lynx.BuildInfo{Version, Commit, Date}` 三元组（按需
-  以字面量从 vars 构造，不设取值函数——函数与类型不可同名，名字让给类型）、`IsZero()`
-  与 `Display()`（人读版本串：空版本兜底 `dev`，commit/date 非空追加
-  `(commit …, built …)` 修饰）。注入通道由活体探针
-  `TestBuildInfoLdflagsInjection` 钉死——目标串拼写错误在链接期静默 no-op，探针保证
-  文档承诺的目标精确生效。
+- **新增 `buildinfo` 子包**（根模块内叶子包，零依赖）：包级 `buildinfo.Version`/
+  `buildinfo.Commit`/`buildinfo.Date` 是 ldflags `-X` 的唯一注入目标
+  （`-X github.com/lynx-go/lynx/buildinfo.Version=v1.20.0`，包名已带语境、变量不再
+  重复 Build 前缀），缺省零值（未注入即"没有构建信息"，可判定）；`buildinfo.BuildInfo`
+  三元组与 `IsZero()`、`Display()`（人读版本串：空版本兜底 `dev`，commit/date 非空追加
+  `(commit …, built …)` 修饰）。注入通道由活体探针 `TestBuildInfoLdflagsInjection`
+  钉死——目标串拼写错误在链接期静默 no-op，探针保证文档承诺的目标精确生效。
+- **根包新增取值函数 `lynx.BuildInfo()`**（`Meta(ctx)` 同款形态）：返回
+  `buildinfo.BuildInfo` 快照——Go 不允许函数与类型同名，类型住进 buildinfo 子包后，
+  根包的名字让给函数。应用可直接持有、传递（如经依赖注入收敛给接口层）。
 - **元数据版本兜底链补末位**：`service.version` 配置 → `WithVersion` → 编译期
-  `BuildVersion`——构建脚本注入后应用不显式 `WithVersion` 也带版本（`Meta(ctx)`、
+  `buildinfo.Version`——构建脚本注入后应用不显式 `WithVersion` 也带版本（`Meta(ctx)`、
   zap `service.version` 日志键、registry 实例 meta、debug `/version` 的 service 段
   全链联动）。
 - **破坏性变更**：`debug.BuildVersion/BuildCommit/BuildDate` 删除，ldflags 目标迁至
-  根包——`-X github.com/lynx-go/lynx/debug.BuildVersion=…` 改为
-  `-X github.com/lynx-go/lynx.BuildVersion=…`（commit/date 同理；旧目标在 Go 链接器
-  下静默 no-op，构建脚本务必同批迁移）。debug `/version` 端点输出形状不变（空值
-  渲染 `dev`/`unknown`/`unknown` 占位）。
+  buildinfo 子包——`-X github.com/lynx-go/lynx/debug.BuildVersion=…` 改为
+  `-X github.com/lynx-go/lynx/buildinfo.Version=…`（commit/date 同理；旧目标在 Go
+  链接器下静默 no-op，构建脚本务必同批迁移）。debug `/version` 端点输出形状不变
+  （空值渲染 `dev`/`unknown`/`unknown` 占位）。
 - 需求方：fleetly 控制面的 buildinfo 机制下沉（CLI/daemon 版本探查与 wire 收敛复用
   同一机制，不再自持一份）。
 

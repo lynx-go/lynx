@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/lynx-go/lynx/buildinfo"
 	"github.com/lynx-go/lynx/eventbus"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -396,7 +397,7 @@ func (app *lynx) init() error {
 	if meta.Version == "" {
 		// 编译期注入兜底：ldflags 注入后应用不显式 WithVersion 也带版本
 		// （Meta(ctx)、service.version 日志键、registry 实例 meta 全链联动）。
-		meta.Version = BuildVersion
+		meta.Version = buildinfo.Version
 	}
 	app.ctx = ContextWithMeta(app.ctx, meta)
 

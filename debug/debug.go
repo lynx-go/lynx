@@ -353,7 +353,7 @@ func (s *Service) handleLogLevel(w http.ResponseWriter, r *http.Request) {
 // （Init 捕获）；构建变量空值渲染 "dev"/"unknown"/"unknown" 占位，保持
 // 未注入应用的端点输出形状稳定。
 func (s *Service) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	b := lynx.BuildInfo{Version: lynx.BuildVersion, Commit: lynx.BuildCommit, Date: lynx.BuildDate}
+	b := lynx.BuildInfo()
 	version, commit, date := b.Version, b.Commit, b.Date
 	if version == "" {
 		version = "dev"

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lynx-go/lynx/buildinfo"
 	"github.com/lynx-go/lynx/eventbus"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -1471,11 +1472,11 @@ func TestAppContextIgnoresLegacyTopLevelKeys(t *testing.T) {
 
 // TestAppContextVersionFallsBackToBuildInfo 验证元数据版本兜底链的末位：
 // 配置键 service.version 与 WithVersion 都未提供时，init 取编译期注入的
-// BuildVersion（ldflags 注入后应用不显式传版本也带版本）。
+// buildinfo.Version（ldflags 注入后应用不显式传版本也带版本）。
 func TestAppContextVersionFallsBackToBuildInfo(t *testing.T) {
-	oldV, oldC, oldD := BuildVersion, BuildCommit, BuildDate
-	defer func() { BuildVersion, BuildCommit, BuildDate = oldV, oldC, oldD }()
-	BuildVersion, BuildCommit, BuildDate = "v-build", "c-build", "d-build"
+	oldV, oldC, oldD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
+	defer func() { buildinfo.Version, buildinfo.Commit, buildinfo.Date = oldV, oldC, oldD }()
+	buildinfo.Version, buildinfo.Commit, buildinfo.Date = "v-build", "c-build", "d-build"
 
 	app, err := newLynxWithConfig(NewViperConfig(viper.New()))
 	if err != nil {
@@ -1484,6 +1485,20 @@ func TestAppContextVersionFallsBackToBuildInfo(t *testing.T) {
 	got := Meta(app.Context())
 	if got.Version != "v-build" {
 		t.Errorf("Meta().Version = %q, want build-injected %q", got.Version, "v-build")
+	}
+}
+
+// TestBuildInfoAccessor 钉根包取值函数：lynx.BuildInfo() 返回 buildinfo
+// 包级 vars 的当场快照（Meta(ctx) 同款的取值函数形态——函数与类型不可
+// 同名，类型住子包、根包名字让给函数）。
+func TestBuildInfoAccessor(t *testing.T) {
+	oldV, oldC, oldD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
+	defer func() { buildinfo.Version, buildinfo.Commit, buildinfo.Date = oldV, oldC, oldD }()
+	buildinfo.Version, buildinfo.Commit, buildinfo.Date = "v-acc", "c-acc", "d-acc"
+
+	want := buildinfo.BuildInfo{Version: "v-acc", Commit: "c-acc", Date: "d-acc"}
+	if got := BuildInfo(); got != want {
+		t.Errorf("BuildInfo() = %+v, want %+v", got, want)
 	}
 }
 

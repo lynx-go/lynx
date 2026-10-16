@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/lynx-go/lynx"
+	"github.com/lynx-go/lynx/buildinfo"
 )
 
 // controlledFakeAppContext 在 fakeAppContext 之上实现日志级别控制接口。
@@ -64,9 +65,9 @@ func TestVersionEndpoint(t *testing.T) {
 	// 注入反射：根包构建变量（ldflags 唯一目标）非空时端点原样回显，
 	// 不再叠加占位渲染。白盒改写须存原值恢复。
 	t.Run("echoes injected build vars", func(t *testing.T) {
-		oldV, oldC, oldD := lynx.BuildVersion, lynx.BuildCommit, lynx.BuildDate
-		defer func() { lynx.BuildVersion, lynx.BuildCommit, lynx.BuildDate = oldV, oldC, oldD }()
-		lynx.BuildVersion, lynx.BuildCommit, lynx.BuildDate = "v-test", "abc1234", "2026-10-17T00:00:00Z"
+		oldV, oldC, oldD := buildinfo.Version, buildinfo.Commit, buildinfo.Date
+		defer func() { buildinfo.Version, buildinfo.Commit, buildinfo.Date = oldV, oldC, oldD }()
+		buildinfo.Version, buildinfo.Commit, buildinfo.Date = "v-test", "abc1234", "2026-10-17T00:00:00Z"
 
 		s := NewService()
 		if err := s.Init(&fakeAppContext{logger: discardLogger()}); err != nil {
