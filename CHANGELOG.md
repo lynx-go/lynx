@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### 修复：Go 1.26.9 + x/net v0.60.0——关闭 govulncheck 11 项 stdlib 与 4 项 x/net 可达漏洞
+
+CI `govulncheck` job 转红（同批 test / lint 全绿，唯一失败 job；v1.18.0–v1.20.0
+连续发布提交同一失败）。根因是 2026-10-15 前后发布的一批 Go 安全公告：旧工具链
+（go1.26.8）与旧 `golang.org/x/net`（v0.58.0）下 govulncheck 扫描到 11 项 stdlib
+可达漏洞 + 4 项 x/net module 侧可达漏洞，govulncheck 报 `exit status 3`。
+
+- **Go 工具链 1.26.8 → 1.26.9**（`mise.toml`，CI 经 `jdx/mise-action` 唯一取版）：
+  修复 11 项 stdlib 可达漏洞——`net/http` ×7（HTTP/2 HPACK 编码器竞态崩溃
+  GO-2026-6617、双流控退款 GO-2026-6612、初始窗口反复变更 CPU 耗尽
+  GO-2026-6611、接受畸形 framing 相关头 GO-2026-6610、Trailer 头内存耗尽
+  GO-2026-6603、2xx CONNECT 后 HTTP/1 服务端连接失步 GO-2026-6613、CONNECT
+  拒绝后 HTTP/1 客户端连接失步 GO-2026-6605）、`net/textproto` MIME 头解析
+  内存上限绕过 GO-2026-6608、`crypto/tls` ECH 外层扩展引用校验 GO-2026-6607、
+  `html/template` yield 正则前导词识别 GO-2026-6600 / 连续模板表达式上下文
+  跟踪重置 GO-2026-6599。
+- **`golang.org/x/net` v0.58.0 → v0.60.0**（9 个模块 go.mod）：修复同族 HTTP/2
+  漏洞的 module 侧（GO-2026-6617 / 6612 / 6611 / 6610 / 6603）；MVS 连带
+  `x/crypto` v0.56.0 → v0.57.0（`_examples`、`contrib/watermill-kafka`）、
+  `x/sys` v0.47.0 → v0.48.0、`x/text` v0.41.0 → v0.42.0、`x/mod` v0.38.0 →
+  v0.41.0（`contrib/watermill-kafka`；`x/text` v0.42.0 的 require），均为间接
+  依赖，无运行时 API / 行为变更。
+- govulncheck 全部 11 模块（go1.26.9，workspace 语义与 CI 一致）终验：
+  0 可达、0 导入级；各模块 `go vet` 与 `go test -race -shuffle=on` 全绿。
+
 ## v1.20.0 (2026-10-17)
 
 本次发布 tag：根 `v1.20.0` 与全部 10 个 contrib 模块版本对齐——
